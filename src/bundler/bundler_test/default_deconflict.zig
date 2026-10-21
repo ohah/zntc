@@ -1026,6 +1026,32 @@ test "Default: regular export default identifier still self-ref (no regression)"
     try std.testing.expect(!result.hasErrors());
     // regular default는 _ns suffix 없어야 — self-ref 최적화 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value_ns") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = value") == null);
+}
+
+test "Default: unresolved global identifier is snapshotted at export evaluation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import value from './mod';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\globalThis.snapshotValue = 7;
+        \\export default snapshotValue;
+        \\globalThis.snapshotValue = 9;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default = snapshotValue") != null);
 }
 
 test "Deconflict: rest parameter shadows renamed function (#1457)" {

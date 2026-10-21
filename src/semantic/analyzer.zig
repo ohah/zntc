@@ -1389,8 +1389,9 @@ pub const SemanticAnalyzer = struct {
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
         // #4221: 이름이 string_table 슬라이스(합성 노드)일 수 있다 — emitter 소비
         // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
-        // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. 이미 등록된 키면
-        // 사본을 만들지 않는다.
+        // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. Escaped identifiers
+        // also reserve their decoded spelling so generated bindings cannot capture
+        // the same global name after codegen normalizes the escape.
         if (self.collect_unresolved_reference_nodes) {
             self.unresolved_reference_nodes.put(self.allocator, @backingInt(node_idx), {}) catch {
                 self.alloc_failed = true;
@@ -1406,6 +1407,18 @@ pub const SemanticAnalyzer = struct {
         };
         self.unresolved_references.put(self.allocator, stable_name, {}) catch {
             self.allocator.free(stable_name);
+            self.alloc_failed = true;
+        };
+
+        var decoded_name_buffer: [256]u8 = undefined;
+        const decoded_name = Scanner.decodeIdentifierEscapesInto(name, &decoded_name_buffer) orelse return;
+        if (std.mem.eql(u8, decoded_name, name) or self.unresolved_references.contains(decoded_name)) return;
+        const stable_decoded_name = self.allocator.dupe(u8, decoded_name) catch {
+            self.alloc_failed = true;
+            return;
+        };
+        self.unresolved_references.put(self.allocator, stable_decoded_name, {}) catch {
+            self.allocator.free(stable_decoded_name);
             self.alloc_failed = true;
         };
     }
@@ -4945,7 +4958,9 @@ pub const SemanticAnalyzer = struct {
         try self.registerExportedName("default", node.span);
 
         const inner_idx = node.data.unary.operand;
-        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx);
+        const unresolved_identifier_needs_facade = self.unresolvedDefaultIdentifierNeedsFacade(inner_idx);
+        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx) or
+            unresolved_identifier_needs_facade;
 
         if (needs_facade) {
             // _default facade 심볼 생성 — declareSymbolWithNode 우회 (재선언 검증 불필요)
@@ -4970,7 +4985,19 @@ pub const SemanticAnalyzer = struct {
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 // The facade is only a reachability token. Preserve a user's
                 // real `_default` binding in lexical lookup when one exists.
-                if (!self.scope_maps.items[module_scope.toIndex()].contains("_default"))
+                const facade_would_capture_source_reference = blk: {
+                    if (!unresolved_identifier_needs_facade or inner_idx.isNone()) break :blk false;
+                    const source_reference_name = self.ast.getText(self.ast.getNode(inner_idx).span);
+                    if (std.mem.eql(u8, source_reference_name, "_default")) break :blk true;
+                    var decoded_name_buffer: [64]u8 = undefined;
+                    const decoded_name = Scanner.decodeIdentifierEscapesInto(
+                        source_reference_name,
+                        &decoded_name_buffer,
+                    ) orelse break :blk false;
+                    break :blk std.mem.eql(u8, decoded_name, "_default");
+                };
+                if (!facade_would_capture_source_reference and
+                    !self.scope_maps.items[module_scope.toIndex()].contains("_default"))
                     try self.scope_maps.items[module_scope.toIndex()].put(self.allocator, "_default", sym_index);
                 // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
                 self.recordDeclareRef(@intCast(sym_index), module_scope, null);
@@ -5013,6 +5040,29 @@ pub const SemanticAnalyzer = struct {
                 else => {},
             }
         }
+    }
+
+    /// A bare identifier can be a valid module-level value without naming a
+    /// lexical binding (for example a global installed on `globalThis`). Such
+    /// an `export default` still captures its value at module evaluation time,
+    /// so give it the same exact facade identity as an anonymous expression.
+    fn unresolvedDefaultIdentifierNeedsFacade(self: *SemanticAnalyzer, inner_idx: NodeIndex) bool {
+        if (inner_idx.isNone() or @backingInt(inner_idx) >= self.ast.nodes.items.len) return false;
+        const inner = self.ast.getNode(inner_idx);
+        if (inner.tag != .identifier_reference) return false;
+        if (self.isExplicitGlobalRefNode(inner_idx)) return true;
+
+        const name = self.ast.getText(inner.span);
+        if (self.isHelperRefNode(inner_idx)) return self.helper_scope_map.get(name) == null;
+
+        var scope_id = self.current_scope;
+        while (!scope_id.isNone()) {
+            if (self.findSymbolIndexInScope(scope_id, name) != null) return false;
+            const raw = scope_id.toIndex();
+            if (raw >= self.scopes.items.len) break;
+            scope_id = self.scopes.items[raw].parent;
+        }
+        return true;
     }
 
     /// `export = expr;` (TS CJS interop) — transformer 가 `module.exports = expr;` 로 lower.

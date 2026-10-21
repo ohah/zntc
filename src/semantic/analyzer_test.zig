@@ -1515,6 +1515,127 @@ test "Enum: default export" {
     try analyzeNoErrors("enum Status { Active }\nexport default Status;");
 }
 
+test "#4819 unresolved direct default identifier receives an exact facade SymbolId" {
+    var r = try analyzeModule(
+        "globalThis.snapshot = 7; export default snapshot; globalThis.snapshot = 9;",
+    );
+    defer r.deinit();
+
+    var default_export_id: ?u32 = null;
+    var unresolved_reference_id: ?u32 = null;
+    for (r.parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .export_default_declaration) {
+            default_export_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .identifier_reference and
+            std.mem.eql(u8, r.parser.ast.getText(node.span), "snapshot"))
+        {
+            unresolved_reference_id = r.analyzer.symbol_ids.items[index];
+        }
+    }
+
+    const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
+    try std.testing.expectEqual(@as(?u32, null), unresolved_reference_id);
+    const facade = r.analyzer.symbols.items[facade_id];
+    try std.testing.expect(facade.decl_flags.is_default_export);
+    try std.testing.expectEqualStrings("_default", facade.synthetic_name);
+}
+
+test "#4819 direct local default identifier keeps its source SymbolId" {
+    var r = try analyzeModule("const snapshot = 7; export default snapshot;");
+    defer r.deinit();
+
+    var binding_id: ?u32 = null;
+    var reference_id: ?u32 = null;
+    var default_export_id: ?u32 = null;
+    for (r.parser.ast.nodes.items, 0..) |node, index| {
+        const name = r.parser.ast.getText(node.span);
+        if (node.tag == .binding_identifier and std.mem.eql(u8, name, "snapshot")) {
+            binding_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .identifier_reference and std.mem.eql(u8, name, "snapshot")) {
+            reference_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .export_default_declaration) {
+            default_export_id = r.analyzer.symbol_ids.items[index];
+        }
+    }
+
+    const local_id = binding_id orelse return error.MissingLocalBinding;
+    try std.testing.expectEqual(local_id, reference_id orelse return error.MissingLocalReference);
+    try std.testing.expectEqual(@as(?u32, null), default_export_id);
+}
+
+test "#4819 escaped unresolved default identifier does not bind to its facade" {
+    var r = try analyzeModule(
+        "globalThis._default = 7; export default \\u005fdefault; globalThis._default = 9;",
+    );
+    defer r.deinit();
+
+    var default_export_id: ?u32 = null;
+    var escaped_reference_id: ?u32 = null;
+    for (r.parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .export_default_declaration) {
+            default_export_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .identifier_reference and
+            std.mem.eql(u8, r.parser.ast.getText(node.span), "\\u005fdefault"))
+        {
+            escaped_reference_id = r.analyzer.symbol_ids.items[index];
+        }
+    }
+
+    const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
+    try std.testing.expectEqual(@as(?u32, null), escaped_reference_id);
+    try std.testing.expect(r.analyzer.unresolved_references.contains("\\u005fdefault"));
+    try std.testing.expect(r.analyzer.unresolved_references.contains("_default"));
+    const facade = r.analyzer.symbols.items[facade_id];
+    try std.testing.expect(facade.decl_flags.is_default_export);
+    try std.testing.expectEqualStrings("_default", facade.synthetic_name);
+}
+
+test "#4819 unresolved `_default` stays external to its facade binding" {
+    var r = try analyzeModule(
+        "globalThis._default = 7; export default _default; globalThis._default = 9;",
+    );
+    defer r.deinit();
+
+    var default_export_id: ?u32 = null;
+    var reference_id: ?u32 = null;
+    for (r.parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .export_default_declaration) {
+            default_export_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .identifier_reference and
+            std.mem.eql(u8, r.parser.ast.getText(node.span), "_default"))
+        {
+            reference_id = r.analyzer.symbol_ids.items[index];
+        }
+    }
+
+    try std.testing.expect(default_export_id != null);
+    try std.testing.expectEqual(@as(?u32, null), reference_id);
+    try std.testing.expect(r.analyzer.unresolved_references.contains("_default"));
+}
+
+test "#4819 local `_default` default export keeps its binding identity" {
+    var r = try analyzeModule("const _default = 7; export default _default;");
+    defer r.deinit();
+
+    var binding_id: ?u32 = null;
+    var reference_id: ?u32 = null;
+    var default_export_id: ?u32 = null;
+    for (r.parser.ast.nodes.items, 0..) |node, index| {
+        const name = r.parser.ast.getText(node.span);
+        if (node.tag == .binding_identifier and std.mem.eql(u8, name, "_default")) {
+            binding_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .identifier_reference and std.mem.eql(u8, name, "_default")) {
+            reference_id = r.analyzer.symbol_ids.items[index];
+        } else if (node.tag == .export_default_declaration) {
+            default_export_id = r.analyzer.symbol_ids.items[index];
+        }
+    }
+
+    const local_id = binding_id orelse return error.MissingLocalBinding;
+    try std.testing.expectEqual(local_id, reference_id orelse return error.MissingLocalReference);
+    try std.testing.expectEqual(@as(?u32, null), default_export_id);
+}
+
 test "Enum: mixed re-export with class and var" {
     try analyzeNoErrors(
         \\enum Dir { Up }

@@ -540,6 +540,29 @@ pub fn extractExportBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
+/// Add facade classification from the exact analyzer node identity. The
+/// parser's syntax-only scan cannot tell a lexical identifier from a global
+/// reference, while the analyzer records the synthetic facade on the export
+/// declaration node itself.
+pub fn markDefaultExportFacadesFromSemantic(
+    bindings: []ExportBinding,
+    symbol_ids: []const ?u32,
+    symbols: []const SemanticSymbol,
+) void {
+    for (bindings) |*binding| {
+        if (binding.kind != .local or !std.mem.eql(u8, binding.exported_name, "default")) continue;
+        const export_node = binding.default_export_node orelse continue;
+        const node_index = @backingInt(export_node);
+        if (node_index >= symbol_ids.len) continue;
+        const symbol_index = symbol_ids[node_index] orelse continue;
+        if (symbol_index >= symbols.len) continue;
+        const symbol = symbols[symbol_index];
+        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) {
+            binding.has_default_export_facade = true;
+        }
+    }
+}
+
 const NameInfo = struct {
     name: []const u8,
     span: Span,
