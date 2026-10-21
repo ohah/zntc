@@ -102,6 +102,133 @@ console.log(methods.read.call({ input: 'home' }), _obj, _obj$1, _obj$2);`,
     expect(actual.stdout).toBe(native.stdout);
   });
 
+  test('generator default object-super homes reserve their exact output binding', async () => {
+    const cases = [
+      {
+        name: 'function declaration default',
+        source: `function* generatorDefault(value = (eval(''), { input: this.input, read() { return super.read(); } })) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 });
+}
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+      },
+      {
+        name: 'function expression default',
+        source: `const generatorDefault = function* (value = { input: this.input, read() { return super.read(); } }) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 });
+};
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+      },
+      {
+        name: 'later parameter default',
+        source: `function* generatorDefault(unused, value = { input: this.input, read() { return super.read(); } }) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 });
+}
+console.log(generatorDefault.call({ input: 2 }, null).next().value);`,
+      },
+      {
+        name: 'nested object producer',
+        source: `function* generatorDefault(value = { child: { input: this.input, read() { return super.read(); } } }) {
+  Object.setPrototypeOf(value.child, base);
+  yield value.child.read.call({ input: 3 });
+}
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+      },
+      {
+        name: 'computed property beside home method',
+        source: `function* generatorDefault(value = { [this.key]: 1, input: this.input, read() { return super.read(); } }) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 }) + value[this.key];
+}
+console.log(generatorDefault.call({ input: 2, key: 'x' }).next().value);`,
+        expected: '4\n',
+      },
+      {
+        name: 'generator object method',
+        source: `const factory = { *make(value = { input: this.input, read() { return super.read(); } }) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 });
+} };
+console.log(factory.make.call({ input: 2 }).next().value);`,
+      },
+      {
+        name: 'nested generator declaration',
+        source: `function outer() {
+  function* generatorDefault(value = { input: this.input, read() { return super.read(); } }) {
+    Object.setPrototypeOf(value, base);
+    yield value.read.call({ input: 3 });
+  }
+  return generatorDefault.call({ input: 2 }).next().value;
+}
+console.log(outer());`,
+      },
+      {
+        name: 'arrow factory in default',
+        source: `function* generatorDefault(value = (() => ({ input: this.input, read() { return super.read(); } }))()) {
+  Object.setPrototypeOf(value, base);
+  yield value.read.call({ input: 3 });
+}
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+      },
+      {
+        name: 'two object producers in one default',
+        source: `function* generatorDefault(values = [
+  { input: this.input, read() { return super.read(); } },
+  { input: this.input, read() { return super.read(); } },
+]) {
+  values.forEach((value) => Object.setPrototypeOf(value, base));
+  yield values.map((value) => value.read.call({ input: 3 })).join(':');
+}
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+        expected: '3:3\n',
+      },
+      {
+        name: 'two parameter producers',
+        source: `function* generatorDefault(first = { input: this.input, read() { return super.read(); } }, second = { input: this.input, read() { return super.read(); } }) {
+  Object.setPrototypeOf(first, base);
+  Object.setPrototypeOf(second, base);
+  yield first.read.call({ input: 3 }) + ':' + second.read.call({ input: 4 });
+}
+console.log(generatorDefault.call({ input: 2 }).next().value);`,
+        expected: '3:4\n',
+      },
+    ];
+    const prefix = `const base = { read() { return this.input; } };\n`;
+
+    for (const item of cases) {
+      const fixture = await createFixture({ 'input.js': prefix + item.source });
+      try {
+        const output = join(fixture.dir, 'out.js');
+        const native = spawnSync('node', [join(fixture.dir, 'input.js')], {
+          cwd: fixture.dir,
+          encoding: 'utf8',
+        });
+        expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+        const transformed = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(transformed.status, `${item.name}: ${transformed.stderr}`).toBe(0);
+        const report = transformed.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/clean=1(?:\s|$)/);
+        expect(report, item.name).toMatch(/missing_binding=0(?:\s|$)/);
+        expect(report, item.name).toMatch(/missing_reference=0(?:\s|$)/);
+
+        const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(native.stdout);
+        if (item.expected) expect(actual.stdout, item.name).toBe(item.expected);
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  });
+
   test('bundler object-super home names survive ten hostile collision and scope inputs', async () => {
     const cases = [
       {

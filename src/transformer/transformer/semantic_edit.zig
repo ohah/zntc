@@ -272,7 +272,9 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
                 self.options.unsupported.async_generator;
             break :blk exact_async_function or exact_async_generator;
         };
-        if (!exact_async_arrow_state_machine and !exact_async_function_wrapper) return null;
+        const exact_sync_generator_wrapper = ownerIsLoweredSyncGenerator(self, output_owner);
+        if (!exact_async_arrow_state_machine and !exact_async_function_wrapper and
+            !exact_sync_generator_wrapper) return null;
         const owner_raw = @backingInt(output_owner);
         const output_scope_raw = self.transformed_scope_owner_map.get(owner_raw) orelse
             self.scope_owner_map.get(owner_raw) orelse return null;
@@ -296,7 +298,8 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
         {
             if (exact_async_arrow_state_machine and scopes[start_scope.toIndex()].parent == output_scope)
                 return output_scope;
-            if (exact_async_function_wrapper and scopes[output_scope.toIndex()].parent == start_scope)
+            if ((exact_async_function_wrapper or exact_sync_generator_wrapper) and
+                scopes[output_scope.toIndex()].parent == start_scope)
                 return output_scope;
         }
         return null;
@@ -343,6 +346,68 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
         );
     }
     return if (ambiguous) null else candidate;
+}
+
+fn ownerIsLoweredSyncGenerator(self: *Transformer, owner: NodeIndex) bool {
+    if (!self.options.unsupported.generator or owner.isNone() or @backingInt(owner) >= self.ast.nodes.items.len)
+        return false;
+    const node = self.ast.getNode(owner);
+    const flags: u32 = switch (node.tag) {
+        .function_declaration, .function_expression, .function => self.readU32(node.data.extra, ast_mod.FunctionExtra.flags),
+        .method_definition => ast_mod.methodFlagsToFunctionFlags(
+            self.readU32(node.data.extra, ast_mod.MethodExtra.flags),
+        ),
+        else => return false,
+    };
+    const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+    const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+    return is_generator and !is_async;
+}
+
+fn reparentLoweredGeneratorParameterScope(
+    self: *Transformer,
+    reference_scope: ScopeId,
+    output_scope: ScopeId,
+    editor: *SemanticEditor,
+) Transformer.Error!?ScopeId {
+    const owner = self.synthetic_function_source_owner;
+    if (!self.options.unsupported.default_params or self.native_parameter_list_retained_for_dynamic_lookup or
+        !ownerIsLoweredSyncGenerator(self, owner) or reference_scope.isNone() or output_scope.isNone() or
+        reference_scope.toIndex() >= editor.scopes.items.len or output_scope.toIndex() >= editor.scopes.items.len)
+        return null;
+    const output = editor.scopes.items[output_scope.toIndex()];
+    if (reference_scope == output_scope) return null;
+    if (!self.synthetic_function_node.isNone() and
+        self.outputOwnedScope(self.synthetic_function_node) == reference_scope)
+    {
+        // The temporary function expression created for a method is replaced
+        // by the original method's output owner. Its parameter references must
+        // move to that final scope; retaining the temporary function boundary
+        // would make the hoisted temp invisible.
+        return output_scope;
+    }
+    var root = reference_scope;
+    var hops: usize = 0;
+    while (hops < editor.scopes.items.len) : (hops += 1) {
+        if (root.isNone() or root.toIndex() >= editor.scopes.items.len) return null;
+        const parent = editor.scopes.items[root.toIndex()].parent;
+        if (parent == output.parent) break;
+        root = parent;
+    }
+    if (root.isNone() or root.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[root.toIndex()].parent != output.parent)
+        return null;
+    if (scopeOwnerNode(self, root)) |scope_owner| {
+        if (self.ast.getNode(scope_owner).tag == .formal_parameters) return null;
+    }
+    // Default expressions move into the emitted generator function body.
+    // During parameter-temp hoisting, their nested scopes can still be rooted
+    // under the source parameter environment. Move that exact subtree under
+    // the output function scope so all its reads remain visible to the hoisted
+    // temp. Final output-scope binding will reconcile AST-owned scopes later.
+    if (root == output_scope) return null;
+    editor.reparentScope(root, output_scope) catch |err| return editError(err);
+    return reference_scope;
 }
 
 /// Resolve the body scope for an expression emitted from a lowered formal
@@ -3832,6 +3897,8 @@ pub fn bindHoistedTempWithProducerIdentity(
                 // must follow that emitted scope so the body var is visible.
                 if (editor.scopes.items[expected_scope.toIndex()].parent == ref.scope)
                     break :blk expected_scope;
+                if (try reparentLoweredGeneratorParameterScope(self, ref.scope, expected_scope, editor)) |mapped_scope|
+                    break :blk mapped_scope;
                 break :blk ref.scope;
             };
             try bindPendingHoistedTempReference(self, editor, ref.node, id, reference_scope, ref.flags);
@@ -3934,7 +4001,11 @@ fn bindPendingTempProducerReferencesInScope(
         if (self.options.unsupported.default_params and !reference_scope.isNone() and
             !target_scope.isNone() and target_scope.toIndex() < editor.scopes.items.len and
             editor.scopes.items[target_scope.toIndex()].parent == reference_scope)
+        {
             reference_scope = target_scope;
+        } else if (try reparentLoweredGeneratorParameterScope(self, reference_scope, target_scope, editor)) |mapped_scope| {
+            reference_scope = mapped_scope;
+        }
         try bindPendingHoistedTempReference(self, editor, pending.node, symbol_id, reference_scope, pending.flags);
     }
     forgetPendingTempProducerReferences(self, producer_id);

@@ -46,6 +46,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const es_helpers = @import("es_helpers.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
+const es2015_params = @import("es2015_params.zig");
 const es2015_scan = @import("es2015_generator/scan.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
@@ -98,6 +99,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const params_list_old = self.ast.functionParamsList(node);
             const params_start = params_list_old.start;
             const params_len = params_list_old.len;
+            const params_idx: NodeIndex = self.readNodeIdx(e, ast_mod.FunctionExtra.params);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
             const source_scope = self.stateMachineOwnerScope(source_owner);
@@ -117,8 +119,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const parameter_temp_start = self.temp_var_counter;
             const param_capture_use_start = self.lexical_capture_uses.items.len;
-            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
-            const parameter_temp_end = self.temp_var_counter;
+            var native_params_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+            if (self.options.unsupported.default_params and es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                self,
+                params_list_old,
+            )) {
+                const parameter_environment = @import("parameter_environment.zig");
+                const params_dynamic_lookup = try parameter_environment.nodeHasDynamicLookup(self, params_idx);
+                const body_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(
+                    self,
+                    source_scope,
+                    body_idx,
+                );
+                native_params_retained = params_dynamic_lookup or body_dynamic_lookup;
+            }
+            const parameter_visit = blk: {
+                const saved_parameter_output_owner = self.lowered_parameter_temp_output_owner;
+                const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+                self.lowered_parameter_temp_output_owner = source_owner;
+                self.native_parameter_list_retained_for_dynamic_lookup = native_params_retained;
+                defer self.lowered_parameter_temp_output_owner = saved_parameter_output_owner;
+                defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
+                break :blk .{ .params = new_params, .temp_end = self.temp_var_counter };
+            };
+            const new_params = parameter_visit.params;
+            const parameter_temp_end = parameter_visit.temp_end;
             const param_needs_this = if (extracted_loop) false else self.needs_this_var;
             const param_needs_arguments = if (extracted_loop) false else self.needs_arguments_var;
             const param_needs_new_target = if (extracted_loop) false else self.hasLexicalCaptureSince(param_capture_use_start, self.capture_frame, .new_target_value);
@@ -188,7 +214,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = body_list },
             });
-            const new_body = try self.hoistParameterTempsAndRestore(wrapper_body, parameter_temp_start, parameter_temp_end, span);
+            const new_body = blk: {
+                const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+                const saved_source_owner = self.synthetic_function_source_owner;
+                self.native_parameter_list_retained_for_dynamic_lookup = native_params_retained;
+                self.synthetic_function_source_owner = source_owner;
+                defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                defer self.synthetic_function_source_owner = saved_source_owner;
+                break :blk try self.hoistParameterTempsAndRestore(wrapper_body, parameter_temp_start, parameter_temp_end, span);
+            };
 
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
