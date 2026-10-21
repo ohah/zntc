@@ -2816,39 +2816,6 @@ pub fn createSyntheticTempBindingWithIdentity(
     return .{ .node = node, .name_span = name_span, .symbol_id = symbol_id };
 }
 
-/// Carry the exact identity from a lowering-created generator temp binding to
-/// the wrapper declaration emitted after state-machine operation collection.
-pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbol: ?SymbolId) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or self.state_machine_depth == 0) return;
-    const id = symbol orelse return;
-    if (self.generator_temp_var_spans.items.len != self.generator_temp_producer_identities.items.len)
-        std.debug.panic("generator temp spans and producer identities are out of sync", .{});
-    const gop = try self.generator_state_temp_symbols.getOrPut(self.allocator, name_span.start);
-    if (gop.found_existing) {
-        if (gop.value_ptr.* != @backingInt(id)) std.debug.panic("generator temp Span was assigned multiple symbols", .{});
-    } else {
-        gop.value_ptr.* = @backingInt(id);
-    }
-    for (self.generator_temp_var_spans.items, 0..) |temp_span, index| {
-        if (temp_span.start != name_span.start or temp_span.end != name_span.end) continue;
-        const identity = &self.generator_temp_producer_identities.items[index];
-        if (identity.symbol_id) |existing| {
-            if (existing != @backingInt(id)) std.debug.panic("generator temp identity changed SymbolId", .{});
-        } else {
-            identity.symbol_id = @backingInt(id);
-        }
-        const owner_scope = self.generator_state_machine_scope;
-        if (identity.owner_scope.isNone()) {
-            identity.owner_scope = owner_scope;
-        } else if (identity.owner_scope != owner_scope) {
-            std.debug.panic("generator temp SymbolId owner changed before hoisting", .{});
-        }
-    }
-    // Some assignment targets reserve their identity before the wrapper var
-    // is added to the span list. appendGeneratorTempSpan copies this legacy
-    // reservation into the aligned slot when that declaration is registered.
-}
-
 pub fn registerGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, owner_scope: ScopeId) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     if (self.state_machine_depth == 0) std.debug.panic("generated wrapper temp registered outside state-machine lowering", .{});

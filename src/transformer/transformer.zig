@@ -609,9 +609,6 @@ pub const Transformer = struct {
     generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
     /// Producer identities aligned with generator_temp_var_spans.
     generator_temp_producer_identities: std.ArrayListUnmanaged(GeneratorTempProducerIdentity) = .empty,
-    /// Legacy span-indexed identities for generator temp paths that have not
-    /// yet been migrated to direct producer handles.
-    generator_state_temp_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Exact generated `_state` reference nodes awaiting their callback binding.
     /// Each state machine records its starting offset, so nested lowering cannot
     /// consume an enclosing machine's references.
@@ -1042,7 +1039,6 @@ pub const Transformer = struct {
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
     pub const reserveSyntheticTempIdentityForReference = @import("transformer/semantic_edit.zig").reserveSyntheticTempIdentityForReference;
     pub const SyntheticTempReferenceIdentity = @import("transformer/semantic_edit.zig").SyntheticTempReferenceIdentity;
-    pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
