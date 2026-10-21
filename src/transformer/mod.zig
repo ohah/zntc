@@ -68,6 +68,7 @@ test {
     _ = @import("generator_state_semantic_test.zig");
     _ = @import("generated_temp_identity_semantic_test.zig");
     _ = @import("es2020_temp_identity_semantic_test.zig");
+    _ = @import("manual_captured_temp_deferred_identity_semantic_test.zig");
     _ = @import("es2021_temp_identity_semantic_test.zig");
     _ = @import("es2015_spread_temp_identity_semantic_test.zig");
     _ = @import("class_key_temp_identity_semantic_test.zig");

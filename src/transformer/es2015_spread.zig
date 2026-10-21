@@ -85,14 +85,23 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                 if (receiver_capture.symbol_id) |symbol_id| {
                     try self.addSyntheticRefInScope(receiver_ref, symbol_id, receiver_capture.reference_scope, .{ .read = true });
                 } else {
+                    const producer_id = receiver_capture.temp_producer_id orelse
+                        std.debug.panic("spread receiver temp has no allocator producer identity", .{});
                     const assignment = self.ast.getNode(receiver_capture.paren_assign);
-                    try self.trackSyntheticTempReference(
+                    try self.trackCapturedTempReference(
+                        producer_id,
                         receiver_capture.span,
-                        span,
                         assignment.data.binary.left,
+                        self.current_scope,
                         .{ .write = true },
                     );
-                    try self.trackSyntheticTempReference(receiver_capture.span, span, receiver_ref, .{ .read = true });
+                    try self.trackCapturedTempReference(
+                        producer_id,
+                        receiver_capture.span,
+                        receiver_ref,
+                        self.current_scope,
+                        .{ .read = true },
+                    );
                 }
                 break :blk receiver_ref;
             } else try es_helpers.makeVoidZero(self, span);
@@ -158,8 +167,22 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     if (cap.symbol_id) |symbol_id| {
                         try self.addSyntheticRefInScope(ref, symbol_id, cap.reference_scope, .{ .read = true });
                     } else {
-                        try self.trackSyntheticTempReference(cap.span, span, assignment.data.binary.left, .{ .write = true });
-                        try self.trackSyntheticTempReference(cap.span, span, ref, .{ .read = true });
+                        const producer_id = cap.temp_producer_id orelse
+                            std.debug.panic("spread constructor temp has no allocator producer identity", .{});
+                        try self.trackCapturedTempReference(
+                            producer_id,
+                            cap.span,
+                            assignment.data.binary.left,
+                            self.current_scope,
+                            .{ .write = true },
+                        );
+                        try self.trackCapturedTempReference(
+                            producer_id,
+                            cap.span,
+                            ref,
+                            self.current_scope,
+                            .{ .read = true },
+                        );
                     }
                     break :blk .{ cap.paren_assign, ref };
                 };
