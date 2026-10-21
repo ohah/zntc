@@ -2101,6 +2101,7 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
         try setSymbolId(self, temp.binding, declared);
         break :blk declared;
     };
+    try recordTempProducerSymbolId(self, temp.temp_producer_id, id);
 
     // Relocation updates the editor's copy of the node-to-symbol table. Keep
     // the transform's parallel table in sync as well; later output and
@@ -2120,6 +2121,18 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
         }
         try setSymbolId(self, pending.reference, id);
     }
+    try bindPendingTempProducerReferencesInCallback(
+        self,
+        temp.temp_producer_id,
+        id,
+        temp.name_span,
+        source_scope,
+        binding_scope,
+        callback_scope,
+        live,
+        live_scopes,
+        traces,
+    );
     // Source temps carry producer identity. Only callback temps created after
     // state-machine assembly lack it and may take the exact-scope late-name
     // path here.
@@ -2293,6 +2306,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
         owner_scope,
         known_id,
     ) catch |err| return editError(err);
+    try recordTempProducerSymbolId(self, temp.temp_producer_id, id);
     const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
     if (bound.found_existing and bound.value_ptr.* != @backingInt(id))
         std.debug.panic("callback temp allocation changed its exact SymbolId", .{});
@@ -2316,6 +2330,18 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
         }
         try setSymbolId(self, pending.reference, id);
     }
+    try bindPendingTempProducerReferencesInCallback(
+        self,
+        temp.temp_producer_id,
+        id,
+        temp.name_span,
+        source_scope,
+        callback_scope,
+        callback_scope,
+        live,
+        live_scopes,
+        null,
+    );
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
@@ -3444,6 +3470,39 @@ pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: Nod
     }
 }
 
+/// Preserve a captured temp reference with the stable allocator identity kept
+/// by `TempCapture`. Deferred owners must not recover this handoff from text.
+pub fn trackCapturedTempReference(
+    self: *Transformer,
+    temp_producer_id: u64,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (temp_producer_id == 0 or node.isNone() or scope.isNone() or
+        @backingInt(node) >= self.ast.nodes.items.len)
+        std.debug.panic("captured temp reference has no stable producer context", .{});
+    const reference = self.ast.getNode(node);
+    if ((reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) or
+        reference.data.string_ref.start != name_span.start or reference.data.string_ref.end != name_span.end)
+        std.debug.panic("captured temp reference disagrees with its producer name span", .{});
+    for (self.pending_temp_producer_refs.items) |existing| {
+        if (existing.temp_producer_id != temp_producer_id or existing.node != node) continue;
+        if (existing.scope != scope or !std.meta.eql(existing.flags, flags))
+            std.debug.panic("captured temp reference was registered with conflicting metadata", .{});
+        return;
+    }
+    try self.pending_temp_producer_refs.append(self.allocator, .{
+        .temp_producer_id = temp_producer_id,
+        .name_span = name_span,
+        .node = node,
+        .scope = scope,
+        .flags = flags,
+    });
+}
+
 /// Attach a generated `var` temp reference to an identity reserved at its
 /// first use when the output scope is known. Parameter environments and
 /// state-machine callbacks keep using the deferred hoist path until their
@@ -3620,6 +3679,26 @@ pub fn bindHoistedTempWithProducerSymbol(
     binding_scope: ScopeId,
     producer_symbol_id: ?SymbolId,
 ) Transformer.Error!void {
+    return bindHoistedTempWithProducerIdentity(
+        self,
+        binding,
+        name_span,
+        declaration_span,
+        binding_scope,
+        producer_symbol_id,
+        null,
+    );
+}
+
+pub fn bindHoistedTempWithProducerIdentity(
+    self: *Transformer,
+    binding: NodeIndex,
+    name_span: Span,
+    declaration_span: Span,
+    binding_scope: ScopeId,
+    producer_symbol_id: ?SymbolId,
+    temp_producer_id: ?u64,
+) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     // State-machine operations are assembled before the generated callback
     // scope exists. Leave exact refs and duplicate var declarations pending;
@@ -3634,6 +3713,7 @@ pub fn bindHoistedTempWithProducerSymbol(
             .name_span = name_span,
             .symbol_id = self.getSymbolIdAt(binding),
             .callback_local = true,
+            .temp_producer_id = temp_producer_id,
         });
         return;
     }
@@ -3655,7 +3735,8 @@ pub fn bindHoistedTempWithProducerSymbol(
             (bound_temp_id != null and bound_temp_id.? != raw_producer_id))
             std.debug.panic("hoisted temp producer changed its exact SymbolId", .{});
     }
-    if (chain == null and known_temp_id == null and bound_temp_id == null and producer_symbol_id == null) return;
+    if (chain == null and known_temp_id == null and bound_temp_id == null and producer_symbol_id == null and
+        (temp_producer_id == null or !hasPendingTempProducerReferences(self, temp_producer_id.?))) return;
     if (known_temp_id != null and bound_temp_id != null and known_temp_id.? != bound_temp_id.?)
         std.debug.panic("hoisted temp allocation has conflicting exact SymbolIds", .{});
     const id = bindGeneratedTempByIdentity(
@@ -3667,6 +3748,7 @@ pub fn bindHoistedTempWithProducerSymbol(
         expected_scope,
         if (producer_symbol_id) |producer_id| @backingInt(producer_id) else known_temp_id orelse bound_temp_id,
     ) catch |err| return editError(err);
+    try recordTempProducerSymbolId(self, temp_producer_id, id);
     const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
     if (bound.found_existing and bound.value_ptr.* != @backingInt(id))
         std.debug.panic("hoisted temp allocation changed its exact SymbolId", .{});
@@ -3675,6 +3757,7 @@ pub fn bindHoistedTempWithProducerSymbol(
         if (existing != @backingInt(id)) std.debug.panic("hoisted temp binding changed its exact SymbolId", .{});
     } else try setSymbolId(self, binding, id);
     es_helpers.markStandaloneLateSyntheticTemp(self, id, expected_scope);
+    try bindPendingTempProducerReferencesInScope(self, temp_producer_id, id, name_span, expected_scope);
     if (chain) |found| {
         var i: ?usize = found.value.first;
         while (i) |index| {
@@ -3739,6 +3822,105 @@ fn bindPendingHoistedTempReference(
     }
 
     if (transformer_symbol == null) try setSymbolId(self, node, symbol);
+}
+
+fn forgetPendingTempProducerReferences(self: *Transformer, temp_producer_id: u64) void {
+    var retained: usize = 0;
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.temp_producer_id == temp_producer_id) continue;
+        self.pending_temp_producer_refs.items[retained] = pending;
+        retained += 1;
+    }
+    self.pending_temp_producer_refs.shrinkRetainingCapacity(retained);
+}
+
+fn hasPendingTempProducerReferences(self: *Transformer, temp_producer_id: u64) bool {
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.temp_producer_id == temp_producer_id) return true;
+    }
+    return false;
+}
+
+fn recordTempProducerSymbolId(self: *Transformer, temp_producer_id: ?u64, symbol_id: SymbolId) Transformer.Error!void {
+    const producer_id = temp_producer_id orelse return;
+    if (producer_id == 0) return editError(error.InvalidSymbol);
+    const entry = try self.temp_symbols_by_producer_id.getOrPut(self.allocator, producer_id);
+    if (entry.found_existing and entry.value_ptr.* != @backingInt(symbol_id))
+        return editError(error.InvalidSymbol);
+    entry.value_ptr.* = @backingInt(symbol_id);
+}
+
+fn bindPendingTempProducerReferencesInScope(
+    self: *Transformer,
+    temp_producer_id: ?u64,
+    symbol_id: SymbolId,
+    name_span: Span,
+    target_scope: ScopeId,
+) Transformer.Error!void {
+    const producer_id = temp_producer_id orelse return;
+    const editor = try editorFor(self);
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.temp_producer_id != producer_id) continue;
+        if (pending.node.isNone() or @backingInt(pending.node) >= self.ast.nodes.items.len or
+            pending.scope.isNone() or @backingInt(pending.scope) >= editor.scopes.items.len or
+            pending.name_span.start != name_span.start or pending.name_span.end != name_span.end)
+            return editError(error.InvalidSymbol);
+        const reference = self.ast.getNode(pending.node);
+        if ((reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) or
+            reference.data.string_ref.start != name_span.start or reference.data.string_ref.end != name_span.end)
+            return editError(error.InvalidSymbol);
+        var reference_scope = pending.scope;
+        if (self.options.unsupported.default_params and !reference_scope.isNone() and
+            !target_scope.isNone() and target_scope.toIndex() < editor.scopes.items.len and
+            editor.scopes.items[target_scope.toIndex()].parent == reference_scope)
+            reference_scope = target_scope;
+        try bindPendingHoistedTempReference(self, editor, pending.node, symbol_id, reference_scope, pending.flags);
+    }
+    forgetPendingTempProducerReferences(self, producer_id);
+}
+
+fn bindPendingTempProducerReferencesInCallback(
+    self: *Transformer,
+    temp_producer_id: ?u64,
+    symbol_id: SymbolId,
+    name_span: Span,
+    source_scope: ScopeId,
+    binding_scope: ScopeId,
+    callback_scope: ScopeId,
+    live: *const std.AutoHashMapUnmanaged(u32, void),
+    live_scopes: *const std.AutoHashMapUnmanaged(u32, void),
+    traces: ?*const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace),
+) Transformer.Error!void {
+    const producer_id = temp_producer_id orelse return;
+    const editor = try editorFor(self);
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.temp_producer_id != producer_id or !live.contains(@backingInt(pending.node))) continue;
+        if (pending.node.isNone() or @backingInt(pending.node) >= self.ast.nodes.items.len or
+            pending.scope.isNone() or @backingInt(pending.scope) >= editor.scopes.items.len or
+            pending.name_span.start != name_span.start or pending.name_span.end != name_span.end)
+            return editError(error.InvalidSymbol);
+        const reference = self.ast.getNode(pending.node);
+        if ((reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) or
+            reference.data.string_ref.start != name_span.start or reference.data.string_ref.end != name_span.end)
+            return editError(error.InvalidSymbol);
+        const reference_scope = if (traces) |trace_map| blk: {
+            const trace = trace_map.get(@backingInt(pending.node)) orelse
+                std.debug.panic("captured temp reference has no final scope trace", .{});
+            if (trace.ambiguous_scope)
+                std.debug.panic("captured temp reference has ambiguous output scopes", .{});
+            break :blk try stateTempOutputScope(
+                self,
+                source_scope,
+                callback_scope,
+                binding_scope,
+                pending.scope,
+                trace.scope,
+                live_scopes,
+            );
+        } else try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
+        try bindPendingHoistedTempReference(self, editor, pending.node, symbol_id, reference_scope, pending.flags);
+    }
+    forgetPendingTempProducerReferences(self, producer_id);
 }
 
 /// Bind a generated temp that is emitted directly in a lexical declaration.
@@ -4358,6 +4540,22 @@ pub fn validateDeferredGeneratedTempHandoffs(
             cursor = pending.next;
         }
         if (last == null or last.? != entry.value_ptr.last) return false;
+    }
+
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.temp_producer_id == 0 or pending.node.isNone() or
+            @backingInt(pending.node) >= self.ast.nodes.items.len or pending.scope.isNone() or
+            @backingInt(pending.scope) >= editor.scopes.items.len)
+            return false;
+        const reference_node = self.ast.getNode(pending.node);
+        if (reference_node.tag != .identifier_reference and reference_node.tag != .assignment_target_identifier)
+            return false;
+        if (reference_node.data.string_ref.start != pending.name_span.start or
+            reference_node.data.string_ref.end != pending.name_span.end)
+            return false;
+        // A live captured reference may not leave semantic editing before its
+        // exact allocator producer is bound to a SymbolId.
+        if (live.contains(@backingInt(pending.node))) return false;
     }
 
     for (self.generator_state_temp_refs.items) |pending| {

@@ -329,7 +329,11 @@ pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, be
     // function. Consume them even when no later allocation currently extends
     // the counter: an enclosing transform may allocate more temps afterwards
     // and otherwise sweep the stale parameter slots into its own hoist.
-    for (before_params..after_params) |i| _ = self.temp_span_by_counter.remove(@intCast(i));
+    for (before_params..after_params) |i| {
+        const counter_index: u32 = @intCast(i);
+        _ = self.temp_span_by_counter.remove(counter_index);
+        _ = self.temp_producer_id_by_counter.remove(counter_index);
+    }
     if (later_counter > after_params) {
         // Those later allocations still need their existing body owner.
         self.temp_var_counter = later_counter;
@@ -384,18 +388,20 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
             @fromBackingInt(@intCast(raw_id))
         else
             null;
+        const temp_producer_id = self.temp_producer_id_by_counter.get(i);
         if (state_bindings) |bindings| {
             const binding_symbol_id: ?u32 = if (producer_symbol_id) |id| @backingInt(id) else self.getSymbolIdAt(binding);
             try bindings.append(self.allocator, .{
                 .binding = binding,
                 .name_span = name_span,
                 .symbol_id = binding_symbol_id,
+                .temp_producer_id = temp_producer_id,
             });
         }
         if (body_node.tag == .program and self.semantic_edit_enabled) {
-            try self.bindHoistedTempWithProducerSymbol(binding, name_span, span, .none, producer_symbol_id);
+            try self.bindHoistedTempWithProducerIdentity(binding, name_span, span, .none, producer_symbol_id, temp_producer_id);
         } else if (function_scope) |scope_id| {
-            try self.bindHoistedTempWithProducerSymbol(binding, name_span, span, scope_id, producer_symbol_id);
+            try self.bindHoistedTempWithProducerIdentity(binding, name_span, span, scope_id, producer_symbol_id, temp_producer_id);
         }
         const none = @backingInt(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
