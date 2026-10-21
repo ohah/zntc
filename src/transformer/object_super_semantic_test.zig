@@ -3,11 +3,13 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const NodeIndex = ast_mod.NodeIndex;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const Transformer = @import("transformer.zig").Transformer;
+const ObjectSuperHomeIdentity = Transformer.ObjectSuperHomeIdentity;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const es_helpers = @import("es_helpers.zig");
 const object_super = @import("object_super.zig");
@@ -238,11 +240,12 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     transformer.current_scope = scope;
 
     const home_span = try es_helpers.makeTempVarSpan(&transformer);
-    const first_proto = try object_super.buildHomeProto(&transformer, home_span, span);
+    const home_identity = ObjectSuperHomeIdentity{ .producer_node = program, .span = home_span };
+    const first_proto = try object_super.buildHomeProto(&transformer, home_identity, span);
     const first_ref = transformer.object_super_home_references.items[
         transformer.object_super_home_references.items.len - 1
     ].node;
-    const second_proto = try object_super.buildHomeProto(&transformer, home_span, span);
+    const second_proto = try object_super.buildHomeProto(&transformer, home_identity, span);
     const second_ref = transformer.object_super_home_references.items[
         transformer.object_super_home_references.items.len - 1
     ].node;
@@ -261,13 +264,34 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     const decoy_ref = try es_helpers.makeTempVarRef(&transformer, home_span, span);
     try transformer.addSyntheticRefInScope(decoy_ref, decoy_id, scope, .{ .read = true });
 
+    var other_home_identity: ?ObjectSuperHomeIdentity = null;
+    var other_home_proto: ?NodeIndex = null;
+    var other_home_ref: ?NodeIndex = null;
+    if (home_wrap != .assign) {
+        // Deliberately reuse the exact name span under a distinct producer.
+        // Deferred reference grouping must follow the producer NodeIndex.
+        const empty_members = try transformer.ast.addNodeList(&.{});
+        const other_producer = try transformer.ast.addNode(.{
+            .tag = .object_expression,
+            .span = span,
+            .data = .{ .list = empty_members },
+        });
+        const other_identity = ObjectSuperHomeIdentity{ .producer_node = other_producer, .span = home_span };
+        const other_proto = try object_super.buildHomeProto(&transformer, other_identity, span);
+        other_home_identity = other_identity;
+        other_home_proto = other_proto;
+        other_home_ref = transformer.object_super_home_references.items[
+            transformer.object_super_home_references.items.len - 1
+        ].node;
+    }
+
     const values = try transformer.ast.addNodeList(&.{ first_proto, second_proto, decoy_ref });
     const root = try transformer.ast.addNode(.{
         .tag = .array_expression,
         .span = span,
         .data = .{ .list = values },
     });
-    const wrapped = try object_super.wrapWithHome(&transformer, .{ .span = home_span, .wrap = home_wrap }, root, span);
+    const wrapped = try object_super.wrapWithHome(&transformer, .{ .identity = home_identity, .wrap = home_wrap }, root, span);
     const write_ref = try findHomeWriteReference(&transformer, wrapped, root);
     const home_id = switch (home_wrap) {
         .assign => blk: {
@@ -292,7 +316,32 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     try std.testing.expectEqual(@as(?u32, @backingInt(home_id)), transformer.getSymbolIdAt(first_ref));
     try std.testing.expectEqual(@as(?u32, @backingInt(home_id)), transformer.getSymbolIdAt(second_ref));
     try std.testing.expectEqual(@as(?u32, @backingInt(decoy_id)), transformer.getSymbolIdAt(decoy_ref));
-    try std.testing.expectEqual(@as(usize, 0), transformer.object_super_home_references.items.len);
+    if (other_home_identity) |other_identity| {
+        const other_ref = other_home_ref.?;
+        try std.testing.expectEqual(@as(usize, 1), transformer.object_super_home_references.items.len);
+        try std.testing.expectEqual(other_ref, transformer.object_super_home_references.items[0].node);
+        try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(other_ref));
+
+        const other_root = try transformer.ast.addNode(.{
+            .tag = .array_expression,
+            .span = span,
+            .data = .{ .list = try transformer.ast.addNodeList(&.{other_home_proto.?}) },
+        });
+        const other_wrapped = try object_super.wrapWithHome(
+            &transformer,
+            .{ .identity = other_identity, .wrap = home_wrap },
+            other_root,
+            span,
+        );
+        const other_write_ref = try findHomeWriteReference(&transformer, other_wrapped, other_root);
+        const other_raw_id = transformer.getSymbolIdAt(other_write_ref) orelse return error.MissingOtherHomeSymbolId;
+        const other_home_id: SymbolId = @fromBackingInt(@intCast(other_raw_id));
+        try std.testing.expect(other_home_id != home_id);
+        try std.testing.expectEqual(@as(?u32, @backingInt(other_home_id)), transformer.getSymbolIdAt(other_ref));
+        try std.testing.expectEqual(@as(usize, 0), transformer.object_super_home_references.items.len);
+    } else {
+        try std.testing.expectEqual(@as(usize, 0), transformer.object_super_home_references.items.len);
+    }
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     var home_reads: usize = 0;
@@ -307,6 +356,79 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     try std.testing.expectEqual(@as(usize, 1), home_writes);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+}
+
+test "#6004 object-super home identity follows its object expression node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function owner() { const first = { method() { return super.value; } }; const second = { method() { return super.value; } }; return [first, second]; }";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var producer_nodes: [2]NodeIndex = undefined;
+    var method_extras: [2]u32 = undefined;
+    var producer_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw_index| {
+        if (producer_count == producer_nodes.len) break;
+        if (node.tag != .object_expression) continue;
+        const candidate_producer: NodeIndex = @fromBackingInt(@intCast(raw_index));
+        var member_index: u32 = 0;
+        var candidate_method_extra: ?u32 = null;
+        while (member_index < node.data.list.len) : (member_index += 1) {
+            const raw_member = parser.ast.extra_data.items[node.data.list.start + member_index];
+            const member: NodeIndex = @fromBackingInt(@intCast(raw_member));
+            if (parser.ast.getNode(member).tag == .method_definition) {
+                candidate_method_extra = parser.ast.getNode(member).data.extra;
+                break;
+            }
+        }
+        if (candidate_method_extra) |extra| {
+            producer_nodes[producer_count] = candidate_producer;
+            method_extras[producer_count] = extra;
+            producer_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), producer_count);
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    transformer.semantic_edit_enabled = true;
+    const mark = transformer.object_super_homes.items.len;
+    const first_home = (try object_super.prepareHome(&transformer, producer_nodes[0], true)) orelse return error.MissingFirstObjectHome;
+    const second_mark = transformer.object_super_homes.items.len;
+    const second_home = (try object_super.prepareHome(&transformer, producer_nodes[1], true)) orelse return error.MissingSecondObjectHome;
+    try std.testing.expectEqual(producer_nodes[0], first_home.identity.producer_node);
+    try std.testing.expectEqual(producer_nodes[1], second_home.identity.producer_node);
+    try std.testing.expect(first_home.identity.producer_node != second_home.identity.producer_node);
+    const first_method_home = object_super.lookup(&transformer, method_extras[0]) orelse return error.MissingFirstMethodHome;
+    const second_method_home = object_super.lookup(&transformer, method_extras[1]) orelse return error.MissingSecondMethodHome;
+    try std.testing.expectEqual(first_home.identity, first_method_home);
+    try std.testing.expectEqual(second_home.identity, second_method_home);
+
+    const outer_saved = object_super.enterMethod(&transformer, first_method_home);
+    const inner_saved = object_super.enterMethod(&transformer, second_method_home);
+    try std.testing.expectEqual(second_home.identity, transformer.current_super_home_object.?);
+    object_super.leaveMethod(&transformer, inner_saved);
+    try std.testing.expectEqual(first_home.identity, transformer.current_super_home_object.?);
+    object_super.leaveMethod(&transformer, outer_saved);
+    try std.testing.expect(transformer.current_super_home_object == null);
+
+    _ = try object_super.buildHomeProto(&transformer, first_method_home, parser.ast.getNode(producer_nodes[0]).span);
+    _ = try object_super.buildHomeProto(&transformer, second_method_home, parser.ast.getNode(producer_nodes[1]).span);
+    try std.testing.expectEqual(@as(usize, 2), transformer.object_super_home_references.items.len);
+    try std.testing.expectEqual(producer_nodes[0], transformer.object_super_home_references.items[0].producer_node);
+    try std.testing.expectEqual(producer_nodes[1], transformer.object_super_home_references.items[1].producer_node);
+    object_super.release(&transformer, second_mark);
+    try std.testing.expectEqual(@as(usize, 1), transformer.object_super_home_references.items.len);
+    try std.testing.expectEqual(producer_nodes[0], transformer.object_super_home_references.items[0].producer_node);
+    object_super.release(&transformer, mark);
+    try std.testing.expectEqual(@as(usize, 0), transformer.object_super_home_references.items.len);
 }
 
 test "#6004 object-super home refs bind their producer nodes across ten hostile scopes" {

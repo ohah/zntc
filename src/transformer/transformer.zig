@@ -593,17 +593,15 @@ pub const Transformer = struct {
     /// property VALUE 위치는 enclosing class 의 super 를 그대로 사용해야 하므로
     /// object_expression dispatch 가 아닌 method_definition 진입 시에만 reset.
     in_object_literal_depth: u32 = 0,
-    /// 객체 리터럴 메서드의 `super` 기준(home object)을 담은 임시 변수 (#4729).
-    /// 스펙상 그 메서드의 `super` 는 **자기가 정의된 객체**의 [[Prototype]] 이다. 메서드가
-    /// 함수로 낮춰지거나(es5) 본문이 generator 로 옮겨지면(async/generator 낮추기) native
-    /// `super` 를 쓸 수 없어서, 객체를 이 임시 변수에 담아 `Object.getPrototypeOf(_obj)` 를
-    /// 기준으로 낮춘다. null 이 아니면 `needsSuperLowering` 도 참이다. 클래스 진입 시 비운다.
-    current_super_home_object: ?Span = null,
+    /// 객체 리터럴 메서드의 `super` 기준(home object)을 담는다 (#4729).
+    /// producer object NodeIndex와 출력 이름 Span을 함께 보존하며, Span은 참조를 묶는 key로 쓰지 않는다.
+    /// null 이 아니면 `needsSuperLowering` 도 참이다. 클래스 진입 시 비운다.
+    current_super_home_object: ?ObjectSuperHomeIdentity = null,
     /// 방문 중인 객체 리터럴들이 home 임시 변수를 배정한 메서드 목록 (#4729).
     /// 키는 method_definition 의 extra 인덱스 — 메서드 방문 함수가 `Node` 만 받기 때문.
     object_super_homes: std.ArrayList(ObjectSuperHome) = .empty,
-    /// object-super home 의 producer가 만든 실제 참조 노드. final AST에서 이름 문자열로
-    /// 다시 찾지 않고, 이 NodeIndex들을 최종 owner scope에 연결한다.
+    /// object-super home producer가 만든 실제 참조 노드. producer object NodeIndex로 묶고
+    /// final AST에서 이름 문자열이나 Span으로 다시 찾지 않는다.
     object_super_home_references: std.ArrayList(ObjectSuperHomeReference) = .empty,
     /// `_obj`, `_obj2`, … — arrow 파라미터로 쓰는 home 이름 카운터 (#4729).
     object_home_counter: u32 = 0,
@@ -804,8 +802,11 @@ pub const Transformer = struct {
     // 외부 모듈 (refresh.zig 등)에서 `Transformer.RefreshRegistration`로 접근 가능하도록 alias 제공.
     pub const RefreshRegistration = plugin_state.RefreshRegistration;
     pub const RefreshSignature = plugin_state.RefreshSignature;
-    pub const ObjectSuperHome = struct { method_extra: u32, home: Span };
-    pub const ObjectSuperHomeReference = struct { home: Span, node: NodeIndex };
+    /// Exact producer handle for one object literal's lowered `super` home.
+    /// The spelling span remains output data, never a registry key.
+    pub const ObjectSuperHomeIdentity = struct { producer_node: NodeIndex, span: Span };
+    pub const ObjectSuperHome = struct { method_extra: u32, identity: ObjectSuperHomeIdentity };
+    pub const ObjectSuperHomeReference = struct { producer_node: NodeIndex, node: NodeIndex };
 
     pub fn currentPendingTempRefKey(self: *Transformer, name_span: Span) PendingTempRefKey {
         const producer_scope = self.generator_state_machine_scope;
@@ -886,7 +887,7 @@ pub const Transformer = struct {
         is_static: bool,
         static_receiver: ?Span,
         in_extracted_fn: bool,
-        home_object: ?Span,
+        home_object: ?ObjectSuperHomeIdentity,
         via_proto_chain: bool,
         proto_chain_symbol_id: ?SymbolId,
         this_alias: bool,

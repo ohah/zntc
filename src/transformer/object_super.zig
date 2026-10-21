@@ -34,6 +34,7 @@ const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
 const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
+const ObjectSuperHomeIdentity = Transformer.ObjectSuperHomeIdentity;
 const es_helpers = @import("es_helpers.zig");
 const members = @import("transformer/members.zig");
 
@@ -121,7 +122,7 @@ fn scanMethodSuper(self: *Transformer, method: Node, only_in_async_arrow: bool) 
 }
 
 pub const Home = struct {
-    span: Span,
+    identity: ObjectSuperHomeIdentity,
     wrap: Wrap,
     late_output_name: bool = false,
     temp_counter_index: ?u32 = null,
@@ -194,7 +195,7 @@ fn valuesYieldOrAwait(self: *Transformer, node: Node) bool {
     return false;
 }
 
-fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Transformer.Error!Home {
+fn allocHome(self: *Transformer, producer_node: NodeIndex, node: Node, allow_late_output_name: bool) Transformer.Error!Home {
     const wrap: Home.Wrap = if (!self.options.unsupported.arrow)
         (if (valuesYieldOrAwait(self, node)) .assign else .arrow)
     else if (valuesUseFunctionContext(self, node)) .assign else .function;
@@ -211,17 +212,26 @@ fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Trans
                 try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.object_home_counter, self.current_scope);
             // 사용자 식별자를 가리면 값 자리의 `_obj` 참조가 파라미터로 바뀐다.
             if (try es_helpers.nameAppearsInSource(self, name)) continue;
-            return .{ .span = try self.ast.addString(name), .wrap = wrap, .late_output_name = late_output_name };
+            return .{
+                .identity = .{ .producer_node = producer_node, .span = try self.ast.addString(name) },
+                .wrap = wrap,
+                .late_output_name = late_output_name,
+            };
         }
     }
     const span = try es_helpers.makeTempVarSpan(self);
-    return .{ .span = span, .wrap = .assign, .temp_counter_index = self.temp_var_counter - 1 };
+    return .{
+        .identity = .{ .producer_node = producer_node, .span = span },
+        .wrap = .assign,
+        .temp_counter_index = self.temp_var_counter - 1,
+    };
 }
 
 /// 객체 리터럴 방문 전에 호출. home 이 필요한 메서드가 있으면 임시 변수를 만들어
 /// 그 메서드들을 등록하고 돌려준다. 호출자는 방문 결과를 `wrapWithHome` 으로 감싸고,
 /// 끝나면 `release(mark)` 로 등록을 되돌린다.
-pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool) Transformer.Error!?Home {
+pub fn prepareHome(self: *Transformer, producer_node: NodeIndex, allow_late_output_name: bool) Transformer.Error!?Home {
+    const node = self.ast.getNode(producer_node);
     const list = node.data.list;
     var home: ?Home = null;
     var i: u32 = 0;
@@ -233,8 +243,8 @@ pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool)
         const flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
         if (!superMustBeLowered(self, flags) and !hasDownleveledAsyncArrowSuper(self, m)) continue;
         if (!methodUsesSuper(self, m)) continue;
-        if (home == null) home = try allocHome(self, node, allow_late_output_name);
-        try self.object_super_homes.append(self.allocator, .{ .method_extra = m.data.extra, .home = home.?.span });
+        if (home == null) home = try allocHome(self, producer_node, node, allow_late_output_name);
+        try self.object_super_homes.append(self.allocator, .{ .method_extra = m.data.extra, .identity = home.?.identity });
     }
     return home;
 }
@@ -244,7 +254,7 @@ pub fn release(self: *Transformer, mark: usize) void {
     for (self.object_super_home_references.items) |reference| {
         var released = false;
         for (self.object_super_homes.items[mark..]) |home| {
-            if (sameSpan(home.home, reference.home)) {
+            if (home.identity.producer_node == reference.producer_node) {
                 released = true;
                 break;
             }
@@ -258,12 +268,12 @@ pub fn release(self: *Transformer, mark: usize) void {
 }
 
 /// 이 method_definition(extra 인덱스)에 배정된 home 임시 변수.
-pub fn lookup(self: *const Transformer, method_extra: u32) ?Span {
+pub fn lookup(self: *const Transformer, method_extra: u32) ?ObjectSuperHomeIdentity {
     var i = self.object_super_homes.items.len;
     while (i > 0) {
         i -= 1;
         const entry = self.object_super_homes.items[i];
-        if (entry.method_extra == method_extra) return entry.home;
+        if (entry.method_extra == method_extra) return entry.identity;
     }
     return null;
 }
@@ -271,7 +281,7 @@ pub fn lookup(self: *const Transformer, method_extra: u32) ?Span {
 /// 객체 리터럴 방문 결과를 home 에 담는다 — `Home.Wrap` 참고.
 pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) Transformer.Error!NodeIndex {
     const assign = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
-        .left = try es_helpers.makeTempVarRef(self, home.span, home.span),
+        .left = try es_helpers.makeTempVarRef(self, home.identity.span, home.identity.span),
         .right = obj,
         .flags = 0,
     } } });
@@ -284,7 +294,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
             const deferred_output_scope = parameter_output_scope == null and
                 self.objectSuperTempOutputScopeIsDeferred(parent_scope);
             const callback_binding = if (deferred_output_scope and self.state_machine_depth > 0)
-                try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span)
+                try es_helpers.makeExactSyntheticBindingFromSpan(self, home.identity.span)
             else
                 .none;
             if (!callback_binding.isNone())
@@ -293,13 +303,13 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                     callback_binding,
                 );
             const symbol_id: ?SymbolId = if (parameter_output_scope != null)
-                (try self.reserveSyntheticTempSymbolInScope(home.span, span, output_scope)) orelse
+                (try self.reserveSyntheticTempSymbolInScope(home.identity.span, span, output_scope)) orelse
                     std.debug.panic("lowered parameter object home temp has no SymbolId", .{})
             else if (deferred_output_scope)
                 null
             else blk: {
                 const owner_scope = self.nearestVarScope(output_scope);
-                const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span);
+                const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.identity.span);
                 break :blk (try self.declareSyntheticTempInScope(binding, span, owner_scope)) orelse
                     std.debug.panic("function-scoped object home temp has no SymbolId", .{});
             };
@@ -307,7 +317,8 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                 self,
                 obj,
                 self.ast.getNode(assign).data.binary.left,
-                home.span,
+                home.identity,
+                home.identity.span,
                 output_scope,
                 symbol_id,
                 callback_binding,
@@ -320,7 +331,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         return assign;
     }
 
-    const param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span);
+    const param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.identity.span);
     const none = @backingInt(NodeIndex.none);
     const formal = try self.ast.addNode(.{
         .tag = .formal_parameter,
@@ -343,7 +354,15 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         },
     };
     const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
-    try bindWrappedHomeParameter(self, callee, param_binding, assign, home.span, parent_scope, home.late_output_name);
+    try bindWrappedHomeParameter(
+        self,
+        callee,
+        param_binding,
+        assign,
+        home.identity,
+        parent_scope,
+        home.late_output_name,
+    );
     return es_helpers.makeCallExpr(self, callee, &.{}, span);
 }
 
@@ -382,6 +401,7 @@ fn trackHoistedHomeReferences(
     self: *Transformer,
     root: NodeIndex,
     write_ref: NodeIndex,
+    identity: ObjectSuperHomeIdentity,
     name_span: Span,
     root_scope: ScopeId,
     symbol_id: ?SymbolId,
@@ -389,7 +409,7 @@ fn trackHoistedHomeReferences(
     reparent_from_scope: ScopeId,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or root_scope.isNone()) return;
-    var home_refs = try collectObjectSuperHomeReferences(self, name_span);
+    var home_refs = try collectObjectSuperHomeReferences(self, identity);
     defer home_refs.deinit(self.allocator);
     if (symbol_id) |id|
         try self.addSyntheticRefInScope(write_ref, id, root_scope, .{ .write = true })
@@ -432,7 +452,7 @@ fn trackHoistedHomeReferences(
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try queue.append(self.allocator, .{ .node = child, .scope = scope });
     }
-    forgetObjectSuperHomeReferences(self, name_span);
+    forgetObjectSuperHomeReferences(self, identity);
 }
 
 /// Arrow/function home wrappers introduce a real parameter scope after their
@@ -444,7 +464,7 @@ fn bindWrappedHomeParameter(
     wrapper: NodeIndex,
     binding: NodeIndex,
     assignment: NodeIndex,
-    name_span: Span,
+    identity: ObjectSuperHomeIdentity,
     parent_scope: ScopeId,
     late_output_name: bool,
 ) Transformer.Error!void {
@@ -459,7 +479,7 @@ fn bindWrappedHomeParameter(
             es_helpers.markStandaloneLateSyntheticOutputName(
                 self,
                 id,
-                self.ast.getText(name_span),
+                self.ast.getText(identity.span),
                 .object_super_home_binding,
                 "_obj",
             );
@@ -468,7 +488,7 @@ fn bindWrappedHomeParameter(
         }
     }
     const write_ref = self.ast.getNode(assignment).data.binary.left;
-    var home_refs = try collectObjectSuperHomeReferences(self, name_span);
+    var home_refs = try collectObjectSuperHomeReferences(self, identity);
     defer home_refs.deinit(self.allocator);
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var worklist: std.ArrayList(Work) = .empty;
@@ -503,32 +523,28 @@ fn bindWrappedHomeParameter(
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try worklist.append(self.allocator, .{ .node = child, .scope = scope });
     }
-    forgetObjectSuperHomeReferences(self, name_span);
-}
-
-fn sameSpan(a: Span, b: Span) bool {
-    return a.start == b.start and a.end == b.end;
+    forgetObjectSuperHomeReferences(self, identity);
 }
 
 /// Home-prototype reads are recorded at their producer as exact NodeIndexes.
 /// Build the short-lived set used while the final output scopes are resolved.
 fn collectObjectSuperHomeReferences(
     self: *Transformer,
-    home: Span,
+    identity: ObjectSuperHomeIdentity,
 ) Transformer.Error!std.AutoHashMapUnmanaged(u32, void) {
     var nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     errdefer nodes.deinit(self.allocator);
     for (self.object_super_home_references.items) |reference| {
-        if (!sameSpan(reference.home, home)) continue;
+        if (reference.producer_node != identity.producer_node) continue;
         try nodes.put(self.allocator, @backingInt(reference.node), {});
     }
     return nodes;
 }
 
-fn forgetObjectSuperHomeReferences(self: *Transformer, home: Span) void {
+fn forgetObjectSuperHomeReferences(self: *Transformer, identity: ObjectSuperHomeIdentity) void {
     var retained: usize = 0;
     for (self.object_super_home_references.items) |reference| {
-        if (sameSpan(reference.home, home)) continue;
+        if (reference.producer_node == identity.producer_node) continue;
         self.object_super_home_references.items[retained] = reference;
         retained += 1;
     }
@@ -537,13 +553,13 @@ fn forgetObjectSuperHomeReferences(self: *Transformer, home: Span) void {
 
 /// A generated `Object.getPrototypeOf(home)` read keeps the exact reference
 /// node until its wrapper binding and output scope are known.
-pub fn recordHomePrototypeReference(self: *Transformer, home: Span, node: NodeIndex) Transformer.Error!void {
+pub fn recordHomePrototypeReference(self: *Transformer, identity: ObjectSuperHomeIdentity, node: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
-    try self.object_super_home_references.append(self.allocator, .{ .home = home, .node = node });
+    try self.object_super_home_references.append(self.allocator, .{ .producer_node = identity.producer_node, .node = node });
 }
 
 pub const Saved = struct {
-    home: ?Span,
+    home: ?ObjectSuperHomeIdentity,
     class: ?Span,
     class_old_idx: NodeIndex,
     is_static: bool,
@@ -557,7 +573,7 @@ pub const Saved = struct {
 /// 메서드 본문 진입. `home` 이 있으면(객체 리터럴이 배정) 그 메서드의 `super` 는 home
 /// 기준이고, 바깥 클래스의 super 문맥은 전부 끊는다 — 남겨 두면 es5 에서 바깥 클래스의
 /// 부모가 기준이 된다. 없으면(클래스 메서드, super 없는 객체 메서드) 바깥 home 만 끊는다.
-pub fn enterMethod(self: *Transformer, home: ?Span) Saved {
+pub fn enterMethod(self: *Transformer, home: ?ObjectSuperHomeIdentity) Saved {
     const saved: Saved = .{
         .home = self.current_super_home_object,
         .class = self.current_super_class,
@@ -596,11 +612,11 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
 }
 
 /// `Object.getPrototypeOf(<home>)` — 호출 시점의 home object 프로토타입.
-pub fn buildHomeProto(self: *Transformer, home: Span, span: Span) Transformer.Error!NodeIndex {
+pub fn buildHomeProto(self: *Transformer, home: ObjectSuperHomeIdentity, span: Span) Transformer.Error!NodeIndex {
     const object_ref = try es_helpers.makeGlobalRef(self, "Object");
     const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
-    const home_ref = try es_helpers.makeTempVarRef(self, home, home);
+    const home_ref = try es_helpers.makeTempVarRef(self, home.span, home.span);
     try recordHomePrototypeReference(self, home, home_ref);
     return es_helpers.makeCallExpr(self, callee, &.{home_ref}, span);
 }
