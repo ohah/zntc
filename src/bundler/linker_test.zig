@@ -3102,6 +3102,65 @@ test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
 
+test "namespace re-export metadata uses the import binding SymbolId under a hostile scope map" {
+    const allocator = std.testing.allocator;
+    const barrel_sources = [_][]const u8{
+        "import * as ns from './provider.ts'; export { ns };\n",
+        "export * as ns from './provider.ts';\n",
+    };
+
+    for (barrel_sources) |barrel_source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(
+            tmp.dir,
+            "entry.ts",
+            "import { ns as value } from './barrel.ts';\n" ++
+                "const decoy0 = 0, decoy1 = 1, decoy2 = 2, decoy3 = 3, decoy4 = 4;\n" ++
+                "const decoy5 = 5, decoy6 = 6, decoy7 = 7, decoy8 = 8, decoy9 = 9;\n" ++
+                "console.log(value.answer);\n",
+        );
+        try writeFile(tmp.dir, "barrel.ts", barrel_source);
+        try writeFile(tmp.dir, "provider.ts", "export const answer = 1;\n");
+
+        var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+
+        const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+        const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+        const semantic = if (entry.semantic) |*value| value else return error.MissingEntrySemantic;
+        if (semantic.scope_maps.len == 0) return error.MissingEntryScopeMap;
+
+        const binding = blk: {
+            for (entry.import_bindings) |ib| {
+                if (std.mem.eql(u8, ib.local_name, "value")) break :blk ib;
+            }
+            return error.MissingNamespaceImportBinding;
+        };
+        const binding_symbol = binding.local_symbol.semanticIndex() orelse return error.MissingNamespaceImportSymbol;
+        try std.testing.expectEqual(entry_index, binding.local_symbol.moduleIndex());
+
+        const mutable_scope_maps = @constCast(semantic.scope_maps);
+        const decoy_names = [_][]const u8{
+            "decoy0", "decoy1", "decoy2", "decoy3", "decoy4",
+            "decoy5", "decoy6", "decoy7", "decoy8", "decoy9",
+        };
+        for (decoy_names) |decoy_name| {
+            const decoy_symbol = semantic.scope_maps[0].get(decoy_name) orelse return error.MissingNamespaceDecoy;
+            try std.testing.expect(decoy_symbol != binding_symbol);
+            try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+
+            var metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+            defer metadata.deinit();
+
+            try std.testing.expect(metadata.ns_member_rewrites.get(binding_symbol) != null);
+            try std.testing.expect(metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+        }
+    }
+}
+
 // ============================================================
 // semantic analyzer: property key symbol_id 미할당
 // ============================================================

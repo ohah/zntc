@@ -172,6 +172,23 @@ fn nsForceInline(
         self.isNamespaceExportConsumed(module_index, local_name);
 }
 
+/// Resolve the current module's import binding by its captured semantic identity.
+/// The scope-map lookup remains only for low-level callers that have not populated
+/// `local_symbol`; a valid but foreign SymbolRef fails closed instead of being
+/// redirected through a potentially stale spelling.
+fn importBindingLocalSemanticIndex(
+    ib: ImportBinding,
+    module_scope: *const std.StringHashMapUnmanaged(usize),
+    module_index: u32,
+) ?u32 {
+    if (ib.local_symbol.isValid()) {
+        if (ib.local_symbol.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;
+        return ib.local_symbol.semanticIndex();
+    }
+    const scope_index = module_scope.get(ib.local_name) orelse return null;
+    return @intCast(scope_index);
+}
+
 /// (#3975) namespace import target 이 *순수* CJS star re-export — ESM 모듈이 단일
 /// `export * from <CJS>` 만 가지고 자체 named/default export·다른 star 가 없는 경우 —
 /// 면 underlying CJS 모듈 인덱스를 반환한다. 이 경우 `import * as ns from mid` 는
@@ -1192,7 +1209,7 @@ pub fn buildMetadataForAst(
                                     if (rec_idx < cmod_ptr.import_records.len) {
                                         const src = cmod_ptr.import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
-                                            const import_sym_id = module_scope.get(ib.local_name) orelse break :blk ib.imported_name;
+                                            const import_sym_id = importBindingLocalSemanticIndex(ib, &module_scope, module_index) orelse break :blk ib.imported_name;
                                             const inline_name = try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
@@ -1221,7 +1238,7 @@ pub fn buildMetadataForAst(
                         for (cmod2_ptr.import_bindings) |cib| {
                             if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
                                 // namespace import → 인라인 객체로 처리
-                                const imp_sym = module_scope.get(ib.local_name) orelse break;
+                                const imp_sym = importBindingLocalSemanticIndex(ib, &module_scope, module_index) orelse break;
                                 const ns_target_mod = if (cib.import_record_index < cmod2_ptr.import_records.len)
                                     @backingInt(cmod2_ptr.import_records[cib.import_record_index].resolved)
                                 else
