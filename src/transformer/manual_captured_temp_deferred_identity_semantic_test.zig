@@ -226,9 +226,8 @@ fn checkDeferredManualCapture(
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_producer_refs.items.len);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const edited = (try transformer.finishSemanticEdit()).?;
-    for (editor.references.items) |reference| {
-        if (reference.node_index.isNone() or @backingInt(reference.symbol_id) != symbol_id) continue;
-        try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[@backingInt(reference.node_index)]);
+    for (reference_nodes) |node| {
+        try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[@backingInt(node)]);
     }
 }
 
