@@ -121,6 +121,73 @@ test "Module.isExportBindingAlive uses exact SymbolId across hostile spellings a
     try std.testing.expect(!test_module.isExportBindingAlive(scenarios[6].binding));
 }
 
+test "runtime-helper export semantic index ignores hostile local-name lookups" {
+    const allocator = std.testing.allocator;
+    var test_module = Module.init(@fromBackingInt(@as(u32, 0)), "runtime-helper.mjs");
+    defer test_module.deinit(allocator);
+
+    const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), 1);
+    defer allocator.free(scope_maps);
+    scope_maps[0] = .empty;
+    defer scope_maps[0].deinit(allocator);
+
+    const spellings = [_][]const u8{
+        "__generator",
+        "publicGenerator",
+        "decoy",
+        "decoy$2",
+        "__generator$1",
+        "_generator",
+        "\\u005f\\u005fgenerator",
+        "",
+        "stale-local",
+        "not-the-export",
+    };
+    for (spellings) |spelling| try scope_maps[0].put(allocator, spelling, 0);
+
+    var semantic = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    defer semantic.symbols.deinit(allocator);
+    try semantic.symbols.append(allocator, livenessTestSymbol()); // decoy
+    try semantic.symbols.append(allocator, livenessTestSymbol()); // exported helper
+    test_module.semantic = semantic;
+
+    const exports = try allocator.alloc(ExportBinding, 1);
+    defer allocator.free(exports);
+    exports[0] = .{
+        .exported_name = "publicGenerator",
+        .local_name = "__generator",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+        .symbol = symbol_mod.SymbolRef.makeSemantic(test_module.index, 1),
+    };
+    test_module.export_bindings = exports;
+
+    // Ten independent stale, escaped, exported, and fabricated local spellings all point
+    // at the decoy in scope_maps. The scanner-owned export SymbolRef remains authoritative.
+    for (spellings) |spelling| {
+        exports[0].local_name = spelling;
+        try std.testing.expectEqual(@as(?u32, 1), test_module.findLocalExportSemanticIndex("publicGenerator"));
+    }
+
+    try std.testing.expectEqual(@as(?u32, null), test_module.findLocalExportSemanticIndex("__generator"));
+    exports[0].symbol = .invalid;
+    try std.testing.expectEqual(@as(?u32, null), test_module.findLocalExportSemanticIndex("publicGenerator"));
+    exports[0].symbol = symbol_mod.SymbolRef.makeSemantic(@fromBackingInt(@as(u32, 1)), 1);
+    try std.testing.expectEqual(@as(?u32, null), test_module.findLocalExportSemanticIndex("publicGenerator"));
+    exports[0].symbol = symbol_mod.SymbolRef.makeSemantic(test_module.index, 2);
+    try std.testing.expectEqual(@as(?u32, null), test_module.findLocalExportSemanticIndex("publicGenerator"));
+    exports[0].symbol = symbol_mod.SymbolRef.makeSemantic(test_module.index, 1);
+    exports[0].kind = .re_export;
+    try std.testing.expectEqual(@as(?u32, null), test_module.findLocalExportSemanticIndex("publicGenerator"));
+}
+
 test "Module: state transitions" {
     var m = Module.init(@fromBackingInt(@intCast(0)), "test.ts");
     defer m.deinit(std.testing.allocator);

@@ -80,6 +80,75 @@ fn buildAndLinkWithTransformOptions(
     return .{ .linker = linker, .graph = graph, .cache = cache };
 }
 
+test "linker runtime-helper shadow rename uses canonical export SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "export function run(__generator) {\n" ++
+            "  function* values() { yield 1; }\n" ++
+            "  return values().next().value + __generator;\n" ++
+            "}\n",
+    );
+
+    var result = try buildAndLinkWithTransformOptions(
+        std.testing.allocator,
+        &tmp,
+        "entry.mjs",
+        .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .defer_runtime_helper_name_resolution = true,
+            .emit_runtime_helper_imports = true,
+        },
+        false,
+    );
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingRuntimeHelperEntry;
+    const entry_module = result.graph.getModule(entry_index) orelse return error.MissingRuntimeHelperEntry;
+    const helper_binding = blk: {
+        for (entry_module.import_bindings) |binding| {
+            if (binding.is_helper) break :blk binding;
+        }
+        return error.MissingGeneratedRuntimeHelper;
+    };
+    const resolved = result.linker.getResolvedBinding(entry_index.toU32(), helper_binding.local_span) orelse
+        return error.MissingResolvedRuntimeHelper;
+    const helper_module = result.graph.getModule(resolved.canonical.module_index) orelse return error.MissingRuntimeHelperModule;
+    const helper_inner = helper_module.findLocalExportSemanticIndex(resolved.canonical.export_name) orelse
+        return error.MissingExactRuntimeHelperExport;
+    const helper_id = bundler_symbol.SymbolID.make(helper_module.index, helper_inner);
+    const export_local = result.linker.getExportLocalName(helper_module.index.toU32(), resolved.canonical.export_name) orelse
+        return error.MissingRuntimeHelperLocalName;
+
+    const helper_module_mut = @constCast(helper_module);
+    const semantic = if (helper_module_mut.semantic) |*value| value else return error.MissingRuntimeHelperSemantic;
+    if (semantic.scope_maps.len == 0 or semantic.symbols.items.len < 2) return error.MissingRuntimeHelperDecoy;
+    const decoy_inner: usize = if (helper_inner == 0) 1 else 0;
+    const scope_maps = @constCast(semantic.scope_maps);
+    try scope_maps[0].put(std.testing.allocator, export_local, decoy_inner);
+
+    try result.linker.computeRenames();
+
+    const selected = result.linker.rename_table.get(helper_id) orelse return error.MissingCanonicalRuntimeHelperRename;
+    try std.testing.expect(!std.mem.eql(u8, selected, export_local));
+
+    const module_index = helper_module.index.toU32();
+    try result.linker.putCrossChunkGlobalName(
+        module_index,
+        resolved.canonical.export_name,
+        try std.testing.allocator.dupe(u8, "stale_cross_chunk_name"),
+    );
+    try result.linker.prepareCrossChunkRuntimeHelperNames();
+    const cross_chunk_name = result.linker.getCrossChunkGlobalName(module_index, resolved.canonical.export_name) orelse
+        return error.MissingPreparedRuntimeHelperName;
+    const exact_name = result.linker.rename_table.get(helper_id) orelse return error.MissingPreparedRuntimeHelperRename;
+    try std.testing.expectEqualStrings(exact_name, cross_chunk_name);
+}
+
 test "linker: tagged-template cache final names come from exact post-graph bindings" {
     for ([_]bool{ false, true }) |minify_identifiers| {
         var tmp = std.testing.tmpDir(.{});

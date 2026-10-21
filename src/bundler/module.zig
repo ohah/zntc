@@ -954,6 +954,15 @@ pub const Module = struct {
         return null;
     }
 
+    /// Resolve a real local export to the semantic index already recorded by the
+    /// export scanner. The exported spelling is the public lookup key; local names
+    /// and scope maps must not be used to reconstruct the binding identity.
+    pub fn findLocalExportSemanticIndex(self: *const Module, exported_name: []const u8) ?u32 {
+        const eb = self.findExportBinding(exported_name) orelse return null;
+        if (eb.kind != .local) return null;
+        return self.exportBindingSemanticIndex(eb.*);
+    }
+
     /// SymbolId → 이름. semantic Symbol.nameText 호출의 short-cut.
     /// 인덱스 범위 밖이거나 semantic 없으면 null.
     pub fn symbolName(self: *const Module, id: SemanticSymbolId) ?[]const u8 {

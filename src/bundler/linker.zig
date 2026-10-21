@@ -1994,8 +1994,9 @@ pub const Linker = struct {
                 if (self.getCrossChunkGlobalName(helper_module_index, resolved.canonical.export_name) == null) continue;
 
                 const export_local = self.getExportLocalName(helper_module_index, resolved.canonical.export_name) orelse resolved.canonical.export_name;
-                const helper_inner = self.findSymbolIdx(helper_module_index, export_local) orelse return error.BundlerRuntimeHelperIdentityMissing;
-                const helper_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(helper_module_index)), helper_inner);
+                const helper_inner = helper_module.findLocalExportSemanticIndex(resolved.canonical.export_name) orelse
+                    return error.BundlerRuntimeHelperIdentityMissing;
+                const helper_id = bundler_symbol.SymbolID.make(helper_module.index, helper_inner);
                 const seen_entry = try seen.getOrPut(self.allocator, helper_id);
                 if (seen_entry.found_existing) continue;
                 seen_entry.value_ptr.* = {};
@@ -3746,8 +3747,8 @@ pub const Linker = struct {
                     // Choose its alias against every source scope so a user parameter (including
                     // one visible to direct eval) keeps its spelling and cannot capture calls.
                     const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
-                    const helper_inner = self.findSymbolIdx(cmod, export_local) orelse continue;
-                    const helper_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(cmod)), helper_inner);
+                    const helper_inner = target_module.findLocalExportSemanticIndex(resolved.canonical.export_name) orelse continue;
+                    const helper_id = bundler_symbol.SymbolID.make(target_module.index, helper_inner);
                     const helper_name = try self.calculateGraphWideRuntimeHelperName(helper_id, export_local, resolved.canonical.export_name);
                     self.allocator.free(helper_name);
                     continue;
