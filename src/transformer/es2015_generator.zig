@@ -437,13 +437,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 if (owner_scope.isNone()) std.debug.panic("generator wrapper binding has no exact owner ScopeId", .{});
                 if (@backingInt(binding) >= self.parser_node_count) {
-                    const registered = try self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope) orelse
-                        std.debug.panic("generated generator wrapper binding lost its SymbolId", .{});
                     if (symbol_id) |existing| {
-                        if (existing != @backingInt(registered))
-                            std.debug.panic("generator wrapper binding changed its exact SymbolId", .{});
+                        const editor = if (self.semantic_editor) |*value| value else std.debug.panic("generated generator wrapper binding has no semantic editor", .{});
+                        if (existing >= editor.symbols.items.len)
+                            std.debug.panic("generated generator wrapper binding has an invalid SymbolId", .{});
+                        const symbol = editor.symbols.items[existing];
+                        if (symbol.scope_id != owner_scope or symbol.kind != .variable_var or
+                            symbol.name.start != name_span.start or symbol.name.end != name_span.end or
+                            !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(name_span)))
+                            std.debug.panic("generated generator wrapper binding changed its exact identity", .{});
+                    } else {
+                        const registered = try self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope) orelse
+                            std.debug.panic("generated generator wrapper binding lost its SymbolId", .{});
+                        symbol_id = @backingInt(registered);
                     }
-                    symbol_id = @backingInt(registered);
                 } else {
                     const raw_id = symbol_id orelse std.debug.panic("source generator wrapper binding has no exact SymbolId", .{});
                     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -536,6 +543,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!usize {
             const producer_index = self.generator_temp_var_spans.items.len;
             try appendGeneratorTempSpan(self, span);
+            self.generator_temp_producer_identities.items[producer_index].binding = origin;
             if (self.getSymbolIdAt(origin) != null) {
                 const producer = &self.generator_temp_producer_identities.items[producer_index];
                 producer.source_binding = origin;
@@ -560,8 +568,29 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (bnode.tag == .binding_identifier) {
                     try seen.put(self.allocator, self.ast.getText(bnode.data.string_ref), {});
                     for (self.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
-                        if (!self.generator_temp_producer_identities.items[temp_index].source_binding.isNone()) continue;
-                        if (bnode.data.string_ref.start == temp_span.start) {
+                        const producer = self.generator_temp_producer_identities.items[temp_index];
+                        if (!producer.source_binding.isNone()) continue;
+                        const binding_symbol = self.getSymbolIdAt(binding);
+                        const exact_symbol_match = if (producer.symbol_id) |producer_id|
+                            binding_symbol == producer_id
+                        else
+                            false;
+                        if (producer.binding == binding or exact_symbol_match) {
+                            try recordGeneratorStateBinding(self, binding, temp_span, wrapper_scope, span);
+                            break;
+                        }
+                        // Semantic generation must use the producer's binding or SID. A
+                        // shared start offset is only a legacy semantic-less association;
+                        // on the semantic path, an ambiguous missing handle fails closed.
+                        if (self.semantic_edit_enabled and
+                            producer.binding.isNone() and
+                            producer.symbol_id == null and
+                            binding_symbol == null and
+                            bnode.data.string_ref.start == temp_span.start)
+                        {
+                            std.debug.panic("generator hoist producer matched a binding span without an exact identity", .{});
+                        }
+                        if (!self.semantic_edit_enabled and bnode.data.string_ref.start == temp_span.start) {
                             try recordGeneratorStateBinding(self, binding, temp_span, wrapper_scope, span);
                             break;
                         }
@@ -3411,6 +3440,202 @@ fn checkGeneratorAssignmentBindingIdentity(source: []const u8) !void {
         try std.testing.expectEqual(transformer.generator_state_machine_scope, temp.owner_scope);
     }
     try std.testing.expect(matched);
+}
+
+fn checkGeneratorHoistProducerUsesExactBindingHandle(
+    source: []const u8,
+    anchor: []const u8,
+    prefix_count: usize,
+    producer_slot: usize,
+) !void {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var generator_scope: ?ScopeId = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const flags = transformer.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+        if (flags & ast_mod.FunctionFlags.is_generator == 0) continue;
+        const raw_scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse continue;
+        generator_scope = @fromBackingInt(@intCast(raw_scope));
+        break;
+    }
+    const owner_scope = generator_scope orelse return error.MissingGeneratorHoistOwner;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(owner_scope);
+    transformer.current_scope = owner_scope;
+    transformer.state_machine_depth = 1;
+
+    if (std.mem.indexOf(u8, source, anchor) == null) return error.MissingGeneratorHoistAnchor;
+    const full_name_span = try transformer.ast.addString(anchor);
+    const raw_start = full_name_span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
+    const name_start = raw_start | ast_mod.Ast.STRING_TABLE_BIT;
+    const producer_span = Span{ .start = name_start, .end = (raw_start + 1) | ast_mod.Ast.STRING_TABLE_BIT };
+    const producer_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, producer_span);
+    const producer_index = try ES2015Generator(Transformer).registerGeneratorVar(&transformer, producer_span, producer_binding);
+    try std.testing.expectEqual(producer_binding, transformer.generator_temp_producer_identities.items[producer_index].binding);
+
+    var hoisted_bindings = try allocator.alloc(NodeIndex, prefix_count);
+    hoisted_bindings[producer_slot] = producer_binding;
+    var prefix_len: usize = 2;
+    for (0..prefix_count) |slot| {
+        if (slot == producer_slot) continue;
+        const decoy_span = Span{ .start = name_start, .end = (raw_start + @as(u32, @intCast(prefix_len))) | ast_mod.Ast.STRING_TABLE_BIT };
+        hoisted_bindings[slot] = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, decoy_span);
+        prefix_len += 1;
+    }
+
+    var state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    const hoisted_decl = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        hoisted_bindings,
+        .EMPTY,
+        &state_temps,
+        transformer.generator_state_machine_scope,
+    );
+    try std.testing.expect(!hoisted_decl.isNone());
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
+    const state_binding = transformer.generator_state_bindings.items[0];
+    try std.testing.expectEqual(producer_binding, state_binding.binding);
+    try std.testing.expectEqual(transformer.generator_state_machine_scope, state_binding.owner_scope);
+    try std.testing.expect(state_binding.symbol_id != null);
+
+    transformer.generator_temp_var_spans.clearRetainingCapacity();
+    transformer.generator_temp_producer_identities.clearRetainingCapacity();
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    transformer.generated_temp_spans.clearRetainingCapacity();
+    var id_binding: ?NodeIndex = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), anchor)) continue;
+        id_binding = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    const source_binding = id_binding orelse return error.MissingGeneratorHoistSourceBinding;
+    const source_symbol_raw = transformer.getSymbolIdAt(source_binding) orelse return error.MissingGeneratorHoistSourceSymbol;
+    const source_symbol: SymbolId = @fromBackingInt(@intCast(source_symbol_raw));
+    const source_name_span = transformer.ast.getNode(source_binding).data.string_ref;
+    try ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+        &transformer,
+        source_name_span,
+        source_symbol,
+        transformer.generator_state_machine_scope,
+    );
+    var id_state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    _ = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        &.{source_binding},
+        .EMPTY,
+        &id_state_temps,
+        transformer.generator_state_machine_scope,
+    );
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
+    try std.testing.expectEqual(source_binding, transformer.generator_state_bindings.items[0].binding);
+    try std.testing.expectEqual(@as(?u32, @backingInt(source_symbol)), transformer.generator_state_bindings.items[0].symbol_id);
+
+    transformer.generator_temp_var_spans.clearRetainingCapacity();
+    transformer.generator_temp_producer_identities.clearRetainingCapacity();
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    transformer.generated_temp_spans.clearRetainingCapacity();
+    _ = try ES2015Generator(Transformer).registerGeneratorVar(&transformer, source_name_span, source_binding);
+    var source_state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    _ = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        &.{source_binding},
+        .EMPTY,
+        &source_state_temps,
+        transformer.generator_state_machine_scope,
+    );
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_bindings.items.len);
+    try std.testing.expectEqual(@as(usize, 0), source_state_temps.items.len);
+    try std.testing.expect(!hoisted_decl.isNone());
+
+    transformer.generator_temp_var_spans.clearRetainingCapacity();
+    transformer.generator_temp_producer_identities.clearRetainingCapacity();
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    transformer.generated_temp_spans.clearRetainingCapacity();
+    const generated_name = try std.fmt.allocPrint(allocator, "generated_{s}", .{anchor});
+    const generated_name_span = try transformer.ast.addString(generated_name);
+    const generated_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, generated_name_span);
+    const generated_symbol = try transformer.declareSyntheticTempInScope(
+        generated_binding,
+        .EMPTY,
+        transformer.generator_state_machine_scope,
+    ) orelse return error.MissingGeneratorHoistGeneratedSymbol;
+    try ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+        &transformer,
+        generated_name_span,
+        generated_symbol,
+        transformer.generator_state_machine_scope,
+    );
+    var generated_state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    const generated_decl = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        &.{generated_binding},
+        .EMPTY,
+        &generated_state_temps,
+        transformer.generator_state_machine_scope,
+    );
+    try std.testing.expect(!generated_decl.isNone());
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
+    try std.testing.expectEqual(generated_binding, transformer.generator_state_bindings.items[0].binding);
+    try std.testing.expectEqual(
+        @as(?u32, @backingInt(generated_symbol)),
+        transformer.generator_state_bindings.items[0].symbol_id,
+    );
+}
+
+test "generator hoist producer association uses exact binding handles" {
+    const hostile = [_]struct { anchor: []const u8, prefix_count: usize, producer_slot: usize }{
+        .{ .anchor = "alphaNumericIdentifier", .prefix_count = 5, .producer_slot = 0 },
+        .{ .anchor = "brightHueIdentifier", .prefix_count = 6, .producer_slot = 1 },
+        .{ .anchor = "crystalGammaIdentifier", .prefix_count = 7, .producer_slot = 2 },
+        .{ .anchor = "deltaHotelIdentifier", .prefix_count = 8, .producer_slot = 3 },
+        .{ .anchor = "emberIndiaIdentifier", .prefix_count = 5, .producer_slot = 4 },
+        .{ .anchor = "forestJulietIdentifier", .prefix_count = 6, .producer_slot = 5 },
+        .{ .anchor = "gentleKiloIdentifier", .prefix_count = 7, .producer_slot = 6 },
+        .{ .anchor = "harborLimaIdentifier", .prefix_count = 8, .producer_slot = 7 },
+        .{ .anchor = "indigoMountainIdentifier", .prefix_count = 5, .producer_slot = 2 },
+        .{ .anchor = "jasmineFlowerIdentifier", .prefix_count = 6, .producer_slot = 4 },
+    };
+    for (hostile) |case| {
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "function* g() {{ var {s} = 0; yield 0; }}",
+            .{case.anchor},
+        );
+        defer std.testing.allocator.free(source);
+        try checkGeneratorHoistProducerUsesExactBindingHandle(
+            source,
+            case.anchor,
+            case.prefix_count,
+            case.producer_slot,
+        );
+    }
 }
 
 test "generator assignment bindings retain producer identity without span lookup" {

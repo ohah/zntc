@@ -104,6 +104,9 @@ pub const GeneratorTempProducerIdentity = struct {
     symbol_id: ?u32 = null,
     owner_scope: ScopeId = .none,
     producer_owned: bool = false,
+    /// Exact AST binding supplied by the registration caller, even when the
+    /// semantic ID is deferred until the wrapper declaration is emitted.
+    binding: NodeIndex = .none,
     /// Exact source binding when a generated wrapper var preserves a binding
     /// that existed before state-machine lowering.
     source_binding: NodeIndex = .none,
