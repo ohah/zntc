@@ -43,6 +43,7 @@ pub fn ES2020(comptime Transformer: type) type {
             span: Span,
             paren_assign: NodeIndex,
             identity: ?TempIdentity,
+            producer_id: u64,
         };
 
         /// Reserve a producer-owned identity as soon as an optional-chain or
@@ -72,6 +73,32 @@ pub fn ES2020(comptime Transformer: type) type {
             if (self.loweredParameterEnvironmentOutputScope(self.current_scope)) |parameter_output_scope|
                 return .{ .reservation_scope = parameter_output_scope, .reference_scope = parameter_output_scope };
 
+            // Async-arrow parameters may be visited while their state machine
+            // is active. The wrapper keeps the source arrow's function ScopeId;
+            // when this is the exact formal-parameter owner and dynamic lookup
+            // did not retain native parameters, that output scope is known even
+            // if the generic parameter-scope resolver cannot pair the scopes.
+            if (self.state_machine_depth > 0 and
+                !self.native_parameter_list_retained_for_dynamic_lookup and
+                !self.lowered_parameter_temp_output_owner.isNone())
+            {
+                const owner = self.lowered_parameter_temp_output_owner;
+                const owner_node = self.ast.getNode(owner);
+                if (owner_node.tag == .arrow_function_expression) {
+                    const flags = self.readU32(owner_node.data.extra, ast_mod.ArrowExtra.flags);
+                    const params = self.ast.readExtraNode(owner_node.data.extra, ast_mod.ArrowExtra.params);
+                    const parameter_scope = self.transformed_scope_owner_map.get(@backingInt(params)) orelse
+                        self.scope_owner_map.get(@backingInt(params));
+                    const output_scope = self.originalFunctionScope(owner);
+                    if ((flags & ast_mod.ArrowFlags.is_async) != 0 and self.options.unsupported.async_await and
+                        parameter_scope != null and !output_scope.isNone() and
+                        (parameter_scope.? == @backingInt(self.current_scope) or output_scope == self.current_scope))
+                    {
+                        return .{ .reservation_scope = output_scope, .reference_scope = output_scope };
+                    }
+                }
+            }
+
             if (self.state_machine_depth > 0 and !self.generator_state_machine_scope.isNone() and
                 self.nearestVarScope(self.current_scope) == self.generator_state_machine_scope)
             {
@@ -83,8 +110,72 @@ pub fn ES2020(comptime Transformer: type) type {
                 };
             }
 
+            // Pass 2 visits lowered defaults under the source function scope,
+            // while the scope owner map still points at its parameter scope.
+            // A synchronous output owner is already stable and can reserve its
+            // exact SymbolId before the default expression is rewritten.
+            if (self.state_machine_depth == 0 and self.options.unsupported.default_params and
+                !self.native_parameter_list_retained_for_dynamic_lookup and
+                !self.lowered_parameter_temp_output_owner.isNone())
+            {
+                const output_scope = self.originalFunctionScope(self.lowered_parameter_temp_output_owner);
+                if (!output_scope.isNone() and !self.syntheticTempOutputScopeIsDeferred(output_scope))
+                    return .{ .reservation_scope = output_scope, .reference_scope = output_scope };
+            }
+
+            if (self.state_machine_depth == 0 and self.options.unsupported.default_params and
+                !self.native_parameter_list_retained_for_dynamic_lookup)
+            {
+                if (functionOwnerForScope(self, self.current_scope)) |owner| {
+                    if (!functionOwnerNeedsLoweredScope(self, owner))
+                        return .{ .reservation_scope = self.current_scope, .reference_scope = self.current_scope };
+                }
+            }
+
             if (self.syntheticTempOutputScopeIsDeferred(self.current_scope)) return null;
             return .{ .reservation_scope = self.current_scope, .reference_scope = self.current_scope };
+        }
+
+        fn functionOwnerForScope(self: *Transformer, scope: ScopeId) ?NodeIndex {
+            if (scope.isNone()) return null;
+            const scope_raw = @backingInt(scope);
+            var found: ?NodeIndex = null;
+            var owners = self.scope_owner_map.iterator();
+            while (owners.next()) |entry| {
+                if (entry.value_ptr.* != scope_raw or entry.key_ptr.* >= self.ast.nodes.items.len) continue;
+                const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
+                switch (self.ast.getNode(owner).tag) {
+                    .function_declaration, .function_expression, .function, .method_definition, .arrow_function_expression => {},
+                    else => continue,
+                }
+                if (found) |existing| {
+                    if (existing != owner) return null;
+                } else found = owner;
+            }
+            return found;
+        }
+
+        fn functionOwnerNeedsLoweredScope(self: *Transformer, owner: NodeIndex) bool {
+            const node = self.ast.getNode(owner);
+            return switch (node.tag) {
+                .function_declaration, .function_expression, .function => blk: {
+                    const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+                    break :blk ((flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                        ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) ==
+                            (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) and self.options.unsupported.async_generator) or
+                        ((flags & ast_mod.FunctionFlags.is_generator) != 0 and self.options.unsupported.generator);
+                },
+                .method_definition => blk: {
+                    const flags = self.readU32(node.data.extra, ast_mod.MethodExtra.flags);
+                    break :blk ((flags & ast_mod.MethodFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                        ((flags & (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator)) ==
+                            (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator) and self.options.unsupported.async_generator) or
+                        ((flags & ast_mod.MethodFlags.is_generator) != 0 and self.options.unsupported.generator);
+                },
+                .arrow_function_expression => (self.readU32(node.data.extra, ast_mod.ArrowExtra.flags) & ast_mod.ArrowFlags.is_async) != 0 and
+                    self.options.unsupported.async_await,
+                else => true,
+            };
         }
 
         fn trackTempReference(
@@ -94,27 +185,39 @@ pub fn ES2020(comptime Transformer: type) type {
             ref: NodeIndex,
             flags: @import("../semantic/symbol.zig").ReferenceFlags,
             identity: ?TempIdentity,
+            producer_id: u64,
         ) Transformer.Error!void {
             if (identity) |exact| {
                 return self.addSyntheticRefInScope(ref, exact.symbol_id, exact.reference_scope, flags);
             }
             if (knownTempIdentityScopes(self) != null)
                 std.debug.panic("known-scope ES2020 temp reference is missing its producer SymbolId", .{});
-            try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
+            const deferred = self.static_field_initializer_depth > 0 or
+                (!self.current_scope.isNone() and self.syntheticTempOutputScopeIsDeferred(self.current_scope));
+            if (deferred) {
+                if (producer_id == 0)
+                    std.debug.panic("deferred ES2020 temp reference has no producer identity", .{});
+                try self.trackCapturedTempReference(producer_id, name_span, ref, self.current_scope, flags);
+            } else {
+                try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
+            }
         }
 
         fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!TrackedTempCapture {
             const name_span = try helpers.makeTempVarSpan(self);
-            const identity = try reserveTempIdentity(self, name_span, span, self.temp_var_counter - 1);
+            const counter_index = self.temp_var_counter - 1;
+            const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                std.debug.panic("ES2020 temp allocator did not retain its producer identity", .{});
+            const identity = try reserveTempIdentity(self, name_span, span, counter_index);
             const left = try helpers.makeTempVarRef(self, name_span, span);
             const assignment = try helpers.makeAssignExpr(self, left, value, span, @backingInt(token_mod.Kind.eq));
-            try trackTempReference(self, name_span, span, left, .{ .write = true }, identity);
-            return .{ .span = name_span, .paren_assign = assignment, .identity = identity };
+            try trackTempReference(self, name_span, span, left, .{ .write = true }, identity, producer_id);
+            return .{ .span = name_span, .paren_assign = assignment, .identity = identity, .producer_id = producer_id };
         }
 
-        fn readTrackedTemp(self: *Transformer, name_span: Span, identity: ?TempIdentity, node_span: Span) Transformer.Error!NodeIndex {
-            const ref = try helpers.makeTempVarRef(self, name_span, node_span);
-            try trackTempReference(self, name_span, node_span, ref, .{ .read = true }, identity);
+        fn readTrackedTemp(self: *Transformer, capture: TrackedTempCapture, node_span: Span) Transformer.Error!NodeIndex {
+            const ref = try helpers.makeTempVarRef(self, capture.span, node_span);
+            try trackTempReference(self, capture.span, node_span, ref, .{ .read = true }, capture.identity, capture.producer_id);
             return ref;
         }
 
@@ -167,9 +270,12 @@ pub fn ES2020(comptime Transformer: type) type {
                 });
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
-                const identity = try reserveTempIdentity(self, temp_span, node.span, self.temp_var_counter - 1);
+                const counter_index = self.temp_var_counter - 1;
+                const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                    std.debug.panic("ES2020 temp allocator did not retain its producer identity", .{});
+                const identity = try reserveTempIdentity(self, temp_span, node.span, counter_index);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true }, identity);
+                try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true }, identity, producer_id);
                 const assign_node = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = node.span,
@@ -189,7 +295,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     } },
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true }, identity);
+                try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true }, identity, producer_id);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
@@ -286,7 +392,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const cap = try captureTrackedTemp(self, visited_base, node.span);
                 null_check_base = cap.paren_assign;
-                chain_base = try readTrackedTemp(self, cap.span, cap.identity, node.span);
+                chain_base = try readTrackedTemp(self, cap, node.span);
             }
 
             const rebuilt_chain = if (optional_member_call) |mc|
@@ -363,7 +469,7 @@ pub fn ES2020(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const visited_base = try self.visitNode(receiver_base);
             const base_cap = try captureTrackedTemp(self, visited_base, root.span);
-            const chain_base = try readTrackedTemp(self, base_cap.span, base_cap.identity, root.span);
+            const chain_base = try readTrackedTemp(self, base_cap, root.span);
             const rewritten = try replaceOptionalBoundaryWithTemp(self, root, receiver_base, chain_base);
             const lowered_tail = try self.visitNode(rewritten);
             const base_eq_null = try helpers.makeEqNull(self, base_cap.paren_assign, root.span);
@@ -454,7 +560,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 const cap = try captureTrackedTemp(self, member, root.span);
                 return .{
                     .null_check_base = cap.paren_assign,
-                    .chain_base = try readTrackedTemp(self, cap.span, cap.identity, root.span),
+                    .chain_base = try readTrackedTemp(self, cap, root.span),
                     .receiver = try makeThisOrAlias(self, root.span),
                 };
             }
@@ -472,7 +578,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const obj_cap = try captureTrackedTemp(self, visited_obj, root.span);
                 member_obj = obj_cap.paren_assign;
-                receiver = try readTrackedTemp(self, obj_cap.span, obj_cap.identity, root.span);
+                receiver = try readTrackedTemp(self, obj_cap, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -483,7 +589,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const fn_cap = try captureTrackedTemp(self, member, root.span);
             return .{
                 .null_check_base = fn_cap.paren_assign,
-                .chain_base = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, root.span),
+                .chain_base = try readTrackedTemp(self, fn_cap, root.span),
                 .receiver = receiver,
             };
         }
@@ -526,8 +632,8 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const cap = try captureTrackedTemp(self, visited_obj, root.span);
                 receiver_check = cap.paren_assign;
-                member_obj = try readTrackedTemp(self, cap.span, cap.identity, root.span);
-                receiver = try readTrackedTemp(self, cap.span, cap.identity, root.span);
+                member_obj = try readTrackedTemp(self, cap, root.span);
+                receiver = try readTrackedTemp(self, cap, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -549,7 +655,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 // `receiver?.method?.().value` must evaluate as
                 // `method.call(receiver).value` only when both guards pass.
                 const fn_cap = try captureTrackedTemp(self, member, root.span);
-                const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, root.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap, root.span);
                 const rebuilt = try rebuildChainNodeWithOptionalMemberCallThis(
                     self,
                     root,
@@ -699,7 +805,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, span);
 
             const call_prop = try helpers.makePropertyName(self, "call");
-            const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, span);
+            const fn_ref = try readTrackedTemp(self, fn_cap, span);
             const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, span);
 
             const args_start = self.readU32(call_e, 1);
@@ -1028,7 +1134,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     receiver,
                 );
                 const obj_cap = try captureTrackedTemp(self, rebuilt_obj, old_call.span);
-                const obj_ref = try readTrackedTemp(self, obj_cap.span, obj_cap.identity, old_call.span);
+                const obj_ref = try readTrackedTemp(self, obj_cap, old_call.span);
                 const prop = try self.visitNode(old_prop);
                 const member_obj = if (is_optional_member) obj_ref else obj_cap.paren_assign;
                 const member = try self.ast.addNode(.{
@@ -1041,7 +1147,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     }) },
                 });
                 const fn_cap = try captureTrackedTemp(self, member, old_call.span);
-                const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, old_call.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap, old_call.span);
                 const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
                 const call_prop = try helpers.makePropertyName(self, "call");
                 const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, old_call.span);
@@ -1078,7 +1184,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 receiver,
             );
             const fn_cap = try captureTrackedTemp(self, rebuilt_callee, old_call.span);
-            const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, old_call.span);
+            const fn_ref = try readTrackedTemp(self, fn_cap, old_call.span);
             const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
             const call_extra = try self.ast.addExtras(&.{
                 @backingInt(fn_ref),
