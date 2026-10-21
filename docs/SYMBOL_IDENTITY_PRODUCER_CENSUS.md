@@ -1,14 +1,14 @@
 # SymbolId producer census: bounded AST binding constructors
 
-이 문서는 [#5980](https://github.com/ohah/zntc/issues/5980)의 source census를 위한 bounded AST binding constructor 호출 위치 색인이다. 이 색인은 빠진 `SymbolId` 수가 아니다. 경로별 identity/owner/최종 이름 소비자 분류는 별도 [#6120](https://github.com/ohah/zntc/issues/6120)에서 진행한다.
+이 문서는 [#5980](https://github.com/ohah/zntc/issues/5980)의 bounded AST binding-constructor 색인이다. Callsite별 생성 시점, owner `ScopeId`, exact `SymbolId` handoff, final-name consumer와 fallback은 [SYMBOL_IDENTITY_PRODUCER_AUDIT.md](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md)에 있다. 112개라는 색인 수는 누락 ID 수가 아니다.
 
 ## 기준과 계수
 
-- 기준 커밋: `230d0eaa2df06583d10dbe0ce5b5c17b151b2863` (`origin/main`, PR #6119 병합 후).
-- 분모: production callsite 112곳, 70개 함수, 35개 파일.
-- 기존 다섯 constructor 계열: 110곳. `makeSyntheticBinding` 50, `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 20, `createSyntheticTempBinding` 10, `makeUsingBinding` 4.
-- 별도 exact-identity helper `createSyntheticTempBindingWithIdentity`: production callsite 2곳.
-- 세는 항목은 아래 여섯 helper의 실제 production call expression이다. 생성자 정의와 helper 내부 위임은 중복 계산하지 않는다. 전용 test 파일, inline `test` block, 테스트에서만 부르는 `checkGeneratorAssignmentBindingIdentity`와 `checkGeneratorHoistProducerUsesExactBindingHandle`도 제외한다.
+- 기준 커밋: `7346fc2cb48980257f9fc5a8625dc627eb7f0768` (`origin/main`, PR #6122 병합 후).
+- 색인 분모: call expression 112곳, 70개 색인 함수, 35개 파일. 실제 production caller가 있는 expression은 111곳, 함수는 69개다. `es2015_for_of.zig::makeVarDeclFromSpan`은 호출자가 없는 helper 안의 call이다.
+- 기존 다섯 constructor 계열은 색인상 110곳이며, 도달 가능한 production expression은 109곳이다. 색인 분포는 `makeSyntheticBinding` 50(도달 49), `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 20, `createSyntheticTempBinding` 10, `makeUsingBinding` 4다.
+- 별도 exact-identity helper `createSyntheticTempBindingWithIdentity`: 도달 가능한 production callsite 2곳.
+- 색인은 아래 여섯 helper의 source call expression을 기록한다. 이 분모에는 위의 호출 없는 helper expression 하나가 포함된다. Constructor 정의, helper 내부 위임, 전용 test 파일, inline `test {}` 및 테스트에서만 부르는 `checkGeneratorAssignmentBindingIdentity`와 `checkGeneratorHoistProducerUsesExactBindingHandle`는 제외한다.
 
 ## Source index
 
@@ -24,7 +24,7 @@
 | [`src/transformer/es2015_class/members.zig`](../src/transformer/es2015_class/members.zig) | `classifyComputedAccessorProperty`: `makeExactSyntheticBindingFromSpan` L733<br>`setupPrivateFieldMappings`: `makeExactSyntheticBinding` L302,322 |
 | [`src/transformer/es2015_class/super_props.zig`](../src/transformer/es2015_class/super_props.zig) | `beginSuperTemp`: `createSyntheticTempBinding` L39; `createSyntheticTempBindingWithIdentity` L38; `makeExactSyntheticBindingFromSpan` L42 |
 | [`src/transformer/es2015_destructuring.zig`](../src/transformer/es2015_destructuring.zig) | `makeDestructuringTempBinding`: `makeSyntheticBinding` L55 |
-| [`src/transformer/es2015_for_of.zig`](../src/transformer/es2015_for_of.zig) | `makeVarDeclFromSpan`: `makeSyntheticBinding` L574<br>`rewriteForIn`: `createSyntheticTempBinding` L374,375,376,377<br>`rewriteForOf`: `makeExactSyntheticBinding` L264; `makeExactSyntheticBindingFromSpan` L204; `makeSyntheticBinding` L122,142,162,186 |
+| [`src/transformer/es2015_for_of.zig`](../src/transformer/es2015_for_of.zig) | `makeVarDeclFromSpan`: `makeSyntheticBinding` L574 (production caller 없음)<br>`rewriteForIn`: `createSyntheticTempBinding` L374,375,376,377<br>`rewriteForOf`: `makeExactSyntheticBinding` L264; `makeExactSyntheticBindingFromSpan` L204; `makeSyntheticBinding` L122,142,162,186 |
 | [`src/transformer/es2015_generator.zig`](../src/transformer/es2015_generator.zig) | `buildHoistedVarDecl`: `createSyntheticTempBindingWithIdentity` L666; `makeExactSyntheticBindingFromSpan` L674<br>`makeGeneratorStateBinding`: `makeExactSyntheticBindingFromSpan` L3219 |
 | [`src/transformer/es2015_params.zig`](../src/transformer/es2015_params.zig) | `buildDestructuringDefault`: `makeSyntheticBinding` L496,515<br>`buildDestructuringParam`: `makeSyntheticBinding` L555,573<br>`buildRestPatternParam`: `makeSyntheticBinding` L702,720<br>`call`: `makeSyntheticBinding` L309 |
 | [`src/transformer/es2018_for_await.zig`](../src/transformer/es2018_for_await.zig) | `rewriteForAwait`: `createSyntheticTempBinding` L122,123,128,129; `makeExactSyntheticBinding` L118 |
@@ -54,8 +54,8 @@
 
 ## 분모 밖에 남겨 둔 producer/consumer 경계
 
-이 112곳은 AST binding constructor 호출만 센다. reference-only temp reservation, plugin/linker가 소유하는 output binding, detached Worklet `__initData.code`, semantic-less/graphless lowering은 이 분모에 넣지 않았다. 이 경계는 `docs/SYMBOL_IDENTITY_MIGRATION.md`와 #5952, #5955, #6002, #6003, #6004 등 각각의 열린 issue에서 별도로 추적한다. 분모 밖이라는 이유만으로 완료 처리하지 않는다.
+이 분모는 AST binding-constructor call expression만 센다. Reference-only temp reservation과 plugin/linker-owned output binding은 별도 경계다. `worklet.zig`의 두 serialized-payload binding call은 색인에 포함하지만 별도 semantic graph를 사용한다. Semantic-less/graphless fallback은 각 callsite 행에 분리 기록하며, 그 경계 자체를 누락 ID로 세지 않는다. 다른 producer family와 resolver/local re-search 범위는 #5952, #5954, #5956, #6003, #6004의 현 상태에 따라 별도로 추적한다.
 
-## 아직 확정하지 않은 결과
+## Identity audit 결과
 
-현재 확인된 것은 호출 위치의 분모뿐이다. 이 표에서 owner/ID handoff와 final-name consumer를 모두 대조하고 기존 child issue 및 의도된 fallback과 중복 제거하기 전에는 미완료 producer의 정확한 수를 산출할 수 없다. [#6120](https://github.com/ohah/zntc/issues/6120)에서 각 source-index 행을 identity family와 follow-up issue에 연결하고 미분류 행을 0으로 만든다.
+[상세 감사표](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md)에서 112/112 callsite를 생성 시점, owner, consumer, output mode, fallback 기준으로 분류했다. Production caller가 있는 111개 경로에서 semantic graph를 사용하는 지원 경로의 누락 exact `SymbolId` handoff는 0이다. 한 call은 호출자가 없는 helper expression이다. 이 결과는 전체 final-name 통합이나 #4819 완료를 뜻하지 않으며, name/span/scope 재검색과 resolver·collision 경계는 별도 이슈에 남아 있다.
