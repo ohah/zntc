@@ -621,24 +621,10 @@ test "#4819 extracted generator loop has exact header and catch symbols" {
     try std.testing.expect(saw_e_reference);
 }
 
-test "#4819 extracted generator control-flow temps reuse their exact ret names" {
+fn checkExtractedGeneratorControlFlowTempIdentity(source: []const u8) !usize {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source =
-        \\function* g() {
-        \\  const _ret = 99;
-        \\  for (let i = 0; i < 2; i++) {
-        \\    if (i === 0) return 1;
-        \\    yield () => i;
-        \\  }
-        \\  for (let j = 0; j < 2; j++) {
-        \\    if (j === 0) return 2;
-        \\    yield () => j;
-        \\  }
-        \\  yield _ret;
-        \\}
-    ;
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
@@ -713,7 +699,44 @@ test "#4819 extracted generator control-flow temps reuse their exact ret names" 
         try std.testing.expectEqual(symbol.reference_count, value_reference_count);
         try std.testing.expectEqual(symbol.write_count, write_count);
     }
-    try std.testing.expectEqual(@as(usize, 2), generated_ret_temps);
+    return generated_ret_temps;
+}
+
+test "#4819 extracted generator control-flow temps reuse their exact ret names" {
+    const source =
+        \\function* g() {
+        \\  const _ret = 99;
+        \\  for (let i = 0; i < 2; i++) {
+        \\    if (i === 0) return 1;
+        \\    yield () => i;
+        \\  }
+        \\  for (let j = 0; j < 2; j++) {
+        \\    if (j === 0) return 2;
+        \\    yield () => j;
+        \\  }
+        \\  yield _ret;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(usize, 2), try checkExtractedGeneratorControlFlowTempIdentity(source));
+}
+
+test "#6004 callback-local loop bindings survive ten hostile generator shapes" {
+    const sources = [_][]const u8{
+        "function* g(){ const _ret=99; for(let i=0;i<2;i++){ if(i===0)return 1; yield ()=>i; } yield _ret; }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ for(let j=0;j<3;j++){ if(j===1)continue outer; if(j===2)return j; yield ()=>i+j; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ switch(i){ case 0: yield i; break; default: yield i; } if(i===2)return i; yield ()=>i; } }",
+        "function* g(){ for(let i=0;i<3;i++){ try { if(i===1)return i; yield ()=>i; } catch(e) { if(e)return e; yield ()=>i; } finally { void i; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ if(i===1)continue; if(i===2)break; yield ()=>i; if(i)return i; } }",
+        "function* g(){ for(let i=0;i<3;i++){ if(i===2)return i; yield ()=>({value:i}).value; } }",
+        "class C { *g(){ for(let i=0;i<3;i++){ if(i===2)return i; yield ()=>this.value+i; } } }",
+        "async function* g(){ for(let i=0;i<3;i++){ await Promise.resolve(i); if(i===2)return i; yield ()=>i; } }",
+        "function* outer(){ for(let i=0;i<2;i++){ function* inner(){ for(let j=0;j<2;j++){ if(j)return j; yield ()=>i+j; } } yield inner(); if(i)return i; } }",
+        "function* g(){ const _ret=1,_ret2=2; for(let i=0;i<2;i++){ if(i)return _ret; yield ()=>_ret2+i; } }",
+    };
+    for (sources) |source| {
+        const generated_ret_temps = try checkExtractedGeneratorControlFlowTempIdentity(source);
+        try std.testing.expect(generated_ret_temps > 0);
+    }
 }
 
 test "#4819 generator object super home temp reuses its exact callback binding" {

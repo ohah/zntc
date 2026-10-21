@@ -2272,7 +2272,6 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     if (chain == null and !source_scope.isNone())
         chain = self.pending_temp_ref_chains.fetchRemove(PendingTempRefKey.fromSpan(temp.name_span, .none));
     const editor = try editorFor(self);
-    const temp_name = self.ast.getText(temp.name_span);
     const owner_scope = variableScope(self, callback_scope);
     const temp_key = syntheticTempSymbolKey(temp.name_span, owner_scope);
     const registered_id = self.synthetic_temp_symbol_ids.get(temp_key);
@@ -2316,70 +2315,6 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
             editor.addReference(pending.reference, id, scope, pending.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
         }
         try setSymbolId(self, pending.reference, id);
-    }
-    // A lowering performed while collecting the state machine may already
-    // have emitted an initialized `var` declaration for this exact temp. The
-    // callback hoister adds the canonical declaration above; every declaration
-    // carrying the same unique name Span is a `var` redeclaration of that same
-    // binding and must share its SymbolId.
-    var live_iter = live.iterator();
-    while (live_iter.next()) |entry| {
-        const raw = entry.key_ptr.*;
-        if (raw >= self.ast.nodes.items.len or self.ast.nodes.items[raw].tag != .binding_identifier) continue;
-        const binding_idx: NodeIndex = @fromBackingInt(@intCast(raw));
-        if (binding_idx == temp.binding) continue;
-        const binding = self.ast.getNode(binding_idx);
-        if (binding.data.string_ref.start != temp.name_span.start or binding.data.string_ref.end != temp.name_span.end) continue;
-        const slot = @backingInt(binding_idx);
-        if (slot < self.symbol_ids.items.len) {
-            if (self.symbol_ids.items[slot]) |existing_id| {
-                if (existing_id >= editor.symbols.items.len) std.debug.panic("state callback temp alias symbol is out of range", .{});
-                // A catch parameter intentionally shadows a same-spelled
-                // callback temp inside its catch clause; it is a distinct
-                // lexical binding even when both originated from one temp Span.
-                if (editor.symbols.items[existing_id].kind != .variable_var) continue;
-                if (existing_id == @backingInt(id)) continue;
-                const old_symbol = editor.symbols.items[existing_id];
-                if (old_symbol.synthetic_name.len == 0 or
-                    !std.mem.eql(u8, old_symbol.synthetic_name, temp_name))
-                    std.debug.panic("callback temp Span resolves to an unrelated var binding", .{});
-                try self.setGeneratedSymbolId(binding_idx, @backingInt(id));
-                var reference_iter = live.iterator();
-                while (reference_iter.next()) |reference_entry| {
-                    const reference_raw = reference_entry.key_ptr.*;
-                    if (reference_raw >= self.ast.nodes.items.len) continue;
-                    const reference_node: NodeIndex = @fromBackingInt(@intCast(reference_raw));
-                    const reference_ast_node = self.ast.getNode(reference_node);
-                    if (reference_ast_node.tag != .identifier_reference and
-                        reference_ast_node.tag != .assignment_target_identifier) continue;
-                    if (reference_ast_node.data.string_ref.start != temp.name_span.start or
-                        reference_ast_node.data.string_ref.end != temp.name_span.end or
-                        self.getSymbolIdAt(reference_node) != @as(?u32, existing_id)) continue;
-                    const maybe_reference = editor.referenceForNode(reference_node) catch |err| return editError(err);
-                    const reference = maybe_reference orelse continue;
-                    if (reference.symbol_id != @as(SymbolId, @fromBackingInt(@intCast(existing_id))))
-                        std.debug.panic("callback temp alias reference changed SymbolId", .{});
-                    const reference_scope = try generatedTempRefScope(
-                        self,
-                        source_scope,
-                        callback_scope,
-                        reference.scope_id,
-                        live_scopes,
-                    );
-                    editor.relocateReference(
-                        reference_node,
-                        reference_scope,
-                        id,
-                        reference.stmt_idx,
-                        reference.scope_stmt_idx,
-                    ) catch |err| return editError(err);
-                    try self.setGeneratedSymbolId(reference_node, @backingInt(id));
-                }
-            }
-        }
-        if (slot >= self.symbol_ids.items.len or self.symbol_ids.items[slot] == null) {
-            try setSymbolId(self, binding_idx, id);
-        }
     }
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
