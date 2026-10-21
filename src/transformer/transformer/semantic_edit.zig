@@ -2010,6 +2010,34 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     if (old_scope == source_scope) return target_scope;
     if (scopeWithin(editor.scopes.items, old_scope, target_scope)) return old_scope;
     if (!scopeWithin(editor.scopes.items, old_scope, source_scope)) {
+        // An extracted generator-loop function temporarily keeps its moved
+        // body scopes under the enclosing source function until that outer
+        // function's callback is assembled. Its own state callback is built
+        // first, so reparent live body scopes under this callback while the
+        // exact loop migration is still pending.
+        if (self.deferred_generator_loop_migrations.get(@backingInt(source_scope))) |migration| {
+            const enclosing_scope = migration.enclosing_function_scope;
+            if (!migration.function_reparented and !enclosing_scope.isNone() and
+                scopeWithin(editor.scopes.items, old_scope, enclosing_scope))
+            {
+                var cursor = old_scope;
+                var frontier: ScopeId = .none;
+                var has_live_scope = false;
+                var hops: usize = 0;
+                while (cursor != enclosing_scope and !cursor.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
+                    has_live_scope = has_live_scope or live_scopes.contains(@backingInt(cursor));
+                    frontier = cursor;
+                    cursor = editor.scopes.items[cursor.toIndex()].parent;
+                }
+                if (cursor == enclosing_scope) {
+                    if (!has_live_scope or frontier.isNone()) return target_scope;
+                    if (scopeWithin(editor.scopes.items, target_scope, frontier)) return target_scope;
+                    if (!scopeWithin(editor.scopes.items, frontier, target_scope))
+                        editor.reparentScope(frontier, target_scope) catch |err| return editError(err);
+                    return old_scope;
+                }
+            }
+        }
         if (self.deferred_generator_loop_migrations.get(@backingInt(old_scope))) |migration| {
             if (!migration.function_reparented) return target_scope;
         }
