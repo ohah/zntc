@@ -418,7 +418,7 @@ pub fn attachNameTempReference(
     if (capture.symbol_id) |symbol_id| {
         try self.addSyntheticRefInScope(reference, symbol_id, scope, .{ .read = true });
     } else {
-        try self.trackSyntheticTempReferenceInScope(capture.span, capture.span, reference, scope, .{ .read = true });
+        try es_helpers.trackDeferredTempIdentityReference(self, capture, reference, scope, .{ .read = true });
     }
 }
 
