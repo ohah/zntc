@@ -17,8 +17,9 @@
 //!   - arrow 가 네이티브인 타겟: `((_obj) => _obj = { … })()` — 파라미터라 평가마다 새
 //!     바인딩이다. arrow 라 `this`/`arguments`/`super` 도 그대로다.
 //!   - es5: `(function (_obj) { return _obj = { … }; })()`. 값 자리가 함수 문맥을 쓰지
-//!     않으면 이 래퍼를 쓴다. native parameter list 를 유지하는 중 `this` 만 쓰면
-//!     `.call(this)` 로 원래 수신자를 전달한다. 다른 문맥은 함수 단위 임시 변수로 돌아간다.
+//!     않으면 이 래퍼를 쓴다. native parameter list 를 유지하는 중 `this` 는 `.call(this)` 로,
+//!     `arguments` 는 원래 arguments 객체를 별도 매개변수로 넘겨 보존한다. 그 밖의 문맥은
+//!     함수 단위 임시 변수로 돌아간다.
 //!   - 값 자리에 `yield`/`await` 가 있으면(감싸면 깨짐) es5 에서 함수 단위
 //!     `var` 임시 변수로 돌아간다. 이때는 클로저가 캡처하는 루프 본문이 `_loop` 으로
 //!     추출되며 그 안에 선언돼 반복마다 새로 생기고, 추출되지 않는 루프에서만 공유된다.
@@ -127,6 +128,8 @@ pub const Home = struct {
     wrap: Wrap,
     late_output_name: bool = false,
     temp_counter_index: ?u32 = null,
+    arguments_alias_span: ?Span = null,
+    arguments_outer_ref: NodeIndex = .none,
 
     pub const Wrap = enum {
         /// `_a = obj` — 함수 단위 `var` 임시 변수.
@@ -137,60 +140,155 @@ pub const Home = struct {
         function,
         /// `(function (home) { return home = obj; }).call(this)` — es5, `this` 만 사용.
         function_with_this,
+        /// `(function (home, args) { return home = obj; })(arguments)` — lexical `arguments` 를 alias.
+        function_with_arguments,
+        /// `(function (home, args) { return home = obj; }).call(this, arguments)` — `this` 와 `arguments` 를 보존.
+        function_with_this_and_arguments,
     };
 };
 
-const FunctionContextUse = enum {
-    none,
-    this_only,
-    other,
+const FunctionContextUse = struct {
+    uses_this: bool = false,
+    uses_arguments: bool = false,
+    uses_other: bool = false,
 };
+
+fn argumentsReferenceBelongsToEnclosingScope(self: *Transformer, reference: NodeIndex, start_scope: ScopeId) bool {
+    const raw_id = self.getSymbolIdAt(reference) orelse return true;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (raw_id >= symbols.len) return false;
+    const binding_scope = symbols[raw_id].scope_id;
+    var cursor = start_scope;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
+        if (cursor.toIndex() >= scopes.len) return false;
+        if (cursor == binding_scope) return true;
+        cursor = scopes[cursor.toIndex()].parent;
+    }
+    return false;
+}
 
 /// 객체의 값 자리(메서드 본문 밖)에서 감싸는 함수가 바꿔 버릴 문맥을 쓰는지.
 /// arrow 는 투명(같은 문맥), 일반 함수는 경계. 클래스·중첩 메서드는 보수적으로 들여다본다.
 fn valuesFunctionContextUse(self: *Transformer, node: Node) FunctionContextUse {
-    var ctx: ContextScan = .{ .ast = self.ast };
+    const ContextWork = struct { node: NodeIndex, parent_tag: ?ast_mod.Node.Tag = null };
+    var ctx = FunctionContextUse{};
+    var stack: std.ArrayList(ContextWork) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
         const m_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (m_idx.isNone()) continue;
         const m = self.ast.getNode(m_idx);
-        const target = if (m.tag == .method_definition) self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key) else m_idx;
-        if (target.isNone()) continue;
-        // OOM 이면 보수적으로 다른 함수 문맥을 쓴다고 보고 함수 래퍼를 피한다.
-        ast_walk.walkPreorderIterative(self.allocator, self.ast, target, &ctx, contextVisit) catch return .other;
-        if (ctx.uses_other) return .other;
+        if (m.tag == .method_definition) {
+            const key = self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key);
+            if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                stack.append(self.allocator, .{ .node = key }) catch return .{ .uses_other = true };
+        } else {
+            stack.append(self.allocator, .{ .node = m_idx }) catch return .{ .uses_other = true };
+        }
     }
-    return if (ctx.uses_this) .this_only else .none;
+
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
+        if (seen.contains(raw)) continue;
+        seen.put(self.allocator, raw, {}) catch return .{ .uses_other = true };
+        const current = self.ast.getNode(work.node);
+        switch (current.tag) {
+            .function_declaration, .function_expression, .function => continue,
+            .method_definition => {
+                const key = self.readNodeIdx(current.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    stack.append(self.allocator, .{ .node = key }) catch return .{ .uses_other = true };
+                continue;
+            },
+            .this_expression => ctx.uses_this = true,
+            .super_expression, .meta_property, .yield_expression, .await_expression => {
+                ctx.uses_other = true;
+                return ctx;
+            },
+            .identifier_reference => if (std.mem.eql(u8, self.ast.getText(current.data.string_ref), "arguments") and
+                argumentsReferenceBelongsToEnclosingScope(self, work.node, self.current_scope))
+            {
+                if (work.parent_tag == .update_expression or work.parent_tag == .unary_expression) {
+                    ctx.uses_other = true;
+                    return ctx;
+                }
+                ctx.uses_arguments = true;
+            },
+            .assignment_target_identifier => if (std.mem.eql(u8, self.ast.getText(current.data.string_ref), "arguments") and
+                argumentsReferenceBelongsToEnclosingScope(self, work.node, self.current_scope))
+            {
+                ctx.uses_other = true;
+                return ctx;
+            },
+            else => {},
+        }
+
+        var children = ast_walk.children(self.ast, current);
+        while (children.next()) |child| {
+            stack.append(self.allocator, .{ .node = child, .parent_tag = current.tag }) catch return .{ .uses_other = true };
+        }
+    }
+    return ctx;
 }
 
-const ContextScan = struct {
-    ast: *const ast_mod.Ast,
-    uses_this: bool = false,
-    uses_other: bool = false,
-};
+fn valuesHaveDynamicLookup(self: *Transformer, root: NodeIndex) bool {
+    const parameter_environment = @import("parameter_environment.zig");
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
 
-fn contextVisit(ctx: *ContextScan, _: NodeIndex, n: Node) ast_walk.WalkAction {
-    switch (n.tag) {
-        .this_expression => {
-            ctx.uses_this = true;
-            return .descend;
-        },
-        .super_expression, .meta_property, .yield_expression, .await_expression => {
-            ctx.uses_other = true;
-            return .stop;
-        },
-        .identifier_reference => {
-            if (std.mem.eql(u8, ctx.ast.getText(n.data.string_ref), "arguments")) {
-                ctx.uses_other = true;
-                return .stop;
+    const root_node = self.ast.getNode(root);
+    if (root_node.tag == .object_expression) {
+        const list = root_node.data.list;
+        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            const member: NodeIndex = @fromBackingInt(@intCast(raw));
+            if (member.isNone()) continue;
+            const member_node = self.ast.getNode(member);
+            if (member_node.tag == .method_definition) {
+                const key = self.readNodeIdx(member_node.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    stack.append(self.allocator, key) catch return true;
+            } else {
+                stack.append(self.allocator, member) catch return true;
             }
-            return .descend;
-        },
-        .function_declaration, .function_expression, .function => return .skip_children,
-        else => return .descend,
+        }
+    } else {
+        stack.append(self.allocator, root) catch return true;
     }
+
+    while (stack.pop()) |current| {
+        if (current.isNone() or @backingInt(current) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(current);
+        if (seen.contains(raw)) continue;
+        seen.put(self.allocator, raw, {}) catch return true;
+        const node = self.ast.getNode(current);
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function => continue,
+            .method_definition => {
+                const key = self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    stack.append(self.allocator, key) catch return true;
+                continue;
+            },
+            .with_statement => return true,
+            .call_expression => if (parameter_environment.nodeHasDynamicLookup(self, current) catch true) {
+                return true;
+            },
+            else => {},
+        }
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| stack.append(self.allocator, child) catch return true;
+    }
+    return false;
 }
 
 /// 객체의 값 자리(메서드 본문 밖)에 `yield`/`await` 가 있는지 — arrow 로 감싸면 깨진다.
@@ -209,19 +307,38 @@ fn valuesYieldOrAwait(self: *Transformer, node: Node) bool {
     return false;
 }
 
+fn uniqueHomeCaptureName(self: *Transformer, prefix: []const u8) Transformer.Error!Span {
+    while (true) {
+        const name = try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.object_home_counter, self.current_scope);
+        if (try es_helpers.nameAppearsInSource(self, name)) continue;
+        return self.ast.addString(name);
+    }
+}
+
 fn allocHome(self: *Transformer, producer_node: NodeIndex, node: Node, allow_late_output_name: bool) Transformer.Error!Home {
+    var arguments_alias_span: ?Span = null;
     const wrap: Home.Wrap = if (!self.options.unsupported.arrow)
         (if (valuesYieldOrAwait(self, node)) .assign else .arrow)
     else blk: {
+        if (valuesYieldOrAwait(self, node)) break :blk .assign;
         const context_use = valuesFunctionContextUse(self, node);
-        switch (context_use) {
-            .other => break :blk .assign,
-            .this_only => break :blk if (self.native_parameter_list_retained_for_dynamic_lookup)
-                .function_with_this
+        if (context_use.uses_other) break :blk .assign;
+        if (context_use.uses_arguments) {
+            if (!self.native_parameter_list_retained_for_dynamic_lookup) break :blk .assign;
+            // A direct eval / with in the value would observe the wrapper's
+            // lexical environment. Keep those expressions in their source frame.
+            if (valuesHaveDynamicLookup(self, producer_node)) break :blk .assign;
+            arguments_alias_span = try uniqueHomeCaptureName(self, "_args");
+            break :blk if (context_use.uses_this)
+                .function_with_this_and_arguments
             else
-                .assign,
-            .none => break :blk .function,
+                .function_with_arguments;
         }
+        if (context_use.uses_this) break :blk if (self.native_parameter_list_retained_for_dynamic_lookup)
+            .function_with_this
+        else
+            .assign;
+        break :blk .function;
     };
     if (wrap != .assign) {
         // 함수 파라미터 — 함수 단위 temp 카운터를 쓰지 않는다(var 로 호이스팅되면 안 됨).
@@ -240,6 +357,7 @@ fn allocHome(self: *Transformer, producer_node: NodeIndex, node: Node, allow_lat
                 .identity = .{ .producer_node = producer_node, .span = try self.ast.addString(name) },
                 .wrap = wrap,
                 .late_output_name = late_output_name,
+                .arguments_alias_span = arguments_alias_span,
             };
         }
     }
@@ -267,7 +385,27 @@ pub fn prepareHome(self: *Transformer, producer_node: NodeIndex, allow_late_outp
         const flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
         if (!superMustBeLowered(self, flags) and !hasDownleveledAsyncArrowSuper(self, m)) continue;
         if (!methodUsesSuper(self, m)) continue;
-        if (home == null) home = try allocHome(self, producer_node, node, allow_late_output_name);
+        if (home == null) {
+            var created = try allocHome(self, producer_node, node, allow_late_output_name);
+            if (created.arguments_alias_span) |alias_span| {
+                var arguments_refs: std.ArrayList(NodeIndex) = .empty;
+                defer arguments_refs.deinit(self.allocator);
+                try collectLexicalArgumentsReferences(self, producer_node, &arguments_refs);
+                if (arguments_refs.items.len == 0)
+                    std.debug.panic("object-super arguments wrapper has no source arguments references", .{});
+                const parent_scope = homeObjectParentScope(self, producer_node, self.current_scope);
+                const arguments_origin = arguments_refs.items[0];
+                created.arguments_outer_ref = if (self.getSymbolIdAt(arguments_origin) != null)
+                    try self.makeUserRefNamedAtScope("arguments", arguments_origin, parent_scope)
+                else
+                    try es_helpers.makeGlobalRef(self, "arguments");
+                for (arguments_refs.items) |ref| {
+                    try self.removeSemanticReference(ref);
+                    self.ast.nodes.items[@backingInt(ref)].data.string_ref = alias_span;
+                }
+            }
+            home = created;
+        }
         try self.object_super_homes.append(self.allocator, .{ .method_extra = m.data.extra, .identity = home.?.identity });
     }
     return home;
@@ -300,6 +438,98 @@ pub fn lookup(self: *const Transformer, method_extra: u32) ?ObjectSuperHomeIdent
         if (entry.method_extra == method_extra) return entry.identity;
     }
     return null;
+}
+
+fn collectLexicalArgumentsReferences(
+    self: *Transformer,
+    root: NodeIndex,
+    references: *std.ArrayList(NodeIndex),
+) Transformer.Error!void {
+    const Work = struct { node: NodeIndex, parent_tag: ?ast_mod.Node.Tag = null };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+
+    const root_node = self.ast.getNode(root);
+    if (root_node.tag == .object_expression) {
+        const list = root_node.data.list;
+        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            const member: NodeIndex = @fromBackingInt(@intCast(raw));
+            if (member.isNone()) continue;
+            const member_node = self.ast.getNode(member);
+            if (member_node.tag == .method_definition) {
+                const key = self.readNodeIdx(member_node.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    try stack.append(self.allocator, .{ .node = key });
+            } else {
+                try stack.append(self.allocator, .{ .node = member });
+            }
+        }
+    } else {
+        try stack.append(self.allocator, .{ .node = root });
+    }
+
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(work.node);
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function => continue,
+            .method_definition => {
+                const key = self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    try stack.append(self.allocator, .{ .node = key });
+                continue;
+            },
+            .identifier_reference => {
+                if (std.mem.eql(u8, self.ast.getText(node.data.string_ref), "arguments") and
+                    argumentsReferenceBelongsToEnclosingScope(self, work.node, self.current_scope))
+                {
+                    if (work.parent_tag == .update_expression or work.parent_tag == .unary_expression)
+                        continue;
+                    try references.append(self.allocator, work.node);
+                }
+            },
+            else => {},
+        }
+
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| {
+            try stack.append(self.allocator, .{ .node = child, .parent_tag = node.tag });
+        }
+    }
+}
+
+fn collectHomeArgumentsAliasReferences(
+    self: *Transformer,
+    root: NodeIndex,
+    alias_span: Span,
+    references: *std.ArrayList(NodeIndex),
+) Transformer.Error!void {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+
+    const alias_name = self.ast.getText(alias_span);
+    while (stack.pop()) |current| {
+        if (current.isNone() or @backingInt(current) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(current);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(current);
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, self.ast.getText(node.data.string_ref), alias_name))
+        {
+            try references.append(self.allocator, current);
+        }
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
 }
 
 /// 객체 리터럴 방문 결과를 home 에 담는다 — `Home.Wrap` 참고.
@@ -365,21 +595,43 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         return assign;
     }
 
+    var arguments_refs: std.ArrayList(NodeIndex) = .empty;
+    defer arguments_refs.deinit(self.allocator);
+    if (home.arguments_alias_span) |alias_span|
+        try collectHomeArgumentsAliasReferences(self, obj, alias_span, &arguments_refs);
+    const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
+    const arguments_ref = home.arguments_outer_ref;
+    if (home.arguments_alias_span != null and arguments_ref.isNone())
+        std.debug.panic("object-super arguments wrapper lost its outer reference", .{});
+
     const param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.identity.span);
     const none = @backingInt(NodeIndex.none);
-    const formal = try self.ast.addNode(.{
+    var formals: std.ArrayList(NodeIndex) = .empty;
+    defer formals.deinit(self.allocator);
+    const home_formal = try self.ast.addNode(.{
         .tag = .formal_parameter,
         .span = span,
         // extras = [pattern, type_ann, default, flags, deco_start, deco_len] — deco_len 은 0.
         .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(param_binding), none, none, 0, 0, 0 }) },
     });
-    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{formal}), span);
+    try formals.append(self.allocator, home_formal);
+    const arguments_binding = if (home.arguments_alias_span) |alias_span| blk: {
+        const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, alias_span);
+        const formal = try self.ast.addNode(.{
+            .tag = .formal_parameter,
+            .span = span,
+            .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(binding), none, none, 0, 0, 0 }) },
+        });
+        try formals.append(self.allocator, formal);
+        break :blk binding;
+    } else .none;
+    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(formals.items), span);
     const callee = switch (home.wrap) {
         .assign => unreachable,
         .arrow => try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = span, .data = .{
             .extra = try self.ast.addExtras(&.{ @backingInt(params), @backingInt(assign), 0 }),
         } }),
-        .function, .function_with_this => blk: {
+        .function, .function_with_this, .function_with_arguments, .function_with_this_and_arguments => blk: {
             const ret = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = assign, .flags = 0 } } });
             const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ret}) } });
             break :blk try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{
@@ -387,25 +639,34 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
             } });
         },
     };
-    const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
     try bindWrappedHomeParameter(
         self,
         callee,
         param_binding,
+        arguments_binding,
+        arguments_refs.items,
         assign,
         home.identity,
         parent_scope,
         home.late_output_name,
     );
-    if (home.wrap == .function_with_this) {
+    if (home.wrap == .function_with_this or home.wrap == .function_with_this_and_arguments) {
         const call = try es_helpers.makeStaticMember(
             self,
             callee,
             try es_helpers.makePropertyName(self, "call"),
             span,
         );
+        if (home.wrap == .function_with_this_and_arguments)
+            return es_helpers.makeCallExpr(self, call, &.{
+                try es_helpers.makeThisExpr(self, span),
+                try es_helpers.makeVoidZero(self, span),
+                arguments_ref,
+            }, span);
         return es_helpers.makeCallExpr(self, call, &.{try es_helpers.makeThisExpr(self, span)}, span);
     }
+    if (home.wrap == .function_with_arguments)
+        return es_helpers.makeCallExpr(self, callee, &.{ try es_helpers.makeVoidZero(self, span), arguments_ref }, span);
     return es_helpers.makeCallExpr(self, callee, &.{}, span);
 }
 
@@ -506,6 +767,8 @@ fn bindWrappedHomeParameter(
     self: *Transformer,
     wrapper: NodeIndex,
     binding: NodeIndex,
+    arguments_binding: NodeIndex,
+    arguments_refs: []const NodeIndex,
     assignment: NodeIndex,
     identity: ObjectSuperHomeIdentity,
     parent_scope: ScopeId,
@@ -515,6 +778,15 @@ fn bindWrappedHomeParameter(
     const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
     if (wrapper_scope.isNone()) return;
     const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, wrapper_scope)) orelse return;
+    const arguments_id = if (!arguments_binding.isNone())
+        try self.declareSyntheticInScope(
+            arguments_binding,
+            self.ast.getNode(arguments_binding).span,
+            .parameter,
+            wrapper_scope,
+        )
+    else
+        null;
     if (late_output_name) {
         if (es_helpers.canUseLateGraphOutputName(self, wrapper_scope)) {
             es_helpers.markLateGraphSyntheticSymbol(self, id, .object_super_home_binding, "_obj");
@@ -533,6 +805,9 @@ fn bindWrappedHomeParameter(
     const write_ref = self.ast.getNode(assignment).data.binary.left;
     var home_refs = try collectObjectSuperHomeReferences(self, identity);
     defer home_refs.deinit(self.allocator);
+    var arguments_ref_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer arguments_ref_set.deinit(self.allocator);
+    for (arguments_refs) |ref| try arguments_ref_set.put(self.allocator, @backingInt(ref), {});
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var worklist: std.ArrayList(Work) = .empty;
     defer worklist.deinit(self.allocator);
@@ -562,6 +837,10 @@ fn bindWrappedHomeParameter(
         if (work.node == write_ref or home_refs.fetchRemove(raw) != null) {
             const flags: ReferenceFlags = if (work.node == write_ref) .{ .write = true } else .{ .read = true };
             try self.addSyntheticRefInScope(work.node, id, scope, flags);
+        } else if (arguments_ref_set.fetchRemove(raw) != null) {
+            const arguments_symbol = arguments_id orelse
+                std.debug.panic("object-super arguments alias has references but no parameter SymbolId", .{});
+            try self.addSyntheticRefInScope(work.node, arguments_symbol, scope, .{ .read = true });
         }
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try worklist.append(self.allocator, .{ .node = child, .scope = scope });

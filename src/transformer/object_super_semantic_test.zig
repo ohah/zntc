@@ -306,7 +306,7 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
             const raw_id = transformer.getSymbolIdAt(hoisted_binding) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
         },
-        .arrow, .function, .function_with_this => blk: {
+        .arrow, .function, .function_with_this, .function_with_arguments, .function_with_this_and_arguments => blk: {
             const raw_id = transformer.getSymbolIdAt(write_ref) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
         },
