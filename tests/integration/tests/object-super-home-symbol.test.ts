@@ -102,6 +102,66 @@ console.log(methods.read.call({ input: 'home' }), _obj, _obj$1, _obj$2);`,
     expect(actual.stdout).toBe(native.stdout);
   });
 
+  test('bundler preserves invocation-local arguments aliases for dynamic generator defaults', async () => {
+    const fixture = await createFixture({
+      'input.js': `var _args = 'source-args';
+const baseA = { read() { return 'A'; } };
+const baseB = { read() { return 'B'; } };
+function* generatorDefault(value = { input: arguments[1], receiver: this.input, sourceArgName: _args, args: arguments, readArgs: () => arguments, read() { return super.read(); } }) {
+  eval('');
+  value.__proto__ = this.base;
+  yield value;
+}
+const first = generatorDefault.call({ base: baseA, input: 'first' }, undefined, 1).next().value;
+generatorDefault.call({ base: baseB, input: 'second' }, undefined, 2).next();
+first.args[1] = 9;
+console.log(first.input, first.receiver, first.sourceArgName, first.read.call({}), first.args === first.readArgs(), first.readArgs()[1], _args);`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.cjs');
+    const native = spawnSync('node', [join(fixture.dir, 'input.js')], {
+      cwd: fixture.dir,
+      encoding: 'utf8',
+    });
+    expect(native.status, native.stderr).toBe(0);
+    const transformed = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        'input.js',
+        '--target=es5',
+        '--platform=node',
+        '--format=cjs',
+        '--minify-syntax',
+        '-o',
+        output,
+      ],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(transformed.status, transformed.stderr).toBe(0);
+    const mode = transformed.stderr
+      .split(/\r?\n/)
+      .find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'),
+      );
+    expect(mode, transformed.stderr).toContain('semantic_graph=reanalyzed');
+    const report = transformed.stderr
+      .split(/\r?\n/)
+      .find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('input.js'),
+      );
+    expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
+    const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+    expect(actual.stdout).toBe('1 first source-args A true 9 source-args\n');
+  });
+
   test('generator default object-super homes reserve their exact output binding', async () => {
     const cases = [
       {
@@ -476,6 +536,54 @@ console.log(f());`,
         const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
         expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, item.name).toBe(native.stdout);
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  });
+
+  test('dynamic generator defaults keep arguments and object-super homes invocation-local', async () => {
+    const cases = [
+      { name: 'direct eval', dynamicLookup: "  eval('');" },
+      { name: 'with statement', dynamicLookup: '  with ({}) {}' },
+    ];
+    for (const item of cases) {
+      const fixture = await createFixture({
+        'input.js': `const baseA = { read() { return 'A'; } };
+const baseB = { read() { return 'B'; } };
+function* generatorDefault(value = { input: arguments[1], receiver: this.input, args: arguments, readArgs: () => arguments, read() { return super.read(); } }) {
+${item.dynamicLookup}
+  value.__proto__ = this.base;
+  yield value;
+}
+const first = generatorDefault.call({ base: baseA, input: 'first' }, undefined, 1).next().value;
+generatorDefault.call({ base: baseB, input: 'second' }, undefined, 2).next();
+first.args[1] = 9;
+const firstArgs = first.readArgs();
+console.log(first.input, first.receiver, first.read.call({}), first.args === firstArgs, firstArgs[1]);`,
+      });
+      try {
+        const output = join(fixture.dir, 'out.js');
+        const native = spawnSync('node', [join(fixture.dir, 'input.js')], {
+          cwd: fixture.dir,
+          encoding: 'utf8',
+        });
+        expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+        const transformed = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(transformed.status, `${item.name}: ${transformed.stderr}`).toBe(0);
+        const report = transformed.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/clean=1(?:\s|$)/);
+
+        const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(native.stdout);
+        expect(actual.stdout, item.name).toBe('1 first A true 9\n');
       } finally {
         await fixture.cleanup();
       }
