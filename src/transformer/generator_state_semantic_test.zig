@@ -905,8 +905,10 @@ fn checkCallbackTempSymbolIdentity(source: []const u8) !void {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    _ = try transformer.transform();
+    const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
 
     var callback_temp_refs: usize = 0;
     for (transformer.generator_state_temp_refs.items) |pending| {
@@ -914,6 +916,24 @@ fn checkCallbackTempSymbolIdentity(source: []const u8) !void {
         const reference = @backingInt(pending.reference);
         const binding_id = edited.symbol_ids[binding] orelse return error.MissingCallbackTempBindingSymbol;
         try std.testing.expectEqual(@as(?u32, binding_id), edited.symbol_ids[reference]);
+        const reference_record = blk: {
+            for (edited.references) |record| {
+                if (record.node_index == pending.reference) break :blk record;
+            }
+            return error.MissingCallbackTempReferenceRecord;
+        };
+        const binding_scope = @backingInt(edited.symbols.items[binding_id].scope_id);
+        const reference_scope = @backingInt(reference_record.scope_id);
+        try std.testing.expect(reference_scope == binding_scope or
+            scopeHasAncestor(edited.scopes, reference_scope, binding_scope));
+        const expected_scope = output_scope.expectedScope(
+            transformer.ast,
+            root,
+            &output_parents,
+            &edited.scope_owner_map,
+            @backingInt(pending.reference),
+        ) orelse return error.MissingCallbackTempOutputScope;
+        try std.testing.expectEqual(expected_scope, reference_record.scope_id);
         callback_temp_refs += 1;
     }
     try std.testing.expect(callback_temp_refs > 0);
@@ -928,6 +948,18 @@ test "#6004 callback temp allocator handoff preserves producer bindings across h
         "async function* build(proto, key) { const object = { __proto__: proto, [await Promise.resolve(key)]: 1, read() { return super.value; } }; yield object; }",
         "function* build(proto, values) { let index = 0; while (index < values.length) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield values[index] }; yield object; index++; } }",
         "function* build(proto) { const object = { __proto__: proto, nested: { value: yield 1 }, read() { return super.value; } }; yield object; }",
+        "function* build(proto, values) { for (const value of values) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield value }; yield object; } }",
+        "function* build(proto, values) { for (const { value } of values) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield value }; yield object; } }",
+        "function* build(proto, values) { for (const key in values) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield values[key] }; yield object; } }",
+        "function* build(proto, values) { for (let index = 0; index < values.length; index++) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield values[index] }; yield object; } }",
+        "function* build(proto, values, keys) { for (const value of values) { for (const key of keys) { const object = { __proto__: proto, [key]: yield value, read() { return super.value; } }; yield object; } } }",
+        "async function* build(proto, values) { for (const value of values) { const object = { __proto__: proto, read() { return super.value; }, awaited: await Promise.resolve(value) }; yield object; } }",
+        "function* build(proto, values) { for (const value of values) { const object = { __proto__: proto, nested: { value: yield value }, read() { return super.value; } }; yield object; } }",
+        "function* build(proto, values) { outer: for (const value of values) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield value }; if (value) continue outer; yield object; } }",
+        "function* build(proto, values) { for (const value of values) { if (value !== 0) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield value }; yield object; } } }",
+        "function* build(proto, values) { for (const value of values) { try { const object = { __proto__: proto, read() { return super.value; }, yielded: yield value }; yield object; } catch (error) { yield error; } } }",
+        "function* build(proto, entries) { for (const [key, value] of entries) { const object = { __proto__: proto, [key]: value, read() { return super.value; }, yielded: yield value }; yield object; } }",
+        "async function* build(proto, values) { for await (const value of values) { const object = { __proto__: proto, read() { return super.value; }, awaited: await Promise.resolve(value) }; yield object; } }",
         "function* build(proto) { const first = { __proto__: proto, read() { return super.first; }, yielded: yield 1 }; const second = { __proto__: proto, read() { return super.second; }, yielded: yield 2 }; return [first, second]; }",
         "function* outer(proto) { const first = { __proto__: proto, read() { return super.outer; }, yielded: yield 1 }; function* inner() { const nested = { __proto__: proto, read() { return super.inner; }, yielded: yield 2 }; yield nested; } yield inner(); yield first; }",
         "class Base {} class Derived extends Base { *read(key) { yield super[key]++; } }",
