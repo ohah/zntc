@@ -504,6 +504,7 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     });
     const owner_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), owner);
     transformer.current_scope = owner_scope;
+    transformer.generator_state_machine_scope = owner_scope;
     transformer.state_machine_depth = 1;
     defer transformer.state_machine_depth = 0;
 
@@ -672,23 +673,34 @@ test "#4819 callback temp reference binds through its exact producer node" {
     }
     const tracked = transformer.generator_state_temp_refs.items[0];
     const binding_name = transformer.ast.getNode(tracked.binding).data.string_ref;
+    const chain_key = @import("transformer.zig").PendingTempRefKey.fromSpan(binding_name, transformer.generator_state_machine_scope);
     const chain_index = transformer.pending_temp_refs.items.len;
     try transformer.pending_temp_refs.append(allocator, .{
         .name_start = binding_name.start,
+        .name_end = binding_name.end,
+        .producer_scope = chain_key.producer_scope,
         .node = tracked.reference,
         .scope = tracked.scope,
         .flags = tracked.flags,
     });
-    try transformer.pending_temp_ref_chains.put(allocator, binding_name.start, .{
+    try transformer.pending_temp_ref_chains.put(allocator, chain_key, .{
         .first = chain_index,
         .last = chain_index,
     });
     try std.testing.expect(semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
 
-    const chain = transformer.pending_temp_ref_chains.getPtr(binding_name.start).?;
+    const chain = transformer.pending_temp_ref_chains.getPtr(chain_key).?;
     transformer.pending_temp_refs.items[chain_index].name_start += 1;
     try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
     transformer.pending_temp_refs.items[chain_index].name_start = binding_name.start;
+
+    transformer.pending_temp_refs.items[chain_index].name_end += 1;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.pending_temp_refs.items[chain_index].name_end = binding_name.end;
+
+    transformer.pending_temp_refs.items[chain_index].producer_scope = owner_scope;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.pending_temp_refs.items[chain_index].producer_scope = chain_key.producer_scope;
 
     chain.last = transformer.pending_temp_refs.items.len;
     try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
@@ -1084,4 +1096,237 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
         live_owners += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), live_owners);
+}
+
+fn checkDeferredCallbackTempSpanCollision(anchor: []const u8, producer_prefix_len: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const source_scope = transformer.programScope();
+    transformer.current_scope = source_scope;
+    transformer.generator_state_machine_scope = source_scope;
+    transformer.state_machine_depth = 1;
+    defer transformer.state_machine_depth = 0;
+
+    const anchor_span = try transformer.ast.addString(anchor);
+    const raw_start = anchor_span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
+    const producer_span = @import("../lexer/token.zig").Span{
+        .start = anchor_span.start,
+        .end = (raw_start + @as(u32, @intCast(producer_prefix_len))) | ast_mod.Ast.STRING_TABLE_BIT,
+    };
+    try std.testing.expect(producer_prefix_len < anchor.len);
+    const producer_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, producer_span);
+    const producer_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, producer_span);
+    const decoy_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, anchor_span);
+    try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(producer_ref));
+
+    const producer_stmt = try es_helpers.makeExprStmt(&transformer, producer_ref, .EMPTY);
+    const decoy_stmt = try es_helpers.makeExprStmt(&transformer, decoy_ref, .EMPTY);
+    const body_list = try transformer.ast.addNodeList(&.{ producer_stmt, decoy_stmt });
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = body_list },
+    });
+    const none = @backingInt(ast_mod.NodeIndex.none);
+    const state_name = try transformer.ast.addString("_state");
+    const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
+    const params_list = try transformer.ast.addNodeList(&.{state_parameter});
+    const params = try transformer.ast.addFormalParameters(params_list, .EMPTY);
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
+    const callback = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = callback_extra },
+    });
+
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = producer_binding,
+        .name_span = producer_span,
+        .callback_local = true,
+    });
+    try transformer.trackHoistedTempRefInScope(producer_span, producer_ref, source_scope, .{ .read = true });
+    try transformer.trackHoistedTempRefInScope(anchor_span, decoy_ref, source_scope, .{ .read = true });
+    try transformer.bindGeneratedState(source_scope, source_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const producer_symbol = transformer.getSymbolIdAt(producer_binding) orelse return error.MissingDeferredCallbackTempSymbol;
+    try std.testing.expectEqual(@as(?u32, producer_symbol), transformer.getSymbolIdAt(producer_ref));
+    try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(decoy_ref));
+    try std.testing.expect((try editor.referenceForNode(producer_ref)) != null);
+    try std.testing.expect((try editor.referenceForNode(decoy_ref)) == null);
+    const producer_key = @import("transformer.zig").PendingTempRefKey.fromSpan(producer_span, source_scope);
+    const decoy_key = @import("transformer.zig").PendingTempRefKey.fromSpan(anchor_span, source_scope);
+    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(producer_key));
+    try std.testing.expect(transformer.pending_temp_ref_chains.contains(decoy_key));
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
+    const decoy_chain = transformer.pending_temp_ref_chains.get(decoy_key).?;
+    try std.testing.expectEqual(decoy_ref, transformer.pending_temp_refs.items[decoy_chain.first].node);
+    try std.testing.expectEqual(anchor_span.end, transformer.pending_temp_refs.items[decoy_chain.first].name_end);
+}
+
+test "#4819 deferred generator callback temp refs do not alias by span start" {
+    const hostile = [_]struct { anchor: []const u8, prefix_len: usize }{
+        .{ .anchor = "_amberProducer", .prefix_len = 6 },
+        .{ .anchor = "_brightProducer", .prefix_len = 7 },
+        .{ .anchor = "_cobaltProducer", .prefix_len = 7 },
+        .{ .anchor = "_deltaProducer", .prefix_len = 6 },
+        .{ .anchor = "_emberProducer", .prefix_len = 6 },
+        .{ .anchor = "_forestProducer", .prefix_len = 7 },
+        .{ .anchor = "_gentleProducer", .prefix_len = 7 },
+        .{ .anchor = "_harborProducer", .prefix_len = 7 },
+        .{ .anchor = "_indigoProducer", .prefix_len = 7 },
+        .{ .anchor = "_jasmineProducer", .prefix_len = 8 },
+    };
+    for (hostile) |case| try checkDeferredCallbackTempSpanCollision(case.anchor, case.prefix_len);
+}
+
+test "#4819 deferred callback temp chains partition identical spans by nested producer scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const add_owner = struct {
+        fn run(transformer_ptr: *Transformer, parent: @import("../semantic/scope.zig").ScopeId) !@import("../semantic/scope.zig").ScopeId {
+            const none = @backingInt(ast_mod.NodeIndex.none);
+            const empty_list = try transformer_ptr.ast.addNodeList(&.{});
+            const params = try transformer_ptr.ast.addFormalParameters(empty_list, .EMPTY);
+            const body = try transformer_ptr.ast.addNode(.{
+                .tag = .block_statement,
+                .span = .EMPTY,
+                .data = .{ .list = empty_list },
+            });
+            const extra = try transformer_ptr.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
+            const function = try transformer_ptr.ast.addNode(.{
+                .tag = .function_expression,
+                .span = .EMPTY,
+                .data = .{ .extra = extra },
+            });
+            return transformer_ptr.addGeneratedFunctionScope(parent, function);
+        }
+    }.run;
+    const outer_scope = try add_owner(&transformer, transformer.programScope());
+    const nested_scope = try add_owner(&transformer, outer_scope);
+    try std.testing.expectEqual(outer_scope, transformer.semantic_editor.?.scopes.items[nested_scope.toIndex()].parent);
+
+    const name_span = try transformer.ast.addString("_sameNestedTemp");
+    const outer_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
+    const nested_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
+    const outer_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const nested_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+
+    const Callback = struct { callback: ast_mod.NodeIndex, parameter: ast_mod.NodeIndex };
+    const make_callback = struct {
+        fn run(transformer_ptr: *Transformer, reference: ast_mod.NodeIndex) !Callback {
+            const statement = try es_helpers.makeExprStmt(transformer_ptr, reference, .EMPTY);
+            const body_list = try transformer_ptr.ast.addNodeList(&.{statement});
+            const body = try transformer_ptr.ast.addNode(.{
+                .tag = .block_statement,
+                .span = .EMPTY,
+                .data = .{ .list = body_list },
+            });
+            const state_name = try transformer_ptr.ast.addString("_state");
+            const parameter = try es_helpers.makeSyntheticBinding(transformer_ptr, state_name);
+            const params_list = try transformer_ptr.ast.addNodeList(&.{parameter});
+            const params = try transformer_ptr.ast.addFormalParameters(params_list, .EMPTY);
+            const none = @backingInt(ast_mod.NodeIndex.none);
+            const extra = try transformer_ptr.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
+            const callback = try transformer_ptr.ast.addNode(.{
+                .tag = .function_expression,
+                .span = .EMPTY,
+                .data = .{ .extra = extra },
+            });
+            return .{ .callback = callback, .parameter = parameter };
+        }
+    }.run;
+    const outer_callback = try make_callback(&transformer, outer_ref);
+    const nested_callback = try make_callback(&transformer, nested_ref);
+
+    transformer.current_scope = outer_scope;
+    transformer.generator_state_machine_scope = outer_scope;
+    transformer.state_machine_depth = 1;
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = outer_binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+    try transformer.trackHoistedTempRefInScope(name_span, outer_ref, outer_scope, .{ .read = true });
+
+    transformer.current_scope = nested_scope;
+    transformer.generator_state_machine_scope = nested_scope;
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = nested_binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+    try transformer.trackHoistedTempRefInScope(name_span, nested_ref, nested_scope, .{ .read = true });
+    transformer.state_machine_depth = 0;
+
+    const outer_key = @import("transformer.zig").PendingTempRefKey.fromSpan(name_span, outer_scope);
+    const nested_key = @import("transformer.zig").PendingTempRefKey.fromSpan(name_span, nested_scope);
+    try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
+    const outer_chain = transformer.pending_temp_ref_chains.get(outer_key).?;
+    const nested_chain = transformer.pending_temp_ref_chains.get(nested_key).?;
+    try std.testing.expectEqual(outer_ref, transformer.pending_temp_refs.items[outer_chain.first].node);
+    try std.testing.expectEqual(nested_ref, transformer.pending_temp_refs.items[nested_chain.first].node);
+    try std.testing.expectEqual(outer_scope, transformer.pending_temp_refs.items[outer_chain.first].producer_scope);
+    try std.testing.expectEqual(nested_scope, transformer.pending_temp_refs.items[nested_chain.first].producer_scope);
+
+    transformer.generator_state_machine_scope = .none;
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = outer_binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+    try transformer.bindGeneratedState(outer_scope, outer_scope, outer_callback.callback, outer_callback.parameter, 0, &.{}, &.{}, .EMPTY);
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(nested_ref));
+
+    transformer.generator_state_bindings.clearRetainingCapacity();
+    const nested_temp: @import("transformer/lists.zig").HoistedStateTemp = .{
+        .binding = nested_binding,
+        .name_span = name_span,
+    };
+    try transformer.bindGeneratedState(nested_scope, nested_scope, nested_callback.callback, nested_callback.parameter, 0, &.{}, &.{nested_temp}, .EMPTY);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    const outer_id = transformer.getSymbolIdAt(outer_binding) orelse return error.MissingNestedOuterTempSymbol;
+    const nested_id = transformer.getSymbolIdAt(nested_binding) orelse return error.MissingNestedInnerTempSymbol;
+    try std.testing.expect(outer_id != nested_id);
+    try std.testing.expectEqual(@as(?u32, outer_id), transformer.getSymbolIdAt(outer_ref));
+    try std.testing.expectEqual(@as(?u32, nested_id), transformer.getSymbolIdAt(nested_ref));
 }

@@ -73,7 +73,7 @@ fn checkParameterAliasIdentity(source: []const u8) !void {
     try std.testing.expect(alias.synthetic_kind == .standalone_temp_binding);
 
     const name_span = alias.name;
-    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(name_span.start));
+    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(name_span)));
 
     var read_count: usize = 0;
     var write_count: usize = 0;

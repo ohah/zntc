@@ -121,6 +121,23 @@ pub const GeneratedTempReference = struct {
     flags: @import("../semantic/symbol.zig").ReferenceFlags,
 };
 
+/// Temporary references are deferred until their generated binding is
+/// available. Keep the exact full spelling span and owning state-machine
+/// scope in the key so nested callbacks cannot consume one another's refs.
+pub const PendingTempRefKey = struct {
+    name_start: u32,
+    name_end: u32,
+    producer_scope: ScopeId = .none,
+
+    pub fn fromSpan(name_span: Span, producer_scope: ScopeId) PendingTempRefKey {
+        return .{
+            .name_start = name_span.start,
+            .name_end = name_span.end,
+            .producer_scope = producer_scope,
+        };
+    }
+};
+
 pub const ParameterBodyVarCopy = struct {
     function_scope: ScopeId,
     body_var_symbol_id: u32,
@@ -319,6 +336,8 @@ pub const Transformer = struct {
     /// 선언보다 먼저 만들어진 nullish temp 참조. 생성 Span으로 hoist와 연결한다.
     pending_temp_refs: std.ArrayListUnmanaged(struct {
         name_start: u32,
+        name_end: u32,
+        producer_scope: ScopeId = .none,
         node: NodeIndex,
         scope: ScopeId,
         flags: ReferenceFlags,
@@ -330,7 +349,7 @@ pub const Transformer = struct {
         node: NodeIndex,
         symbol_id: u32,
     }) = .empty,
-    pending_temp_ref_chains: std.AutoHashMapUnmanaged(u32, struct { first: usize, last: usize }) = .empty,
+    pending_temp_ref_chains: std.AutoHashMapUnmanaged(PendingTempRefKey, struct { first: usize, last: usize }) = .empty,
     /// Exact generated lexical-capture uses, paired with the function frame
     /// that will emit their `_this` or `_arguments` declaration.
     lexical_capture_uses: std.ArrayListUnmanaged(struct {
@@ -767,6 +786,11 @@ pub const Transformer = struct {
     pub const RefreshSignature = plugin_state.RefreshSignature;
     pub const ObjectSuperHome = struct { method_extra: u32, home: Span };
     pub const ObjectSuperHomeReference = struct { home: Span, node: NodeIndex };
+
+    pub fn currentPendingTempRefKey(self: *Transformer, name_span: Span) PendingTempRefKey {
+        const producer_scope = self.generator_state_machine_scope;
+        return PendingTempRefKey.fromSpan(name_span, producer_scope);
+    }
 
     /// super 참조가 Parent.prototype.* / Parent.* 호출 형태로 lowering 되어야 하는지 판정.
     /// - `unsupported.class`: ES2015 미만 타겟이라 class 자체가 lowering 됨
