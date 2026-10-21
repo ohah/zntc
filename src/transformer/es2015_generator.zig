@@ -532,14 +532,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// 사용자 바인딩(`origin`)에서 온 이름을 wrapper 최상단 `var` 목록에 등록한다.
         /// producer record가 원래 binding node를 직접 보유해 hoist 시 같은 SymbolId를 재사용한다.
-        fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!void {
+        /// 반환한 index는 호출자가 producer record를 다시 검색하지 않도록 전달한다.
+        fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!usize {
+            const producer_index = self.generator_temp_var_spans.items.len;
             try appendGeneratorTempSpan(self, span);
             if (self.getSymbolIdAt(origin) != null) {
-                const producer = &self.generator_temp_producer_identities.items[
-                    self.generator_temp_producer_identities.items.len - 1
-                ];
+                const producer = &self.generator_temp_producer_identities.items[producer_index];
                 producer.source_binding = origin;
             }
+            return producer_index;
         }
 
         /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
@@ -754,7 +755,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .variable_declaration => {
                     // 모든 var는 호이스팅됨. init를 assignment로 변환.
-                    try collectVarDeclWithYield(self, stmt, ops, next_label);
+                    _ = try collectVarDeclWithYield(self, stmt, ops, next_label, null);
                 },
                 .block_statement, .function_body => {
                     try collectBodyOperations(self, stmt_idx, ops, next_label);
@@ -881,7 +882,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = node_idx } });
                 return;
             }
-            try collectVarDeclWithYield(self, node, ops, next_label);
+            _ = try collectVarDeclWithYield(self, node, ops, next_label, null);
             // 등록은 collectVarDeclWithYield **뒤** — 그 안에서 다른 상태 기계가 만들어지면
             // 먼저 넣은 이름이 그쪽 리스트로 빨려 들어간다(#4716 에서 밟음).
             const e = node.data.extra;
@@ -894,7 +895,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const binding_idx = self.readNodeIdx(decl.data.extra, 0);
                 const binding = self.ast.getNode(binding_idx);
                 if (binding.tag == .binding_identifier) {
-                    try registerGeneratorVar(self, binding.data.string_ref, binding_idx);
+                    _ = try registerGeneratorVar(self, binding.data.string_ref, binding_idx);
                 }
             }
         }
@@ -1063,24 +1064,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // ⚠️ 등록은 **collectVarDeclWithYield 뒤**에 해야 한다. 그 안에서 `_loopN` 의
             // generator 본문이 낮아지며 자기 상태 기계를 만드는데, 먼저 넣어 두면 그
             // 안쪽 리스트로 들어가 `var _loop;` 이 엉뚱한 함수에 선언된다.
-            try collectVarDeclWithYield(self, loop_fn_node, ops, next_label);
+            const loop_producer_index = try collectVarDeclWithYield(
+                self,
+                loop_fn_node,
+                ops,
+                next_label,
+                result.loop_binding,
+            );
             if (self.semantic_edit_enabled) {
                 const loop_symbol_id = result.loop_symbol_id orelse
                     std.debug.panic("extracted generator loop lost its producer SymbolId", .{});
                 const loop_owner_scope = result.loop_owner_scope;
                 if (loop_owner_scope.isNone() or loop_owner_scope != self.generator_state_machine_scope)
                     std.debug.panic("extracted generator loop binding owner changed before state-machine hoisting", .{});
-                var loop_producer_index: ?usize = null;
-                for (self.generator_temp_producer_identities.items, 0..) |identity, identity_index| {
-                    if (identity.source_binding != result.loop_binding) continue;
-                    const producer_span = self.generator_temp_var_spans.items[identity_index];
-                    if (producer_span.start != loop_name_span.start or producer_span.end != loop_name_span.end) continue;
-                    loop_producer_index = identity_index;
-                    break;
-                }
                 const index = loop_producer_index orelse
                     std.debug.panic("extracted generator loop binding lost its producer handle", .{});
+                if (index >= self.generator_temp_producer_identities.items.len or
+                    index >= self.generator_temp_var_spans.items.len)
+                    std.debug.panic("extracted generator loop producer handle is out of range", .{});
                 const producer = &self.generator_temp_producer_identities.items[index];
+                if (producer.source_binding != result.loop_binding)
+                    std.debug.panic("extracted generator loop producer handle changed its binding", .{});
+                const producer_span = self.generator_temp_var_spans.items[index];
+                if (producer_span.start != loop_name_span.start or producer_span.end != loop_name_span.end)
+                    std.debug.panic("extracted generator loop producer handle changed its name span", .{});
                 if (self.getSymbolIdAt(result.loop_binding) != @as(?u32, @backingInt(loop_symbol_id)))
                     std.debug.panic("extracted generator loop AST handoff disagrees with its producer identity", .{});
                 if (producer.symbol_id) |existing_id| {
@@ -1234,7 +1241,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const init_node = self.ast.getNode(init_idx);
                 if (init_node.tag == .variable_declaration) {
                     // var i = 0 → i = 0 (var는 이미 호이스팅됨)
-                    try collectVarDeclWithYield(self, init_node, ops, next_label);
+                    _ = try collectVarDeclWithYield(self, init_node, ops, next_label, null);
                 } else {
                     const new_init = try self.visitNode(init_idx);
                     if (!new_init.isNone()) {
@@ -1794,7 +1801,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const decl = try es_helpers.makeVarDeclaration(self, &.{
                         try es_helpers.makeDeclarator(self, catch_param, try makeGeneratorTempRefForProducer(self, producer, tmp, .{ .read = true }), stmt.span),
                     }, .let, stmt.span);
-                    try collectVarDeclWithYield(self, self.ast.getNode(decl), ops, next_label);
+                    _ = try collectVarDeclWithYield(self, self.ast.getNode(decl), ops, next_label, null);
                 } else if (!catch_param.isNone()) {
                     const visited_param = try self.visitNode(catch_param);
                     // `catch (e) {…}` → `case N: e = _state.sent();` 로 접을 때, catch 의
@@ -2083,10 +2090,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
         /// var x = yield 1 → yield 1 (op) + x = _state.sent() (op)
         /// var x = expr (no yield) → x = expr (statement op)
-        fn collectVarDeclWithYield(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+        /// `capture_binding`이 있으면 그 exact binding의 등록 슬롯을 직접 반환한다.
+        fn collectVarDeclWithYield(
+            self: *Transformer,
+            stmt: Node,
+            ops: *std.ArrayList(Operation),
+            next_label: *u32,
+            capture_binding: ?NodeIndex,
+        ) Transformer.Error!?usize {
             const e = stmt.data.extra;
             const list_start = self.readU32(e, 1);
             const list_len = self.readU32(e, 2);
+            var captured_producer_index: ?usize = null;
 
             // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
             var i_loop: u32 = 0;
@@ -2139,9 +2154,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const bnode = self.ast.getNode(binding);
                 if (bnode.tag == .binding_identifier) {
                     const span_to_declare = if (self.renamedNameOf(binding)) |renamed| try self.ast.addString(renamed) else bnode.data.string_ref;
-                    try registerGeneratorVar(self, span_to_declare, binding);
+                    const producer_index = try registerGeneratorVar(self, span_to_declare, binding);
+                    if (capture_binding) |expected_binding| {
+                        if (binding == expected_binding) {
+                            if (captured_producer_index != null)
+                                std.debug.panic("generator binding producer handle was returned more than once", .{});
+                            captured_producer_index = producer_index;
+                        }
+                    }
                 }
             }
+            return captured_producer_index;
         }
 
         /// 선언 바인딩을 **대입 좌변**으로 쓸 수 있는 노드로 바꾼다. (#4703 · #4716)
@@ -2907,7 +2930,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const bi = @backingInt(binding);
                 const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
                 const sid = sym orelse {
-                    try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
+                    _ = try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
                     continue;
                 };
                 // 블록 스코프가 네이티브인 타깃(chrome49)은 소스 바인딩을 제자리에 둔다. 다만 분석 후
@@ -2916,7 +2939,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (!stateMachineRenamesBlockScope(self)) {
                     const name_span = self.ast.getNode(binding).data.string_ref;
                     if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 and !isRegisteredGeneratorBinding(self, binding))
-                        try registerGeneratorVar(self, name_span, binding);
+                        _ = try registerGeneratorVar(self, name_span, binding);
                     continue;
                 }
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -2927,7 +2950,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // The standalone exact-ID naming pass owns this symbol's
                     // final spelling. A second name$N choice here conflicts
                     // with that pass when the generated loop temp is hoisted.
-                    try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
+                    _ = try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
                     continue;
                 }
                 const new_name = self.tableRenameOf(binding) orelse blk: {
@@ -2939,7 +2962,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.block_rename_map.?.put(self.allocator, sid, n);
                     break :blk n;
                 };
-                try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                _ = try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
             }
         }
 
@@ -3365,7 +3388,7 @@ fn checkGeneratorAssignmentBindingIdentity(source: []const u8) !void {
     try std.testing.expect(raw_symbol_id < editor.symbols.items.len);
     try std.testing.expectEqual(transformer.generator_state_machine_scope, editor.symbols.items[raw_symbol_id].scope_id);
 
-    try ES2015Generator(Transformer).registerGeneratorVar(&transformer, name_span, binding);
+    _ = try ES2015Generator(Transformer).registerGeneratorVar(&transformer, name_span, binding);
     const producer_index = transformer.generator_temp_producer_identities.items.len - 1;
     const producer = transformer.generator_temp_producer_identities.items[producer_index];
     try std.testing.expectEqual(binding, producer.source_binding);
@@ -3503,6 +3526,116 @@ test "#4819 extracted generator loop bindings carry producer IDs through hoistin
     for (hostile_sources) |source| try checkGeneratorTempProducerFixture(source, true);
 }
 
+fn checkGeneratorVarProducerHandleSelection() !void {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function* g(){ var first = 1, middle = 2, last = 3; var same = 4, other = 5, same = 6; yield 0; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var generator_scope: ?ScopeId = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const flags = transformer.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+        if (flags & ast_mod.FunctionFlags.is_generator == 0) continue;
+        const owner_raw = analyzer.scope_owner_map.get(@intCast(raw)) orelse continue;
+        generator_scope = @fromBackingInt(@intCast(owner_raw));
+        break;
+    }
+    const owner_scope = generator_scope orelse return error.MissingGeneratorProducerHandleOwner;
+    transformer.current_scope = owner_scope;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(owner_scope);
+    transformer.state_machine_depth = 1;
+
+    var ops: std.ArrayList(Operation) = .empty;
+    defer ops.deinit(allocator);
+    var next_label: u32 = 1;
+    var declarations_seen: usize = 0;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .variable_declaration) continue;
+        const list_start = transformer.readU32(node.data.extra, 1);
+        const list_len = transformer.readU32(node.data.extra, 2);
+        if (list_len != 3) continue;
+        var bindings: [3]NodeIndex = undefined;
+        for (0..3) |index| {
+            const decl = transformer.ast.getNode(@fromBackingInt(@intCast(transformer.ast.extra_data.items[list_start + index])));
+            if (decl.tag != .variable_declarator) return error.UnexpectedGeneratorProducerDeclarator;
+            bindings[index] = transformer.readNodeIdx(decl.data.extra, 0);
+        }
+        const first_name = transformer.ast.getText(transformer.ast.getNode(bindings[0]).span);
+        const target_binding: NodeIndex = if (std.mem.eql(u8, first_name, "first")) blk: {
+            if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(bindings[1]).span), "middle"))
+                return error.MissingMiddleGeneratorProducerBinding;
+            break :blk bindings[1];
+        } else if (std.mem.eql(u8, first_name, "same")) blk: {
+            if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(bindings[2]).span), "same"))
+                return error.MissingRepeatedGeneratorProducerBinding;
+            break :blk bindings[2];
+        } else continue;
+
+        const expected_index: usize = if (declarations_seen == 0) 1 else 5;
+        const producer_index = (try ES2015Generator(Transformer).collectVarDeclWithYield(
+            &transformer,
+            node,
+            &ops,
+            &next_label,
+            target_binding,
+        )) orelse return error.MissingGeneratorProducerHandle;
+        try std.testing.expectEqual(expected_index, producer_index);
+        try std.testing.expectEqual(target_binding, transformer.generator_temp_producer_identities.items[producer_index].source_binding);
+        try std.testing.expectEqual(transformer.generator_temp_var_spans.items.len, transformer.generator_temp_producer_identities.items.len);
+        declarations_seen += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), declarations_seen);
+    const repeated_id = transformer.getSymbolIdAt(transformer.generator_temp_producer_identities.items[3].source_binding) orelse
+        return error.MissingFirstRepeatedGeneratorSymbol;
+    try std.testing.expectEqual(
+        @as(?u32, repeated_id),
+        transformer.getSymbolIdAt(transformer.generator_temp_producer_identities.items[5].source_binding),
+    );
+}
+
+test "generator var producer handle returns the exact binding record" {
+    try checkGeneratorVarProducerHandleSelection();
+}
+
+test "#4819 extracted generator loop producer handles survive hostile nesting" {
+    const hostile_sources = [_][]const u8{
+        "function* g(){ for(let index=0;index<3;index++){ var before=index, after=index+1; yield (()=>index)(); } }",
+        "function* g(){ outer: for(let i=0;i<2;i++){ var before=i; for(let j=0;j<2;j++){ var after=j; yield (()=>i+j)(); if(j) continue outer; } } }",
+        "function* g(items){ for(let item of items){ var first=item, second=item+1; yield (()=>item)(); } }",
+        "function* g(items){ for(let key in items){ var first=key, second=key+1; yield (()=>key)(); } }",
+        "function* g(){ for(let i=0;i<3;i++){ var before=i, after=i+1; yield (()=>i)(); if(i===2) break; } }",
+        "function* g(){ for(let i=0;i<3;i++){ var before=i, after=i+1; yield (()=>i)(); if(i===1) continue; } }",
+        "function* g(){ for(let i=0;i<3;i++){ var first=i, second=i+1; try { yield (()=>i)(); } finally { if(i===2) break; } } }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ var first=i, second=i+1; switch(i){ case 1: continue outer; default: yield (()=>i)(); } } }",
+        "function* g(){ for(let i=0;i<2;i++){ var before=i, after=i+1; function* inner(){ yield i; } yield inner; } }",
+        "async function* g(items){ for await(let item of items){ var before=item, after=item; yield (()=>item)(); if(item) break; } }",
+    };
+    for (hostile_sources) |source| try checkGeneratorTempProducerFixture(source, true);
+}
+
 test "#4819 generator state temp producers attach their SymbolIds immediately" {
     const Transformer = @import("transformer.zig").Transformer;
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -3600,7 +3733,7 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     const assignment_ref = try ES2015Generator(Transformer).bindingToAssignTarget(&transformer, generated_binding);
     const assignment_id = transformer.getSymbolIdAt(generated_binding) orelse return error.MissingAssignmentTempSymbol;
     try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(assignment_ref));
-    try ES2015Generator(Transformer).registerGeneratorVar(&transformer, generated_binding_span, generated_binding);
+    _ = try ES2015Generator(Transformer).registerGeneratorVar(&transformer, generated_binding_span, generated_binding);
     const origin_identity = transformer.generator_temp_producer_identities.items[
         transformer.generator_temp_producer_identities.items.len - 1
     ];
@@ -3638,7 +3771,7 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     const source_symbol_id = transformer.getSymbolIdAt(source_binding) orelse
         return error.MissingSourceGeneratorVarSymbol;
     const source_temp_span = try transformer.ast.addString("origin");
-    try ES2015Generator(Transformer).registerGeneratorVar(&transformer, source_temp_span, source_binding);
+    _ = try ES2015Generator(Transformer).registerGeneratorVar(&transformer, source_temp_span, source_binding);
     state_temps.clearRetainingCapacity();
     _ = try ES2015Generator(Transformer).buildHoistedVarDecl(
         &transformer,
