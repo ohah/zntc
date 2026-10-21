@@ -104,6 +104,9 @@ pub const GeneratorTempProducerIdentity = struct {
     symbol_id: ?u32 = null,
     owner_scope: ScopeId = .none,
     producer_owned: bool = false,
+    /// Exact source binding when a generated wrapper var preserves a binding
+    /// that existed before state-machine lowering.
+    source_binding: NodeIndex = .none,
 };
 
 /// Generated state-callback references retain their producer-selected binding
@@ -639,10 +642,6 @@ pub const Transformer = struct {
     /// Runtime helper references emitted inside those generator loops. Their
     /// lexical owner is only known after the generated function is attached.
     deferred_generator_helper_refs: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
-    /// `generator_temp_var_spans` 중 사용자 바인딩에서 온 이름의 원래 바인딩 노드(span 키).
-    /// 호이스트한 `var` 선언에 심볼을 물려주는 데 쓴다 (#4760).
-    generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
-
     /// ES2015 class private fields: "#name" → "_name" 매핑.
     /// class body 방문 중 설정되어, this.#x → _x.get(this), this.#x = v → _x.set(this, v) 변환에 사용.
     current_private_fields: []const PrivateFieldMapping = &.{},
