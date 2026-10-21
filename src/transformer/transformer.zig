@@ -1115,6 +1115,7 @@ pub const Transformer = struct {
     pub const trackSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceByIdInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceByIdInScope;
+    pub const trackPendingTempProducerReferenceInScope = @import("transformer/semantic_edit.zig").trackPendingTempProducerReferenceInScope;
     pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
     pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;
