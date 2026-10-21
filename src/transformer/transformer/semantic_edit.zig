@@ -3454,6 +3454,28 @@ pub fn trackGeneratedCallbackTempReference(
     });
 }
 
+/// Keep a callback-local producer binding attached to the exact allocator
+/// slot that created it. The hoister later retrieves this NodeIndex by slot,
+/// without reconstructing the producer from its spelling span.
+pub fn registerGeneratedCallbackTempBinding(self: *Transformer, counter_index: u32, binding: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.state_machine_depth == 0 or binding.isNone())
+        std.debug.panic("generated callback temp binding has no exact producer context", .{});
+    if (counter_index >= self.temp_var_counter or @backingInt(binding) >= self.ast.nodes.items.len)
+        std.debug.panic("generated callback temp binding has an invalid allocator slot or node", .{});
+    const name_span = self.temp_span_by_counter.get(counter_index) orelse
+        std.debug.panic("generated callback temp binding has no allocator span", .{});
+    const node = self.ast.getNode(binding);
+    if (node.tag != .binding_identifier or node.data.string_ref.start != name_span.start or
+        node.data.string_ref.end != name_span.end)
+        std.debug.panic("generated callback temp binding disagrees with its allocator slot", .{});
+    if (self.callback_temp_bindings_by_counter.get(counter_index)) |existing| {
+        if (existing != binding)
+            std.debug.panic("callback temp allocator slot has multiple producer bindings", .{});
+        return;
+    }
+    try self.callback_temp_bindings_by_counter.put(self.allocator, counter_index, binding);
+}
+
 pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
     return trackHoistedTempRefInScope(self, name_span, node, self.current_scope, flags);
 }

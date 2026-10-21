@@ -221,22 +221,10 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 /// 이 helper 는 항상 non-none `sm_body` 로 호출된다.
 pub const HoistedStateTemp = transformer_mod.GeneratedTempBinding;
 
-/// Reuse a callback temp binding that a producer gave to its references before
-/// the callback body was hoisted. The generated name span is unique per temp
-/// allocation, so this hands the exact binding node through the hoist boundary.
-fn generatedCallbackTempBinding(self: *Transformer, name_span: Span) ?NodeIndex {
-    var found: ?NodeIndex = null;
-    for (self.generator_state_temp_refs.items) |pending| {
-        const binding = pending.binding;
-        if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len) continue;
-        const node = self.ast.getNode(binding);
-        if (node.tag != .binding_identifier or node.data.string_ref.start != name_span.start or
-            node.data.string_ref.end != name_span.end) continue;
-        if (found) |prior| {
-            if (prior != binding) std.debug.panic("callback temp span has multiple producer binding nodes", .{});
-        } else found = binding;
-    }
-    return found;
+/// Reuse the callback binding registered by its producer for this exact temp
+/// allocator slot before the callback body was hoisted.
+fn generatedCallbackTempBinding(self: *Transformer, counter_index: u32) ?NodeIndex {
+    return self.callback_temp_bindings_by_counter.get(counter_index);
 }
 
 pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
@@ -389,7 +377,7 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         try self.generated_temp_spans.append(self.allocator, name_span);
         const binding = if (state_bindings != null)
-            (generatedCallbackTempBinding(self, name_span) orelse try es_helpers.makeSyntheticBinding(self, name_span))
+            (generatedCallbackTempBinding(self, i) orelse try es_helpers.makeSyntheticBinding(self, name_span))
         else
             try es_helpers.makeSyntheticBinding(self, name_span);
         const producer_symbol_id: ?SymbolId = if (self.temp_symbol_ids_by_counter.get(i)) |raw_id|

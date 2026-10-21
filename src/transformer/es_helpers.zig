@@ -524,6 +524,7 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         // 카운터는 함수마다 되감긴다. 이전 함수의 같은 슬롯을 남기지 않는다.
         _ = self.temp_span_by_counter.remove(idx);
         _ = self.temp_symbol_ids_by_counter.remove(idx);
+        _ = self.callback_temp_bindings_by_counter.remove(idx);
         const name = tempVarName(idx, &buf);
         if (collidesWithPrivateField(self, name)) continue;
         // #4220: 사용자 식별자(_a 등)와 충돌하면 skip — 충돌 시 temp 대입이
@@ -2327,6 +2328,8 @@ pub const TempCapture = struct {
     paren_assign: NodeIndex,
     symbol_id: ?symbol_mod.SymbolId = null,
     reference_scope: ScopeId = .none,
+    /// Exact allocator slot that produced this capture, when it has one.
+    temp_counter_index: ?u32 = null,
 };
 
 /// Reserve a generated temp identity before its first reference is emitted.
@@ -2426,6 +2429,7 @@ pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !T
         .paren_assign = assign,
         .symbol_id = if (identity) |exact| exact.symbol_id else null,
         .reference_scope = if (identity) |exact| exact.reference_scope else .none,
+        .temp_counter_index = counter_index,
     };
 }
 

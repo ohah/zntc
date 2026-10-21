@@ -1336,3 +1336,53 @@ test "#4819 deferred callback temp chains partition identical spans by nested pr
     try std.testing.expectEqual(@as(?u32, outer_id), transformer.getSymbolIdAt(outer_ref));
     try std.testing.expectEqual(@as(?u32, nested_id), transformer.getSymbolIdAt(nested_ref));
 }
+
+test "#6004 callback temp hoist carries its producer binding by allocator slot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    transformer.semantic_edit_enabled = true;
+    transformer.state_machine_depth = 1;
+
+    const empty_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = try transformer.ast.addNodeList(&.{}) },
+    });
+    const first_span = try es_helpers.makeTempVarSpan(&transformer);
+    const first_slot = transformer.temp_var_counter - 1;
+    const first_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, first_span);
+    try transformer.registerGeneratedCallbackTempBinding(first_slot, first_binding);
+
+    var first_hoisted: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    defer first_hoisted.deinit(allocator);
+    _ = try transformer.hoistTempVarsRecording(empty_body, 0, .EMPTY, &first_hoisted);
+    try std.testing.expectEqual(@as(usize, 1), first_hoisted.items.len);
+    try std.testing.expectEqual(first_binding, first_hoisted.items[0].binding);
+
+    // The counter may be restored and reused by another generated function.
+    // Its new producer handle must replace the prior slot entry directly.
+    transformer.temp_var_counter = 0;
+    const second_span = try es_helpers.makeTempVarSpan(&transformer);
+    const second_slot = transformer.temp_var_counter - 1;
+    const second_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, second_span);
+    try transformer.registerGeneratedCallbackTempBinding(second_slot, second_binding);
+
+    const second_empty_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = try transformer.ast.addNodeList(&.{}) },
+    });
+    var second_hoisted: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    defer second_hoisted.deinit(allocator);
+    _ = try transformer.hoistTempVarsRecording(second_empty_body, 0, .EMPTY, &second_hoisted);
+    try std.testing.expectEqual(@as(usize, 1), second_hoisted.items.len);
+    try std.testing.expectEqual(second_binding, second_hoisted.items[0].binding);
+    try std.testing.expect(second_binding != first_binding);
+}

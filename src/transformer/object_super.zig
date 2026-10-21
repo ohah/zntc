@@ -124,6 +124,7 @@ pub const Home = struct {
     span: Span,
     wrap: Wrap,
     late_output_name: bool = false,
+    temp_counter_index: ?u32 = null,
 
     pub const Wrap = enum {
         /// `_a = obj` — 함수 단위 `var` 임시 변수.
@@ -213,7 +214,8 @@ fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Trans
             return .{ .span = try self.ast.addString(name), .wrap = wrap, .late_output_name = late_output_name };
         }
     }
-    return .{ .span = try es_helpers.makeTempVarSpan(self), .wrap = .assign };
+    const span = try es_helpers.makeTempVarSpan(self);
+    return .{ .span = span, .wrap = .assign, .temp_counter_index = self.temp_var_counter - 1 };
 }
 
 /// 객체 리터럴 방문 전에 호출. home 이 필요한 메서드가 있으면 임시 변수를 만들어
@@ -285,6 +287,11 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                 try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span)
             else
                 .none;
+            if (!callback_binding.isNone())
+                try self.registerGeneratedCallbackTempBinding(
+                    home.temp_counter_index orelse std.debug.panic("deferred object home has no allocator slot", .{}),
+                    callback_binding,
+                );
             const symbol_id: ?SymbolId = if (parameter_output_scope != null)
                 (try self.reserveSyntheticTempSymbolInScope(home.span, span, output_scope)) orelse
                     std.debug.panic("lowered parameter object home temp has no SymbolId", .{})

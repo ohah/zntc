@@ -856,6 +856,65 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
     try std.testing.expectEqual(symbol.write_count, write_count);
 }
 
+fn checkCallbackTempSymbolIdentity(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var callback_temp_refs: usize = 0;
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        const binding = @backingInt(pending.binding);
+        const reference = @backingInt(pending.reference);
+        const binding_id = edited.symbol_ids[binding] orelse return error.MissingCallbackTempBindingSymbol;
+        try std.testing.expectEqual(@as(?u32, binding_id), edited.symbol_ids[reference]);
+        callback_temp_refs += 1;
+    }
+    try std.testing.expect(callback_temp_refs > 0);
+}
+
+test "#6004 callback temp allocator handoff preserves producer bindings across hostile inputs" {
+    const fixtures = [_][]const u8{
+        "function* build(proto) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield 1 }; yield object; }",
+        "async function* build(proto) { const object = { __proto__: proto, read() { return super.value; }, awaited: await Promise.resolve(1) }; yield object; }",
+        "function* build(proto, key) { const object = { __proto__: proto, [yield key]: 1, read() { return super.value; } }; yield object; }",
+        "function* build(proto, values) { const object = { __proto__: proto, ...(yield values), read() { return super.value; } }; yield object; }",
+        "async function* build(proto, key) { const object = { __proto__: proto, [await Promise.resolve(key)]: 1, read() { return super.value; } }; yield object; }",
+        "function* build(proto, values) { let index = 0; while (index < values.length) { const object = { __proto__: proto, read() { return super.value; }, yielded: yield values[index] }; yield object; index++; } }",
+        "function* build(proto) { const object = { __proto__: proto, nested: { value: yield 1 }, read() { return super.value; } }; yield object; }",
+        "function* build(proto) { const first = { __proto__: proto, read() { return super.first; }, yielded: yield 1 }; const second = { __proto__: proto, read() { return super.second; }, yielded: yield 2 }; return [first, second]; }",
+        "function* outer(proto) { const first = { __proto__: proto, read() { return super.outer; }, yielded: yield 1 }; function* inner() { const nested = { __proto__: proto, read() { return super.inner; }, yielded: yield 2 }; yield nested; } yield inner(); yield first; }",
+        "class Base {} class Derived extends Base { *read(key) { yield super[key]++; } }",
+        "class Base {} class Derived extends Base { *read(key) { yield (super[key] += 1); } }",
+        "class Base {} class Derived extends Base { *read(key) { yield (super[key] ??= 1); } }",
+        "class Base {} class Derived extends Base { *read(key) { yield (super[key] ||= 1); } }",
+    };
+    for (fixtures) |source| try checkCallbackTempSymbolIdentity(source);
+}
+
 test "#4819 async generator inner function owns its ES5 state callback" {
     try checkStateScopes(
         "export async function* stream() { yield await Promise.resolve(1); }",
