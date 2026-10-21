@@ -122,6 +122,8 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.scratch.deinit(self.allocator);
     if (self.temp_collision_set) |*set| set.deinit(self.allocator);
     self.temp_span_by_counter.deinit(self.allocator);
+    self.temp_producer_id_by_counter.deinit(self.allocator);
+    self.temp_symbols_by_producer_id.deinit(self.allocator);
     self.temp_symbol_ids_by_counter.deinit(self.allocator);
     self.callback_temp_bindings_by_counter.deinit(self.allocator);
     self.generated_temp_spans.deinit(self.allocator);
@@ -141,6 +143,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.transformed_scope_owner_map.deinit(self.allocator);
     if (self.semantic_editor) |*editor| editor.deinit();
     self.pending_temp_refs.deinit(self.allocator);
+    self.pending_temp_producer_refs.deinit(self.allocator);
     self.pending_exact_symbol_refs.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.lexical_capture_uses.deinit(self.allocator);

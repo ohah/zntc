@@ -524,6 +524,7 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         // 카운터는 함수마다 되감긴다. 이전 함수의 같은 슬롯을 남기지 않는다.
         _ = self.temp_span_by_counter.remove(idx);
         _ = self.temp_symbol_ids_by_counter.remove(idx);
+        _ = self.temp_producer_id_by_counter.remove(idx);
         _ = self.callback_temp_bindings_by_counter.remove(idx);
         const name = tempVarName(idx, &buf);
         if (collidesWithPrivateField(self, name)) continue;
@@ -541,6 +542,10 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         if (try nameAppearsInDynamicEvalString(self, self.current_scope, name)) continue;
         const span = try self.ast.addUniqueString(name);
         try self.temp_span_by_counter.put(self.allocator, idx, span);
+        if (self.next_temp_producer_id == 0 or self.next_temp_producer_id == std.math.maxInt(u64))
+            std.debug.panic("synthetic temp producer identity space exhausted", .{});
+        try self.temp_producer_id_by_counter.put(self.allocator, idx, self.next_temp_producer_id);
+        self.next_temp_producer_id += 1;
         try self.generated_temp_spans.append(self.allocator, span);
         return span;
     }
@@ -640,7 +645,10 @@ pub fn consumeTempVarSpan(self: anytype, span: Span) void {
             break;
         }
     }
-    if (key_to_remove) |key| _ = self.temp_span_by_counter.remove(key);
+    if (key_to_remove) |key| {
+        _ = self.temp_span_by_counter.remove(key);
+        _ = self.temp_producer_id_by_counter.remove(key);
+    }
 }
 
 /// 사용자 선언 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
@@ -2330,6 +2338,8 @@ pub const TempCapture = struct {
     reference_scope: ScopeId = .none,
     /// Exact allocator slot that produced this capture, when it has one.
     temp_counter_index: ?u32 = null,
+    /// Stable producer identity that survives counter restoration and reuse.
+    temp_producer_id: ?u64 = null,
 };
 
 /// Reserve a generated temp identity before its first reference is emitted.
@@ -2397,12 +2407,15 @@ pub fn reserveTrackedTempIdentityInOutputScope(
 
 pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const temp_span = try makeTempVarSpan(self);
+    const counter_index = self.temp_var_counter - 1;
     const temp_lhs = try makeTempVarRef(self, temp_span, span);
     const assign = try makeAssignExpr(self, temp_lhs, value, span, @backingInt(token_mod.Kind.eq));
     return .{
         .span = temp_span,
         // 합성 paren 제거(#4042 PR8): bare assign — 첫 사용 자리의 precedence 가 괄호 재유도.
         .paren_assign = assign,
+        .temp_counter_index = counter_index,
+        .temp_producer_id = self.temp_producer_id_by_counter.get(counter_index),
     };
 }
 
@@ -2413,6 +2426,8 @@ pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
 pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const temp_span = try makeTempVarSpan(self);
     const counter_index = self.temp_var_counter - 1;
+    const temp_producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+        std.debug.panic("captured temp has no stable producer identity", .{});
     const identity = try self.reserveSyntheticTempIdentityForReference(
         temp_span,
         span,
@@ -2423,6 +2438,10 @@ pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !T
     if (identity) |exact| {
         try self.addSyntheticRefInScope(temp_lhs, exact.symbol_id, exact.reference_scope, .{ .write = true });
         try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(exact.symbol_id));
+        const producer = try self.temp_symbols_by_producer_id.getOrPut(self.allocator, temp_producer_id);
+        if (producer.found_existing and producer.value_ptr.* != @backingInt(exact.symbol_id))
+            std.debug.panic("captured temp producer changed its exact SymbolId", .{});
+        producer.value_ptr.* = @backingInt(exact.symbol_id);
     }
     return .{
         .span = temp_span,
@@ -2430,6 +2449,7 @@ pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !T
         .symbol_id = if (identity) |exact| exact.symbol_id else null,
         .reference_scope = if (identity) |exact| exact.reference_scope else .none,
         .temp_counter_index = counter_index,
+        .temp_producer_id = temp_producer_id,
     };
 }
 
@@ -2441,7 +2461,11 @@ pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCa
     const captured = try captureToTempWithIdentity(self, value, span);
     if (captured.symbol_id == null) {
         const assignment = self.ast.getNode(captured.paren_assign);
-        try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
+        if (captured.temp_producer_id) |producer_id| {
+            try self.trackCapturedTempReference(producer_id, captured.span, assignment.data.binary.left, self.current_scope, .{ .write = true });
+        } else {
+            try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
+        }
     }
     return captured;
 }
@@ -2489,7 +2513,11 @@ pub fn makeCapturedTempRef(
             std.debug.panic("captured temp SymbolId has no reference scope", .{});
         try self.addSyntheticRefInScope(ref, symbol_id, capture.reference_scope, flags);
     } else {
-        try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+        if (capture.temp_producer_id) |producer_id| {
+            try self.trackCapturedTempReference(producer_id, capture.span, ref, self.current_scope, flags);
+        } else {
+            try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+        }
     }
     return ref;
 }

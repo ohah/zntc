@@ -95,6 +95,16 @@ pub const GeneratedTempBinding = struct {
     callback_local: bool = false,
     /// Exact var owner recorded when the wrapper binding is produced.
     owner_scope: ScopeId = .none,
+    /// Stable allocator identity for a capture whose binding is deferred.
+    temp_producer_id: ?u64 = null,
+};
+
+pub const PendingTempProducerReference = struct {
+    temp_producer_id: u64,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
 };
 
 /// Exact identity reserved for one generator temp at producer creation. The
@@ -350,6 +360,9 @@ pub const Transformer = struct {
         symbol_id: u32,
     }) = .empty,
     pending_temp_ref_chains: std.AutoHashMapUnmanaged(PendingTempRefKey, struct { first: usize, last: usize }) = .empty,
+    /// Captured-temp references carry the allocator's stable producer identity
+    /// until the corresponding hoisted binding receives its SymbolId.
+    pending_temp_producer_refs: std.ArrayListUnmanaged(PendingTempProducerReference) = .empty,
     /// Exact generated lexical-capture uses, paired with the function frame
     /// that will emit their `_this` or `_arguments` declaration.
     lexical_capture_uses: std.ArrayListUnmanaged(struct {
@@ -479,6 +492,9 @@ pub const Transformer = struct {
     /// 카운터를 되감아 같은 이름을 재사용해도 각 temp의 생성 위치는 고유하다.
     /// hoist는 이름을 다시 만들지 않고 이 위치를 가져와야 한다.
     temp_span_by_counter: std.AutoHashMapUnmanaged(u32, Span) = .empty,
+    temp_producer_id_by_counter: std.AutoHashMapUnmanaged(u32, u64) = .empty,
+    temp_symbols_by_producer_id: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    next_temp_producer_id: u64 = 1,
     /// Producer-owned exact identities for temp slots whose output scope is
     /// known when the temp is created.
     temp_symbol_ids_by_counter: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -1069,6 +1085,7 @@ pub const Transformer = struct {
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
     pub const reserveSyntheticTempIdentityForReference = @import("transformer/semantic_edit.zig").reserveSyntheticTempIdentityForReference;
+    pub const trackCapturedTempReference = @import("transformer/semantic_edit.zig").trackCapturedTempReference;
     pub const SyntheticTempReferenceIdentity = @import("transformer/semantic_edit.zig").SyntheticTempReferenceIdentity;
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
@@ -1114,6 +1131,7 @@ pub const Transformer = struct {
     pub const ensureSymbolDeclarationAtNode = @import("transformer/semantic_edit.zig").ensureSymbolDeclarationAtNode;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
     pub const bindHoistedTempWithProducerSymbol = @import("transformer/semantic_edit.zig").bindHoistedTempWithProducerSymbol;
+    pub const bindHoistedTempWithProducerIdentity = @import("transformer/semantic_edit.zig").bindHoistedTempWithProducerIdentity;
     pub const bindSyntheticTempInScope = @import("transformer/semantic_edit.zig").bindSyntheticTempInScope;
     pub const trackNullishIdentifierCopies = @import("transformer/semantic_edit.zig").trackNullishIdentifierCopies;
     pub const replaceUserReferenceWithCopy = @import("transformer/semantic_edit.zig").replaceUserReferenceWithCopy;
