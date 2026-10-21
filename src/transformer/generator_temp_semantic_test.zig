@@ -625,6 +625,12 @@ test "#4819 callback temp reference binds through its exact producer node" {
     );
     try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_temp_refs.items.len);
     const binding = transformer.generator_state_temp_refs.items[0].binding;
+    try std.testing.expectEqual(binding, loop.ret_temp_binding orelse return error.MissingExactLoopRetBinding);
+    const ret_name_span = loop.ret_temp_span orelse return error.MissingExactLoopRetName;
+    try std.testing.expectEqual(
+        transformer.ast.getText(ret_name_span),
+        transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref),
+    );
     try std.testing.expectEqual(binding, transformer.generator_state_temp_refs.items[1].binding);
     for (transformer.generator_state_temp_refs.items) |pending| {
         try std.testing.expectEqual(binding, pending.binding);
