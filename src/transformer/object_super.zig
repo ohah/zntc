@@ -16,9 +16,10 @@
 //! 공유하면 먼저 만든 객체의 메서드가 나중 객체의 프로토타입을 본다. 그래서:
 //!   - arrow 가 네이티브인 타겟: `((_obj) => _obj = { … })()` — 파라미터라 평가마다 새
 //!     바인딩이다. arrow 라 `this`/`arguments`/`super` 도 그대로다.
-//!   - es5: `(function (_obj) { return _obj = { … }; })()`. 일반 함수라 값 자리의
-//!     `this`/`arguments`/`super`/`new.target` 이 바뀌므로, 그런 게 없을 때만 쓴다.
-//!   - 값 자리에 `yield`/`await` 가 있거나(감싸면 깨짐) es5 에서 위 문맥을 쓰면 함수 단위
+//!   - es5: `(function (_obj) { return _obj = { … }; })()`. 값 자리가 함수 문맥을 쓰지
+//!     않으면 이 래퍼를 쓴다. native parameter list 를 유지하는 중 `this` 만 쓰면
+//!     `.call(this)` 로 원래 수신자를 전달한다. 다른 문맥은 함수 단위 임시 변수로 돌아간다.
+//!   - 값 자리에 `yield`/`await` 가 있으면(감싸면 깨짐) es5 에서 함수 단위
 //!     `var` 임시 변수로 돌아간다. 이때는 클로저가 캡처하는 루프 본문이 `_loop` 으로
 //!     추출되며 그 안에 선언돼 반복마다 새로 생기고, 추출되지 않는 루프에서만 공유된다.
 
@@ -134,12 +135,20 @@ pub const Home = struct {
         arrow,
         /// `(function (home) { return home = obj; })()` — es5.
         function,
+        /// `(function (home) { return home = obj; }).call(this)` — es5, `this` 만 사용.
+        function_with_this,
     };
+};
+
+const FunctionContextUse = enum {
+    none,
+    this_only,
+    other,
 };
 
 /// 객체의 값 자리(메서드 본문 밖)에서 감싸는 함수가 바꿔 버릴 문맥을 쓰는지.
 /// arrow 는 투명(같은 문맥), 일반 함수는 경계. 클래스·중첩 메서드는 보수적으로 들여다본다.
-fn valuesUseFunctionContext(self: *Transformer, node: Node) bool {
+fn valuesFunctionContextUse(self: *Transformer, node: Node) FunctionContextUse {
     var ctx: ContextScan = .{ .ast = self.ast };
     const list = node.data.list;
     var i: u32 = 0;
@@ -149,27 +158,32 @@ fn valuesUseFunctionContext(self: *Transformer, node: Node) bool {
         const m = self.ast.getNode(m_idx);
         const target = if (m.tag == .method_definition) self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key) else m_idx;
         if (target.isNone()) continue;
-        // OOM 이면 보수적으로 "쓴다" — 함수로 감싸지 않고 임시 변수로 돌아갈 뿐이다.
-        ast_walk.walkPreorderIterative(self.allocator, self.ast, target, &ctx, contextVisit) catch return true;
-        if (ctx.found) return true;
+        // OOM 이면 보수적으로 다른 함수 문맥을 쓴다고 보고 함수 래퍼를 피한다.
+        ast_walk.walkPreorderIterative(self.allocator, self.ast, target, &ctx, contextVisit) catch return .other;
+        if (ctx.uses_other) return .other;
     }
-    return false;
+    return if (ctx.uses_this) .this_only else .none;
 }
 
 const ContextScan = struct {
     ast: *const ast_mod.Ast,
-    found: bool = false,
+    uses_this: bool = false,
+    uses_other: bool = false,
 };
 
 fn contextVisit(ctx: *ContextScan, _: NodeIndex, n: Node) ast_walk.WalkAction {
     switch (n.tag) {
-        .this_expression, .super_expression, .meta_property, .yield_expression, .await_expression => {
-            ctx.found = true;
+        .this_expression => {
+            ctx.uses_this = true;
+            return .descend;
+        },
+        .super_expression, .meta_property, .yield_expression, .await_expression => {
+            ctx.uses_other = true;
             return .stop;
         },
         .identifier_reference => {
             if (std.mem.eql(u8, ctx.ast.getText(n.data.string_ref), "arguments")) {
-                ctx.found = true;
+                ctx.uses_other = true;
                 return .stop;
             }
             return .descend;
@@ -198,7 +212,17 @@ fn valuesYieldOrAwait(self: *Transformer, node: Node) bool {
 fn allocHome(self: *Transformer, producer_node: NodeIndex, node: Node, allow_late_output_name: bool) Transformer.Error!Home {
     const wrap: Home.Wrap = if (!self.options.unsupported.arrow)
         (if (valuesYieldOrAwait(self, node)) .assign else .arrow)
-    else if (valuesUseFunctionContext(self, node)) .assign else .function;
+    else blk: {
+        const context_use = valuesFunctionContextUse(self, node);
+        switch (context_use) {
+            .other => break :blk .assign,
+            .this_only => break :blk if (self.native_parameter_list_retained_for_dynamic_lookup)
+                .function_with_this
+            else
+                .assign,
+            .none => break :blk .function,
+        }
+    };
     if (wrap != .assign) {
         // 함수 파라미터 — 함수 단위 temp 카운터를 쓰지 않는다(var 로 호이스팅되면 안 됨).
         const late_output_name = allow_late_output_name and
@@ -355,7 +379,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         .arrow => try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = span, .data = .{
             .extra = try self.ast.addExtras(&.{ @backingInt(params), @backingInt(assign), 0 }),
         } }),
-        .function => blk: {
+        .function, .function_with_this => blk: {
             const ret = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = assign, .flags = 0 } } });
             const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ret}) } });
             break :blk try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{
@@ -373,6 +397,15 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         parent_scope,
         home.late_output_name,
     );
+    if (home.wrap == .function_with_this) {
+        const call = try es_helpers.makeStaticMember(
+            self,
+            callee,
+            try es_helpers.makePropertyName(self, "call"),
+            span,
+        );
+        return es_helpers.makeCallExpr(self, call, &.{try es_helpers.makeThisExpr(self, span)}, span);
+    }
     return es_helpers.makeCallExpr(self, callee, &.{}, span);
 }
 

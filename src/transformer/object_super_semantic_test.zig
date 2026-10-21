@@ -306,7 +306,7 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
             const raw_id = transformer.getSymbolIdAt(hoisted_binding) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
         },
-        .arrow, .function => blk: {
+        .arrow, .function, .function_with_this => blk: {
             const raw_id = transformer.getSymbolIdAt(write_ref) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
         },
@@ -448,5 +448,6 @@ test "#6004 object-super home refs bind their producer nodes across ten hostile 
         try checkObjectSuperHomeReferenceHandle(source, .assign);
         try checkObjectSuperHomeReferenceHandle(source, .arrow);
         try checkObjectSuperHomeReferenceHandle(source, .function);
+        try checkObjectSuperHomeReferenceHandle(source, .function_with_this);
     }
 }
