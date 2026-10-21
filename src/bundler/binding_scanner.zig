@@ -56,6 +56,9 @@ pub const ImportBinding = struct {
     /// linker.populateImportSymbols가 채움. invalid = synthetic binding 등
     /// semantic scope에 로컬이 없는 경우.
     local_symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
+    /// Exact AST node that declares this local import binding. Parse-time
+    /// consumers can recover its analyzer SymbolId without a name-based lookup.
+    local_symbol_node: ?NodeIndex = null,
     /// #3068: helper marker (runtime helper / JSX runtime) 가 적용된 binding.
     /// linker 의 local_symbol lookup 이 일반 `module_scope` 가 아닌 격리된
     /// `helper_scope_map` 에서 sym_index 를 찾아야 사용자가 같은 이름의 식별자를
@@ -264,6 +267,7 @@ pub fn extractImportBindings(
                         .imported_name = "default",
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
+                        .local_symbol_node = spec,
                     });
                 },
                 .import_namespace_specifier => {
@@ -274,6 +278,7 @@ pub fn extractImportBindings(
                         .imported_name = "*",
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
+                        .local_symbol_node = spec,
                     });
                 },
                 .import_specifier => {
@@ -310,6 +315,7 @@ pub fn extractImportBindings(
                         .local_span = local_node.span,
                         .import_record_index = rec_idx,
                         .is_helper = is_helper,
+                        .local_symbol_node = local_node_idx,
                     });
                 },
                 else => {},

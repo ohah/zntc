@@ -1333,6 +1333,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
                     .local_name = try stableModuleImportBindingName(self, spec_node.span),
                     .imported_name = "default",
                     .local_span = spec_node.span,
+                    .local_symbol_node_index = @backingInt(spec_idx),
                     .import_record_index = rec_idx,
                 }) catch {};
             },
@@ -1342,6 +1343,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
                     .local_name = try stableModuleImportBindingName(self, spec_node.span),
                     .imported_name = "*",
                     .local_span = spec_node.span,
+                    .local_symbol_node_index = @backingInt(spec_idx),
                     .import_record_index = rec_idx,
                 }) catch {};
             },
@@ -1355,10 +1357,11 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
                 const imported_node = self.ast.getNode(imported_idx);
                 const imported_name = try stableModuleExportName(self, imported_node);
 
-                const local_node = if (!local_idx.isNone() and @backingInt(local_idx) != @backingInt(imported_idx))
-                    self.ast.getNode(local_idx)
+                const local_node_idx = if (!local_idx.isNone() and @backingInt(local_idx) != @backingInt(imported_idx))
+                    local_idx
                 else
-                    imported_node;
+                    imported_idx;
+                const local_node = self.ast.getNode(local_node_idx);
                 const local_name = try stableModuleExportName(self, local_node);
 
                 self.scan_import_bindings.append(self.allocator, .{
@@ -1366,6 +1369,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
                     .local_name = local_name,
                     .imported_name = imported_name,
                     .local_span = local_node.span,
+                    .local_symbol_node_index = @backingInt(local_node_idx),
                     .import_record_index = rec_idx,
                 }) catch {};
             },

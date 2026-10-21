@@ -5,6 +5,7 @@ const determineExportsKind = graph_mod.determineExportsKind;
 const Module = @import("module.zig").Module;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
+const graph_parse_module = @import("graph/parse_module.zig");
 const renumber_mod = @import("graph/renumber.zig");
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
@@ -1953,6 +1954,79 @@ test "graph: load hit — TS 타입 전용 판정이 cold parse 와 같다 (#558
     try std.testing.expectEqual(@as(usize, 3), cold.type_names); // T, g, U
     const loaded = try buildTsTypeFacts(entry, cache_root, true);
     try std.testing.expectEqual(cold, loaded);
+}
+
+test "graph: TS type-only import classification uses binding identity under hostile scope maps" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "types.ts", "export interface T { n: number }\n");
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import { T } from './types';\n" ++
+            "const decoy0 = {}, decoy1 = {}, decoy2 = {}, decoy3 = {}, decoy4 = {};\n" ++
+            "const decoy5 = {}, decoy6 = {}, decoy7 = {}, decoy8 = {}, decoy9 = {};\n" ++
+            "type Use = T;\n" ++
+            "console.log(decoy0, decoy1, decoy2, decoy3, decoy4, decoy5, decoy6, decoy7, decoy8, decoy9);\n",
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry_path});
+
+    const entry_index = blk: {
+        for (0..graph.moduleCount()) |index| {
+            const candidate = graph.moduleAtMut(ModuleIndex.fromUsize(index)) orelse continue;
+            if (std.mem.eql(u8, candidate.path, entry_path)) break :blk ModuleIndex.fromUsize(index);
+        }
+        return error.MissingEntryModule;
+    };
+    const entry = graph.moduleAtMut(entry_index) orelse return error.MissingEntryModule;
+    if (entry.import_bindings.len != 1) return error.UnexpectedImportBindingCount;
+    const semantic = if (entry.semantic) |*value| value else return error.MissingEntrySemantic;
+    if (semantic.scope_maps.len == 0) return error.MissingEntryScopeMap;
+    const scope = &semantic.scope_maps[0];
+    const imported_symbol = scope.getPtr("T") orelse return error.MissingImportedSymbol;
+    const importer_ast = if (entry.ast) |*value| value else return error.MissingEntryAst;
+    const arena_alloc = entry.parse_arena.?.allocator();
+    const binding_node = entry.import_bindings[0].local_symbol_node orelse return error.MissingImportedBindingNode;
+    const binding_node_index: usize = @intCast(@backingInt(binding_node));
+    if (binding_node_index >= semantic.symbol_ids.len) return error.ImportedBindingNodeOutOfBounds;
+    const binding_symbol_id = semantic.symbol_ids[binding_node_index] orelse return error.MissingImportedBindingSymbolId;
+    try std.testing.expectEqual(imported_symbol.*, @as(usize, @intCast(binding_symbol_id)));
+    const original_imported_symbol = imported_symbol.*;
+
+    const decoy_names = [_][]const u8{
+        "decoy0", "decoy1", "decoy2", "decoy3", "decoy4",
+        "decoy5", "decoy6", "decoy7", "decoy8", "decoy9",
+    };
+    for (decoy_names) |name| {
+        imported_symbol.* = scope.get(name) orelse return error.MissingDecoySymbol;
+
+        graph_parse_module.markSourceTypeOnlyImports(&graph, entry, importer_ast, arena_alloc);
+
+        try std.testing.expectEqual(@as(?bool, true), entry.import_bindings[0].source_type_only);
+        try std.testing.expect(entry.import_records[0].ts_elided);
+    }
+
+    // A producer node with no usable SymbolId must fail closed. It must not
+    // fall back to the hostile name map and classify the decoy's value use.
+    imported_symbol.* = scope.get("decoy0") orelse return error.MissingDecoySymbol;
+    entry.import_bindings[0].local_symbol_node = .none;
+    entry.import_bindings[0].source_type_only = null;
+    graph_parse_module.markSourceTypeOnlyImports(&graph, entry, importer_ast, arena_alloc);
+    try std.testing.expectEqual(@as(?bool, null), entry.import_bindings[0].source_type_only);
+    try std.testing.expect(!entry.import_records[0].ts_elided);
+
+    entry.import_bindings[0].local_symbol_node = binding_node;
+    imported_symbol.* = original_imported_symbol;
 }
 
 test "graph: TS import record type-only classification is grouped by record" {
