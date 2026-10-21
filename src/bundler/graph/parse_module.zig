@@ -30,7 +30,7 @@ const getMtime = ModuleGraph.getMtime;
 /// (`/** @jsx h */` + `import { h }`). Transforms that rewrite code onto user
 /// imports (Emotion css prop, styled-components, decorator metadata) leave the
 /// judgement to the post-transform references.
-fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast: *const @import("../../parser/ast.zig").Ast, arena_alloc: std.mem.Allocator) void {
+pub fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast: *const @import("../../parser/ast.zig").Ast, arena_alloc: std.mem.Allocator) void {
     if (!module.module_type.isTypeScript()) return;
     // The pre-pass's per-module options (transform_prepass `run`).
     var base = self.transform_options_base;
@@ -60,7 +60,12 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
             ib.source_type_only = false;
             continue;
         }
-        const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
+        const sym_idx: usize = if (ib.local_symbol_node) |binding_node| blk: {
+            const node_index: usize = @intCast(@backingInt(binding_node));
+            if (node_index >= sem.symbol_ids.len) continue;
+            const symbol_id = sem.symbol_ids[node_index] orelse continue;
+            break :blk @intCast(symbol_id);
+        } else sem.scope_maps[0].get(ib.local_name) orelse continue;
         if (sym_idx >= sem.symbols.items.len) continue;
         ib.source_type_only = !value_used.isSet(sym_idx);
     }

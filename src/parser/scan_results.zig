@@ -90,6 +90,8 @@ pub const ScanImportBinding = struct {
     imported_name: []const u8,
     /// 로컬 바인딩의 소스 위치
     local_span: Span,
+    /// Exact AST node that carries the analyzer SymbolId for this import binding.
+    local_symbol_node_index: ?u32 = null,
     /// 어떤 import 문에서 왔는지 (scan_import_records 인덱스)
     import_record_index: u32,
 };
