@@ -482,6 +482,10 @@ pub const Transformer = struct {
     /// Producer-owned exact identities for temp slots whose output scope is
     /// known when the temp is created.
     temp_symbol_ids_by_counter: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Callback-local producer bindings keyed by the temp allocator slot that
+    /// created them. Hoisting carries this NodeIndex forward without scanning
+    /// deferred references for a matching name span.
+    callback_temp_bindings_by_counter: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
     /// #4598: `es2022_tla.lowerProgram` 이 만든 async IIFE **statement** 의 인덱스.
     /// emitter 가 `__esm` factory 본문에서 이 문장을 `return <expr>;` 로 방출해
     /// `init_X()` 가 **초기화 완료 promise** 를 돌려주게 한다(소비자가 기다릴 대상).
@@ -1089,6 +1093,7 @@ pub const Transformer = struct {
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;
     pub const trackGeneratedCallbackTempReference = @import("transformer/semantic_edit.zig").trackGeneratedCallbackTempReference;
+    pub const registerGeneratedCallbackTempBinding = @import("transformer/semantic_edit.zig").registerGeneratedCallbackTempBinding;
     pub const trackSyntheticTempReference = @import("transformer/semantic_edit.zig").trackSyntheticTempReference;
     pub const trackSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceInScope;

@@ -30,6 +30,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             name_span: Span,
             declaration_span: Span,
             producer_symbol_id: ?SymbolId,
+            temp_counter_index: u32,
         ) Transformer.Error!SuperTemp {
             const binding = if (self.semantic_edit_enabled and self.state_machine_depth == 0) blk: {
                 const owner_scope = self.nearestVarScope(self.current_scope);
@@ -41,7 +42,13 @@ pub fn SuperProps(comptime Transformer: type) type {
                 try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span)
             else
                 .none;
-            return .{ .name_span = name_span, .binding = binding, .callback_binding = callback_binding };
+            if (!callback_binding.isNone())
+                try self.registerGeneratedCallbackTempBinding(temp_counter_index, callback_binding);
+            return .{
+                .name_span = name_span,
+                .binding = binding,
+                .callback_binding = callback_binding,
+            };
         }
 
         fn registerSuperTempRef(self: *Transformer, temp: SuperTemp, ref: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
@@ -328,7 +335,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const visited = try self.visitNode(prop_idx);
             const temp_span = try es_helpers.makeTempVarSpan(self);
-            const temp = try beginSuperTemp(self, temp_span, span, null);
+            const temp = try beginSuperTemp(self, temp_span, span, null, self.temp_var_counter - 1);
             const temp_lhs = try makeSuperTempRef(self, temp, span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
@@ -589,7 +596,13 @@ pub fn SuperProps(comptime Transformer: type) type {
 
                 if (self.options.unsupported.nullish_coalescing) {
                     const read_capture = try es_helpers.captureToTempWithIdentity(self, get_read, span);
-                    const capture_temp = try beginSuperTemp(self, read_capture.span, span, read_capture.symbol_id);
+                    const capture_temp = try beginSuperTemp(
+                        self,
+                        read_capture.span,
+                        span,
+                        read_capture.symbol_id,
+                        read_capture.temp_counter_index orelse std.debug.panic("super capture has no allocator slot", .{}),
+                    );
                     if (read_capture.symbol_id == null) {
                         const capture_assignment = self.ast.getNode(read_capture.paren_assign);
                         try registerSuperTempRef(self, capture_temp, capture_assignment.data.binary.left, .{ .write = true });
@@ -652,7 +665,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
                 const temp_span = try es_helpers.makeTempVarSpan(self);
-                const temp = try beginSuperTemp(self, temp_span, span, null);
+                const temp = try beginSuperTemp(self, temp_span, span, null, self.temp_var_counter - 1);
                 const get_call = try buildSuperPropGet(self, prop_ref.read, span);
                 const tmp_lhs = try makeSuperTempRef(self, temp, span, .{ .write = true });
                 const init_old = try self.ast.addNode(.{
