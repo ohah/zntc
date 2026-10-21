@@ -4918,7 +4918,6 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
     try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
-    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
 
     for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
         const temp_name = transformer.ast.getText(temp_span);
@@ -5072,7 +5071,6 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
             identity.symbol_id orelse return error.MissingForAwaitProducerIdentity,
         );
         try std.testing.expectEqual(transformer.generator_state_machine_scope, identity.owner_scope);
-        try std.testing.expect(transformer.generator_state_temp_symbols.get(temp_span.start) == null);
     }
 
     for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
@@ -5087,7 +5085,6 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
         }
     }
     for (ref_counts) |count| try std.testing.expect(count > 0);
-    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
@@ -5149,7 +5146,6 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
         try std.testing.expect(symbol_id != null);
     }
     try std.testing.expectEqual(expected_names.len, found);
-    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
     for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
         const temp_name = transformer.ast.getText(temp_span);
         const identity = transformer.generator_temp_producer_identities.items[temp_index];

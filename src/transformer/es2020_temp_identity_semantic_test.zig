@@ -244,7 +244,6 @@ fn checkES2020GeneratorProducerHandle(
     }
 
     try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
-    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
     try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
