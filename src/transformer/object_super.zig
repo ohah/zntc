@@ -302,10 +302,20 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                     home.temp_counter_index orelse std.debug.panic("deferred object home has no allocator slot", .{}),
                     callback_binding,
                 );
-            const symbol_id: ?SymbolId = if (parameter_output_scope != null)
-                (try self.reserveSyntheticTempSymbolInScope(home.identity.span, span, output_scope)) orelse
-                    std.debug.panic("lowered parameter object home temp has no SymbolId", .{})
-            else if (deferred_output_scope)
+            const symbol_id: ?SymbolId = if (parameter_output_scope != null) blk: {
+                const id = (try self.reserveSyntheticTempSymbolInScope(home.identity.span, span, output_scope)) orelse
+                    std.debug.panic("lowered parameter object home temp has no SymbolId", .{});
+                const counter_index = home.temp_counter_index orelse
+                    std.debug.panic("lowered parameter object home temp has no allocator slot", .{});
+                const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                    std.debug.panic("lowered parameter object home temp has no producer identity", .{});
+                if (producer_id == 0) std.debug.panic("lowered parameter object home temp has an invalid producer identity", .{});
+                const producer_symbol = try self.temp_symbol_ids_by_counter.getOrPut(self.allocator, counter_index);
+                if (producer_symbol.found_existing and producer_symbol.value_ptr.* != @backingInt(id))
+                    std.debug.panic("lowered parameter object home producer changed its exact SymbolId", .{});
+                producer_symbol.value_ptr.* = @backingInt(id);
+                break :blk id;
+            } else if (deferred_output_scope)
                 null
             else blk: {
                 const owner_scope = self.nearestVarScope(output_scope);
