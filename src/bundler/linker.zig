@@ -5675,15 +5675,19 @@ pub const Linker = struct {
                     if (!is_virtual_ns) continue;
                 }
 
-                // 소비자 모듈에서 local symbol id 조회. top-level import이므로 scope_maps[0].
-                const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
+                // 소비자 모듈의 exact import SymbolId 우선. 이름 조회는 ID가 없는
+                // low-level binding에만 남겨 stale scope-map spelling의 오연결을 막는다.
+                const sym_idx: u32 = if (ib.local_symbol.isValid()) blk: {
+                    if (ib.local_symbol.moduleIndex() != importer.index) continue;
+                    break :blk ib.local_symbol.semanticIndex() orelse continue;
+                } else @intCast(sem.scope_maps[0].get(ib.local_name) orelse continue);
 
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
                 var access = namespace_access.analyzeNamespaceAccessWithIndex(
                     self.allocator,
                     ast,
                     sem.symbol_ids,
-                    @intCast(sym_idx),
+                    sym_idx,
                     stmt_spans_opt,
                     sem.references,
                     ns_index_ptr,

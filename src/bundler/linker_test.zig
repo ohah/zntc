@@ -3102,6 +3102,59 @@ test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
 
+test "namespace access analysis uses the import SymbolId under hostile scope maps" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.ts",
+        "import * as ns from './provider.ts';\n" ++
+            "const decoy0 = { wrong0: 0 }, decoy1 = { wrong1: 1 }, decoy2 = { wrong2: 2 }, decoy3 = { wrong3: 3 }, decoy4 = { wrong4: 4 };\n" ++
+            "const decoy5 = { wrong5: 5 }, decoy6 = { wrong6: 6 }, decoy7 = { wrong7: 7 }, decoy8 = { wrong8: 8 }, decoy9 = { wrong9: 9 };\n" ++
+            "console.log(ns.answer, decoy0.wrong0, decoy1.wrong1, decoy2.wrong2, decoy3.wrong3, decoy4.wrong4, " ++
+            "decoy5.wrong5, decoy6.wrong6, decoy7.wrong7, decoy8.wrong8, decoy9.wrong9);\n",
+    );
+    try writeFile(tmp.dir, "provider.ts", "export const answer = 42;\n");
+
+    var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+    const semantic = if (entry.semantic) |*value| value else return error.MissingEntrySemantic;
+    if (semantic.scope_maps.len == 0) return error.MissingEntryScopeMap;
+    const binding_index = blk: {
+        for (entry.import_bindings, 0..) |ib, index| {
+            if (std.mem.eql(u8, ib.local_name, "ns")) break :blk index;
+        }
+        return error.MissingNamespaceImportBinding;
+    };
+    const binding_symbol = entry.import_bindings[binding_index].local_symbol.semanticIndex() orelse
+        return error.MissingNamespaceImportSymbol;
+    try std.testing.expectEqual(entry_index, entry.import_bindings[binding_index].local_symbol.moduleIndex());
+
+    const mutable_scope_maps = @constCast(semantic.scope_maps);
+    const decoy_names = [_][]const u8{
+        "decoy0", "decoy1", "decoy2", "decoy3", "decoy4",
+        "decoy5", "decoy6", "decoy7", "decoy8", "decoy9",
+    };
+    for (decoy_names) |decoy_name| {
+        const decoy_symbol = semantic.scope_maps[0].get(decoy_name) orelse return error.MissingNamespaceDecoy;
+        try std.testing.expect(decoy_symbol != binding_symbol);
+        try mutable_scope_maps[0].put(allocator, "ns", decoy_symbol);
+
+        r.linker.populateNamespaceAccesses();
+
+        const properties = entry.import_bindings[binding_index].namespace_used_properties orelse
+            return error.MissingNamespaceProperties;
+        try std.testing.expectEqual(@as(usize, 1), properties.len);
+        try std.testing.expectEqualStrings("answer", properties[0]);
+    }
+}
+
 test "namespace re-export metadata uses the import binding SymbolId under a hostile scope map" {
     const allocator = std.testing.allocator;
     const barrel_sources = [_][]const u8{
