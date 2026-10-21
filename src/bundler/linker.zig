@@ -3756,7 +3756,9 @@ pub const Linker = struct {
                 const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                 var suffix: u32 = 1;
                 const candidate = try self.findAvailableCandidate(ref_name, cmod, &suffix, name_to_owners);
-                try self.putCanonicalName(cmod, export_local, candidate);
+                if (!try self.putCanonicalNameForLocalExport(cmod, resolved.canonical.export_name, candidate)) {
+                    try self.putCanonicalName(cmod, export_local, candidate);
+                }
             } else {
                 // (#4566) cross-chunk / preserve-modules: target(다른 청크·별도 출력 파일)의 canonical 을
                 // 못 건드린다 → 대신 **consumer 의 nested 바인딩**을 리네임(renameConsumerScopeBindings,
@@ -4449,6 +4451,30 @@ pub const Linker = struct {
         };
         const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx);
         try self.assignSymbolCanonical(id, value);
+    }
+
+    /// Assign an export's canonical spelling from its scanner-owned SymbolRef.
+    /// Return false only for a non-local export, whose alias identity is owned by
+    /// the export-chain path and may still use the legacy name contract.
+    fn putCanonicalNameForLocalExport(
+        self: *Linker,
+        module_index: u32,
+        exported_name: []const u8,
+        value: []const u8,
+    ) !bool {
+        const module = self.getModule(module_index) orelse return false;
+        const export_binding = module.findExportBinding(exported_name) orelse {
+            self.allocator.free(value);
+            return error.BundlerCanonicalExportBindingMissing;
+        };
+        if (export_binding.kind != .local) return false;
+        const symbol_index = module.findLocalExportSemanticIndex(exported_name) orelse {
+            self.allocator.free(value);
+            return error.BundlerLocalExportIdentityMissing;
+        };
+        const symbol_id = bundler_symbol.SymbolID.make(module.index, symbol_index);
+        try self.assignSymbolCanonical(symbol_id, value);
+        return true;
     }
 
     fn putCanonicalNameForOwner(self: *Linker, owner: NameOwner, name: []const u8, value: []const u8) !void {
@@ -6628,7 +6654,9 @@ pub const Linker = struct {
                 while (git.next()) |e| {
                     const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
                     const dup = try self.allocator.dupe(u8, e.value_ptr.*);
-                    try self.putCanonicalName(mod_idx.toU32(), local, dup);
+                    if (!try self.putCanonicalNameForLocalExport(mod_idx.toU32(), e.key_ptr.*, dup)) {
+                        try self.putCanonicalName(mod_idx.toU32(), local, dup);
+                    }
                 }
             }
         }

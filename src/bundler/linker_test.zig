@@ -80,6 +80,60 @@ fn buildAndLinkWithTransformOptions(
     return .{ .linker = linker, .graph = graph, .cache = cache };
 }
 
+fn writeCanonicalExportIdentityFixture(tmp: *std.testing.TmpDir) !void {
+    try writeFile(
+        tmp.dir,
+        "provider.mjs",
+        "const decoy0 = 100; const local0 = 1; export { local0 as public0 };\n" ++
+            "const decoy1 = 101; const local1 = 2; export { local1 as public1 };\n" ++
+            "const decoy2 = 102; const local2 = 3; export { local2 as public2 };\n" ++
+            "const decoy3 = 103; const local3 = 4; export { local3 as public3 };\n" ++
+            "const decoy4 = 104; const local4 = 5; export { local4 as public4 };\n" ++
+            "const decoy5 = 105; const local5 = 6; export { local5 as public5 };\n" ++
+            "const decoy6 = 106; const local6 = 7; export { local6 as public6 };\n" ++
+            "const decoy7 = 107; const local7 = 8; export { local7 as public7 };\n" ++
+            "const decoy8 = 108; const local8 = 9; export { local8 as public8 };\n" ++
+            "const decoy9 = 109; const local9 = 10; export { local9 as public9 };\n",
+    );
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import { public0 as imported0, public1 as imported1, public2 as imported2, public3 as imported3, public4 as imported4, " ++
+            "public5 as imported5, public6 as imported6, public7 as imported7, public8 as imported8, public9 as imported9 } from './provider.mjs';\n" ++
+            "export function run() {\n" ++
+            "  function consume(local0, local1, local2, local3, local4, local5, local6, local7, local8, local9) {\n" ++
+            "    return imported0 + local0 + imported1 + local1 + imported2 + local2 + imported3 + local3 + imported4 + local4 + " ++
+            "imported5 + local5 + imported6 + local6 + imported7 + local7 + imported8 + local8 + imported9 + local9;\n" ++
+            "  }\n" ++
+            "  return consume(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);\n" ++
+            "}\n",
+    );
+}
+
+fn poisonCanonicalExportLocalNames(
+    allocator: std.mem.Allocator,
+    module: *Module,
+) ![10]bundler_symbol.SymbolID {
+    const semantic = if (module.semantic) |*value| value else return error.MissingCanonicalExportSemantic;
+    if (semantic.scope_maps.len == 0) return error.MissingCanonicalExportScopeMap;
+    var export_ids: [10]bundler_symbol.SymbolID = undefined;
+    const scope_map = @constCast(&semantic.scope_maps[0]);
+    for (0..10) |i| {
+        const local_name = try std.fmt.allocPrint(allocator, "local{d}", .{i});
+        defer allocator.free(local_name);
+        const decoy_name = try std.fmt.allocPrint(allocator, "decoy{d}", .{i});
+        defer allocator.free(decoy_name);
+        const public_name = try std.fmt.allocPrint(allocator, "public{d}", .{i});
+        defer allocator.free(public_name);
+        const symbol_index = module.findLocalExportSemanticIndex(public_name) orelse
+            return error.MissingCanonicalExportSymbol;
+        const decoy_index = semantic.scope_maps[0].get(decoy_name) orelse return error.MissingCanonicalExportDecoy;
+        export_ids[i] = bundler_symbol.SymbolID.make(module.index, symbol_index);
+        try scope_map.put(allocator, local_name, decoy_index);
+    }
+    return export_ids;
+}
+
 test "linker runtime-helper shadow rename uses canonical export SymbolId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -147,6 +201,94 @@ test "linker runtime-helper shadow rename uses canonical export SymbolId" {
         return error.MissingPreparedRuntimeHelperName;
     const exact_name = result.linker.rename_table.get(helper_id) orelse return error.MissingPreparedRuntimeHelperRename;
     try std.testing.expectEqualStrings(exact_name, cross_chunk_name);
+}
+
+test "linker nested export renames use exact SymbolIds under hostile scope-map spellings" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeCanonicalExportIdentityFixture(&tmp);
+
+    var result = try buildAndLink(allocator, &tmp, "entry.mjs");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const provider_index = findModuleIdx(result.graph, "provider.mjs") orelse return error.MissingCanonicalExportProvider;
+    const provider = result.graph.getModule(provider_index) orelse return error.MissingCanonicalExportProvider;
+    const export_ids = try poisonCanonicalExportLocalNames(allocator, @constCast(provider));
+
+    try result.linker.computeRenames();
+
+    const semantic = provider.semantic orelse return error.MissingCanonicalExportSemantic;
+    for (0..10) |i| {
+        const local_name = try std.fmt.allocPrint(allocator, "local{d}", .{i});
+        defer allocator.free(local_name);
+        const decoy_name = try std.fmt.allocPrint(allocator, "decoy{d}", .{i});
+        defer allocator.free(decoy_name);
+        const expected = try std.fmt.allocPrint(allocator, "{s}$1", .{local_name});
+        defer allocator.free(expected);
+
+        const actual = result.linker.rename_table.get(export_ids[i]) orelse return error.MissingExactExportCanonicalName;
+        try std.testing.expectEqualStrings(expected, actual);
+
+        const decoy_index = semantic.scope_maps[0].get(decoy_name) orelse return error.MissingCanonicalExportDecoy;
+        const decoy_id = bundler_symbol.SymbolID.make(provider.index, @as(u32, @intCast(decoy_index)));
+        if (result.linker.rename_table.get(decoy_id)) |decoy_canonical| {
+            try std.testing.expect(!std.mem.eql(u8, expected, decoy_canonical));
+        }
+    }
+}
+
+test "lazy cross-chunk export overrides use exact SymbolIds under hostile local names" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeCanonicalExportIdentityFixture(&tmp);
+
+    var result = try buildAndLink(allocator, &tmp, "entry.mjs");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+
+    const provider_index = findModuleIdx(result.graph, "provider.mjs") orelse return error.MissingCanonicalExportProvider;
+    const provider = result.graph.getModule(provider_index) orelse return error.MissingCanonicalExportProvider;
+    const export_ids = try poisonCanonicalExportLocalNames(allocator, @constCast(provider));
+    result.graph.lazy_compilation = true;
+
+    for (0..10) |i| {
+        const public_name = try std.fmt.allocPrint(allocator, "public{d}", .{i});
+        defer allocator.free(public_name);
+        const global_name = try std.fmt.allocPrint(allocator, "chunkExport{d}", .{i});
+        defer allocator.free(global_name);
+        const export_binding = provider.findExportBinding(public_name) orelse return error.MissingCanonicalExportBinding;
+        try result.linker.putCrossChunkGlobalName(
+            provider_index.toU32(),
+            export_binding.exported_name,
+            try allocator.dupe(u8, global_name),
+        );
+    }
+
+    try result.linker.computeRenamesForModules(&.{provider_index}, &.{});
+
+    const semantic = provider.semantic orelse return error.MissingCanonicalExportSemantic;
+    for (0..10) |i| {
+        const public_name = try std.fmt.allocPrint(allocator, "public{d}", .{i});
+        defer allocator.free(public_name);
+        const decoy_name = try std.fmt.allocPrint(allocator, "decoy{d}", .{i});
+        defer allocator.free(decoy_name);
+        const global_name = try std.fmt.allocPrint(allocator, "chunkExport{d}", .{i});
+        defer allocator.free(global_name);
+
+        const actual = result.linker.rename_table.get(export_ids[i]) orelse return error.MissingExactExportCanonicalName;
+        try std.testing.expectEqualStrings(global_name, actual);
+
+        const decoy_index = semantic.scope_maps[0].get(decoy_name) orelse return error.MissingCanonicalExportDecoy;
+        const decoy_id = bundler_symbol.SymbolID.make(provider.index, @as(u32, @intCast(decoy_index)));
+        if (result.linker.rename_table.get(decoy_id)) |decoy_canonical| {
+            try std.testing.expect(!std.mem.eql(u8, global_name, decoy_canonical));
+        }
+    }
 }
 
 test "linker: tagged-template cache final names come from exact post-graph bindings" {
