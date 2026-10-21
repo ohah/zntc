@@ -72,6 +72,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             generator_function_scope: ?ScopeId = null,
             call_and_check: NodeIndex,
             ret_temp_span: ?Span = null,
+            ret_temp_binding: ?NodeIndex = null,
             ret_temp_symbol_id: ?SymbolId = null,
             ret_temp_owner_scope: ScopeId = .none,
         };
@@ -79,6 +80,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         const ControlFlowCheck = struct {
             node: NodeIndex,
             ret_temp_span: ?Span = null,
+            ret_temp_binding: ?NodeIndex = null,
             ret_temp_symbol_id: ?SymbolId = null,
             ret_temp_owner_scope: ScopeId = .none,
         };
@@ -911,12 +913,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- 제어 흐름 후처리: var _ret = await _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
             var ret_temp_span: ?Span = null;
+            var ret_temp_binding: ?NodeIndex = null;
             var ret_temp_symbol_id: ?SymbolId = null;
             var ret_temp_owner_scope: ScopeId = .none;
             if (needs_ret_var) {
                 const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
                 final_stmt = control_flow_check.node;
                 ret_temp_span = control_flow_check.ret_temp_span;
+                ret_temp_binding = control_flow_check.ret_temp_binding;
                 ret_temp_symbol_id = control_flow_check.ret_temp_symbol_id;
                 ret_temp_owner_scope = control_flow_check.ret_temp_owner_scope;
             } else {
@@ -944,6 +948,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .generator_function_scope = generator_function_scope,
                 .call_and_check = call_block,
                 .ret_temp_span = ret_temp_span,
+                .ret_temp_binding = ret_temp_binding,
                 .ret_temp_symbol_id = ret_temp_symbol_id,
                 .ret_temp_owner_scope = ret_temp_owner_scope,
             };
@@ -1588,6 +1593,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return .{
                 .node = block,
                 .ret_temp_span = ret_name_span,
+                .ret_temp_binding = ret_binding,
                 .ret_temp_symbol_id = ret_symbol,
                 .ret_temp_owner_scope = if (ret_symbol != null) binding_scope else .none,
             };

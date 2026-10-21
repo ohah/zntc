@@ -432,6 +432,45 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (spans) |span| try appendGeneratorTempSpan(self, span);
         }
 
+        fn attachGeneratorTempProducerBinding(self: *Transformer, binding: NodeIndex, name_span: Span, symbol_id: SymbolId) void {
+            if (self.generator_temp_var_spans.items.len != self.generator_temp_producer_identities.items.len or
+                self.generator_temp_producer_identities.items.len == 0)
+                std.debug.panic("generator temp binding has no matching producer record", .{});
+            const node = self.ast.getNode(binding);
+            if (node.tag != .binding_identifier or
+                !std.mem.eql(u8, self.ast.getText(node.data.string_ref), self.ast.getText(name_span)))
+                std.debug.panic("generator temp binding handle disagrees with its exact name", .{});
+            const raw_symbol_id = @backingInt(symbol_id);
+            if (self.getSymbolIdAt(binding) != raw_symbol_id)
+                std.debug.panic("generator temp binding handle disagrees with its exact SymbolId", .{});
+            const producer = &self.generator_temp_producer_identities.items[
+                self.generator_temp_producer_identities.items.len - 1
+            ];
+            if (producer.symbol_id != raw_symbol_id)
+                std.debug.panic("generator temp producer record changed its exact SymbolId", .{});
+            if (!producer.binding.isNone() and producer.binding != binding)
+                std.debug.panic("generator temp producer record changed its binding handle", .{});
+            producer.binding = binding;
+        }
+
+        fn hasExactCallbackLocalGeneratorTempBinding(self: *Transformer, binding: NodeIndex, name_span: Span) bool {
+            var found = false;
+            for (self.generator_state_bindings.items) |registered| {
+                if (registered.binding != binding) continue;
+                if (!registered.callback_local or
+                    registered.name_span.start != name_span.start or registered.name_span.end != name_span.end)
+                    return false;
+                if (found) return false;
+                found = true;
+            }
+            return found;
+        }
+
+        fn requireCallbackLocalGeneratorTempBinding(self: *Transformer, binding: NodeIndex, name_span: Span) void {
+            if (!hasExactCallbackLocalGeneratorTempBinding(self, binding, name_span))
+                std.debug.panic("deferred generator temp has no exact callback-local binding handoff", .{});
+        }
+
         fn recordGeneratorStateBinding(self: *Transformer, binding: NodeIndex, name_span: Span, owner_scope: ScopeId, declaration_span: Span) Transformer.Error!void {
             var symbol_id = self.getSymbolIdAt(binding);
             if (self.semantic_edit_enabled) {
@@ -1135,6 +1174,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (flow.needsRetVar()) {
                 const ret_temp_span = result.ret_temp_span orelse
                     std.debug.panic("extracted generator control-flow check lost its exact return-temp span", .{});
+                const ret_temp_binding = result.ret_temp_binding orelse
+                    std.debug.panic("extracted generator control-flow check lost its exact return-temp binding", .{});
+                const ret_binding_node = self.ast.getNode(ret_temp_binding);
+                if (ret_binding_node.tag != .binding_identifier or
+                    !std.mem.eql(u8, self.ast.getText(ret_binding_node.data.string_ref), self.ast.getText(ret_temp_span)))
+                    std.debug.panic("extracted generator control-flow binding disagrees with its name span", .{});
                 if (result.ret_temp_symbol_id) |symbol_id| {
                     if (result.ret_temp_owner_scope == self.generator_state_machine_scope and
                         !result.ret_temp_owner_scope.isNone())
@@ -1149,10 +1194,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             self.generator_state_machine_scope,
                         );
                     }
+                    attachGeneratorTempProducerBinding(self, ret_temp_binding, ret_temp_span, symbol_id);
+                } else if (self.semantic_edit_enabled) {
+                    // buildControlFlowCheck already registered this exact
+                    // binding with bindHoistedTemp while its callback scope
+                    // was unknown. Preserve that NodeIndex handoff instead of
+                    // rebuilding the producer from its spelling later.
+                    requireCallbackLocalGeneratorTempBinding(self, ret_temp_binding, ret_temp_span);
                 } else {
-                    // A missing call scope is an intentional deferred binding
-                    // path. Its pending handoff is checked when semantic edit
-                    // finishes, so keep the span until that owner is known.
+                    // Semantic-less transforms retain the legacy name-only
+                    // temp list because no producer graph is available.
                     try appendGeneratorTempSpan(self, ret_temp_span);
                 }
             }
@@ -3306,9 +3357,18 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
         generator_count += 1;
 
         for (transformer.generator_temp_producer_identities.items, 0..) |identity, identity_index| {
+            const producer_name = transformer.ast.getText(transformer.generator_temp_var_spans.items[identity_index]);
+            if ((std.mem.startsWith(u8, producer_name, "_ret") or
+                std.mem.startsWith(u8, producer_name, "__zntc_loop_ret")) and
+                identity.source_binding.isNone() and identity.symbol_id != null)
+            {
+                const binding = identity.binding;
+                if (binding.isNone()) return error.MissingLoopReturnProducerBindingHandle;
+                try std.testing.expectEqual(@as(?u32, identity.symbol_id.?), transformer.getSymbolIdAt(binding));
+                try std.testing.expectEqual(ast_mod.Node.Tag.binding_identifier, transformer.ast.getNode(binding).tag);
+            }
             if (!identity.producer_owned) continue;
             direct_producer_count += 1;
-            const producer_name = transformer.ast.getText(transformer.generator_temp_var_spans.items[identity_index]);
             if (std.mem.startsWith(u8, producer_name, "_loop") or
                 std.mem.startsWith(u8, producer_name, "__zntc_loop"))
             {
@@ -4413,4 +4473,42 @@ test "generator state name handoff survives nested cache invalidation" {
     outer_active = false;
     try std.testing.expectEqual(@as(usize, 0), mock.generator_state_refs.items.len);
     try std.testing.expectEqual(@as(u32, 0), mock.state_machine_depth);
+}
+
+test "generator deferred loop return handoff requires one exact binding node" {
+    const Mock = struct {
+        pub const Error = std.mem.Allocator.Error;
+        generator_state_bindings: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var mock = Mock{};
+    defer mock.generator_state_bindings.deinit(allocator);
+    const Generator = ES2015Generator(Mock);
+    const binding: NodeIndex = @fromBackingInt(17);
+    const decoy: NodeIndex = @fromBackingInt(18);
+    const name_span: Span = .{ .start = 30, .end = 34 };
+    const wrong_start_span: Span = .{ .start = 31, .end = 34 };
+    const wrong_end_span: Span = .{ .start = 30, .end = 35 };
+    try mock.generator_state_bindings.append(allocator, .{
+        .binding = binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+
+    try std.testing.expect(Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, name_span));
+    try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, decoy, name_span));
+    try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, wrong_start_span));
+    try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, wrong_end_span));
+
+    mock.generator_state_bindings.items[0].callback_local = false;
+    try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, name_span));
+    mock.generator_state_bindings.items[0].callback_local = true;
+    try mock.generator_state_bindings.append(allocator, .{
+        .binding = binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+    try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, name_span));
 }
