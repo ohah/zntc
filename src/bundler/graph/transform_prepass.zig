@@ -9053,6 +9053,13 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
             module.import_records,
             module.import_bindings,
         );
+        if (module.semantic) |*sem| {
+            binding_scanner_mod.markDefaultExportFacadesFromSemantic(
+                module.export_bindings,
+                sem.symbol_ids,
+                sem.symbols.items,
+            );
+        }
         module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
         @import("requested_exports.zig").computeBarrelFlags(module);
         @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};

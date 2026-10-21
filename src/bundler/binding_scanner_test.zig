@@ -592,7 +592,7 @@ test "populateSyntheticSymbols: low-level caller without SymbolId map retains sc
     try expectSemanticExportSymbol(r.export_bindings[0], 0);
 }
 
-fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
+fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool, parser_expects_facade: bool) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -637,11 +637,17 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
         @as(?u32, @intCast(export_node_index orelse return error.MissingExpectedFacadeNode)),
         scan_export.default_export_node_index,
     );
-    try std.testing.expectEqual(expects_facade, scan_export.has_default_export_facade);
+    try std.testing.expectEqual(parser_expects_facade, scan_export.has_default_export_facade);
+    binding_scanner.markDefaultExportFacadesFromSemantic(
+        export_bindings,
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+    );
+    try std.testing.expectEqual(expects_facade, export_bindings[0].has_default_export_facade);
 
     var alias_table = symbol.AliasTable.init(allocator);
     defer alias_table.deinit();
-    if (expects_facade) {
+    if (expects_facade and source_binding_id != null) {
         const node_index = export_node_index orelse return error.MissingExpectedFacadeNode;
         const saved_id = analyzer.symbol_ids.items[node_index] orelse return error.MissingExpectedFacade;
 
@@ -706,10 +712,11 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
     };
     if (expects_facade) {
         const facade_id = export_node_id orelse return error.MissingExpectedFacade;
-        try std.testing.expect(source_binding_id != null);
-        try std.testing.expect(facade_id != source_binding_id.?);
         try std.testing.expectEqual(facade_id, actual_id);
-        try std.testing.expect(analyzer.symbols.items[source_binding_id.?].synthetic_kind == null);
+        if (source_binding_id) |source_id| {
+            try std.testing.expect(facade_id != source_id);
+            try std.testing.expect(analyzer.symbols.items[source_id].synthetic_kind == null);
+        }
     } else {
         try std.testing.expect(export_node_id == null);
         const binding_id = source_binding_id orelse return error.MissingSourceBinding;
@@ -719,11 +726,19 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
 }
 
 test "#4819 default export facade uses its exact analyzer SymbolId despite `_default` collision" {
-    try expectDefaultExportIdentity("const _default = 7; export default 42;", true);
+    try expectDefaultExportIdentity("const _default = 7; export default 42;", true, true);
 }
 
 test "#4819 default export of source `_default` stays a regular local binding" {
-    try expectDefaultExportIdentity("const _default = 42; export default _default;", false);
+    try expectDefaultExportIdentity("const _default = 42; export default _default;", false, false);
+}
+
+test "#4819 unresolved default identifier facade comes from its exact analyzer node" {
+    try expectDefaultExportIdentity(
+        "globalThis.snapshot = 7; export default snapshot; globalThis.snapshot = 9;",
+        true,
+        false,
+    );
 }
 
 test "#4819 local exports use their exact analyzer SymbolId instead of scope name lookup" {

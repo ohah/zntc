@@ -485,7 +485,16 @@ pub const Codegen = struct {
                 // `export default X`는 반드시 `X$N = X_ns` 할당이 필요.
                 if (md.ns_inline_objects.get(sid) != null) return false;
                 if (self.finalSymbolName(sid)) |name| return std.mem.eql(u8, name, def_name);
+                // The exact SymbolId proves this is a lexical binding. If the
+                // linker selected no rename, codegen keeps the reference's
+                // source spelling, so compare it only within this identity-
+                // resolved branch (never for an unresolved/global identifier).
+                return std.mem.eql(u8, self.ast.getText(inner_node.span), def_name);
             }
+            // A missing exact SymbolId cannot prove a self-reference. In a
+            // bundle, an unresolved identifier may read a global value that a
+            // synthetic default facade must snapshot at module evaluation.
+            return false;
         } else if (self.sourceSymbolId(inner)) |sid| {
             if (self.finalSymbolName(sid)) |name| return std.mem.eql(u8, name, def_name);
         }

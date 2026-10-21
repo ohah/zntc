@@ -41,6 +41,47 @@ export default 42;
     });
   }
 
+  const unresolvedGlobals = [
+    { property: '_default', reference: '_default' },
+    { property: 'snapshot', reference: 'snapshot' },
+    { property: '$default', reference: '$default' },
+    { property: '__default', reference: '__default' },
+    { property: 'defaultValue', reference: 'defaultValue' },
+    { property: 'reference', reference: 'reference' },
+    { property: 'captured', reference: 'captured' },
+    { property: 'moduleValue', reference: 'moduleValue' },
+    { property: 'value_1', reference: 'value_1' },
+    { property: '_default', reference: '\\u005fdefault' },
+  ];
+
+  for (const [index, scenario] of unresolvedGlobals.entries()) {
+    test(`snapshots unresolved global default identifier (${index + 1}/10: ${scenario.reference})`, async () => {
+      const fixture = await createFixture({
+        'entry.mjs': `import value from './dep.mjs';\nconsole.log(JSON.stringify(value));\n`,
+        'dep.mjs':
+          `globalThis[${JSON.stringify(scenario.property)}] = 7;\n` +
+          `export default ${scenario.reference};\n` +
+          `globalThis[${JSON.stringify(scenario.property)}] = 9;\n`,
+      });
+      cleanup = fixture.cleanup;
+
+      const entry = join(fixture.dir, 'entry.mjs');
+      const native = await runNode(entry);
+      expect(native.stderr).toBe('');
+      expect(native.stdout.trim()).toBe('7');
+
+      for (const format of ['esm', 'cjs'] as const) {
+        const output = join(fixture.dir, `bundle.${format === 'esm' ? 'mjs' : 'cjs'}`);
+        const result = await runZntc(['--bundle', entry, '-o', output, `--format=${format}`]);
+        expect(result.exitCode, result.stderr).toBe(0);
+
+        const bundled = await runNode(output);
+        expect(bundled.stderr).toBe('');
+        expect(bundled.stdout).toBe(native.stdout);
+      }
+    });
+  }
+
   for (const flags of [[], ['--minify-identifiers'], ['--minify-identifiers', '--minify-syntax']]) {
     test(`keeps a named source _default when default exports that local (${flags.length ? flags.join(' ') : 'plain'})`, async () => {
       const fixture = await createFixture({

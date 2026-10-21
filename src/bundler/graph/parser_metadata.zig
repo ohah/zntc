@@ -89,6 +89,13 @@ pub fn materialize(
                     .has_default_export_facade = sb.has_default_export_facade,
                 };
             }
+            if (module.semantic) |*sem| {
+                binding_scanner.markDefaultExportFacadesFromSemantic(
+                    ebindings,
+                    sem.symbol_ids,
+                    sem.symbols.items,
+                );
+            }
             module.export_bindings = ebindings;
             module.exported_names = projectExportedNames(arena_alloc, ebindings);
             // barrel 분류 캐시 (export_bindings 가 final 인 시점에 한 번 계산).
