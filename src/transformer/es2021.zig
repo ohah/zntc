@@ -58,10 +58,13 @@ pub fn ES2021(comptime Transformer: type) type {
                 const captured_assign = self.ast.getNode(captured.paren_assign);
                 std.debug.assert(captured_assign.tag == .assignment_expression);
                 if (captured.symbol_id == null) {
-                    try self.trackSyntheticTempReference(
+                    const producer_id = captured.temp_producer_id orelse
+                        std.debug.panic("ES2021 captured temp has no allocator producer identity", .{});
+                    try self.trackCapturedTempReference(
+                        producer_id,
                         captured.span,
-                        node.span,
                         captured_assign.data.binary.left,
+                        self.current_scope,
                         .{ .write = true },
                     );
                 }
@@ -69,7 +72,15 @@ pub fn ES2021(comptime Transformer: type) type {
                 if (captured.symbol_id) |symbol_id| {
                     try self.addSyntheticRefInScope(captured_value, symbol_id, captured.reference_scope, .{ .read = true });
                 } else {
-                    try self.trackSyntheticTempReference(captured.span, node.span, captured_value, .{ .read = true });
+                    const producer_id = captured.temp_producer_id orelse
+                        std.debug.panic("ES2021 captured temp has no allocator producer identity", .{});
+                    try self.trackCapturedTempReference(
+                        producer_id,
+                        captured.span,
+                        captured_value,
+                        self.current_scope,
+                        .{ .read = true },
+                    );
                 }
                 const neq_null = try es_helpers.makeNeqNull(self, captured.paren_assign, node.span);
                 return self.ast.addNode(.{
