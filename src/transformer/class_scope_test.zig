@@ -821,6 +821,109 @@ test "#4819 class computed-key memo binds only its producer reference" {
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
 }
 
+test "#4819 class computed-key handoff keeps a deferred producer handle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const key = 'value'; key;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const program_scope = transformer.programScope();
+    transformer.current_scope = program_scope;
+
+    var key_reference: NodeIndex = .none;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "key")) continue;
+        key_reference = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    if (key_reference.isNone()) return error.MissingComputedKeyReference;
+
+    const none = @backingInt(NodeIndex.none);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const owner_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(owner_params), @backingInt(owner_body), 0, none });
+    const owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = owner_extra },
+    });
+    const owner_scope = try transformer.addGeneratedFunctionScope(program_scope, owner);
+
+    transformer.state_machine_depth = 1;
+    const capture = try es_helpers.captureToTrackedTemp(&transformer, key_reference, .EMPTY);
+    try std.testing.expect(capture.symbol_id == null);
+    const producer_id = capture.temp_producer_id orelse return error.MissingTempProducerHandle;
+    const read = try es_helpers.makeCapturedTempRef(&transformer, capture, .EMPTY, .{ .read = true });
+    transformer.state_machine_depth = 0;
+
+    var classified = Members.ClassifiedMembers{
+        .constructor_idx = null,
+        .methods = .empty,
+        .instance_fields = .empty,
+        .static_elements = .empty,
+        .accessors = .empty,
+        .private_fields = .empty,
+        .static_private_fields = .empty,
+        .private_methods = .empty,
+    };
+    defer classified.deinit(allocator);
+    try classified.computed_key_temp_reads.append(allocator, read);
+    const decoy = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, capture.span);
+    try classified.computed_key_temp_reads.append(allocator, decoy);
+
+    // The owner link must survive without the temp-name span indexes.
+    transformer.temp_span_by_counter.clearRetainingCapacity();
+    transformer.temp_symbol_ids_by_counter.clearRetainingCapacity();
+    try Members.bindComputedKeyTemps(&transformer, &classified, owner_scope, .EMPTY);
+
+    const binding = try es_helpers.makeSyntheticBinding(&transformer, capture.span);
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        capture.span,
+        .EMPTY,
+        program_scope,
+        null,
+        producer_id,
+    );
+
+    const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.MissingTempBindingSymbol;
+    try std.testing.expectEqual(@as(?u32, symbol_id), transformer.getSymbolIdAt(read));
+    try std.testing.expect(transformer.getSymbolIdAt(decoy) == null);
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const reference = (try editor.referenceForNode(read)) orelse return error.MissingComputedKeyReferenceRecord;
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(@intCast(symbol_id))), reference.symbol_id);
+    try std.testing.expectEqual(owner_scope, reference.scope_id);
+    try std.testing.expect(reference.flags.read);
+    try std.testing.expect(!reference.flags.write);
+    try std.testing.expect((try editor.referenceForNode(decoy)) == null);
+    const write = transformer.ast.getNode(capture.paren_assign).data.binary.left;
+    try std.testing.expectEqual(@as(?u32, symbol_id), transformer.getSymbolIdAt(write));
+    const write_reference = (try editor.referenceForNode(write)) orelse return error.MissingCapturedTempWrite;
+    try std.testing.expectEqual(program_scope, write_reference.scope_id);
+    try std.testing.expect(write_reference.flags.write);
+    try std.testing.expect(!write_reference.flags.read);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_producer_refs.items.len);
+}
+
 test "#4819 static-block computed-key memo owns an exact producer identity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

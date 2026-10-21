@@ -591,10 +591,12 @@ pub fn trackKnownHoistedTempRef(
     const ref = self.ast.getNode(node);
     if (ref.tag != .identifier_reference and ref.tag != .assignment_target_identifier) return false;
     const name_span = ref.data.string_ref;
+    const has_pending_producer = try self.trackPendingTempProducerReferenceInScope(node, scope, flags);
     if (producerTempSymbolIdAtRef(self, node)) |producer_id| {
         if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
             return true;
     }
+    if (has_pending_producer) return true;
     if (producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
         if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
             return true;

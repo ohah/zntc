@@ -3531,6 +3531,39 @@ pub fn trackCapturedTempReference(
     });
 }
 
+/// Retarget a deferred producer-owned reference after lowering moves it into
+/// an owner scope. The stable producer ID was recorded when the reference was
+/// created, so this handoff does not need to rediscover the temp by its span.
+pub fn trackPendingTempProducerReferenceInScope(
+    self: *Transformer,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!bool {
+    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone()) return false;
+    if (@backingInt(node) >= self.ast.nodes.items.len) return editError(error.InvalidSymbol);
+    const editor = try editorFor(self);
+    if (@backingInt(scope) >= editor.scopes.items.len) return editError(error.InvalidSymbol);
+    const reference = self.ast.getNode(node);
+    if (reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) return false;
+
+    var found: ?usize = null;
+    for (self.pending_temp_producer_refs.items, 0..) |pending, index| {
+        if (pending.node != node) continue;
+        if (pending.temp_producer_id == 0 or pending.scope.isNone() or
+            @backingInt(pending.scope) >= editor.scopes.items.len or
+            pending.name_span.start != reference.data.string_ref.start or
+            pending.name_span.end != reference.data.string_ref.end or
+            !std.meta.eql(pending.flags, flags))
+            return editError(error.InvalidSymbol);
+        if (found != null) return editError(error.InvalidSymbol);
+        found = index;
+    }
+    const index = found orelse return false;
+    self.pending_temp_producer_refs.items[index].scope = scope;
+    return true;
+}
+
 /// Attach a generated `var` temp reference to an identity reserved at its
 /// first use when the output scope is known. Parameter environments and
 /// state-machine callbacks keep using the deferred hoist path until their
