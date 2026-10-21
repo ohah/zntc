@@ -2164,7 +2164,6 @@ pub const AssignmentTargetRef = struct {
 
 const AssignmentTempRefs = struct {
     identity: TempIdentityCapture,
-    declaration_span: Span,
     first_write: NodeIndex,
     value_read: NodeIndex,
     write_read: NodeIndex,
@@ -2187,9 +2186,11 @@ pub fn trackAssignmentTargetRefs(self: anytype, target: AssignmentTargetRef, use
             if (use_write)
                 try self.addSyntheticRefInScope(temp.write_read, symbol_id, temp.identity.reference_scope, .{ .read = true });
         } else {
-            try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.first_write, .{ .write = true });
-            if (use_value) try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.value_read, .{ .read = true });
-            if (use_write) try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.write_read, .{ .read = true });
+            try trackDeferredTempIdentityReference(self, temp.identity, temp.first_write, self.current_scope, .{ .write = true });
+            if (use_value)
+                try trackDeferredTempIdentityReference(self, temp.identity, temp.value_read, self.current_scope, .{ .read = true });
+            if (use_write)
+                try trackDeferredTempIdentityReference(self, temp.identity, temp.write_read, self.current_scope, .{ .read = true });
         }
     }
     for (target.references) |maybe_reference| {
@@ -2303,7 +2304,6 @@ fn makeSingleEvalExpr(
         .write = write_ref,
         .temp = .{
             .identity = identity,
-            .declaration_span = span,
             .first_write = temp_lhs,
             .value_read = value_ref,
             .write_read = write_ref,
@@ -2353,7 +2353,26 @@ pub const TempIdentityCapture = struct {
     /// lexical scope of its references when a state-machine callback is still
     /// being assembled.
     owner_scope: ScopeId = .none,
+    /// Stable allocator identity for deferred references whose output binding
+    /// is not known when this handle is created.
+    temp_producer_id: ?u64 = null,
 };
+
+/// Keep a deferred reference attached to the allocator producer carried by
+/// its reservation. Deferred identity handles must never recover this link
+/// from a generated name or source span.
+pub fn trackDeferredTempIdentityReference(
+    self: anytype,
+    capture: TempIdentityCapture,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !void {
+    if (!self.semantic_edit_enabled) return;
+    const producer_id = capture.temp_producer_id orelse
+        std.debug.panic("deferred temp identity has no stable producer ID", .{});
+    try self.trackCapturedTempReference(producer_id, capture.span, node, scope, flags);
+}
 
 pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempIdentityCapture {
     const temp_span = try makeTempVarSpan(self);
@@ -2370,6 +2389,7 @@ pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempId
         .symbol_id = if (identity) |exact| exact.symbol_id else null,
         .reference_scope = if (identity) |exact| exact.reference_scope else .none,
         .owner_scope = if (identity) |exact| exact.reference_scope else .none,
+        .temp_producer_id = self.temp_producer_id_by_counter.get(counter_index),
     };
 }
 
@@ -2523,7 +2543,7 @@ pub fn makeCapturedTempRef(
 }
 
 /// Create a read/write from a temp reservation without looking up its generated
-/// spelling again. Deferred owners retain the existing pending handoff.
+/// spelling again. Deferred owners retain the allocator producer ID.
 pub fn makeTempRefFromIdentity(
     self: anytype,
     capture: TempIdentityCapture,
@@ -2536,7 +2556,7 @@ pub fn makeTempRefFromIdentity(
             std.debug.panic("reserved temp SymbolId has no reference scope", .{});
         try self.addSyntheticRefInScope(ref, symbol_id, capture.reference_scope, flags);
     } else {
-        try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+        try trackDeferredTempIdentityReference(self, capture, ref, self.current_scope, flags);
     }
     return ref;
 }
