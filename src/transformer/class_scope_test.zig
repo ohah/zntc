@@ -4,8 +4,10 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Ast = @import("../parser/ast.zig").Ast;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const MethodExtra = @import("../parser/ast.zig").MethodExtra;
+const Span = @import("../lexer/token.zig").Span;
 const ast_walk = @import("../parser/ast_walk.zig");
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const coverage = @import("symbol_coverage.zig");
@@ -518,6 +520,265 @@ test "#4819 ES5 computed super assignment and update temps have exact identity" 
         try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
     }
     try std.testing.expect(exact_temp_findings >= 5);
+}
+
+fn expectES5SuperPropertyTempProducerIdentity(source: []const u8, operation: []const u8, expect_block_scope: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var operation_span: ?Span = null;
+    for (parser.ast.nodes.items) |node| {
+        if (!std.mem.eql(u8, parser.ast.getText(node.span), operation)) continue;
+        operation_span = node.span;
+        break;
+    }
+    const expected_operation_span = operation_span orelse return error.MissingSuperPropertyOperation;
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var expected_reference_scope: ?ScopeId = null;
+    var smallest_block_span: usize = std.math.maxInt(usize);
+    if (expect_block_scope) {
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .block_statement or
+                node.span.start > expected_operation_span.start or node.span.end < expected_operation_span.end)
+                continue;
+            const scope_raw = analyzer.scope_owner_map.get(@intCast(raw)) orelse continue;
+            const span_len = node.span.end - node.span.start;
+            if (span_len >= smallest_block_span) continue;
+            expected_reference_scope = @fromBackingInt(scope_raw);
+            smallest_block_span = span_len;
+        }
+    }
+    if (expect_block_scope and expected_reference_scope == null) return error.MissingNestedSuperPropertyScope;
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    if (expected_reference_scope) |scope|
+        try std.testing.expect(scope != transformer.nearestVarScope(scope));
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+    var matching_bindings: usize = 0;
+    for (editor.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, raw_id| {
+        if (symbol.kind != .variable_var or
+            symbol.declaration_span.start != expected_operation_span.start or
+            symbol.declaration_span.end != expected_operation_span.end)
+            continue;
+
+        const id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(raw_id))));
+        // The producer is created with a known owner, so references and the
+        // later hoisted declaration must share the producer-map identity. The
+        // span/scope registry must not be the source of that identity.
+        var producer_matches: usize = 0;
+        var producer_id: ?u64 = null;
+        var producers = transformer.temp_symbols_by_producer_id.iterator();
+        while (producers.next()) |entry| {
+            if (entry.value_ptr.* != raw_id) continue;
+            producer_id = entry.key_ptr.*;
+            producer_matches += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), producer_matches);
+        const exact_producer_id = producer_id orelse return error.MissingSuperPropertyProducerId;
+        try std.testing.expect(transformer.lookupSyntheticTempSymbol(symbol.name, symbol.scope_id) == null);
+
+        var matching_slots: usize = 0;
+        var slots = transformer.temp_symbol_ids_by_counter.iterator();
+        while (slots.next()) |slot| {
+            if (slot.value_ptr.* != raw_id) continue;
+            const slot_producer_id = transformer.temp_producer_id_by_counter.get(slot.key_ptr.*) orelse continue;
+            const slot_span = transformer.temp_span_by_counter.get(slot.key_ptr.*) orelse continue;
+            if (slot_producer_id != exact_producer_id or
+                slot_span.start != symbol.name.start or slot_span.end != symbol.name.end)
+                continue;
+            matching_slots += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), matching_slots);
+
+        var read_count: usize = 0;
+        var write_count: usize = 0;
+        for (editor.references.items) |reference| {
+            if (reference.symbol_id != id or reference.node_index.isNone()) continue;
+            try std.testing.expect(editor.symbolVisibleFrom(id, reference.scope_id));
+            try std.testing.expectEqual(symbol.scope_id, transformer.nearestVarScope(reference.scope_id));
+            if (expected_reference_scope) |expected_scope|
+                try std.testing.expectEqual(expected_scope, reference.scope_id);
+            const ref_node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expect(ref_node.tag == .identifier_reference or ref_node.tag == .assignment_target_identifier);
+            try std.testing.expectEqual(symbol.name.start, ref_node.data.string_ref.start);
+            try std.testing.expectEqual(symbol.name.end, ref_node.data.string_ref.end);
+            if (reference.flags.read) read_count += 1;
+            if (reference.flags.write) write_count += 1;
+        }
+        try std.testing.expect(read_count + write_count > 0);
+        matching_bindings += 1;
+    }
+    try std.testing.expect(matching_bindings > 0);
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= edited.symbol_ids.len) continue;
+        const id = edited.symbol_ids[raw] orelse continue;
+        if (transformer.ast.nodes.items[raw].tag != .identifier_reference and
+            transformer.ast.nodes.items[raw].tag != .assignment_target_identifier)
+            continue;
+        const reference = (try editor.referenceForNode(@fromBackingInt(raw))) orelse continue;
+        try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+    }
+}
+
+test "#4819 ES5 computed super-property temps stay attached to their allocator producer IDs" {
+    const cases = [_]struct { source: []const u8, operation: []const u8, expect_block_scope: bool = false }{
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { return super[key] += delta; } }", .operation = "super[key] += delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { return super[key] -= delta; } }", .operation = "super[key] -= delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { return super[key] *= delta; } }", .operation = "super[key] *= delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { return super[key] |= delta; } }", .operation = "super[key] |= delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, rhs) { return super[key] &&= rhs; } }", .operation = "super[key] &&= rhs" },
+        .{ .source = "class Base {} class Child extends Base { method(key, rhs) { return super[key] ||= rhs; } }", .operation = "super[key] ||= rhs" },
+        .{ .source = "class Base {} class Child extends Base { method(key) { return super[key]++; } }", .operation = "super[key]++" },
+        .{ .source = "class Base {} class Child extends Base { method(key) { return super[key]--; } }", .operation = "super[key]--" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta, log) { eval('typeof _a'); return super[(log.push('key'), key)] += delta; } }", .operation = "super[(log.push('key'), key)] += delta" },
+        .{ .source = "class Base {} class Child extends Base { static method(key, delta) { const read = () => eval('typeof _b'); return super[Symbol.for(key)] += delta; } }", .operation = "super[Symbol.for(key)] += delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { const nested = () => super[key] += delta; return nested(); } }", .operation = "super[key] += delta" },
+        .{ .source = "class Base {} class Child extends Base { method(key, delta) { if (key) { return super[key] += delta; } return 0; } }", .operation = "super[key] += delta", .expect_block_scope = true },
+    };
+    for (cases) |case| try expectES5SuperPropertyTempProducerIdentity(case.source, case.operation, case.expect_block_scope);
+}
+
+test "#4819 reused super-temp allocator slots keep distinct producer identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const seed = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const no_node = @backingInt(NodeIndex.none);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const extra = try transformer.ast.addExtras(&.{ no_node, @backingInt(params), @backingInt(body), 0, no_node });
+    const first_owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = extra },
+    });
+    const second_owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = extra },
+    });
+    const program_scope = transformer.programScope();
+    const first_scope = try transformer.addGeneratedFunctionScope(program_scope, first_owner);
+    const second_scope = try transformer.addGeneratedFunctionScope(program_scope, second_owner);
+    try std.testing.expect(first_scope != second_scope);
+
+    const saved_temp_counter = transformer.temp_var_counter;
+    transformer.current_scope = first_scope;
+    const first_span = try es_helpers.makeTempVarSpan(&transformer);
+    const first_counter = transformer.temp_var_counter - 1;
+    const first_producer = transformer.temp_producer_id_by_counter.get(first_counter) orelse
+        return error.MissingFirstSuperTempProducer;
+    const first_id = (try transformer.reserveSyntheticTempSymbolForProducerInScope(
+        first_producer,
+        first_span,
+        .EMPTY,
+        first_scope,
+    )) orelse return error.MissingFirstSuperTempSymbol;
+    const first_binding = try transformer.createSyntheticTempBindingWithIdentity(first_span, first_scope, first_id);
+    try std.testing.expectEqual(first_id, first_binding.symbol_id.?);
+    try transformer.temp_symbol_ids_by_counter.put(allocator, first_counter, @backingInt(first_id));
+    const first_reference = try es_helpers.makeExactSyntheticRefAt(&transformer, first_span, .EMPTY);
+    try transformer.addSyntheticRefInScope(first_reference, first_id, first_scope, .{ .read = true });
+
+    // Match the class lowerer's saved-counter restoration before a later owner
+    // allocates again at slot zero. The generated spelling interns to the same
+    // Span, while the allocator must issue a new producer handle.
+    transformer.temp_var_counter = saved_temp_counter;
+    transformer.current_scope = second_scope;
+    _ = try es_helpers.makeTempVarSpan(&transformer);
+    const second_counter = transformer.temp_var_counter - 1;
+    const second_producer = transformer.temp_producer_id_by_counter.get(second_counter) orelse
+        return error.MissingSecondSuperTempProducer;
+    // Force the restored allocator slot to alias the first interned spelling
+    // under another owner scope. The second producer still needs its own ID.
+    try transformer.temp_span_by_counter.put(allocator, second_counter, first_span);
+    const second_span = first_span;
+    const second_id = (try transformer.reserveSyntheticTempSymbolForProducerInScope(
+        second_producer,
+        second_span,
+        .EMPTY,
+        second_scope,
+    )) orelse return error.MissingSecondSuperTempSymbol;
+    const second_binding = try transformer.createSyntheticTempBindingWithIdentity(second_span, second_scope, second_id);
+    try std.testing.expectEqual(second_id, second_binding.symbol_id.?);
+    try transformer.temp_symbol_ids_by_counter.put(allocator, second_counter, @backingInt(second_id));
+    const second_reference = try es_helpers.makeExactSyntheticRefAt(&transformer, second_span, .EMPTY);
+    try transformer.addSyntheticRefInScope(second_reference, second_id, second_scope, .{ .read = true });
+
+    try std.testing.expectEqual(first_counter, second_counter);
+    try std.testing.expectEqual(first_span.start, second_span.start);
+    try std.testing.expectEqual(first_span.end, second_span.end);
+    try std.testing.expect(first_producer != second_producer);
+    try std.testing.expect(first_id != second_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(first_id)), transformer.temp_symbols_by_producer_id.get(first_producer));
+    try std.testing.expectEqual(@as(?u32, @backingInt(second_id)), transformer.temp_symbols_by_producer_id.get(second_producer));
+    try std.testing.expectEqual(@as(?u64, second_producer), transformer.temp_producer_id_by_counter.get(second_counter));
+    try std.testing.expectEqual(@as(?u32, @backingInt(second_id)), transformer.temp_symbol_ids_by_counter.get(second_counter));
+    try std.testing.expect(transformer.lookupSyntheticTempSymbol(first_span, first_scope) == null);
+    try std.testing.expect(transformer.lookupSyntheticTempSymbol(second_span, second_scope) == null);
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const first_record = (try editor.referenceForNode(first_reference)) orelse return error.MissingFirstSuperTempReference;
+    const second_record = (try editor.referenceForNode(second_reference)) orelse return error.MissingSecondSuperTempReference;
+    try std.testing.expectEqual(first_id, first_record.symbol_id);
+    try std.testing.expectEqual(second_id, second_record.symbol_id);
+    try std.testing.expectEqual(first_scope, first_record.scope_id);
+    try std.testing.expectEqual(second_scope, second_record.scope_id);
+    try std.testing.expect(editor.symbolVisibleFrom(first_id, first_record.scope_id));
+    try std.testing.expect(editor.symbolVisibleFrom(second_id, second_record.scope_id));
 }
 
 test "#4819 lexical this captures receive late names through exact SymbolIds" {

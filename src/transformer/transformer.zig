@@ -1062,6 +1062,7 @@ pub const Transformer = struct {
     pub const objectSuperTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").objectSuperTempOutputScopeIsDeferred;
     pub const loweredParameterEnvironmentOutputScope = @import("transformer/semantic_edit.zig").loweredParameterEnvironmentOutputScope;
     pub const lookupSyntheticTempSymbol = @import("transformer/semantic_edit.zig").lookupSyntheticTempSymbol;
+    pub const reserveSyntheticTempSymbolForProducerInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolForProducerInScope;
     pub const forgetSyntheticTempSymbolLookup = @import("transformer/semantic_edit.zig").forgetSyntheticTempSymbolLookup;
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const addGeneratedCatchScope = @import("transformer/semantic_edit.zig").addGeneratedCatchScope;
