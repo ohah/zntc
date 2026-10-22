@@ -7622,15 +7622,15 @@ fn validToBinaryRuntimeHelperSymbol(symbol_id: SemanticSymbolId, symbols: []cons
         std.mem.eql(u8, symbol.synthetic_name, "__toBinary");
 }
 
-const ToBinaryReanalysisTestFixture = struct {
+const RuntimeHelperReanalysisTestFixture = struct {
     ast: ast_mod.Ast,
     semantic: ModuleSemanticData,
 };
 
-fn toBinaryReanalysisTestFixture(
+fn runtimeHelperReanalysisTestFixture(
     allocator: std.mem.Allocator,
     source: []const u8,
-) !ToBinaryReanalysisTestFixture {
+) !RuntimeHelperReanalysisTestFixture {
     var scanner = try Scanner.init(allocator, source);
     scanner.is_module = true;
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
@@ -7677,6 +7677,95 @@ fn toBinaryReanalysisTestSymbol() SemanticSymbol {
     return symbol;
 }
 
+const EsmRuntimeReanalysisTestRows = struct {
+    factory_id: SemanticSymbolId,
+    internal_ids: EsmRuntimeInternalSymbolIds,
+    factory_symbol: SemanticSymbol,
+    internal_symbols: [5]SemanticSymbol,
+};
+
+fn esmRuntimeReanalysisTestFactorySymbol() SemanticSymbol {
+    var symbol = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 0, "__esm");
+    symbol.scope_id = .none;
+    symbol.decl_flags = SemanticSymbolKind.variable_var.declFlags();
+    symbol.output_name_hint = "__esm$producer";
+    symbol.reference_count = 2;
+    symbol.write_count = 1;
+    return symbol;
+}
+
+fn esmRuntimeReanalysisTestInternalSymbols() [5]SemanticSymbol {
+    const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+    const kinds = [_]SemanticSymbolKind{
+        .parameter,
+        .parameter,
+        .catch_binding,
+        .function_decl,
+        .variable_var,
+    };
+    const synthetic_names = [_][]const u8{
+        names.factory_parameter,
+        names.result_parameter,
+        names.catch_parameter,
+        names.init_function,
+        names.factory_local,
+    };
+    var symbols: [5]SemanticSymbol = undefined;
+    for (kinds, 0..) |kind, index| {
+        var symbol = graphOwnedSyntheticRenameTestSymbol(
+            .esm_runtime_internal_local,
+            kind,
+            0,
+            synthetic_names[index],
+        );
+        symbol.scope_id = .none;
+        symbol.decl_flags = kind.declFlags();
+        symbol.output_name_hint = "esm-internal$producer";
+        symbol.reference_count = @intCast(index + 1);
+        symbol.write_count = 1;
+        symbols[index] = symbol;
+    }
+    return symbols;
+}
+
+fn appendEsmRuntimeReanalysisTestRows(
+    allocator: std.mem.Allocator,
+    symbols: *std.ArrayList(SemanticSymbol),
+) !EsmRuntimeReanalysisTestRows {
+    const factory_symbol = esmRuntimeReanalysisTestFactorySymbol();
+    const factory_id: SemanticSymbolId = @fromBackingInt(@intCast(symbols.items.len));
+    try symbols.append(allocator, factory_symbol);
+
+    const internal_symbols = esmRuntimeReanalysisTestInternalSymbols();
+    var internal_ids: [5]SemanticSymbolId = undefined;
+    for (internal_symbols, 0..) |symbol, index| {
+        internal_ids[index] = @fromBackingInt(@intCast(symbols.items.len));
+        try symbols.append(allocator, symbol);
+    }
+    return .{
+        .factory_id = factory_id,
+        .internal_ids = .{
+            .factory_parameter = internal_ids[0],
+            .result_parameter = internal_ids[1],
+            .catch_parameter = internal_ids[2],
+            .init_function = internal_ids[3],
+            .factory_local = internal_ids[4],
+        },
+        .factory_symbol = factory_symbol,
+        .internal_symbols = internal_symbols,
+    };
+}
+
+fn esmRuntimeReanalysisTestIdsAt(first_internal_index: usize) EsmRuntimeInternalSymbolIds {
+    return .{
+        .factory_parameter = @fromBackingInt(@intCast(first_internal_index)),
+        .result_parameter = @fromBackingInt(@intCast(first_internal_index + 1)),
+        .catch_parameter = @fromBackingInt(@intCast(first_internal_index + 2)),
+        .init_function = @fromBackingInt(@intCast(first_internal_index + 3)),
+        .factory_local = @fromBackingInt(@intCast(first_internal_index + 4)),
+    };
+}
+
 test "toBinary runtime helper producer row survives hostile semantic reanalysis" {
     const HostileSource = struct {
         source: []const u8,
@@ -7699,7 +7788,7 @@ test "toBinary runtime helper producer row survives hostile semantic reanalysis"
     defer test_arena.deinit();
     const allocator = test_arena.allocator();
 
-    var old_semantic = (try toBinaryReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
+    var old_semantic = (try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
     try old_semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
     const old_id: SemanticSymbolId = @fromBackingInt(@intCast(old_semantic.symbols.items.len - 1));
     const old_symbol = old_semantic.symbols.items[@backingInt(old_id)];
@@ -7711,7 +7800,7 @@ test "toBinary runtime helper producer row survives hostile semantic reanalysis"
     module.parse_arena = &test_arena;
 
     for (hostile_sources) |hostile| {
-        const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, hostile.source);
+        const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, hostile.source);
         const fresh_len = fresh_fixture.semantic.symbols.items.len;
         var saw_source_binding = false;
         for (fresh_fixture.semantic.symbols.items) |symbol| {
@@ -7755,7 +7844,7 @@ test "toBinary runtime helper reanalysis carry fails closed on invalid producer 
     var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer test_arena.deinit();
     const allocator = test_arena.allocator();
-    const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, "const live = 1;");
+    const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, "const live = 1;");
     const fresh_len = fresh_fixture.semantic.symbols.items.len;
     var module = Module.init(@fromBackingInt(@intCast(0)), "to-binary-invalid.js");
     module.semantic = fresh_fixture.semantic;
@@ -7763,7 +7852,7 @@ test "toBinary runtime helper reanalysis carry fails closed on invalid producer 
     try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, null, allocator);
     try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
     module.to_binary_runtime_symbol = null;
-    const previous = try toBinaryReanalysisTestFixture(allocator, "const previous = 1;");
+    const previous = try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;");
     try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, previous.semantic, allocator);
     try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
 
@@ -7773,7 +7862,7 @@ test "toBinary runtime helper reanalysis carry fails closed on invalid producer 
         graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_let, 0, "__toBinary"),
     };
     for (invalid_rows) |invalid_row| {
-        var previous_with_invalid_row = try toBinaryReanalysisTestFixture(allocator, "const prior = 1;");
+        var previous_with_invalid_row = try runtimeHelperReanalysisTestFixture(allocator, "const prior = 1;");
         try previous_with_invalid_row.semantic.symbols.append(allocator, invalid_row);
         module.to_binary_runtime_symbol = @fromBackingInt(@intCast(previous_with_invalid_row.semantic.symbols.items.len - 1));
         try std.testing.expectError(
@@ -7783,7 +7872,7 @@ test "toBinary runtime helper reanalysis carry fails closed on invalid producer 
         try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
     }
 
-    var previous_with_valid_row = try toBinaryReanalysisTestFixture(allocator, "const prior = 1;");
+    var previous_with_valid_row = try runtimeHelperReanalysisTestFixture(allocator, "const prior = 1;");
     try previous_with_valid_row.semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
     module.to_binary_runtime_symbol = @fromBackingInt(@intCast(previous_with_valid_row.semantic.symbols.items.len));
     try std.testing.expectError(
@@ -7805,8 +7894,8 @@ test "toBinary runtime helper reanalysis preserves its rename through the produc
     const allocator = test_arena.allocator();
     const old_source = "const previous = 1;";
     const new_source = "let __toBinary = 1; const later = 2;";
-    var old_fixture = try toBinaryReanalysisTestFixture(allocator, old_source);
-    const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, new_source);
+    var old_fixture = try runtimeHelperReanalysisTestFixture(allocator, old_source);
+    const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, new_source);
     try old_fixture.semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
     const old_id: SemanticSymbolId = @fromBackingInt(@intCast(old_fixture.semantic.symbols.items.len - 1));
     const old_symbol = old_fixture.semantic.symbols.items[@backingInt(old_id)];
@@ -7845,6 +7934,249 @@ test "toBinary runtime helper reanalysis preserves its rename through the produc
     const pending_key = bundler_symbol.SymbolID.make(module.index, @backingInt(new_id));
     try std.testing.expectEqual(@as(u32, 1), module.pending_renames.count());
     try std.testing.expectEqualStrings("__toBinary$producer", module.pending_renames.get(pending_key).?);
+}
+
+test "ESM runtime helper producer group survives hostile semantic reanalysis" {
+    const HostileSource = struct {
+        source: []const u8,
+        binding_name: []const u8,
+        has_source_binding: bool,
+    };
+    const hostile_sources = [_]HostileSource{
+        .{ .source = "let __esm;", .binding_name = "__esm", .has_source_binding = true },
+        .{ .source = "const __esm = 1;", .binding_name = "__esm", .has_source_binding = true },
+        .{ .source = "function __esm() { return 1; }", .binding_name = "__esm", .has_source_binding = true },
+        .{ .source = "class __esm {}", .binding_name = "__esm", .has_source_binding = true },
+        .{ .source = "function nested(fn) { return fn; }", .binding_name = "fn", .has_source_binding = true },
+        .{ .source = "function nested() { let res; return res; }", .binding_name = "res", .has_source_binding = true },
+        .{ .source = "try { throw 1; } catch (e) { void e; }", .binding_name = "e", .has_source_binding = true },
+        .{ .source = "function __init() {}", .binding_name = "__init", .has_source_binding = true },
+        .{ .source = "const [f] = [1];", .binding_name = "f", .has_source_binding = true },
+        .{ .source = "const holder = { __esm: 1 }; holder.__esm;", .binding_name = "__esm", .has_source_binding = false },
+    };
+    const rename_names = [_][]const u8{
+        "__esm$factory",
+        "fn$factory_parameter",
+        "res$result_parameter",
+        "e$catch_parameter",
+        "__init$init_function",
+        "f$factory_local",
+    };
+
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+
+    var old_semantic = (try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
+    const old_rows = try appendEsmRuntimeReanalysisTestRows(allocator, &old_semantic.symbols);
+    var old_renames = try allocator.alloc(?[]const u8, old_semantic.symbols.items.len);
+    @memset(old_renames, null);
+    old_renames[@backingInt(old_rows.factory_id)] = rename_names[0];
+    for (esmRuntimeInternalRenameSlots(old_rows.internal_ids), 0..) |slot, index| {
+        old_renames[@backingInt(slot.symbol_id)] = rename_names[index + 1];
+    }
+
+    var module = Module.init(@fromBackingInt(@intCast(19)), "esm-runtime-shadow.js");
+    module.parse_arena = &test_arena;
+    for (hostile_sources) |hostile| {
+        const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, hostile.source);
+        const fresh_len = fresh_fixture.semantic.symbols.items.len;
+        var saw_source_binding = false;
+        for (fresh_fixture.semantic.symbols.items) |symbol| {
+            if (symbol.synthetic_kind != null) continue;
+            if (std.mem.eql(u8, fresh_fixture.ast.getText(symbol.name), hostile.binding_name)) {
+                saw_source_binding = true;
+                break;
+            }
+        }
+        try std.testing.expectEqual(hostile.has_source_binding, saw_source_binding);
+
+        module.semantic = fresh_fixture.semantic;
+        module.esm_runtime_factory_symbol = old_rows.factory_id;
+        module.esm_runtime_internal_symbols = old_rows.internal_ids;
+        try carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, old_semantic, allocator);
+
+        const expected_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(fresh_len));
+        const expected_internal_ids = esmRuntimeReanalysisTestIdsAt(fresh_len + 1);
+        try std.testing.expectEqual(expected_factory_id, module.esm_runtime_factory_symbol.?);
+        try std.testing.expectEqualDeep(expected_internal_ids, module.esm_runtime_internal_symbols.?);
+        const new_symbols = module.semantic.?.symbols.items;
+        try std.testing.expectEqual(fresh_len + 6, new_symbols.len);
+        try std.testing.expectEqualDeep(old_rows.factory_symbol, new_symbols[@backingInt(expected_factory_id)]);
+        const new_internal_rows = esmRuntimeReanalysisTestInternalSymbols();
+        for (new_internal_rows, 0..) |expected_symbol, index| {
+            try std.testing.expectEqualDeep(expected_symbol, new_symbols[fresh_len + index + 1]);
+        }
+
+        var rebuilt: bundler_symbol.RenameTable = .{};
+        defer rebuilt.deinit(std.testing.allocator);
+        try remapEsmRuntimeFactoryRename(
+            std.testing.allocator,
+            module.index,
+            old_semantic.symbols.items,
+            new_symbols,
+            old_renames,
+            old_rows.factory_id,
+            module.esm_runtime_factory_symbol,
+            &rebuilt,
+        );
+        try remapEsmRuntimeInternalRenames(
+            std.testing.allocator,
+            module.index,
+            old_semantic.symbols.items,
+            new_symbols,
+            old_renames,
+            old_rows.internal_ids,
+            module.esm_runtime_internal_symbols,
+            &rebuilt,
+        );
+        try std.testing.expectEqual(@as(u32, 6), rebuilt.count());
+        const factory_key = bundler_symbol.SymbolID.make(module.index, @backingInt(expected_factory_id));
+        try std.testing.expectEqualStrings(rename_names[0], rebuilt.get(factory_key).?);
+        for (esmRuntimeInternalRenameSlots(expected_internal_ids), 0..) |slot, index| {
+            const key = bundler_symbol.SymbolID.make(module.index, @backingInt(slot.symbol_id));
+            try std.testing.expectEqualStrings(rename_names[index + 1], rebuilt.get(key).?);
+        }
+    }
+}
+
+test "ESM runtime helper reanalysis carry fails closed on invalid producer evidence" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, "const live = 1;");
+    const fresh_len = fresh_fixture.semantic.symbols.items.len;
+    var module = Module.init(@fromBackingInt(@intCast(0)), "esm-runtime-invalid.js");
+    module.semantic = fresh_fixture.semantic;
+
+    try carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, null, allocator);
+    try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+    try carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, fresh_fixture.semantic, allocator);
+    try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+
+    var valid_previous = try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;");
+    const valid_rows = try appendEsmRuntimeReanalysisTestRows(allocator, &valid_previous.semantic.symbols);
+    module.esm_runtime_factory_symbol = valid_rows.factory_id;
+    module.esm_runtime_internal_symbols = null;
+    try std.testing.expectError(
+        error.MissingEsmRuntimeInternalProducerSymbols,
+        carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, valid_previous.semantic, allocator),
+    );
+
+    const invalid_factory_rows = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.runtime_helper_preamble, .variable_var, 0, "__esm"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_let, 0, "__esm"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 0, "__toBinary"),
+    };
+    for (invalid_factory_rows) |invalid_factory| {
+        var previous = try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;");
+        const invalid_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(previous.semantic.symbols.items.len));
+        try previous.semantic.symbols.append(allocator, invalid_factory);
+        module.esm_runtime_factory_symbol = invalid_factory_id;
+        module.esm_runtime_internal_symbols = null;
+        try std.testing.expectError(
+            error.InvalidEsmRuntimeFactoryProducerSymbol,
+            carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, previous.semantic, allocator),
+        );
+        try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+    }
+
+    module.esm_runtime_factory_symbol = @fromBackingInt(@intCast(valid_previous.semantic.symbols.items.len));
+    try std.testing.expectError(
+        error.InvalidEsmRuntimeFactoryProducerSymbol,
+        carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, valid_previous.semantic, allocator),
+    );
+
+    var previous_with_bad_internal = try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;");
+    const bad_internal_rows = try appendEsmRuntimeReanalysisTestRows(allocator, &previous_with_bad_internal.semantic.symbols);
+    previous_with_bad_internal.semantic.symbols.items[@backingInt(bad_internal_rows.internal_ids.factory_parameter)] =
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .parameter, 0, "fn");
+    module.esm_runtime_factory_symbol = bad_internal_rows.factory_id;
+    module.esm_runtime_internal_symbols = bad_internal_rows.internal_ids;
+    try std.testing.expectError(
+        error.InvalidEsmRuntimeInternalProducerSymbols,
+        carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, previous_with_bad_internal.semantic, allocator),
+    );
+
+    module.semantic = null;
+    module.esm_runtime_factory_symbol = valid_rows.factory_id;
+    module.esm_runtime_internal_symbols = valid_rows.internal_ids;
+    try std.testing.expectError(
+        error.MissingSemantic,
+        carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, valid_previous.semantic, allocator),
+    );
+}
+
+test "ESM runtime helper reanalysis preserves factory and internal renames through production resync" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const old_source = "const previous = 1;";
+    const new_source = "let __esm = 1; let fn = 2; let res = 3; let e = 4; function __init() {} let f = 5;";
+    var old_fixture = try runtimeHelperReanalysisTestFixture(allocator, old_source);
+    const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, new_source);
+    const old_rows = try appendEsmRuntimeReanalysisTestRows(allocator, &old_fixture.semantic.symbols);
+
+    var module = Module.init(@fromBackingInt(@intCast(23)), "esm-runtime-resync.js");
+    module.source = new_source;
+    module.ast = fresh_fixture.ast;
+    module.parse_arena = &test_arena;
+    module.semantic = old_fixture.semantic;
+    module.esm_runtime_factory_symbol = old_rows.factory_id;
+    module.esm_runtime_internal_symbols = old_rows.internal_ids;
+
+    const rename_names = [_][]const u8{
+        "__esm$factory",
+        "fn$factory_parameter",
+        "res$result_parameter",
+        "e$catch_parameter",
+        "__init$init_function",
+        "f$factory_local",
+    };
+    var initial_renames: bundler_symbol.RenameTable = .{};
+    defer initial_renames.deinit(std.testing.allocator);
+    try initial_renames.put(
+        std.testing.allocator,
+        bundler_symbol.SymbolID.make(module.index, @backingInt(old_rows.factory_id)),
+        rename_names[0],
+    );
+    for (esmRuntimeInternalRenameSlots(old_rows.internal_ids), 0..) |slot, index| {
+        try initial_renames.put(
+            std.testing.allocator,
+            bundler_symbol.SymbolID.make(module.index, @backingInt(slot.symbol_id)),
+            rename_names[index + 1],
+        );
+    }
+
+    const test_context = .{
+        .allocator = std.testing.allocator,
+        .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{},
+        .flow = false,
+        .ignore_annotations = false,
+        .minify_identifiers = false,
+        .pure = &[_][]const u8{},
+        .wrapper_symbols_registered = false,
+        .wrap_kinds_finalized = true,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try resyncAfterAstMutation(&test_context, &module, allocator, &initial_renames);
+
+    const expected_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(fresh_fixture.semantic.symbols.items.len));
+    const expected_internal_ids = esmRuntimeReanalysisTestIdsAt(fresh_fixture.semantic.symbols.items.len + 1);
+    try std.testing.expectEqual(expected_factory_id, module.esm_runtime_factory_symbol.?);
+    try std.testing.expectEqualDeep(expected_internal_ids, module.esm_runtime_internal_symbols.?);
+    try std.testing.expectEqualDeep(old_rows.factory_symbol, module.semantic.?.symbols.items[@backingInt(expected_factory_id)]);
+    for (old_rows.internal_symbols, 0..) |expected_symbol, index| {
+        try std.testing.expectEqualDeep(expected_symbol, module.semantic.?.symbols.items[fresh_fixture.semantic.symbols.items.len + index + 1]);
+    }
+
+    try std.testing.expectEqual(@as(u32, 6), module.pending_renames.count());
+    const factory_key = bundler_symbol.SymbolID.make(module.index, @backingInt(expected_factory_id));
+    try std.testing.expectEqualStrings(rename_names[0], module.pending_renames.get(factory_key).?);
+    for (esmRuntimeInternalRenameSlots(expected_internal_ids), 0..) |slot, index| {
+        const key = bundler_symbol.SymbolID.make(module.index, @backingInt(slot.symbol_id));
+        try std.testing.expectEqualStrings(rename_names[index + 1], module.pending_renames.get(key).?);
+    }
 }
 
 /// The graph-wide binary runtime helper name is collision-selected by its
@@ -8715,6 +9047,60 @@ fn carryToBinaryRuntimeHelperSymbolAfterReanalysis(
     module.to_binary_runtime_symbol = new_id;
 }
 
+/// Reanalysis replaces source semantic rows but Module owns the graph-level
+/// ESM factory and all five lexical rows in its raw runtime template. Carry the
+/// complete producer group by its typed slots so later rename capture never
+/// has to rediscover any row by spelling.
+fn carryEsmRuntimeHelperSymbolsAfterReanalysis(
+    module: *Module,
+    previous_semantic: ?ModuleSemanticData,
+    allocator: std.mem.Allocator,
+) !void {
+    const previous = previous_semantic orelse return;
+    const old_factory_id = module.esm_runtime_factory_symbol orelse {
+        if (module.esm_runtime_internal_symbols != null) return error.MissingEsmRuntimeFactoryProducerSymbol;
+        return;
+    };
+    if (!validEsmRuntimeFactorySymbol(old_factory_id, previous.symbols.items))
+        return error.InvalidEsmRuntimeFactoryProducerSymbol;
+
+    const old_internal_ids = module.esm_runtime_internal_symbols orelse
+        return error.MissingEsmRuntimeInternalProducerSymbols;
+    const old_internal_slots = esmRuntimeInternalRenameSlots(old_internal_ids);
+    if (!validEsmRuntimeInternalRenameSlots(old_internal_slots, previous.symbols.items))
+        return error.InvalidEsmRuntimeInternalProducerSymbols;
+    for (old_internal_slots) |slot| {
+        if (slot.symbol_id == old_factory_id) return error.InvalidEsmRuntimeProducerSlotOverlap;
+    }
+
+    const current = if (module.semantic) |*semantic| semantic else return error.MissingSemantic;
+    const rows_to_append: usize = 1 + old_internal_slots.len;
+    const max_symbol_count: usize = std.math.maxInt(u32);
+    if (current.symbols.items.len > max_symbol_count - rows_to_append)
+        return error.RuntimeHelperSymbolTableOverflow;
+
+    const old_factory_symbol = previous.symbols.items[@backingInt(old_factory_id)];
+    const new_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(current.symbols.items.len));
+    try current.symbols.append(allocator, old_factory_symbol);
+
+    var new_internal_ids: [5]SemanticSymbolId = undefined;
+    for (old_internal_slots, 0..) |slot, index| {
+        const old_index: usize = @backingInt(slot.symbol_id);
+        const new_id: SemanticSymbolId = @fromBackingInt(@intCast(current.symbols.items.len));
+        try current.symbols.append(allocator, previous.symbols.items[old_index]);
+        new_internal_ids[index] = new_id;
+    }
+
+    module.esm_runtime_factory_symbol = new_factory_id;
+    module.esm_runtime_internal_symbols = .{
+        .factory_parameter = new_internal_ids[0],
+        .result_parameter = new_internal_ids[1],
+        .catch_parameter = new_internal_ids[2],
+        .init_function = new_internal_ids[3],
+        .factory_local = new_internal_ids[4],
+    };
+}
+
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
 /// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsFromSemanticGraph` 다음에 한다.
 fn refreshSemanticAndStmtInfoAfterAstMutation(
@@ -8871,6 +9257,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .helper_scope_map = analyzer.helper_scope_map,
         };
         try carryToBinaryRuntimeHelperSymbolAfterReanalysis(module, previous_semantic, arena_alloc);
+        try carryEsmRuntimeHelperSymbolsAfterReanalysis(module, previous_semantic, arena_alloc);
         suppressRuntimeHelperInternalUnresolved(module);
         module.uses_top_level_await = analyzer.has_top_level_await;
         // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
