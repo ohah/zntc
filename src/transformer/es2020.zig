@@ -181,7 +181,7 @@ pub fn ES2020(comptime Transformer: type) type {
         fn trackTempReference(
             self: *Transformer,
             name_span: Span,
-            declaration_span: Span,
+            _: Span,
             ref: NodeIndex,
             flags: @import("../semantic/symbol.zig").ReferenceFlags,
             identity: ?TempIdentity,
@@ -199,7 +199,13 @@ pub fn ES2020(comptime Transformer: type) type {
                     std.debug.panic("deferred ES2020 temp reference has no producer identity", .{});
                 try self.trackCapturedTempReference(producer_id, name_span, ref, self.current_scope, flags);
             } else {
-                try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
+                try self.trackHoistedTempRefByProducerIdInScope(
+                    producer_id,
+                    name_span,
+                    ref,
+                    self.current_scope,
+                    flags,
+                );
             }
         }
 

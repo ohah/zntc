@@ -74,6 +74,8 @@ fn checkRuntimeKeyNameTempIdentity(source: []const u8) !void {
     }
     const producer_counter = counter orelse return error.MissingRuntimeKeyProducerCounter;
     const producer_span = transformer.temp_span_by_counter.get(producer_counter) orelse return error.MissingRuntimeKeyProducerSpan;
+    const temp_producer_id = transformer.temp_producer_id_by_counter.get(producer_counter) orelse
+        return error.MissingRuntimeKeyTempProducerId;
     try std.testing.expect(sameSpan(producer_span, captured.temp.span));
 
     // This consumer must use the captured handle even if the span-keyed map is gone.
@@ -86,7 +88,14 @@ fn checkRuntimeKeyNameTempIdentity(source: []const u8) !void {
     _ = named;
 
     const binding = try es_helpers.makeSyntheticBinding(&transformer, captured.temp.span);
-    try transformer.bindHoistedTempWithProducerSymbol(binding, captured.temp.span, target_span, target_scope, id);
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        captured.temp.span,
+        target_span,
+        target_scope,
+        id,
+        temp_producer_id,
+    );
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(binding));
 
     const editor = if (transformer.semantic_editor) |*current| current else return error.MissingSemanticEditor;

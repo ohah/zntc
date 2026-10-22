@@ -925,7 +925,7 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
             if (try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, hoisted, scope, .{ .read = true }))
                 break :blk hoisted;
         }
-        if (try es_helpers.trackKnownHoistedTempRef(self, hoisted, scope, .{ .read = true })) {
+        if (try es_helpers.trackKnownHoistedTempRefFromProducerReference(self, temp, hoisted, scope, .{ .read = true })) {
             if (self.semantic_edit_enabled and !self.syntheticTempOutputScopeIsDeferred(scope)) {
                 const hoisted_symbol_id = self.getSymbolIdAt(hoisted) orelse
                     std.debug.panic("runtime computed-key name reference has no producer SymbolId", .{});

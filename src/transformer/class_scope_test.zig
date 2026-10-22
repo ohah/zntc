@@ -210,9 +210,13 @@ test "#4819 producer SymbolId attaches a super temp binding without its span reg
 
     const captured = try es_helpers.captureToTempWithIdentity(&transformer, value, value_span);
     const symbol_id = captured.symbol_id orelse return error.MissingProducerSymbolId;
+    const producer_counter = captured.temp_counter_index orelse return error.MissingProducerCounter;
     try std.testing.expectEqual(
         @as(?@TypeOf(symbol_id), symbol_id),
-        es_helpers.producerTempSymbolIdForSpan(&transformer, captured.span),
+        if (transformer.temp_symbol_ids_by_counter.get(producer_counter)) |raw_id|
+            @as(?@TypeOf(symbol_id), @fromBackingInt(raw_id))
+        else
+            null,
     );
     const editor = if (transformer.semantic_editor) |*semantic_editor| semantic_editor else return error.MissingSemanticEditor;
     const producer_symbol = editor.symbols.items[@backingInt(symbol_id)];
@@ -800,18 +804,36 @@ test "#4819 class computed-key memo binds only its producer reference" {
     defer classified.deinit(allocator);
     try classified.computed_key_temp_bindings.append(allocator, memo);
 
-    // A same-span by-name decoy models an unrelated generated node that must
-    // not be swept into this memo's identity when its binding is finalized.
+    // Reuse the allocator slot so a distinct producer receives the same
+    // interned spelling span. Force this alias to cover interning and slot
+    // restoration behavior independently of the AST string-table strategy.
+    transformer.temp_var_counter = 0;
+    _ = try es_helpers.makeTempVarSpan(&transformer);
+    const decoy_producer_id = transformer.temp_producer_id_by_counter.get(0) orelse
+        return error.MissingDecoyProducerId;
+    try std.testing.expect(decoy_producer_id != memo.temp_producer_id.?);
+    try transformer.temp_span_by_counter.put(allocator, 0, memo.temp_span);
+    const decoy_span = transformer.temp_span_by_counter.get(0) orelse return error.MissingDecoySpan;
+    try std.testing.expectEqual(memo.temp_span.start, decoy_span.start);
+    try std.testing.expectEqual(memo.temp_span.end, decoy_span.end);
     const decoy = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, memo.temp_span);
-    try transformer.trackHoistedTempRefInScope(memo.temp_span, decoy, owner_scope, .{ .read = true });
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        decoy_producer_id,
+        memo.temp_span,
+        decoy,
+        owner_scope,
+        .{ .read = true },
+    );
     try Members.bindComputedKeyTemps(&transformer, &classified, owner_scope, .EMPTY);
 
     const id_raw = transformer.getSymbolIdAt(memo.binding) orelse return error.MissingComputedKeyTempSymbol;
     try std.testing.expectEqual(@as(?u32, id_raw), transformer.getSymbolIdAt(memo.computed_ref));
     try std.testing.expect(transformer.getSymbolIdAt(decoy) == null);
-    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
-    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_refs.items.len);
-    try std.testing.expectEqual(decoy, transformer.pending_temp_refs.items[0].node);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_producer_refs.items.len);
+    try std.testing.expectEqual(decoy_producer_id, transformer.pending_temp_producer_refs.items[0].temp_producer_id);
+    try std.testing.expectEqual(decoy, transformer.pending_temp_producer_refs.items[0].node);
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const reference_record = (try editor.referenceForNode(memo.computed_ref)) orelse return error.TestUnexpectedResult;

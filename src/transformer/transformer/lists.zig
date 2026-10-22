@@ -389,6 +389,7 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         else
             null;
         const temp_producer_id = self.temp_producer_id_by_counter.get(i);
+        try self.registerHoistedTempProducerBinding(binding, temp_producer_id);
         if (state_bindings) |bindings| {
             const binding_symbol_id: ?u32 = if (producer_symbol_id) |id| @backingInt(id) else self.getSymbolIdAt(binding);
             try bindings.append(self.allocator, .{

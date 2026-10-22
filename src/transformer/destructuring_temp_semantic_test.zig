@@ -186,8 +186,17 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     var span_it = transformer.temp_span_by_counter.valueIterator();
     while (span_it.next()) |span| name_span = span.*;
     const temp_span = name_span orelse return error.MissingDestructuringTemp;
-    const id = transformer.lookupSyntheticTempSymbol(temp_span, transformer.current_scope) orelse
+    const reserved_symbol_id = transformer.lookupSyntheticTempSymbol(temp_span, transformer.current_scope) orelse
         return error.MissingDestructuringTempSymbol;
+    var temp_counter: ?u32 = null;
+    var temp_ids = transformer.temp_symbol_ids_by_counter.iterator();
+    while (temp_ids.next()) |entry| {
+        if (entry.value_ptr.* == @backingInt(reserved_symbol_id)) temp_counter = entry.key_ptr.*;
+    }
+    const counter = temp_counter orelse return error.MissingDestructuringTempCounter;
+    const temp_producer_id = transformer.temp_producer_id_by_counter.get(counter) orelse
+        return error.MissingDestructuringTempProducerId;
+    const id = reserved_symbol_id;
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
     var reads: usize = 0;
@@ -206,7 +215,14 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     try std.testing.expectEqual(@as(usize, 1), writes);
 
     const binding = try es_helpers.makeSyntheticBinding(&transformer, temp_span);
-    try transformer.bindHoistedTemp(binding, temp_span, parser.ast.getNode(assignment_idx).span, @fromBackingInt(@intCast(owner)));
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        temp_span,
+        parser.ast.getNode(assignment_idx).span,
+        @fromBackingInt(@intCast(owner)),
+        id,
+        temp_producer_id,
+    );
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(binding));
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
@@ -288,6 +304,8 @@ fn checkArrayAssignmentValueTempProducerIdentity(allocator: std.mem.Allocator, s
     const counter = value_temp_counter orelse return error.MissingValueTempSymbolId;
     const value_temp_span = transformer.temp_span_by_counter.get(counter) orelse return error.MissingValueTempSpan;
     const value_temp_id = transformer.temp_symbol_ids_by_counter.get(counter) orelse return error.MissingValueTempSymbolId;
+    const temp_producer_id = transformer.temp_producer_id_by_counter.get(counter) orelse
+        return error.MissingValueTempProducerId;
     try std.testing.expect(transformer.lookupSyntheticTempSymbol(value_temp_span, expected_scope) == null);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     const expected_var_scope = transformer.nearestVarScope(expected_scope);
@@ -315,7 +333,14 @@ fn checkArrayAssignmentValueTempProducerIdentity(allocator: std.mem.Allocator, s
 
     const binding = try es_helpers.makeSyntheticBinding(&transformer, value_temp_span);
     const producer_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(value_temp_id));
-    try transformer.bindHoistedTempWithProducerSymbol(binding, value_temp_span, assignment_span, expected_scope, producer_id);
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        value_temp_span,
+        assignment_span,
+        expected_scope,
+        producer_id,
+        temp_producer_id,
+    );
     try std.testing.expectEqual(@as(?u32, value_temp_id), transformer.getSymbolIdAt(binding));
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
