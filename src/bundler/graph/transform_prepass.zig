@@ -7622,6 +7622,231 @@ fn validToBinaryRuntimeHelperSymbol(symbol_id: SemanticSymbolId, symbols: []cons
         std.mem.eql(u8, symbol.synthetic_name, "__toBinary");
 }
 
+const ToBinaryReanalysisTestFixture = struct {
+    ast: ast_mod.Ast,
+    semantic: ModuleSemanticData,
+};
+
+fn toBinaryReanalysisTestFixture(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !ToBinaryReanalysisTestFixture {
+    var scanner = try Scanner.init(allocator, source);
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    return .{
+        .ast = parser.ast,
+        .semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        },
+    };
+}
+
+fn toBinaryReanalysisTestSymbol() SemanticSymbol {
+    var symbol = graphOwnedSyntheticRenameTestSymbol(
+        .bundler_runtime_helper,
+        .variable_var,
+        0,
+        "__toBinary",
+    );
+    symbol.scope_id = .none;
+    symbol.decl_flags = SemanticSymbolKind.variable_var.declFlags();
+    symbol.output_name_hint = "__toBinary$producer";
+    symbol.reference_count = 3;
+    symbol.write_count = 1;
+    return symbol;
+}
+
+test "toBinary runtime helper producer row survives hostile semantic reanalysis" {
+    const HostileSource = struct {
+        source: []const u8,
+        has_source_binding: bool,
+    };
+    const hostile_sources = [_]HostileSource{
+        .{ .source = "let __toBinary;", .has_source_binding = true },
+        .{ .source = "const __toBinary = 1;", .has_source_binding = true },
+        .{ .source = "function __toBinary() { return 1; }", .has_source_binding = true },
+        .{ .source = "class __toBinary {}", .has_source_binding = true },
+        .{ .source = "function nested(__toBinary) { return __toBinary; }", .has_source_binding = true },
+        .{ .source = "function nested() { var __toBinary; return __toBinary; }", .has_source_binding = true },
+        .{ .source = "const { __toBinary } = { __toBinary: 1 };", .has_source_binding = true },
+        .{ .source = "const [__toBinary] = [1];", .has_source_binding = true },
+        .{ .source = "try { throw 1; } catch (__toBinary) { void __toBinary; }", .has_source_binding = true },
+        .{ .source = "const holder = { __toBinary: 1 }; holder.__toBinary;", .has_source_binding = false },
+    };
+
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+
+    var old_semantic = (try toBinaryReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
+    try old_semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
+    const old_id: SemanticSymbolId = @fromBackingInt(@intCast(old_semantic.symbols.items.len - 1));
+    const old_symbol = old_semantic.symbols.items[@backingInt(old_id)];
+    var old_renames = try allocator.alloc(?[]const u8, old_semantic.symbols.items.len);
+    @memset(old_renames, null);
+    old_renames[@backingInt(old_id)] = "__toBinary$producer";
+
+    var module = Module.init(@fromBackingInt(@intCast(11)), "to-binary-shadow.js");
+    module.parse_arena = &test_arena;
+
+    for (hostile_sources) |hostile| {
+        const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, hostile.source);
+        const fresh_len = fresh_fixture.semantic.symbols.items.len;
+        var saw_source_binding = false;
+        for (fresh_fixture.semantic.symbols.items) |symbol| {
+            if (symbol.synthetic_kind != null) continue;
+            if (std.mem.eql(u8, fresh_fixture.ast.getText(symbol.name), "__toBinary")) {
+                saw_source_binding = true;
+                break;
+            }
+        }
+        try std.testing.expectEqual(hostile.has_source_binding, saw_source_binding);
+
+        module.semantic = fresh_fixture.semantic;
+        module.to_binary_runtime_symbol = old_id;
+        try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, old_semantic, allocator);
+
+        const expected_new_id: SemanticSymbolId = @fromBackingInt(@intCast(fresh_len));
+        try std.testing.expectEqual(expected_new_id, module.to_binary_runtime_symbol.?);
+        const new_symbols = module.semantic.?.symbols.items;
+        try std.testing.expectEqual(fresh_len + 1, new_symbols.len);
+        try std.testing.expectEqualDeep(old_symbol, new_symbols[@backingInt(expected_new_id)]);
+
+        var rebuilt: bundler_symbol.RenameTable = .{};
+        defer rebuilt.deinit(std.testing.allocator);
+        try remapToBinaryRuntimeHelperRename(
+            std.testing.allocator,
+            module.index,
+            old_semantic.symbols.items,
+            new_symbols,
+            old_renames,
+            old_id,
+            module.to_binary_runtime_symbol,
+            &rebuilt,
+        );
+        const rename_key = bundler_symbol.SymbolID.make(module.index, @backingInt(expected_new_id));
+        try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+        try std.testing.expectEqualStrings("__toBinary$producer", rebuilt.get(rename_key).?);
+    }
+}
+
+test "toBinary runtime helper reanalysis carry fails closed on invalid producer evidence" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, "const live = 1;");
+    const fresh_len = fresh_fixture.semantic.symbols.items.len;
+    var module = Module.init(@fromBackingInt(@intCast(0)), "to-binary-invalid.js");
+    module.semantic = fresh_fixture.semantic;
+
+    try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, null, allocator);
+    try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+    module.to_binary_runtime_symbol = null;
+    const previous = try toBinaryReanalysisTestFixture(allocator, "const previous = 1;");
+    try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, previous.semantic, allocator);
+    try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+
+    const invalid_rows = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 0, "__esm"),
+        graphOwnedSyntheticRenameTestSymbol(.runtime_helper_preamble, .variable_var, 0, "__toBinary"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_let, 0, "__toBinary"),
+    };
+    for (invalid_rows) |invalid_row| {
+        var previous_with_invalid_row = try toBinaryReanalysisTestFixture(allocator, "const prior = 1;");
+        try previous_with_invalid_row.semantic.symbols.append(allocator, invalid_row);
+        module.to_binary_runtime_symbol = @fromBackingInt(@intCast(previous_with_invalid_row.semantic.symbols.items.len - 1));
+        try std.testing.expectError(
+            error.InvalidToBinaryRuntimeHelperProducerSymbol,
+            carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, previous_with_invalid_row.semantic, allocator),
+        );
+        try std.testing.expectEqual(fresh_len, module.semantic.?.symbols.items.len);
+    }
+
+    var previous_with_valid_row = try toBinaryReanalysisTestFixture(allocator, "const prior = 1;");
+    try previous_with_valid_row.semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
+    module.to_binary_runtime_symbol = @fromBackingInt(@intCast(previous_with_valid_row.semantic.symbols.items.len));
+    try std.testing.expectError(
+        error.InvalidToBinaryRuntimeHelperProducerSymbol,
+        carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, previous_with_valid_row.semantic, allocator),
+    );
+
+    module.semantic = null;
+    module.to_binary_runtime_symbol = @fromBackingInt(@intCast(previous_with_valid_row.semantic.symbols.items.len - 1));
+    try std.testing.expectError(
+        error.MissingSemantic,
+        carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, previous_with_valid_row.semantic, allocator),
+    );
+}
+
+test "toBinary runtime helper reanalysis preserves its rename through the production resync" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const old_source = "const previous = 1;";
+    const new_source = "let __toBinary = 1; const later = 2;";
+    var old_fixture = try toBinaryReanalysisTestFixture(allocator, old_source);
+    const fresh_fixture = try toBinaryReanalysisTestFixture(allocator, new_source);
+    try old_fixture.semantic.symbols.append(allocator, toBinaryReanalysisTestSymbol());
+    const old_id: SemanticSymbolId = @fromBackingInt(@intCast(old_fixture.semantic.symbols.items.len - 1));
+    const old_symbol = old_fixture.semantic.symbols.items[@backingInt(old_id)];
+
+    var module = Module.init(@fromBackingInt(@intCast(4)), "to-binary-resync.js");
+    module.source = new_source;
+    module.ast = fresh_fixture.ast;
+    module.parse_arena = &test_arena;
+    module.semantic = old_fixture.semantic;
+    module.to_binary_runtime_symbol = old_id;
+
+    var initial_renames: bundler_symbol.RenameTable = .{};
+    defer initial_renames.deinit(std.testing.allocator);
+    try initial_renames.put(
+        std.testing.allocator,
+        bundler_symbol.SymbolID.make(module.index, @backingInt(old_id)),
+        "__toBinary$producer",
+    );
+
+    const test_context = .{
+        .allocator = std.testing.allocator,
+        .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{},
+        .flow = false,
+        .ignore_annotations = false,
+        .minify_identifiers = false,
+        .pure = &[_][]const u8{},
+        .wrapper_symbols_registered = false,
+        .wrap_kinds_finalized = true,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try resyncAfterAstMutation(&test_context, &module, allocator, &initial_renames);
+
+    const new_id = module.to_binary_runtime_symbol.?;
+    try std.testing.expectEqual(fresh_fixture.semantic.symbols.items.len, @as(usize, @backingInt(new_id)));
+    try std.testing.expectEqualDeep(old_symbol, module.semantic.?.symbols.items[@backingInt(new_id)]);
+    const pending_key = bundler_symbol.SymbolID.make(module.index, @backingInt(new_id));
+    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.count());
+    try std.testing.expectEqualStrings("__toBinary$producer", module.pending_renames.get(pending_key).?);
+}
+
 /// The graph-wide binary runtime helper name is collision-selected by its
 /// producer ID. Carry it across semantic reanalysis through Module's exact
 /// slot instead of matching its generated spelling and scope.
@@ -8461,6 +8686,35 @@ test "rename capture carries ESM factory alias through the production handoff" {
     try std.testing.expect(module.pending_rename_capture_seen);
 }
 
+/// Semantic reanalysis rebuilds source rows and drops graph-owned runtime helper rows.
+/// Carry the previous exact producer slot into the new table instead of finding a
+/// replacement row by its generated spelling.
+fn carryToBinaryRuntimeHelperSymbolAfterReanalysis(
+    module: *Module,
+    previous_semantic: ?ModuleSemanticData,
+    allocator: std.mem.Allocator,
+) !void {
+    const previous = previous_semantic orelse return;
+    const old_id = module.to_binary_runtime_symbol orelse return;
+    if (old_id.isNone()) return error.InvalidToBinaryRuntimeHelperProducerSymbol;
+    const old_index: usize = @intCast(@backingInt(old_id));
+    if (old_index >= previous.symbols.items.len) return error.InvalidToBinaryRuntimeHelperProducerSymbol;
+    const old_symbol = previous.symbols.items[old_index];
+    if (old_symbol.synthetic_kind != .bundler_runtime_helper or
+        old_symbol.kind != .variable_var or
+        !std.mem.eql(u8, old_symbol.synthetic_name, "__toBinary"))
+    {
+        return error.InvalidToBinaryRuntimeHelperProducerSymbol;
+    }
+
+    const current = if (module.semantic) |*semantic| semantic else return error.MissingSemantic;
+    if (current.symbols.items.len >= @as(usize, std.math.maxInt(u32)))
+        return error.RuntimeHelperSymbolTableOverflow;
+    const new_id: SemanticSymbolId = @fromBackingInt(@intCast(current.symbols.items.len));
+    try current.symbols.append(allocator, old_symbol);
+    module.to_binary_runtime_symbol = new_id;
+}
+
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
 /// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsFromSemanticGraph` 다음에 한다.
 fn refreshSemanticAndStmtInfoAfterAstMutation(
@@ -8616,6 +8870,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .numeric_const_texts = analyzer.numeric_const_texts,
             .helper_scope_map = analyzer.helper_scope_map,
         };
+        try carryToBinaryRuntimeHelperSymbolAfterReanalysis(module, previous_semantic, arena_alloc);
         suppressRuntimeHelperInternalUnresolved(module);
         module.uses_top_level_await = analyzer.has_top_level_await;
         // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
