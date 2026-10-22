@@ -6163,6 +6163,58 @@ fn hasNestedWorkletFunctionScope(
     return false;
 }
 
+/// Retain the graph for string-valued define replacements only when every
+/// matching AST candidate is one exact, bound local identifier read. Composite
+/// expressions and dynamic scopes retain the full semantic reanalysis path.
+fn canRetainGraphForStringDefineReferences(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    defines: []const define_mod.DefineEntry,
+) bool {
+    if (semantic.scopes.len == 0) return false;
+
+    const ReferenceIdentity = struct {
+        symbol_id: u32,
+        scope_id: u32,
+        ambiguous: bool = false,
+    };
+    var references_by_node: std.AutoHashMapUnmanaged(u32, ReferenceIdentity) = .empty;
+    defer references_by_node.deinit(allocator);
+    for (semantic.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (references_by_node.getPtr(raw)) |existing| {
+            existing.ambiguous = true;
+            continue;
+        }
+        references_by_node.put(allocator, raw, .{
+            .symbol_id = @backingInt(reference.symbol_id),
+            .scope_id = @backingInt(reference.scope_id),
+        }) catch return false;
+    }
+
+    var found_define = false;
+    for (ast.nodes.items, 0..) |node, raw| {
+        const value = define_mod.matchedDefineValue(ast, node, defines) orelse continue;
+        found_define = true;
+        if (node.tag != .identifier_reference or !define_mod.isStringLiteralDefineValue(value)) return false;
+        if (raw >= semantic.symbol_ids.len) return false;
+        const symbol_id = semantic.symbol_ids[raw] orelse return false;
+        if (symbol_id >= semantic.symbols.items.len) return false;
+        const reference = references_by_node.get(@intCast(raw)) orelse return false;
+        if (reference.ambiguous or reference.symbol_id != symbol_id or
+            reference.scope_id >= semantic.scopes.len) return false;
+        const symbol = semantic.symbols.items[symbol_id];
+        if (symbol.kind == .import_binding or symbol.synthetic_kind != null or
+            symbol.scope_id.isNone() or @backingInt(symbol.scope_id) >= semantic.scopes.len)
+        {
+            return false;
+        }
+    }
+    return found_define;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -6214,6 +6266,13 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_get,
             &retainable_async_method_super_set,
         );
+    const uses_define = define_mod.astUsesDefine(ast, options.define);
+    const retained_string_define = uses_define and canRetainGraphForStringDefineReferences(
+        self.allocator,
+        ast,
+        semantic,
+        options.define,
+    );
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators)) return false;
     // Whitespace minification changes emission and helper spellings, but the
@@ -6221,7 +6280,7 @@ fn canKeepPrepassSemanticGraph(
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators) or options.minify_syntax or
         (options.drop_console and hasDroppedConsoleStatement(ast)) or
-        hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
+        hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_string_define) or
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata) return false;
@@ -6237,7 +6296,7 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
+    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_string_define or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {

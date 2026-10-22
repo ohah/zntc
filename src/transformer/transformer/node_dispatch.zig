@@ -61,6 +61,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     // worklet body 내부에서는 억제: UI 런타임은 bundler prelude의 polyfill 심볼을 모름.
     if (self.options.define.len > 0 and self.plugins.worklet.body_depth == 0) {
         if (self.tryDefineReplace(node)) |new_node| {
+            try self.removeSemanticReference(idx);
             return try new_node;
         }
     }

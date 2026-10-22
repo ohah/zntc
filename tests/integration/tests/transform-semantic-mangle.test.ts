@@ -1066,6 +1066,102 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe('50');
   });
 
+  test('simple local string defines retain exact references and other define shapes reanalyze', async () => {
+    const fixture = await createFixture({
+      'retained.js': `const __BUILD__ = 'source'; console.log(__BUILD__);`,
+      'global.js': `console.log(__BUILD__);`,
+      'dep.js': `export const __BUILD__ = 'source';`,
+      'import.js': `import { __BUILD__ } from './dep.js'; console.log(__BUILD__);`,
+      'member.js': `const options = { env: { NODE: 'source' } }; console.log(options.env.NODE);`,
+      'non-string.js': `const __BUILD__ = 'source'; console.log(__BUILD__);`,
+      'dynamic.js': `const __BUILD__ = 'source'; eval('console.log(__BUILD__)'); console.log(__BUILD__);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const cases = [
+      {
+        file: 'retained.js',
+        define: '--define:__BUILD__="production"',
+        flags: [] as string[],
+        mode: 'retained' as const,
+        expected: 'production',
+      },
+      {
+        file: 'retained.js',
+        define: '--define:__BUILD__="first"',
+        extraDefines: ['--define:__BUILD__="second"'],
+        flags: [] as string[],
+        mode: 'retained' as const,
+        expected: 'second',
+      },
+      {
+        file: 'global.js',
+        define: '--define:__BUILD__="production"',
+        flags: [] as string[],
+        mode: 'reanalyzed' as const,
+        expected: 'production',
+      },
+      {
+        file: 'import.js',
+        define: '--define:__BUILD__="production"',
+        flags: ['--verbatim-module-syntax'],
+        mode: 'reanalyzed' as const,
+        expected: 'production',
+      },
+      {
+        file: 'member.js',
+        define: '--define:options.env.NODE="production"',
+        flags: [] as string[],
+        mode: 'reanalyzed' as const,
+        expected: 'production',
+      },
+      {
+        file: 'non-string.js',
+        define: '--define:__BUILD__=false',
+        flags: [] as string[],
+        mode: 'reanalyzed' as const,
+        expected: 'false',
+      },
+      {
+        file: 'dynamic.js',
+        define: '--define:__BUILD__="production"',
+        flags: [] as string[],
+        mode: 'reanalyzed' as const,
+        expected: 'source\nproduction',
+      },
+    ];
+
+    for (const [index, item] of cases.entries()) {
+      const input = join(fixture.dir, item.file);
+      const output = join(fixture.dir, `out-${index}.cjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          input,
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          ...item.flags,
+          item.define,
+          ...(item.extraDefines ?? []),
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${item.file}: ${result.stderr}`).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, item.file, item.mode);
+      if (item.mode === 'retained') {
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(identity, item.file).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+        }
+      }
+      const execution = await runNode(output);
+      expect(execution.stderr, item.file).toBe('');
+      expect(execution.stdout, item.file).toBe(item.expected);
+    }
+  });
+
   test('automatic JSX runtime import aliases track their generated references', async () => {
     const fixture = await createFixture({
       'node_modules/react/package.json': JSON.stringify({
