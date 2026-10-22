@@ -59,3 +59,13 @@
 ## Identity audit 결과
 
 [상세 감사표](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md)에서 112/112 callsite를 생성 시점, owner, consumer, output mode, fallback 기준으로 분류했다. Production caller가 있는 111개 경로에서 semantic graph를 사용하는 지원 경로의 누락 exact `SymbolId` handoff는 0이다. 한 call은 호출자가 없는 helper expression이다. 이 결과는 전체 final-name 통합이나 #4819 완료를 뜻하지 않으며, name/span/scope 재검색과 resolver·collision 경계는 별도 이슈에 남아 있다.
+
+## Current main delta (2026-10-22; `c5b0c956c`)
+
+위 source index와 112/112 행별 표는 기준 커밋 `7346fc2cb`의 snapshot이다. 기준을 현재 `main`으로 옮기며 바뀐 constructor callsite는 한 건 제거되고 한 건 추가되어 분모는 **112곳, 70개 함수, 35개 파일**로 유지된다. 실제 production caller가 있는 callsite는 **111곳, 69개 함수**다.
+
+- 다섯 constructor 계열의 현재 분포: `makeSyntheticBinding` 50, `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 21, `createSyntheticTempBinding` 9, `makeUsingBinding` 4. 별도 `createSyntheticTempBindingWithIdentity`는 production callsite 2곳이다.
+- `es2015_class/super_props.zig::beginSuperTemp`의 기존 `createSyntheticTempBinding` 호출은 없어졌다. 현재 semantic 경로는 producer `SymbolId`를 확보한 뒤 `createSyntheticTempBindingWithIdentity`를 사용한다.
+- `object_super.zig::wrapWithHome`에는 `_args` alias parameter를 만드는 `makeExactSyntheticBindingFromSpan` callsite가 추가됐다. 이 binding과 alias references는 wrapper parameter `ScopeId` 및 exact `SymbolId`를 공유한다. Alias는 native parameter list가 dynamic lookup 때문에 유지될 때만 생성되고, current final-name marker는 `_obj` home parameter에만 붙는다. 따라서 `_args`의 조기 spelling은 이 dynamic-scope 경계에 남으며 누락된 `SymbolId` handoff로 세지 않는다.
+
+이 delta도 bounded AST constructor 분모만 갱신한다. 전체 producer 누락 수나 #4819 완료 여부를 뜻하지 않는다.
