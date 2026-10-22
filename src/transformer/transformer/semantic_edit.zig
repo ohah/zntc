@@ -2319,11 +2319,6 @@ pub fn bindGeneratedTempByIdentity(
 }
 
 fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
-    const PendingTempRefKey = @import("../transformer.zig").PendingTempRefKey;
-    const chain_key = PendingTempRefKey.fromSpan(temp.name_span, source_scope);
-    var chain = self.pending_temp_ref_chains.fetchRemove(chain_key);
-    if (chain == null and !source_scope.isNone())
-        chain = self.pending_temp_ref_chains.fetchRemove(PendingTempRefKey.fromSpan(temp.name_span, .none));
     const editor = try editorFor(self);
     const owner_scope = variableScope(self, callback_scope);
     const temp_key = syntheticTempSymbolKey(temp.name_span, owner_scope);
@@ -2382,19 +2377,6 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
         live_scopes,
         null,
     );
-    var i: ?usize = if (chain) |found| found.value.first else null;
-    while (i) |index| {
-        const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start and ref.name_end == temp.name_span.end and
-            (ref.producer_scope == source_scope or ref.producer_scope.isNone()));
-        if (live.contains(@backingInt(ref.node))) {
-            const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
-            editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-            try setSymbolId(self, ref.node, id);
-        }
-        i = ref.next;
-    }
-    if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
 /// Record exact source binding nodes moved into a generated function body.
