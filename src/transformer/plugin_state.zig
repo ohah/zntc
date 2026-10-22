@@ -154,17 +154,24 @@ pub const StyledComponentsState = struct {
     /// alias 가 있으면 그 이름 (예: `import s from "styled-components"` → "s").
     /// import 가 없으면 null — 이후 모든 wrap 이 no-op.
     default_binding: ?[]const u8 = null,
+    /// Semantic mode 에서 위 default import 를 가리키는 정확한 binding identity.
+    /// Graphless transform 에서만 이름 비교 fallback 을 허용한다.
+    default_binding_symbol_id: ?SymbolId = null,
 
     /// `import { css } from "styled-components"` named import 의 local binding 이름.
     /// minify 적용에 사용 (`styled.X` 처럼 displayName/componentId 는 부여 안 함 —
     /// helper 는 컴포넌트 아닌 CSS 조각 빌더).
     css_binding: ?[]const u8 = null,
+    css_binding_symbol_id: ?SymbolId = null,
     /// `import { keyframes } from "styled-components"` named import.
     keyframes_binding: ?[]const u8 = null,
+    keyframes_binding_symbol_id: ?SymbolId = null,
     /// `import { createGlobalStyle } from "styled-components"` named import.
     create_global_style_binding: ?[]const u8 = null,
+    create_global_style_binding_symbol_id: ?SymbolId = null,
     /// `import { injectGlobal } from "styled-components"` named import.
     inject_global_binding: ?[]const u8 = null,
+    inject_global_binding_symbol_id: ?SymbolId = null,
 
     /// componentId hash 의 file 부분 — `options.jsx_filename` 의 wyhash 32-bit truncated 8-hex.
     /// SSR hydration 안정화: 같은 파일에서 같은 hash 보장 (counter 와 결합).
