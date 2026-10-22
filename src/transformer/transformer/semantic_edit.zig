@@ -2147,15 +2147,6 @@ fn stateTempOutputScope(self: *Transformer, source_scope: ScopeId, target_scope:
 }
 
 fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void), traces: *const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace)) Transformer.Error!void {
-    const PendingTempRefKey = @import("../transformer.zig").PendingTempRefKey;
-    const chain_key = PendingTempRefKey.fromSpan(temp.name_span, source_scope);
-    var chain = self.pending_temp_ref_chains.fetchRemove(chain_key);
-    // Non-generator async wrappers do not set `generator_state_machine_scope`.
-    // Their legacy deferred producer owner is only known here; the full span
-    // still isolates the allocation, while generator callbacks take the exact
-    // producer-scope branch above.
-    if (chain == null and !source_scope.isNone())
-        chain = self.pending_temp_ref_chains.fetchRemove(PendingTempRefKey.fromSpan(temp.name_span, .none));
     const editor = try editorFor(self);
     const binding_id = self.getSymbolIdAt(temp.binding);
     const source_bound_id = if (source_scope.isNone()) null else self.bound_temp_symbols.get(
@@ -2250,50 +2241,6 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
             }
         }
     }
-
-    var i: ?usize = if (chain) |found| found.value.first else null;
-    while (i) |index| {
-        const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start and ref.name_end == temp.name_span.end and
-            (ref.producer_scope == source_scope or ref.producer_scope.isNone()));
-        if (live.contains(@backingInt(ref.node))) {
-            const trace = traces.get(@backingInt(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
-            if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
-            const scope = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, ref.scope, trace.scope, live_scopes);
-            if (editor.referenceForNode(ref.node) catch |err| return editError(err)) |existing| {
-                if (existing.symbol_id != id or existing.flags.read != ref.flags.read or
-                    existing.flags.write != ref.flags.write)
-                    std.debug.panic("generated temp reference already has a different identity", .{});
-                if (existing.scope_id != scope) {
-                    editor.relocateReference(
-                        ref.node,
-                        scope,
-                        id,
-                        existing.stmt_idx,
-                        existing.scope_stmt_idx,
-                    ) catch |err| return editError(err);
-                }
-            } else {
-                const node_raw = @backingInt(ref.node);
-                if (node_raw < editor.symbol_ids.items.len) {
-                    if (editor.symbol_ids.items[node_raw]) |existing_id| {
-                        if (existing_id != @backingInt(id))
-                            std.debug.panic("generated temp reference has an unrelated SymbolId without a Reference", .{});
-                        editor.addCopiedReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-                    } else {
-                        editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-                    }
-                } else {
-                    editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-                }
-            }
-            if (self.getSymbolIdAt(ref.node)) |existing| {
-                if (existing != @backingInt(id)) std.debug.panic("generated temp reference changed its producer SymbolId", .{});
-            } else try setSymbolId(self, ref.node, id);
-        }
-        i = ref.next;
-    }
-    if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
 fn reparentLiveSourceScopes(self: *Transformer, source_scope: ScopeId, target_scope: ScopeId, live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
