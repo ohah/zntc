@@ -262,7 +262,9 @@ describe('CLI: Vite-style app builder > styles > dev', () => {
         } catch {
           last = '(fetch 실패)';
         }
-        if (last.includes(needle)) return last;
+        // 재빌드 중 outdir 에 raw CSS 가 먼저 잠깐 보일 수 있다. 값만 확인하면
+        // PostCSS afterBundle 이 마커를 다시 쓸 때까지 기다리지 않고 중간 응답을 잡는다.
+        if (last.includes(needle) && last.includes('.ZNTC_MARK')) return last;
         await new Promise((r) => setTimeout(r, 100));
       }
       throw new Error(`main.css 에서 ${needle} 를 기다리다 7s 초과. 마지막 응답:\n${last}`);
