@@ -20,6 +20,165 @@ const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer
 const Symbol = @import("../../semantic/symbol.zig").Symbol;
 const LinkingMetadata = @import("../../bundler/linker.zig").LinkingMetadata;
 
+fn expectNamespaceDeclarationSymbolId(
+    parent_allocator: std.mem.Allocator,
+    source: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+    }
+
+    const semantic_options: CodegenOptions = .{
+        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_scope_maps = analyzer.scope_maps.items,
+        .generated_iife_scope_owner_map = &analyzer.scope_owner_map,
+        .require_generated_iife_symbols = true,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    };
+    {
+        var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+        defer valid_cg.deinit();
+        const output = try valid_cg.generate(root);
+        try std.testing.expect(output.len > 0);
+    }
+
+    var namespace_name_count: usize = 0;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .ts_module_declaration) continue;
+        const name_idx = node.data.binary.left;
+        const raw_name = @backingInt(name_idx);
+        if (name_idx.isNone() or raw_name >= transformer.symbol_ids.items.len) continue;
+        const saved_id = transformer.symbol_ids.items[raw_name] orelse continue;
+        const saved_symbol_index: usize = @intCast(saved_id);
+        namespace_name_count += 1;
+
+        transformer.symbol_ids.items[raw_name] = null;
+        {
+            var missing_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer missing_cg.deinit();
+            try std.testing.expectError(error.MissingNamespaceDeclarationSymbol, missing_cg.generate(root));
+        }
+
+        transformer.symbol_ids.items[raw_name] = std.math.maxInt(u32);
+        {
+            var invalid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer invalid_cg.deinit();
+            try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, invalid_cg.generate(root));
+        }
+
+        var foreign_source_id: ?u32 = null;
+        const source_name = transformer.ast.getText(transformer.ast.getNode(name_idx).span);
+        for (analyzer.symbols.items, 0..) |symbol, raw_symbol| {
+            if (raw_symbol == saved_symbol_index or symbol.synthetic_kind != null or
+                std.mem.eql(u8, transformer.ast.getText(symbol.name), source_name)) continue;
+            foreign_source_id = @intCast(raw_symbol);
+            break;
+        }
+        if (foreign_source_id) |foreign_id| {
+            transformer.symbol_ids.items[raw_name] = foreign_id;
+            var foreign_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer foreign_cg.deinit();
+            try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, foreign_cg.generate(root));
+        }
+
+        transformer.symbol_ids.items[raw_name] = saved_id;
+        var synthetic_id_found = false;
+        for (analyzer.symbols.items, 0..) |symbol, raw_symbol| {
+            if (symbol.synthetic_kind == null) continue;
+            const saved_synthetic = analyzer.symbols.items[raw_symbol];
+            analyzer.symbols.items[raw_symbol].name = analyzer.symbols.items[saved_symbol_index].name;
+            transformer.symbol_ids.items[raw_name] = @intCast(raw_symbol);
+            var synthetic_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer synthetic_cg.deinit();
+            try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, synthetic_cg.generate(root));
+            analyzer.symbols.items[raw_symbol] = saved_synthetic;
+            synthetic_id_found = true;
+            break;
+        }
+        try std.testing.expect(synthetic_id_found);
+
+        const saved_symbol = analyzer.symbols.items[saved_symbol_index];
+        analyzer.symbols.items[saved_symbol_index].name = .{
+            .start = saved_symbol.name.end + 1,
+            .end = saved_symbol.name.end,
+        };
+        {
+            var invalid_span_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer invalid_span_cg.deinit();
+            try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, invalid_span_cg.generate(root));
+        }
+        analyzer.symbols.items[saved_symbol_index] = saved_symbol;
+
+        analyzer.symbols.items[saved_symbol_index].name = .{
+            .start = saved_symbol.name.start,
+            .end = @intCast(source.len + 1),
+        };
+        {
+            var out_of_source_span_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+            defer out_of_source_span_cg.deinit();
+            try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, out_of_source_span_cg.generate(root));
+        }
+        analyzer.symbols.items[saved_symbol_index] = saved_symbol;
+        transformer.symbol_ids.items[raw_name] = saved_id;
+    }
+    try std.testing.expect(namespace_name_count > 0);
+}
+
+test "#5956 no-linker semantic namespace declarations require exact SymbolIds across ten inputs" {
+    const hostile_sources = [_][]const u8{
+        "namespace LongSpace { export const value = 1; }",
+        "namespace Outer { export namespace Inner { export const value = 2; } }",
+        "namespace Outer.Inner { export const value = 3; }",
+        "function make() { namespace Local { export const value = 4; } return Local.value; }",
+        "namespace N { namespace N { export const value = 5; } export const outer = 6; }",
+        "namespace Merge { export const first = 1; } namespace Merge { export const second = 2; }",
+        "function Mergeable() { return 2; } namespace Mergeable { export const value = 3; }",
+        "class WithNamespace { static base = 2; } namespace WithNamespace { export const value = 3; }",
+        "namespace States { export enum State { Ready, Done } }",
+        "namespace Root.Middle.Leaf { export const value = 9; } namespace Root.Middle.Leaf { export const next = value + 1; }",
+    };
+    for (hostile_sources) |source| {
+        try expectNamespaceDeclarationSymbolId(std.testing.allocator, source);
+    }
+}
+
 fn expectAmbiguousGeneratedIifeParameter(
     parent_allocator: std.mem.Allocator,
     source: []const u8,
@@ -670,7 +829,7 @@ test "#4819 namespace IIFE prefix fails closed when semantic ownership lacks a S
     );
 }
 
-test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked semantic output" {
+test "#4819 Codegen rejects a missing namespace declaration SymbolId in semantic output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -725,6 +884,28 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked s
     }
     const foreign_symbol_sid = foreign_sid orelse return error.MissingNamespaceDeclarationDecoy;
 
+    const name_raw = @backingInt(name_idx);
+    var semantic_ids = try allocator.dupe(?u32, transformer.symbol_ids.items);
+    const semantic_options: CodegenOptions = .{
+        .semantic_symbol_ids = semantic_ids,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_scope_maps = analyzer.scope_maps.items,
+        .generated_iife_scope_owner_map = &analyzer.scope_owner_map,
+        .require_generated_iife_symbols = true,
+        .namespace_declaration_owners = &analyzer.namespace_declaration_owners,
+    };
+    var semantic_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+    const semantic_output = try semantic_cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, semantic_output, "var LongSpace;") != null);
+
+    semantic_ids[name_raw] = null;
+    var missing_semantic_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+    try std.testing.expectError(error.MissingNamespaceDeclarationSymbol, missing_semantic_sid_cg.generate(root));
+
+    semantic_ids[name_raw] = std.math.maxInt(u32);
+    var invalid_semantic_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+    try std.testing.expectError(error.InvalidNamespaceDeclarationSymbol, invalid_semantic_sid_cg.generate(root));
+
     var linked_symbol_ids = try allocator.dupe(?u32, transformer.symbol_ids.items);
     const skip_nodes = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
     var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
@@ -751,7 +932,6 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked s
     try std.testing.expect(std.mem.indexOf(u8, output, "var renamedNamespace;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(renamedNamespace || (renamedNamespace = {}));") != null);
 
-    const name_raw = @backingInt(name_idx);
     linked_symbol_ids[name_raw] = null;
     var missing_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, options);
     try std.testing.expectError(error.MissingNamespaceDeclarationSymbol, missing_sid_cg.generate(root));
