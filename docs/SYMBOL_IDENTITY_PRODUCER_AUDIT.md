@@ -14,6 +14,16 @@
 
 이 결과는 112개 AST binding-constructor index에 한정된다. reference-only 예약, plugin/linker-owned output binding, 별도 serialized payload 경계, semantic-less 실행 자체를 빠진 exact ID로 세지 않았다. Name/span/scope 재검색과 resolver/collision 및 다른 producer family는 #6004, #6003, #5952, #5954 등 기존 이슈의 범위다.
 
+## Current main delta (2026-10-22; `c5b0c956c`)
+
+기준 표 이후 `beginSuperTemp`의 spelling fallback constructor callsite 한 건이 제거됐고, `wrapWithHome`에 exact `_args` parameter binding callsite 한 건이 추가됐다. 총 112 callsite 분모와 지원 semantic-graph 경로의 exact identity handoff 판정은 유지된다. 아래 근거는 현재 main source 위치다.
+
+| 현재 callsite | Binding identity와 owner | Consumer / handoff | 출력 모드와 경계 |
+| --- | --- | --- | --- |
+| [`beginSuperTemp` / `createSyntheticTempBindingWithIdentity` L55](../src/transformer/es2015_class/super_props.zig#L55) | producer `SymbolId`를 allocator slot에 기록하고 nearest var `ScopeId`에서 binding handle을 만든다 | `SuperTemp.binding`이 생성 ref를 exact ID에 연결한다 | 이전 `createSyntheticTempBinding` spelling fallback call은 제거됐다. semantic-less state-machine path는 별도 legacy 경계다 |
+| [`beginSuperTemp` / `makeExactSyntheticBindingFromSpan` L58](../src/transformer/es2015_class/super_props.zig#L58) | state-machine callback binding NodeIndex를 callback scope 생성 전에 보유한다 | allocator counter에 binding handle을 등록하고 callback 참조를 그 handle에 연결한다 | callback owner가 나중에 결정되는 deferred identity 경계다 |
+| [`wrapWithHome` / `_args` `makeExactSyntheticBindingFromSpan` L628](../src/transformer/object_super.zig#L628) | alias parameter는 generated wrapper `ScopeId`에서 exact `.parameter` `SymbolId`를 받는다 | `bindWrappedHomeParameter`가 alias reference NodeIndex들을 그 ID로 연결한다 ([L855](../src/transformer/object_super.zig#L855)) | alias는 native parameter list가 dynamic lookup 때문에 유지될 때만 생기고, `_args` 이름은 early spelling으로 남는다. Late-name marker는 `_obj` home parameter에만 등록된다. Dynamic-scope 경계이며 SID 누락이 아니다 ([gate](../src/transformer/object_super.zig#L327), [late-name scope gate](../src/transformer/es_helpers.zig#L782), [home-only marker](../src/transformer/object_super.zig#L804)) |
+
 ## Callsite별 근거
 
 각 행은 생성 시점과 owner, identity consumer, 출력 모드, fallback 경계를 분리한다. `line`은 기준 main의 source 위치다.
