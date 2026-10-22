@@ -78,6 +78,7 @@ pub fn isStyledImportSourceWithExtras(source: []const u8, top_level_import_paths
 const NamedHelperSpec = struct {
     imported: []const u8,
     field: []const u8,
+    symbol_id_field: []const u8,
 };
 
 // `injectGlobal` 은 typically expression-statement (`injectGlobal\`...\`;`) 로 사용되는데
@@ -85,9 +86,9 @@ const NamedHelperSpec = struct {
 // 적용 안 됨 → 일관성 위해 named import 추적도 제외 (helpers list 에서 빼서 false
 // advertising 방지). expression_statement hook 추가 시 함께 부활.
 const NAMED_HELPER_SPECS = [_]NamedHelperSpec{
-    .{ .imported = "css", .field = "css_binding" },
-    .{ .imported = "keyframes", .field = "keyframes_binding" },
-    .{ .imported = "createGlobalStyle", .field = "create_global_style_binding" },
+    .{ .imported = "css", .field = "css_binding", .symbol_id_field = "css_binding_symbol_id" },
+    .{ .imported = "keyframes", .field = "keyframes_binding", .symbol_id_field = "keyframes_binding_symbol_id" },
+    .{ .imported = "createGlobalStyle", .field = "create_global_style_binding", .symbol_id_field = "create_global_style_binding_symbol_id" },
 };
 
 /// `visitImportDeclaration` hook — source 가 styled-components 면:
@@ -118,6 +119,10 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
                 const local_name = self.ast.getText(spec_node.data.string_ref);
                 if (local_name.len == 0) continue;
                 self.plugins.styled_components.default_binding = local_name;
+                self.plugins.styled_components.default_binding_symbol_id = if (self.getSymbolIdAt(spec_idx)) |symbol_id|
+                    @fromBackingInt(@intCast(symbol_id))
+                else
+                    null;
             },
             .import_specifier => {
                 // binary { left=imported, right=local }
@@ -136,6 +141,10 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
                         @field(self.plugins.styled_components, spec.field) == null)
                     {
                         @field(self.plugins.styled_components, spec.field) = local_name;
+                        @field(self.plugins.styled_components, spec.symbol_id_field) = if (self.getSymbolIdAt(local_idx)) |symbol_id|
+                            @fromBackingInt(@intCast(symbol_id))
+                        else
+                            null;
                         break;
                     }
                 }
@@ -146,10 +155,10 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
 }
 
 /// helper binding 필드 이름 (`maybeMinifyHelperTemplate` 의 tag 매칭에 사용).
-const HELPER_BINDING_FIELDS = [_][]const u8{
-    "css_binding",
-    "keyframes_binding",
-    "create_global_style_binding",
+const HELPER_BINDING_FIELDS = [_]struct { name: []const u8, symbol_id: []const u8 }{
+    .{ .name = "css_binding", .symbol_id = "css_binding_symbol_id" },
+    .{ .name = "keyframes_binding", .symbol_id = "keyframes_binding_symbol_id" },
+    .{ .name = "create_global_style_binding", .symbol_id = "create_global_style_binding_symbol_id" },
 };
 
 /// `visitVariableDeclarator` post-hook — tag 가 styled-components named helper 면
@@ -195,9 +204,9 @@ fn tagMatchesStyledHelper(self: *Transformer, tag_idx: NodeIndex) bool {
     if (tag_node.tag != .identifier_reference) return false;
     const text = self.ast.getText(tag_node.data.string_ref);
     const state = &self.plugins.styled_components;
-    inline for (HELPER_BINDING_FIELDS) |field_name| {
-        if (@field(state, field_name)) |b| {
-            if (std.mem.eql(u8, text, b)) return true;
+    inline for (HELPER_BINDING_FIELDS) |fields| {
+        if (@field(state, fields.name)) |b| {
+            if (matchesImportedBinding(self, tag_idx, text, b, @field(state, fields.symbol_id))) return true;
         }
     }
     return false;
@@ -223,7 +232,13 @@ fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
         const node = self.ast.getNode(current);
         switch (node.tag) {
             .identifier_reference => {
-                const matches = std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
+                const matches = matchesImportedBinding(
+                    self,
+                    current,
+                    self.ast.getText(node.data.string_ref),
+                    binding,
+                    self.plugins.styled_components.default_binding_symbol_id,
+                );
                 return .{ .matches_binding = matches, .user_with_config_call = user_with_config };
             },
             .static_member_expression => {
@@ -254,6 +269,20 @@ fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
             else => return result_no_match,
         }
     }
+}
+
+/// Imported plugin bindings use exact semantic identity whenever it is available.
+/// Name-only matching is reserved for graphless transforms that carry no SymbolIds.
+fn matchesImportedBinding(
+    self: *Transformer,
+    reference_idx: NodeIndex,
+    reference_name: []const u8,
+    binding_name: []const u8,
+    binding_symbol_id: ?SymbolId,
+) bool {
+    if (binding_symbol_id) |symbol_id| return self.getSymbolIdAt(reference_idx) == @backingInt(symbol_id);
+    if (self.semantic_edit_enabled or self.getSymbolIdAt(reference_idx) != null) return false;
+    return std.mem.eql(u8, reference_name, binding_name);
 }
 
 /// object_property 의 key 노드에서 displayName 으로 사용할 이름을 추출.
@@ -1275,7 +1304,13 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
         const inner_tag_node = self.ast.getNode(inner_tag_idx);
         if (inner_tag_node.tag != .identifier_reference) return null;
         const css_binding = self.plugins.styled_components.css_binding orelse return null;
-        if (!std.mem.eql(u8, self.ast.getText(inner_tag_node.data.string_ref), css_binding)) return null;
+        if (!matchesImportedBinding(
+            self,
+            inner_tag_idx,
+            self.ast.getText(inner_tag_node.data.string_ref),
+            css_binding,
+            self.plugins.styled_components.css_binding_symbol_id,
+        )) return null;
         const inner_template_node = self.ast.getNode(inner_template_idx);
         if (inner_template_node.tag != .template_literal) return null;
         return inner_template_idx;

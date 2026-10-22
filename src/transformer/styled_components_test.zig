@@ -53,12 +53,166 @@ test "styled-components: styled.X 선언 → withConfig({displayName}) 래핑" {
         \\import styled from "styled-components";
         \\const Button = styled.div`color: red;`;
     ,
-        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        .{ .styled_components = true, .unsupported = .{ .block_scoping = true }, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Button");
+}
+
+test "styled-components: import binding과 이름만 같은 local shadow는 구분" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\function render(styled) {
+        \\  const Local = styled.div`color: blue;`;
+        \\  return Local;
+        \\}
+        \\const Button = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .unsupported = .{ .block_scoping = true }, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+
+    try expectWithConfigCount(r.output, 1);
+    try expectDisplayName(r.output, "Button");
+    try std.testing.expect(!containsDisplayName(r.output, "Local"));
+}
+
+test "styled-components: exact import identity rejects ten shadowing shapes" {
+    const sources = [_][]const u8{
+        \\import styled from "styled-components";
+        \\function render(styled) { const Local = styled.div`color: blue;`; }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\const render = (styled) => styled.div`color: blue;`;
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\function render() { { let styled = local; const Local = styled.div`color: blue;`; } }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\const render = { view(styled) { return styled.div`color: blue;`; } };
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\function render() { try {} catch (styled) { const Local = styled.div`color: blue;`; } }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\function render() { function styled() {} const Local = styled.div`color: blue;`; }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\function render({ styled }) { const Local = styled.div`color: blue;`; }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\class View { render(styled) { return styled.div`color: blue;`; } }
+        \\const Button = styled.div`color: red;`;
+        ,
+        \\import s from "styled-components";
+        \\function render(s) { const Local = s.div`color: blue;`; }
+        \\const Button = s.div`color: red;`;
+        ,
+        \\import styled from "styled-components";
+        \\const render = function(styled) { return styled.div`color: blue;`; };
+        \\const Button = styled.div`color: red;`;
+        ,
+    };
+
+    for (sources) |source| {
+        var r = try e2eFull(
+            std.testing.allocator,
+            source,
+            .{ .styled_components = true, .unsupported = .{ .block_scoping = true }, .jsx_filename = "test.tsx" },
+            default_cg,
+            ".tsx",
+        );
+        defer r.deinit();
+        try expectWithConfigCount(r.output, 1);
+        try expectDisplayName(r.output, "Button");
+        try std.testing.expect(!containsDisplayName(r.output, "Local"));
+    }
+}
+
+test "styled-components helper import identity rejects local css shadow" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\function render(css) {
+        \\  const Local = css`
+        \\    color:   red;
+        \\  `;
+        \\  return Local;
+        \\}
+        \\const Actual = css`
+        \\  color:   blue;
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .unsupported = .{ .block_scoping = true }, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color:   red;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: blue;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color:   blue;") == null);
+}
+
+test "styled-components keyframes helper keeps its own exact import identity" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes } from "styled-components";
+        \\function render(keyframes) {
+        \\  const Local = keyframes`
+        \\    from { opacity:   0; }
+        \\    to   { opacity: 1; }
+        \\  `;
+        \\  return Local;
+        \\}
+        \\const Actual = keyframes`
+        \\  from { opacity:   0; }
+        \\  to   { opacity: 1; }
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .unsupported = .{ .block_scoping = true }, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "to   {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "opacity: 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "opacity:   0") != null);
+}
+
+test "styled-components cssProp does not treat a shadowed css helper as the import" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\function View(css) { return <div css={css`color: red;`} />; }
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .unsupported = .{ .block_scoping = true },
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") == null);
 }
 
 test "styled-components: styled(Component) 선언 → withConfig({displayName})" {
