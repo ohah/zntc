@@ -427,7 +427,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 var ib: [32]u8 = undefined;
                 const k = if (n == 1) "_keys" else std.fmt.bufPrint(&kb, "_keys{d}", .{n}) catch unreachable;
                 const i = if (n == 1) "_idx" else std.fmt.bufPrint(&ib, "_idx{d}", .{n}) catch unreachable;
-                if (try es_helpers.nameAppearsInSource(self, k) or try es_helpers.nameAppearsInSource(self, i)) continue;
+                const key_in_source = try es_helpers.nameAppearsInSource(self, k);
+                const index_in_source = try es_helpers.nameAppearsInSource(self, i);
+                const key_visible_to_eval = if (self.current_scope.isNone())
+                    try es_helpers.nameAppearsInAnyDynamicEvalString(self, k)
+                else
+                    try es_helpers.nameAppearsInDynamicEvalString(self, self.current_scope, k);
+                const index_visible_to_eval = if (self.current_scope.isNone())
+                    try es_helpers.nameAppearsInAnyDynamicEvalString(self, i)
+                else
+                    try es_helpers.nameAppearsInDynamicEvalString(self, self.current_scope, i);
+                if (key_in_source or index_in_source or key_visible_to_eval or index_visible_to_eval) continue;
                 return .{ .keys = try self.ast.addString(k), .idx = try self.ast.addString(i) };
             }
         }

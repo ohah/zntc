@@ -2609,6 +2609,138 @@ test "#4819 standalone using locals choose final spellings from their SymbolIds"
     try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack22, _error22, _hasError22)") != null);
 }
 
+test "#6003 using temps avoid names visible through statically known direct eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    // Each source form evaluates to code that reads the corresponding generated
+    // name, while the source has no literal spelling for that identifier.
+    // A raw source scan therefore misses a binding that direct eval can read.
+    const cases = [_]struct { eval_source: []const u8, name: []const u8, output_fragment: []const u8 }{
+        .{ .eval_source = "eval('typeof \\\\u005fstack')", .name = "_stack", .output_fragment = "var _stack2 = []" },
+        .{ .eval_source = "eval(\"typeof \\\\u005ferror\")", .name = "_error", .output_fragment = "_error2 = void 0" },
+        .{ .eval_source = "eval('typeof ' + '\\\\u005fhasError')", .name = "_hasError", .output_fragment = "_hasError2 = false" },
+        .{ .eval_source = "eval(('typeof \\\\u005f'))", .name = "_", .output_fragment = "catch (_2)" },
+        .{ .eval_source = "eval(`typeof \\\\u005fstack`)", .name = "_stack", .output_fragment = "var _stack2 = []" },
+        .{ .eval_source = "eval('typeof \\u005ferror')", .name = "_error", .output_fragment = "_error2 = void 0" },
+        .{ .eval_source = "eval('typeof \\x5fhasError')", .name = "_hasError", .output_fragment = "_hasError2 = false" },
+        .{ .eval_source = "eval('typeof ' + '\\\\u005f' + 'stack')", .name = "_stack", .output_fragment = "var _stack2 = []" },
+        .{ .eval_source = "eval(`typeof ${'\\\\u005f'}error`)", .name = "_error", .output_fragment = "_error2 = void 0" },
+        .{ .eval_source = "const source = 'typeof \\\\u005f'; eval(source)", .name = "_", .output_fragment = "catch (_2)" },
+    };
+
+    for (cases) |case| {
+        const eval_source = case.eval_source;
+        try std.testing.expect(std.mem.indexOf(u8, eval_source, case.name) == null);
+        const source = try std.fmt.allocPrint(
+            allocator,
+            "function run(resource) {{ using item = resource; {s}; }}",
+            .{eval_source},
+        );
+        var result = try transpile(
+            allocator,
+            source,
+            "input.mjs",
+            .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+        );
+        defer result.deinit(allocator);
+
+        try std.testing.expect(std.mem.indexOf(u8, result.code, case.output_fragment) != null);
+    }
+}
+
+test "#6003 using-created loop and export bindings avoid escaped eval names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const cases = [_]struct { source: []const u8, output_fragment: []const u8 }{
+        .{
+            .source = "export function run(resources) { for (using item of resources) { return eval('typeof \\\\u005fusing'); } }",
+            .output_fragment = "_using2",
+        },
+        .{
+            .source = "using resource = {}; export default 1; eval('typeof \\\\u005fdefault');",
+            .output_fragment = "_default2",
+        },
+    };
+
+    for (cases) |case| {
+        var result = try transpile(
+            allocator,
+            case.source,
+            "input.mjs",
+            .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+        );
+        defer result.deinit(allocator);
+
+        try std.testing.expect(std.mem.indexOf(u8, result.code, case.output_fragment) != null);
+    }
+}
+
+test "#6003 for-in helper bindings avoid escaped eval names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const cases = [_]struct { source: []const u8, output_fragment: []const u8 }{
+        .{
+            .source = "function* run(value) { for (let key in value) { eval('typeof \\\\u005fkeys'); yield key; } }",
+            .output_fragment = "_keys2",
+        },
+        .{
+            .source = "function* run(value) { for (let key in value) { eval('typeof \\\\u005fidx'); yield key; } }",
+            .output_fragment = "_idx2",
+        },
+    };
+    for (cases) |case| {
+        var result = try transpile(
+            allocator,
+            case.source,
+            "input.mjs",
+            .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+        );
+        defer result.deinit(allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, case.output_fragment) != null);
+    }
+}
+
+test "#6003 moved TLA default export avoids escaped eval-visible facade names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "await ready; export default 1; eval('typeof \\\\u005fdefault');";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const program = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .tla_module_awaited = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.current_scope = transformer.programScope();
+
+    _ = try transformer.visitNode(program);
+    var found_facade = false;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .binding_identifier) continue;
+        if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_default2")) {
+            found_facade = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_facade);
+}
+
 test "#4819 nested top-level using blocks register distinct exact temp identities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

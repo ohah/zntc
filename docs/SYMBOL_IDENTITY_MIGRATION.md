@@ -2,6 +2,8 @@
 
 [에픽 #4819](https://github.com/ohah/zntc/issues/4819)의 목표는 사용자 변수와 생성 변수가 변환 중 같은 identity를 유지하고, 출력 직전에 이름을 확정하는 것이다. 이 문서는 현재 보정 경로를 제거할 조건과 다음 작업 단위를 기록한다. 새로운 AST나 별도 심볼 시스템을 도입하는 계획은 아니다.
 
+현재 이름 선택기와 collision allocator의 production caller별 분류는 [#6003 resolver/collision caller census](./SYMBOL_IDENTITY_RESOLVER_CALLER_CENSUS.md)를 기준으로 본다. AST binding-constructor 분모는 별도 [#5980 producer census](./SYMBOL_IDENTITY_PRODUCER_CENSUS.md)이며 두 호출 수를 미완료 심볼 수로 합치지 않는다.
+
 생성자 표의 조사 기준은 2026-10-04의 `6ca87b46`이며, 이후 구현 상태는 아래 작업 순서에 기록한다. 아래 표는 확인한 주요 이름 생성자 계열이며, 모든 호출 지점과 문법·옵션 조합의 전수 목록은 아니다. private-field/decorator/class-self, Flow 및 plugin/worklet/refresh/emotion/styled-components의 생성 경로 전수조사는 남아 있다. 원본 AST를 보존해야 하는 bundler/cache/HMR의 메모리 소유권은 [기존 ownership RFC](./RFC_TRANSFORMER_OWN_AST.md)와 구분한다. AST 복사 제거와 의미 분석 재실행 제거는 다른 작업이다.
 
 ## 생성과 출력의 계약
