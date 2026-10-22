@@ -559,18 +559,40 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// span list until the wrapper declaration is emitted.
         fn captureGeneratorTempProducer(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!HoistedStateTemp {
             var producer = HoistedStateTemp{ .binding = .none, .name_span = name_span };
+            if (self.temp_var_counter == 0)
+                std.debug.panic("generator temp producer has no allocator counter slot", .{});
+            const counter_index = self.temp_var_counter - 1;
+            const allocated_span = self.temp_span_by_counter.get(counter_index) orelse
+                std.debug.panic("generator temp producer has no allocator span", .{});
+            if (allocated_span.start != name_span.start or allocated_span.end != name_span.end)
+                std.debug.panic("generator temp producer span disagrees with its allocator slot", .{});
+            const temp_producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                std.debug.panic("generator temp producer has no allocator producer ID", .{});
+            if (temp_producer_id == 0)
+                std.debug.panic("generator temp producer has an invalid allocator producer ID", .{});
+            producer.temp_producer_id = temp_producer_id;
             try appendGeneratorTempSpan(self, name_span);
+            const identity = &self.generator_temp_producer_identities.items[self.generator_temp_var_spans.items.len - 1];
+            identity.temp_producer_id = temp_producer_id;
             if (self.semantic_edit_enabled) {
                 if (self.state_machine_depth == 0)
                     std.debug.panic("generator temp producer was captured outside its state machine", .{});
                 const owner_scope = self.generator_state_machine_scope;
                 if (owner_scope.isNone())
                     std.debug.panic("generator temp producer has no exact wrapper ScopeId", .{});
-                const symbol = (try self.reserveSyntheticTempSymbolInScope(name_span, declaration_span, owner_scope)) orelse
+                const symbol = (try self.reserveSyntheticTempSymbolForProducerInScope(
+                    temp_producer_id,
+                    name_span,
+                    declaration_span,
+                    owner_scope,
+                )) orelse
                     std.debug.panic("generator temp producer has no exact SymbolId", .{});
+                const slot = try self.temp_symbol_ids_by_counter.getOrPut(self.allocator, counter_index);
+                if (slot.found_existing and slot.value_ptr.* != @backingInt(symbol))
+                    std.debug.panic("generator temp allocator slot changed its exact SymbolId", .{});
+                slot.value_ptr.* = @backingInt(symbol);
                 producer.symbol_id = @backingInt(symbol);
                 producer.owner_scope = owner_scope;
-                const identity = &self.generator_temp_producer_identities.items[self.generator_temp_var_spans.items.len - 1];
                 identity.symbol_id = @backingInt(symbol);
                 identity.owner_scope = owner_scope;
                 identity.producer_owned = true;
@@ -722,6 +744,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .name_span = temp_span,
                     .symbol_id = symbol_id,
                     .owner_scope = if (self.semantic_edit_enabled) wrapper_scope else .none,
+                    .temp_producer_id = producer.temp_producer_id,
                 });
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
@@ -3431,6 +3454,13 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
             }
             const raw_id = identity.symbol_id orelse return error.MissingGeneratorProducerSymbolId;
             try std.testing.expectEqual(owner_scope, identity.owner_scope);
+            if (identity.temp_producer_id) |producer_id| {
+                try std.testing.expect(producer_id != 0);
+                try std.testing.expectEqual(
+                    @as(?u32, raw_id),
+                    transformer.temp_symbols_by_producer_id.get(producer_id),
+                );
+            }
             const editor = if (transformer.semantic_editor) |*value| value else return error.MissingGeneratorProducerEditor;
             try std.testing.expect(raw_id < editor.symbols.items.len);
             const symbol = editor.symbols.items[raw_id];
@@ -3443,6 +3473,8 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
                 binding_matches += 1;
                 try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(temp.binding));
                 try std.testing.expectEqual(identity.owner_scope, temp.owner_scope);
+                if (identity.temp_producer_id != null)
+                    try std.testing.expectEqual(identity.temp_producer_id, temp.temp_producer_id);
             }
             try std.testing.expectEqual(@as(usize, 1), binding_matches);
 
@@ -4025,6 +4057,11 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     const temp_span = transformer.ast.getNode(temp_ref).data.string_ref;
     const producer_identity = transformer.generator_temp_producer_identities.items[0];
     const raw_id = producer_identity.symbol_id orelse return error.MissingGeneratorTempSymbol;
+    const temp_producer_id = producer_identity.temp_producer_id orelse return error.MissingGeneratorTempProducerId;
+    const counter_index = transformer.temp_var_counter - 1;
+    try std.testing.expectEqual(temp_producer_id, transformer.temp_producer_id_by_counter.get(counter_index).?);
+    try std.testing.expectEqual(@as(?u32, raw_id), transformer.temp_symbol_ids_by_counter.get(counter_index));
+    try std.testing.expectEqual(@as(?u32, raw_id), transformer.temp_symbols_by_producer_id.get(temp_producer_id));
     try std.testing.expectEqual(temp_span.start, transformer.generator_temp_var_spans.items[0].start);
     try std.testing.expectEqual(transformer.programScope(), producer_identity.owner_scope);
     var reads: usize = 0;
@@ -4094,6 +4131,15 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
         try std.testing.expectEqual(@as(?u32, assignment_id), temp.symbol_id);
         break;
     }
+    var captured_temp_hoisted = false;
+    for (state_temps.items) |temp| {
+        if (temp.temp_producer_id != temp_producer_id) continue;
+        captured_temp_hoisted = true;
+        try std.testing.expectEqual(@as(?u32, raw_id), temp.symbol_id);
+        try std.testing.expectEqual(transformer.programScope(), temp.owner_scope);
+        try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(temp.binding));
+    }
+    try std.testing.expect(captured_temp_hoisted);
     const exact_binding = hoisted_binding orelse return error.MissingAssignmentTempBinding;
     try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(exact_binding));
 
@@ -4126,6 +4172,125 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     }
     const exact_source_binding = source_hoisted_binding orelse return error.MissingSourceGeneratorVarHoist;
     try std.testing.expectEqual(@as(?u32, source_symbol_id), transformer.getSymbolIdAt(exact_source_binding));
+}
+
+test "#4819 generator temp producer bypasses a stale span identity in another owner scope" {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function* g(){ yield 1; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var generator_scope: ?ScopeId = null;
+    var declaration_span: Span = .EMPTY;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const flags = transformer.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+        if (flags & ast_mod.FunctionFlags.is_generator == 0) continue;
+        const scope_raw = analyzer.scope_owner_map.get(@intCast(raw)) orelse continue;
+        generator_scope = @fromBackingInt(@intCast(scope_raw));
+        declaration_span = node.span;
+        break;
+    }
+    const source_scope = generator_scope orelse return error.MissingGeneratorProducerSourceScope;
+    const owner_scope = transformer.nearestVarScope(source_scope);
+    const decoy_scope = transformer.programScope();
+    if (owner_scope == decoy_scope) return error.GeneratorProducerOwnerMatchesDecoyScope;
+    transformer.current_scope = source_scope;
+    transformer.generator_state_machine_scope = owner_scope;
+    transformer.state_machine_depth = 1;
+
+    const name_span = try es_helpers.makeTempVarSpan(&transformer);
+    const counter_index = transformer.temp_var_counter - 1;
+    const temp_producer_id = transformer.temp_producer_id_by_counter.get(counter_index) orelse
+        return error.MissingGeneratorAllocatorProducerId;
+    const decoy_symbol = (try transformer.reserveSyntheticTempSymbolInScope(
+        name_span,
+        declaration_span,
+        decoy_scope,
+    )) orelse return error.MissingDecoyTempSymbol;
+    const stale_owner_key = (@as(u64, @backingInt(owner_scope)) << 32) | name_span.start;
+    try transformer.synthetic_temp_symbol_ids.put(allocator, stale_owner_key, @backingInt(decoy_symbol));
+
+    const producer = try ES2015Generator(Transformer).captureGeneratorTempProducer(
+        &transformer,
+        name_span,
+        declaration_span,
+    );
+    const symbol_id = producer.symbol_id orelse return error.MissingExactGeneratorTempSymbol;
+    const raw_symbol_id = symbol_id;
+    const producer_identity = transformer.generator_temp_producer_identities.items[0];
+    try std.testing.expectEqual(temp_producer_id, producer_identity.temp_producer_id.?);
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), producer_identity.symbol_id);
+    try std.testing.expectEqual(owner_scope, producer_identity.owner_scope);
+    try std.testing.expect(producer_identity.producer_owned);
+    try std.testing.expect(raw_symbol_id != @backingInt(decoy_symbol));
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingGeneratorProducerEditor;
+    try std.testing.expectEqual(owner_scope, editor.symbols.items[raw_symbol_id].scope_id);
+    try std.testing.expectEqual(SymbolKind.variable_var, editor.symbols.items[raw_symbol_id].kind);
+    try std.testing.expectEqual(temp_producer_id, producer.temp_producer_id.?);
+    try std.testing.expectEqual(temp_producer_id, transformer.temp_producer_id_by_counter.get(counter_index).?);
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.temp_symbol_ids_by_counter.get(counter_index));
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.temp_symbols_by_producer_id.get(temp_producer_id));
+
+    const write_ref = try ES2015Generator(Transformer).makeGeneratorTempRefForProducer(
+        &transformer,
+        producer,
+        name_span,
+        .{ .write = true },
+    );
+    const read_ref = try ES2015Generator(Transformer).makeGeneratorTempRefForProducer(
+        &transformer,
+        producer,
+        name_span,
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.getSymbolIdAt(write_ref));
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.getSymbolIdAt(read_ref));
+
+    var state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    defer state_temps.deinit(allocator);
+    _ = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        &.{},
+        declaration_span,
+        &state_temps,
+        owner_scope,
+    );
+    try std.testing.expectEqual(@as(usize, 1), state_temps.items.len);
+    const hoisted = state_temps.items[0];
+    try std.testing.expectEqual(temp_producer_id, hoisted.temp_producer_id.?);
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), hoisted.symbol_id);
+    try std.testing.expectEqual(owner_scope, hoisted.owner_scope);
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.getSymbolIdAt(hoisted.binding));
+    try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_semantic_refs.items.len);
+    for (transformer.generator_state_semantic_refs.items) |reference| {
+        try std.testing.expectEqual(raw_symbol_id, reference.symbol_id);
+        try std.testing.expectEqual(source_scope, reference.scope);
+        try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.getSymbolIdAt(reference.node));
+    }
 }
 
 fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp_count: usize) !void {
