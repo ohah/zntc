@@ -1752,6 +1752,9 @@ pub fn computeCrossChunkGlobalNames(
         }
         for (lnk.global_identifiers) |name| try free_globals.put(allocator, name, {});
     }
+    // Generated namespace locals have an exact module owner but no source ExportBinding. Keep
+    // their names occupied so no ordinary export can claim one before its owner is processed.
+    try lnk.reserveSharedNamespaceVarNames(allocator, &used);
     for (syms.items) |s| {
         // Lazy export-all exposes a provider binding by its one local spelling.
         // Two public export names may point to that same exact binding; assigning
@@ -1768,6 +1771,8 @@ pub fn computeCrossChunkGlobalNames(
                 continue;
             }
         }
+        const is_shared_namespace_var = lnk.isSharedNamespaceVar(s.mod, s.name);
+        if (is_shared_namespace_var) _ = used.remove(s.name);
         // (#4532 증상1) preserve-modules 는 전역명을 **ESM-wrap owner 로 한정**한다.
         // preserve-modules 는 모든 모듈이 자기 청크라 모든 import 가 cross-chunk 로 잡히는데:
         //  - non-wrap ESM provider(.none): codegen 이 소스 `export { tag }` 를 자연명 재방출 →
@@ -1834,6 +1839,10 @@ pub fn computeCrossChunkGlobalNames(
         // candidate 소유권을 맵으로 이전. used 는 맵의 저장본을 borrow(used.deinit 가 키 미해제).
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
         const global_name = lnk.getCrossChunkGlobalName(s.mod, s.name).?;
+        if (lnk.graph.lazy_compilation and is_shared_namespace_var) {
+            if (!try lnk.assignSharedNamespaceGlobalName(s.mod, s.name, global_name))
+                return error.SharedNamespaceOwnerMissing;
+        }
         try used.put(allocator, global_name, {});
         if (symbol_id) |id| try lazy_symbol_globals.put(allocator, id, global_name);
     }

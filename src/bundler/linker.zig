@@ -451,6 +451,10 @@ pub const Linker = struct {
     ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .empty,
     ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
     ns_shared_var_names: std.StringHashMapUnmanaged(void) = .empty,
+    /// Lazy cross-chunk public names for generated namespace objects. Values borrow the
+    /// corresponding `cross_chunk_global_names` entry; the module key is the exact namespace
+    /// object owner because `export * as ns` has no source semantic local SymbolId.
+    ns_shared_global_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
     /// (#3966) shared namespace var 이름의 결정적 충돌 해소. 같은 sanitized
     /// base (예: 서로 다른 디렉터리의 `core.js`) 를 갖는 모듈들 중 module_index
     /// (renumber 후 path-sorted, 결정적) 순서의 rank. rank>0 인 모듈만 저장
@@ -636,6 +640,7 @@ pub const Linker = struct {
         self.ns_shared_inline_cache.deinit(self.allocator);
         self.ns_shared_inline_order.deinit(self.allocator);
         self.ns_shared_var_names.deinit(self.allocator);
+        self.ns_shared_global_names.deinit(self.allocator);
         self.ns_base_rank.deinit(self.allocator);
         self.ns_target_set.deinit(self.allocator);
         self.ns_cross_chunk_targets.deinit(self.allocator);
@@ -4426,6 +4431,15 @@ pub const Linker = struct {
 
     /// 전역 이름 맵 비우기 — owned value 해제 + inner 맵 deinit.
     pub fn clearCrossChunkGlobalNames(self: *Linker) void {
+        // Namespace-global names borrow the owned values below. Remove their temporary
+        // reservation before freeing those values so no namespace-name key dangles.
+        var ns_it = self.ns_shared_global_names.iterator();
+        while (ns_it.next()) |entry| {
+            const shared = self.ns_shared_inline_cache.get(entry.key_ptr.*) orelse continue;
+            if (!std.mem.eql(u8, shared.var_name, entry.value_ptr.*))
+                _ = self.ns_shared_var_names.remove(entry.value_ptr.*);
+        }
+        self.ns_shared_global_names.clearRetainingCapacity();
         var it = self.cross_chunk_global_names.valueIterator();
         while (it.next()) |inner| {
             var vit = inner.valueIterator();
@@ -5757,6 +5771,10 @@ pub const Linker = struct {
 
     pub const registerNamespaceRewrites = shared_namespace.registerNamespaceRewrites;
     pub const ensureSharedNsVar = shared_namespace.ensureSharedNsVar;
+    pub const isSharedNamespaceVar = shared_namespace.isSharedNamespaceVar;
+    pub const reserveSharedNamespaceVarNames = shared_namespace.reserveSharedNamespaceVarNames;
+    pub const assignSharedNamespaceGlobalName = shared_namespace.assignSharedNamespaceGlobalName;
+    pub const getSharedNamespaceGlobalName = shared_namespace.getSharedNamespaceGlobalName;
     /// #4545 code-review [2]: OOM-latch 회귀 유닛(linker_test.zig) 전용 노출.
     pub const ensureNsBaseRank = shared_namespace.ensureNsBaseRank;
     /// (#3975) namespace 객체의 ESM-local getter literal 생성 (CJS star/inner 혼합 케이스의
@@ -6650,6 +6668,11 @@ pub const Linker = struct {
                 }
                 var git = inner.iterator();
                 while (git.next()) |e| {
+                    // `linkNamespaceCrossChunk` registers the generated namespace object under
+                    // its exact target module and local name. It has no source ExportBinding or
+                    // semantic SymbolId; its global alias was handed to the shared namespace
+                    // owner when cross-chunk names were assigned.
+                    if (self.isSharedNamespaceVar(mod_idx.toU32(), e.key_ptr.*)) continue;
                     const local = self.getExportLocalName(mod_idx.toU32(), e.key_ptr.*) orelse e.key_ptr.*;
                     const dup = try self.allocator.dupe(u8, e.value_ptr.*);
                     if (!try self.putCanonicalNameForLocalExport(mod_idx.toU32(), e.key_ptr.*, dup)) {
