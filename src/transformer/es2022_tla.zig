@@ -477,7 +477,9 @@ fn moveDefaultExport(comptime Transformer: type, self: *Transformer, stmt: NodeI
     var n: u32 = 1;
     const name = while (true) : (n += 1) {
         const candidate = if (n == 1) try self.allocator.dupe(u8, "_default") else try std.fmt.allocPrint(self.allocator, "_default{d}", .{n});
-        if (!try es_helpers.nameAppearsInSource(self, candidate)) break candidate;
+        const in_source = try es_helpers.nameAppearsInSource(self, candidate);
+        const visible_to_eval = try es_helpers.nameAppearsInDynamicEvalString(self, program_scope, candidate);
+        if (!in_source and !visible_to_eval) break candidate;
         self.allocator.free(candidate);
     };
     defer self.allocator.free(name);

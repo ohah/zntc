@@ -134,6 +134,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 for (bases, 0..) |b, k| {
                     names[k] = if (n == 1) b else std.fmt.bufPrint(&bufs[k], "{s}{d}", .{ b, n }) catch unreachable;
                     if (try es_helpers.nameAppearsInSource(self, names[k])) collide = true;
+                    if (try nameVisibleToEval(self, names[k])) collide = true;
                 }
                 if (collide) continue;
                 return .{
@@ -144,6 +145,13 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     .late_output_names = false,
                 };
             }
+        }
+
+        fn nameVisibleToEval(self: *Transformer, name: []const u8) Transformer.Error!bool {
+            return if (self.current_scope.isNone())
+                try es_helpers.nameAppearsInAnyDynamicEvalString(self, name)
+            else
+                try es_helpers.nameAppearsInDynamicEvalString(self, self.current_scope, name);
         }
 
         fn push(self: *Transformer, list: *std.ArrayList(NodeIndex), stmt: NodeIndex) Transformer.Error!void {
@@ -470,7 +478,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 counter.* += 1;
                 const n = counter.*;
                 const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
-                if (!try es_helpers.nameAppearsInSource(self, name)) return name;
+                const in_source = try es_helpers.nameAppearsInSource(self, name);
+                const visible_to_eval = try nameVisibleToEval(self, name);
+                if (!in_source and !visible_to_eval) return name;
                 self.allocator.free(name);
             }
         }
@@ -479,7 +489,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
             var n: u32 = 1;
             while (true) : (n += 1) {
                 const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
-                if (!try es_helpers.nameAppearsInSource(self, name)) return name;
+                const in_source = try es_helpers.nameAppearsInSource(self, name);
+                const visible_to_eval = try nameVisibleToEval(self, name);
+                if (!in_source and !visible_to_eval) return name;
                 self.allocator.free(name);
             }
         }
@@ -736,6 +748,58 @@ test "#4819 standalone using locals defer their names to exact SymbolIds" {
     editor.scopes.items[transformer.current_scope.toIndex()].subtree_has_direct_eval = true;
     const dynamic_names = try Using.allocNames(&transformer);
     try std.testing.expect(!dynamic_names.late_output_names);
+}
+
+test "#6003 using fallback skips decoded names visible through direct eval" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("transformer.zig").TransformOptions;
+    const Transformer = @import("transformer.zig").Transformer;
+    const Using = ES2025Using(Transformer);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function run() { " ++
+        "eval('typeof \\\\u005fstack'); " ++
+        "eval('typeof \\\\u005ferror'); " ++
+        "eval('typeof \\\\u005fhasError'); " ++
+        "eval('typeof \\\\u005f'); }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const names = try Using.allocNames(&transformer);
+    try std.testing.expect(!names.late_output_names);
+    try std.testing.expectEqualStrings("_stack2", transformer.ast.getText(names.stack));
+    try std.testing.expectEqualStrings("_error2", transformer.ast.getText(names.err));
+    try std.testing.expectEqualStrings("_hasError2", transformer.ast.getText(names.has_err));
+    try std.testing.expectEqualStrings("_2", transformer.ast.getText(names.catch_param));
+
+    transformer.using_counter = 0;
+    transformer.current_scope = .none;
+    const unscoped_names = try Using.allocNames(&transformer);
+    try std.testing.expect(!unscoped_names.late_output_names);
+    try std.testing.expectEqualStrings("_stack2", transformer.ast.getText(unscoped_names.stack));
 }
 
 test "#4819 generator using refs retain their producer SymbolId" {
