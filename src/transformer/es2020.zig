@@ -55,15 +55,20 @@ pub fn ES2020(comptime Transformer: type) type {
             name_span: Span,
             declaration_span: Span,
             counter_index: u32,
+            producer_id: u64,
         ) Transformer.Error!?TempIdentity {
             const scopes = knownTempIdentityScopes(self) orelse return null;
-            const symbol_id = try self.reserveSyntheticTempSymbolInScope(
+            const symbol_id = try self.reserveSyntheticTempSymbolForProducerInScope(
+                producer_id,
                 name_span,
                 declaration_span,
                 scopes.reservation_scope,
             ) orelse
                 std.debug.panic("known-scope ES2020 temp identity reservation returned no SymbolId", .{});
-            try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(symbol_id));
+            const slot = try self.temp_symbol_ids_by_counter.getOrPut(self.allocator, counter_index);
+            if (slot.found_existing and slot.value_ptr.* != @backingInt(symbol_id))
+                std.debug.panic("known-scope ES2020 producer changed its exact SymbolId", .{});
+            slot.value_ptr.* = @backingInt(symbol_id);
             return .{ .symbol_id = symbol_id, .reference_scope = scopes.reference_scope };
         }
 
@@ -214,7 +219,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const counter_index = self.temp_var_counter - 1;
             const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
                 std.debug.panic("ES2020 temp allocator did not retain its producer identity", .{});
-            const identity = try reserveTempIdentity(self, name_span, span, counter_index);
+            const identity = try reserveTempIdentity(self, name_span, span, counter_index, producer_id);
             const left = try helpers.makeTempVarRef(self, name_span, span);
             const assignment = try helpers.makeAssignExpr(self, left, value, span, @backingInt(token_mod.Kind.eq));
             try trackTempReference(self, name_span, span, left, .{ .write = true }, identity, producer_id);
@@ -279,7 +284,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 const counter_index = self.temp_var_counter - 1;
                 const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
                     std.debug.panic("ES2020 temp allocator did not retain its producer identity", .{});
-                const identity = try reserveTempIdentity(self, temp_span, node.span, counter_index);
+                const identity = try reserveTempIdentity(self, temp_span, node.span, counter_index, producer_id);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
                 try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true }, identity, producer_id);
                 const assign_node = try self.ast.addNode(.{
