@@ -551,17 +551,16 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     }
 }
 
-/// Return the producer identity carried by the allocator slot for this exact
-/// span, without resolving a semantic binding by name or scope.
-pub fn producerTempSymbolIdForSpan(self: anytype, name_span: Span) ?symbol_mod.SymbolId {
+/// Detect that an exact span belongs to at least one live allocator slot.
+/// Callers may use this only to reject a missing producer handle; never to
+/// select a slot or recover its ID.
+pub fn hasTempAllocatorSpan(self: anytype, name_span: Span) bool {
     var iter = self.temp_span_by_counter.iterator();
     while (iter.next()) |entry| {
         const candidate = entry.value_ptr.*;
-        if (candidate.start != name_span.start or candidate.end != name_span.end) continue;
-        const raw_symbol_id = self.temp_symbol_ids_by_counter.get(entry.key_ptr.*) orelse return null;
-        return @fromBackingInt(raw_symbol_id);
+        if (candidate.start == name_span.start and candidate.end == name_span.end) return true;
     }
-    return null;
+    return false;
 }
 
 /// Return the producer ID already attached to a generated temp reference.
@@ -575,6 +574,26 @@ pub fn producerTempSymbolIdAtRef(self: anytype, node: NodeIndex) ?symbol_mod.Sym
     const raw_symbol_id = self.getSymbolIdAt(node) orelse return null;
     if (raw_symbol_id < self.symbols.len) return null;
     return @fromBackingInt(raw_symbol_id);
+}
+
+/// Generator lowering has a separate exact handoff for state-machine refs:
+/// it records the producer SymbolId on the node and later resolves the final
+/// callback scope from the emitted AST. Preserve that path instead of asking
+/// the ordinary temp allocator for a second producer handle.
+fn hasTrackedGeneratorStateReference(
+    self: anytype,
+    node: NodeIndex,
+    symbol_id: symbol_mod.SymbolId,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) bool {
+    var found = false;
+    for (self.generator_state_semantic_refs.items) |pending| {
+        if (pending.node != node) continue;
+        if (pending.symbol_id != @backingInt(symbol_id) or !std.meta.eql(pending.flags, flags))
+            std.debug.panic("generator state reference changed its exact identity or access mode", .{});
+        found = true;
+    }
+    return found;
 }
 
 /// Record a generated temp reference only when its exact name span is still
@@ -593,24 +612,72 @@ pub fn trackKnownHoistedTempRef(
     const name_span = ref.data.string_ref;
     const has_pending_producer = try self.trackPendingTempProducerReferenceInScope(node, scope, flags);
     if (producerTempSymbolIdAtRef(self, node)) |producer_id| {
+        if (hasTrackedGeneratorStateReference(self, node, producer_id, flags)) return true;
         if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
             return true;
-    }
-    if (has_pending_producer) return true;
-    if (producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
-        if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
-            return true;
-    }
-    var iter = self.temp_span_by_counter.iterator();
-    while (iter.next()) |entry| {
-        const candidate = entry.value_ptr.*;
-        if (candidate.start == name_span.start and candidate.end == name_span.end) {
-            if (!try self.trackKnownSyntheticTempReferenceInScope(candidate, node, scope, flags))
-                try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
+        if (self.tempProducerIdForSymbolId(producer_id)) |temp_producer_id| {
+            try self.trackHoistedTempRefByProducerIdInScope(
+                temp_producer_id,
+                name_span,
+                node,
+                scope,
+                flags,
+            );
             return true;
         }
+        if (hasTempAllocatorSpan(self, name_span))
+            std.debug.panic("generated temp reference has no allocator producer ID", .{});
+    }
+    if (has_pending_producer) return true;
+    if (hasTempAllocatorSpan(self, name_span)) {
+        // The span identifies a generated spelling but cannot distinguish
+        // allocator slots after counter restoration or string interning.
+        std.debug.panic("generated temp reference has no exact allocator producer ID", .{});
     }
     return false;
+}
+
+/// Attach a generated reference to a producer handle already carried by its
+/// source node or allocator binding. The name span validates the AST only.
+pub fn trackKnownHoistedTempRefByProducerId(
+    self: anytype,
+    temp_producer_id: u64,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !bool {
+    if (!self.semantic_edit_enabled or node.isNone()) return false;
+    const reference = self.ast.getNode(node);
+    if (reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) return false;
+    try self.trackHoistedTempRefByProducerIdInScope(
+        temp_producer_id,
+        reference.data.string_ref,
+        node,
+        scope,
+        flags,
+    );
+    return true;
+}
+
+/// Copy exact producer identity when a lowering emits a fresh ref from an
+/// existing producer-owned reference. A span-only match is rejected.
+pub fn trackKnownHoistedTempRefFromProducerReference(
+    self: anytype,
+    producer_ref: NodeIndex,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !bool {
+    if (!self.semantic_edit_enabled or producer_ref.isNone())
+        return trackKnownHoistedTempRef(self, node, scope, flags);
+    if (producerTempSymbolIdAtRef(self, producer_ref)) |symbol_id| {
+        if (try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, node, scope, flags)) return true;
+        if (self.tempProducerIdForSymbolId(symbol_id)) |producer_id|
+            return trackKnownHoistedTempRefByProducerId(self, producer_id, node, scope, flags);
+    }
+    if (try self.pendingTempProducerIdForReference(producer_ref)) |producer_id|
+        return trackKnownHoistedTempRefByProducerId(self, producer_id, node, scope, flags);
+    return trackKnownHoistedTempRef(self, node, scope, flags);
 }
 
 /// A computed property key stores its expression below the wrapper node.
@@ -651,6 +718,29 @@ pub fn consumeTempVarSpan(self: anytype, span: Span) void {
         _ = self.temp_span_by_counter.remove(key);
         _ = self.temp_producer_id_by_counter.remove(key);
     }
+}
+
+/// Consume one allocator slot by its stable producer ID. Span-only removal is
+/// ambiguous when reused counters or string interning give two producers the
+/// same name span.
+pub fn consumeTempVarProducer(self: anytype, temp_producer_id: u64, expected_span: Span) void {
+    if (temp_producer_id == 0) std.debug.panic("cannot consume an invalid temp producer ID", .{});
+    var counter_index: ?u32 = null;
+    var iter = self.temp_producer_id_by_counter.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.* != temp_producer_id) continue;
+        if (counter_index != null) std.debug.panic("temp producer ID belongs to multiple allocator slots", .{});
+        counter_index = entry.key_ptr.*;
+    }
+    const counter = counter_index orelse return;
+    const span = self.temp_span_by_counter.get(counter) orelse
+        std.debug.panic("temp producer ID has no allocator span", .{});
+    if (span.start != expected_span.start or span.end != expected_span.end)
+        std.debug.panic("temp producer ID disagrees with its allocator span", .{});
+    _ = self.temp_span_by_counter.remove(counter);
+    _ = self.temp_symbol_ids_by_counter.remove(counter);
+    _ = self.temp_producer_id_by_counter.remove(counter);
+    _ = self.callback_temp_bindings_by_counter.remove(counter);
 }
 
 /// 사용자 선언 심볼 중 temp 패턴(`_`+letter[+digits]) 이름만 lazy 수집해 조회 (#4220).
@@ -1103,27 +1193,22 @@ pub fn makeLegacyDecoratorComputedKeyRef(self: anytype, key: NodeIndex) !?NodeIn
     if (candidate.tag != .identifier_reference and candidate.tag != .assignment_target_identifier) return null;
 
     const producer_id = producerTempSymbolIdAtRef(self, candidate_idx);
-    var is_known_temp = producer_id != null;
-    var temp_iter = self.temp_span_by_counter.iterator();
-    if (!is_known_temp) {
-        while (temp_iter.next()) |entry| {
-            const temp_span = entry.value_ptr.*;
-            if (temp_span.start == candidate.data.string_ref.start and temp_span.end == candidate.data.string_ref.end) {
-                is_known_temp = true;
-                break;
-            }
-        }
-    }
+    const pending_producer_id = try self.pendingTempProducerIdForReference(candidate_idx);
+    const is_known_temp = producer_id != null or pending_producer_id != null or
+        hasTempAllocatorSpan(self, candidate.data.string_ref);
     if (!is_known_temp) return null;
 
     const read_ref = try makeTempVarRef(self, candidate.data.string_ref, candidate.span);
     if (self.semantic_edit_enabled) {
         if (self.current_scope.isNone())
             std.debug.panic("legacy decorator computed key has no output reference scope", .{});
-        const tracked = if (producer_id) |symbol_id|
-            try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, read_ref, self.current_scope, .{ .read = true })
-        else
-            try trackKnownHoistedTempRef(self, read_ref, self.current_scope, .{ .read = true });
+        const tracked = try trackKnownHoistedTempRefFromProducerReference(
+            self,
+            candidate_idx,
+            read_ref,
+            self.current_scope,
+            .{ .read = true },
+        );
         if (!tracked) std.debug.panic("legacy decorator computed key lost its exact temp identity", .{});
     }
     return try self.ast.addNode(.{
@@ -1141,6 +1226,7 @@ pub const ComputedKeyMemo = struct {
     decl: NodeIndex,
     computed_key: NodeIndex,
     temp_span: Span,
+    temp_producer_id: ?u64 = null,
     binding: NodeIndex,
     computed_ref: NodeIndex,
     value_ref: NodeIndex,
@@ -1148,17 +1234,31 @@ pub const ComputedKeyMemo = struct {
 /// `field_key` 면 값을 `makeToPropertyKey` 로 감싼다 — 필드 정의는 생성자/클래스 뒤로 옮겨진다.
 pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span, field_key: bool) !ComputedKeyMemo {
     const temp_span = try makeTempVarSpan(self);
+    const counter_index = self.temp_var_counter - 1;
+    const temp_producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+        std.debug.panic("computed-key memo has no allocator producer ID", .{});
     const temp_binding = try makeSyntheticBinding(self, temp_span);
     const visited = try self.visitNode(key_expr);
     const temp_init = if (field_key) try makeToPropertyKey(self, visited, span) else visited;
     const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
     const computed_key = try makeComputedKeyRef(self, temp_span, span);
+    const computed_ref = self.ast.getNode(computed_key).data.unary.operand;
+    if (self.semantic_edit_enabled)
+        try self.trackDeferredTempProducerReference(
+            temp_producer_id,
+            temp_span,
+            computed_ref,
+            self.current_scope,
+            .{ .read = true },
+        );
+    consumeTempVarProducer(self, temp_producer_id, temp_span);
     return .{
         .decl = try makeVarDeclaration(self, &.{temp_decl}, .@"var", span),
         .computed_key = computed_key,
         .temp_span = temp_span,
+        .temp_producer_id = temp_producer_id,
         .binding = temp_binding,
-        .computed_ref = self.ast.getNode(computed_key).data.unary.operand,
+        .computed_ref = computed_ref,
         .value_ref = temp_init,
     };
 }
@@ -2384,8 +2484,10 @@ pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempId
         declaration_span,
         self.current_scope,
     );
-    if (identity) |exact|
+    if (identity) |exact| {
         try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(exact.symbol_id));
+        try self.recordTempProducerSymbolId(self.temp_producer_id_by_counter.get(counter_index), exact.symbol_id);
+    }
     return .{
         .span = temp_span,
         .symbol_id = if (identity) |exact| exact.symbol_id else null,
@@ -2410,6 +2512,7 @@ pub fn reserveTrackedTempIdentityInOutputScope(
     if (!self.semantic_edit_enabled) return .{
         .span = temp_span,
         .owner_scope = output_scope,
+        .temp_producer_id = self.temp_producer_id_by_counter.get(counter_index),
     };
     if (output_scope.isNone() or reference_scope.isNone())
         std.debug.panic("state-machine temp producer has no exact owner or reference scope", .{});
@@ -2419,11 +2522,13 @@ pub fn reserveTrackedTempIdentityInOutputScope(
         output_scope,
     )) orelse std.debug.panic("state-machine temp producer did not reserve a SymbolId", .{});
     try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(symbol_id));
+    try self.recordTempProducerSymbolId(self.temp_producer_id_by_counter.get(counter_index), symbol_id);
     return .{
         .span = temp_span,
         .symbol_id = symbol_id,
         .reference_scope = reference_scope,
         .owner_scope = output_scope,
+        .temp_producer_id = self.temp_producer_id_by_counter.get(counter_index),
     };
 }
 
@@ -2988,6 +3093,9 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
         if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
             // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
             const temp_span = try makeTempVarSpan(self);
+            const temp_counter_index = self.temp_var_counter - 1;
+            const temp_producer_id = self.temp_producer_id_by_counter.get(temp_counter_index) orelse
+                std.debug.panic("for-of destructuring temp has no allocator producer ID", .{});
             const temp = try self.createSyntheticTempBinding(
                 temp_span,
                 span,
@@ -2999,6 +3107,7 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
                 .span = temp.name_span,
                 .symbol_id = temp.symbol_id,
                 .reference_scope = if (temp.symbol_id != null) self.current_scope else .none,
+                .temp_producer_id = temp_producer_id,
             };
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
             const temp_init = if (binding_node.tag == .array_pattern)
@@ -3013,7 +3122,14 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
 
             try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, binding_node, temp_identity, span, .@"var");
             if (temp.symbol_id == null)
-                try self.bindSyntheticTempInScope(temp.node, temp.name_span, span, .variable_var, self.current_scope);
+                try self.bindSyntheticTempWithProducerIdentityInScope(
+                    temp.node,
+                    temp.name_span,
+                    span,
+                    .variable_var,
+                    self.current_scope,
+                    temp_producer_id,
+                );
 
             return makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
         }

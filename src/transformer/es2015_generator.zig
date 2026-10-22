@@ -2312,11 +2312,29 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         self.generator_state_machine_scope,
                     )) orelse std.debug.panic("generator assignment temp has no producer SymbolId", .{});
                     try self.trackGeneratorStateReference(target, symbol, self.current_scope, .{ .write = true });
+                } else if (self.hoistedTempProducerIdForBinding(binding)) |producer_id| {
+                    try self.trackHoistedTempRefByProducerIdInScope(
+                        producer_id,
+                        node.data.string_ref,
+                        target,
+                        self.current_scope,
+                        .{ .write = true },
+                    );
                 } else {
                     try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
                 }
             } else {
-                try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
+                if (self.hoistedTempProducerIdForBinding(binding)) |producer_id| {
+                    try self.trackHoistedTempRefByProducerIdInScope(
+                        producer_id,
+                        node.data.string_ref,
+                        target,
+                        self.current_scope,
+                        .{ .write = true },
+                    );
+                } else {
+                    try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
+                }
             }
             return target;
         }

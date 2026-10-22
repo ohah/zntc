@@ -2706,6 +2706,7 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
 
     const identity = try helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
     const expected_id = identity.symbol_id orelse return error.MissingReservedTempSymbol;
+    const producer_id = identity.temp_producer_id orelse return error.MissingTempProducerId;
     const counter = transformer.temp_var_counter - 1;
     try std.testing.expectEqual(@as(?u32, @backingInt(expected_id)), transformer.temp_symbol_ids_by_counter.get(counter));
     transformer.forgetSyntheticTempSymbolLookup(identity.span, identity.reference_scope);
@@ -2716,14 +2717,16 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
         .span = parser.ast.getNode(root).span,
         .data = .{ .string_ref = identity.span },
     });
-    try std.testing.expect(try helpers.trackKnownHoistedTempRef(
+    try std.testing.expect(try helpers.trackKnownHoistedTempRefByProducerId(
         &transformer,
+        producer_id,
         reference,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     ));
-    try std.testing.expect(try helpers.trackKnownHoistedTempRef(
+    try std.testing.expect(try helpers.trackKnownHoistedTempRefByProducerId(
         &transformer,
+        producer_id,
         write_reference,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .write = true },
@@ -2748,6 +2751,8 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
 
     const fallback_span = try helpers.makeTempVarSpan(&transformer);
     const fallback_counter = transformer.temp_var_counter - 1;
+    const fallback_producer_id = transformer.temp_producer_id_by_counter.get(fallback_counter) orelse
+        return error.MissingFallbackTempProducerId;
     try std.testing.expect(transformer.temp_symbol_ids_by_counter.get(fallback_counter) == null);
     const fallback_binding = try helpers.makeSyntheticBinding(&transformer, fallback_span);
     const fallback_id = (try transformer.declareSyntheticTempInScope(
@@ -2755,9 +2760,11 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
         parser.ast.getNode(root).span,
         @fromBackingInt(@intCast(program_scope)),
     )) orelse return error.MissingFallbackTempSymbol;
+    try transformer.recordTempProducerSymbolId(fallback_producer_id, fallback_id);
     const fallback_reference = try helpers.makeSyntheticRefFromSpan(&transformer, fallback_span);
-    try std.testing.expect(try helpers.trackKnownHoistedTempRef(
+    try std.testing.expect(try helpers.trackKnownHoistedTempRefByProducerId(
         &transformer,
+        fallback_producer_id,
         fallback_reference,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
@@ -2929,87 +2936,297 @@ fn expectGenericHoistedTempProducerIdentity(source: []const u8) !void {
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
-    const identity = try helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
-    const expected_id = identity.symbol_id orelse return error.MissingReservedTempSymbol;
+    const name_span = try helpers.makeTempVarSpan(&transformer);
     const counter = transformer.temp_var_counter - 1;
-    try std.testing.expectEqual(@as(?u32, @backingInt(expected_id)), transformer.temp_symbol_ids_by_counter.get(counter));
-    transformer.forgetSyntheticTempSymbolLookup(identity.span, identity.reference_scope);
-    try std.testing.expect(transformer.lookupSyntheticTempSymbol(identity.span, identity.reference_scope) == null);
+    const producer_id = transformer.temp_producer_id_by_counter.get(counter) orelse
+        return error.MissingTempProducerId;
+    try std.testing.expect(transformer.temp_symbol_ids_by_counter.get(counter) == null);
 
-    const read = try helpers.makeSyntheticRefFromSpan(&transformer, identity.span);
+    const read = try helpers.makeSyntheticRefFromSpan(&transformer, name_span);
     const write = try transformer.ast.addNode(.{
         .tag = .assignment_target_identifier,
         .span = parser.ast.getNode(root).span,
-        .data = .{ .string_ref = identity.span },
+        .data = .{ .string_ref = name_span },
     });
-    try transformer.trackHoistedTempRefInScope(
-        identity.span,
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        producer_id,
+        name_span,
         read,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     );
-    try transformer.trackHoistedTempRefInScope(
-        identity.span,
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        producer_id,
+        name_span,
         write,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .write = true },
     );
 
-    try std.testing.expectEqual(@as(?u32, @backingInt(expected_id)), transformer.getSymbolIdAt(read));
-    try std.testing.expectEqual(@as(?u32, @backingInt(expected_id)), transformer.getSymbolIdAt(write));
+    const binding = try helpers.makeSyntheticBinding(&transformer, name_span);
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        name_span,
+        parser.ast.getNode(root).span,
+        @fromBackingInt(@intCast(reference_scope)),
+        null,
+        producer_id,
+    );
+    const expected_id = @as(u32, transformer.getSymbolIdAt(binding) orelse return error.MissingBoundTempSymbol);
+
+    try std.testing.expectEqual(@as(?u32, expected_id), transformer.getSymbolIdAt(read));
+    try std.testing.expectEqual(@as(?u32, expected_id), transformer.getSymbolIdAt(write));
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_producer_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     const read_ref = (try editor.referenceForNode(read)) orelse return error.MissingProducerReadReference;
     const write_ref = (try editor.referenceForNode(write)) orelse return error.MissingProducerWriteReference;
-    try std.testing.expectEqual(expected_id, read_ref.symbol_id);
-    try std.testing.expectEqual(expected_id, write_ref.symbol_id);
+    try std.testing.expectEqual(@as(@TypeOf(read_ref.symbol_id), @fromBackingInt(expected_id)), read_ref.symbol_id);
+    try std.testing.expectEqual(@as(@TypeOf(write_ref.symbol_id), @fromBackingInt(expected_id)), write_ref.symbol_id);
     try std.testing.expectEqual(@as(u32, @intCast(reference_scope)), @backingInt(read_ref.scope_id));
     try std.testing.expectEqual(@as(u32, @intCast(reference_scope)), @backingInt(write_ref.scope_id));
     try std.testing.expect(read_ref.flags.read and !read_ref.flags.write);
     try std.testing.expect(write_ref.flags.write and !write_ref.flags.read);
 
-    const static_identity = try helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
-    const static_ref = try helpers.makeSyntheticRefFromSpan(&transformer, static_identity.span);
-    transformer.forgetSyntheticTempSymbolLookup(static_identity.span, static_identity.reference_scope);
+    const static_span = try helpers.makeTempVarSpan(&transformer);
+    const static_producer_id = transformer.temp_producer_id_by_counter.get(transformer.temp_var_counter - 1) orelse
+        return error.MissingStaticTempProducerId;
+    const static_ref = try helpers.makeSyntheticRefFromSpan(&transformer, static_span);
     transformer.static_field_initializer_depth = 1;
-    try transformer.trackHoistedTempRefInScope(
-        static_identity.span,
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        static_producer_id,
+        static_span,
         static_ref,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     );
     transformer.static_field_initializer_depth = 0;
     try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(static_ref));
-    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_producer_refs.items.len);
 
-    const state_identity = try helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
-    const state_ref = try helpers.makeSyntheticRefFromSpan(&transformer, state_identity.span);
-    transformer.forgetSyntheticTempSymbolLookup(state_identity.span, state_identity.reference_scope);
+    const state_span = try helpers.makeTempVarSpan(&transformer);
+    const state_producer_id = transformer.temp_producer_id_by_counter.get(transformer.temp_var_counter - 1) orelse
+        return error.MissingStateTempProducerId;
+    const state_ref = try helpers.makeSyntheticRefFromSpan(&transformer, state_span);
     transformer.state_machine_depth = 1;
-    try transformer.trackHoistedTempRefInScope(
-        state_identity.span,
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        state_producer_id,
+        state_span,
         state_ref,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     );
     transformer.state_machine_depth = 0;
     try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(state_ref));
-    try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_producer_refs.items.len);
 
     const deferred_span = try helpers.makeTempVarSpan(&transformer);
     const deferred_counter = transformer.temp_var_counter - 1;
     try std.testing.expect(transformer.temp_symbol_ids_by_counter.get(deferred_counter) == null);
+    const deferred_producer_id = transformer.temp_producer_id_by_counter.get(deferred_counter) orelse
+        return error.MissingDeferredTempProducerId;
     const deferred_ref = try helpers.makeSyntheticRefFromSpan(&transformer, deferred_span);
-    try transformer.trackHoistedTempRefInScope(
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        deferred_producer_id,
         deferred_span,
         deferred_ref,
         @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(deferred_ref));
-    try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_refs.items.len);
-    try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_producer_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
+test "#6004 SymbolId reverse lookup rejects ambiguous temp producers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.semantic_edit_enabled = true;
+    const symbol_id: SymbolId = @fromBackingInt(0);
+    try transformer.temp_symbols_by_producer_id.put(allocator, 17, @backingInt(symbol_id));
+    try transformer.temp_symbols_by_producer_id.put(allocator, 29, @backingInt(symbol_id));
+    try std.testing.expectEqual(@as(?u64, null), transformer.tempProducerIdForSymbolId(symbol_id));
+}
+
+test "#6004 pending producer references retain their lexical scope when bound in an outer var scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function host() { return 1; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope: ScopeId = @fromBackingInt(@intCast(
+        analyzer.scope_owner_map.get(@backingInt(root)) orelse return error.MissingProgramScope,
+    ));
+    var reference_scope: ?ScopeId = null;
+    for (analyzer.scopes.items, 0..) |scope, index| {
+        if (scope.kind == .function) {
+            reference_scope = @fromBackingInt(@intCast(index));
+            break;
+        }
+    }
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    const source_scope = reference_scope orelse return error.MissingFunctionScope;
+    transformer.current_scope = source_scope;
+
+    const span = try es_helpers.makeTempVarSpan(&transformer);
+    const producer_id = transformer.temp_producer_id_by_counter.get(transformer.temp_var_counter - 1) orelse
+        return error.MissingTempProducerId;
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, span);
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        producer_id,
+        span,
+        reference,
+        source_scope,
+        .{ .read = true },
+    );
+    const binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, span);
+    try transformer.bindHoistedTempWithProducerIdentity(
+        binding,
+        span,
+        parser.ast.getNode(root).span,
+        program_scope,
+        null,
+        producer_id,
+    );
+
+    const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.MissingHoistedTempSymbol;
+    try std.testing.expectEqual(@as(?u32, symbol_id), transformer.getSymbolIdAt(reference));
+    const record = (try transformer.semantic_editor.?.referenceForNode(reference)) orelse
+        return error.MissingPendingProducerReference;
+    try std.testing.expectEqual(source_scope, record.scope_id);
+    try std.testing.expectEqual(@as(u32, symbol_id), @backingInt(record.symbol_id));
+}
+
+test "#6004 producer IDs bind immediately in stable scopes during an outer state machine" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function host() { return 1; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var reference_scope: ?ScopeId = null;
+    for (analyzer.scopes.items, 0..) |scope, index| {
+        if (scope.kind == .function) {
+            reference_scope = @fromBackingInt(@intCast(index));
+            break;
+        }
+    }
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    const scope = reference_scope orelse return error.MissingFunctionScope;
+    transformer.current_scope = scope;
+
+    const identity = try es_helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
+    const producer_id = identity.temp_producer_id orelse return error.MissingTempProducerId;
+    const symbol_id = identity.symbol_id orelse return error.MissingTempSymbolId;
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, identity.span);
+    transformer.state_machine_depth = 1;
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        producer_id,
+        identity.span,
+        reference,
+        scope,
+        .{ .read = true },
+    );
+    transformer.state_machine_depth = 0;
+
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_producer_refs.items.len);
+    const record = (try transformer.semantic_editor.?.referenceForNode(reference)) orelse
+        return error.MissingStableScopeReference;
+    try std.testing.expectEqual(scope, record.scope_id);
+    try std.testing.expect(record.flags.read and !record.flags.write);
+}
+
+test "#6004 producer IDs stay pending for deferred generator callback scopes during state-machine collection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function* host() { yield 1; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope: ScopeId = @fromBackingInt(@intCast(
+        analyzer.scope_owner_map.get(@backingInt(root)) orelse return error.MissingProgramScope,
+    ));
+    var callback_scope: ?ScopeId = null;
+    for (analyzer.scopes.items, 0..) |scope, index| {
+        if (scope.kind == .function) {
+            callback_scope = @fromBackingInt(@intCast(index));
+            break;
+        }
+    }
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = program_scope;
+
+    const identity = try es_helpers.reserveTrackedTempIdentity(&transformer, parser.ast.getNode(root).span);
+    const producer_id = identity.temp_producer_id orelse return error.MissingTempProducerId;
+    try std.testing.expect(identity.symbol_id != null);
+    const reference_scope = callback_scope orelse return error.MissingGeneratorScope;
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, identity.span);
+    transformer.state_machine_depth = 1;
+    try transformer.trackHoistedTempRefByProducerIdInScope(
+        producer_id,
+        identity.span,
+        reference,
+        reference_scope,
+        .{ .read = true },
+    );
+    transformer.state_machine_depth = 0;
+
+    try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_producer_refs.items.len);
+    try std.testing.expectEqual(producer_id, transformer.pending_temp_producer_refs.items[0].temp_producer_id);
 }
 
 test "#4819 generic hoisted temp references use producer IDs across hostile source forms" {

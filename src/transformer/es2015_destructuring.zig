@@ -52,8 +52,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             name_span: Span,
             decl_kind: ast_mod.VariableDeclarationKind,
         ) Transformer.Error!DestructuringTemp {
+            if (self.temp_var_counter == 0)
+                std.debug.panic("destructuring temp binding has no allocator slot", .{});
+            const counter_index = self.temp_var_counter - 1;
+            const allocated_span = self.temp_span_by_counter.get(counter_index) orelse
+                std.debug.panic("destructuring temp binding lost its allocator slot", .{});
+            if (allocated_span.start != name_span.start or allocated_span.end != name_span.end)
+                std.debug.panic("destructuring temp binding disagrees with its allocator slot", .{});
+            const temp_producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                std.debug.panic("destructuring temp binding has no producer ID", .{});
             const binding = try es_helpers.makeSyntheticBinding(self, name_span);
-            var identity: es_helpers.TempIdentityCapture = .{ .span = name_span };
+            var identity: es_helpers.TempIdentityCapture = .{
+                .span = name_span,
+                .temp_producer_id = temp_producer_id,
+            };
             // The lowering callsite already knows the emitted declaration
             // kind and current lexical owner. Capture the binding identity
             // before emitting any pattern reads.
@@ -65,8 +77,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     tempSymbolKind(decl_kind),
                     self.current_scope,
                 )) orelse std.debug.panic("semantic destructuring temp did not receive a SymbolId", .{});
+                try self.recordTempProducerSymbolId(temp_producer_id, id);
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, self.current_scope);
-                identity = .{ .span = name_span, .symbol_id = id, .reference_scope = self.current_scope };
+                identity = .{
+                    .span = name_span,
+                    .symbol_id = id,
+                    .reference_scope = self.current_scope,
+                    .temp_producer_id = temp_producer_id,
+                };
             }
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
                 try self.destructuring_temp_bindings.put(self.allocator, @backingInt(binding), {});
@@ -156,7 +174,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .let => .variable_let,
                 .@"const", .using, .await_using => .variable_const,
             };
-            try self.bindSyntheticTempInScope(binding, name_span, span, kind, self.current_scope);
+            try self.bindSyntheticTempWithProducerIdentityInScope(
+                binding,
+                name_span,
+                span,
+                kind,
+                self.current_scope,
+                identity.temp_producer_id,
+            );
             if (self.semantic_edit_enabled and !self.current_scope.isNone()) {
                 const producer_id = identity.symbol_id orelse
                     std.debug.panic("known-owner destructuring temp was not identified at creation", .{});

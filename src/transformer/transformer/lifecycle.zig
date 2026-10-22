@@ -124,6 +124,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.temp_span_by_counter.deinit(self.allocator);
     self.temp_producer_id_by_counter.deinit(self.allocator);
     self.temp_symbols_by_producer_id.deinit(self.allocator);
+    self.hoisted_temp_producer_by_binding.deinit(self.allocator);
     self.temp_symbol_ids_by_counter.deinit(self.allocator);
     self.callback_temp_bindings_by_counter.deinit(self.allocator);
     self.generated_temp_spans.deinit(self.allocator);

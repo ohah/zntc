@@ -509,7 +509,6 @@ pub fn Members(comptime Transformer: type) type {
         /// their temp must be removed from the enclosing function's later
         /// temp sweep.
         pub fn bindComputedKeyTemps(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!void {
-            for (cm.computed_key_temp_bindings.items) |memo| es_helpers.consumeTempVarSpan(self, memo.temp_span);
             if (!self.semantic_edit_enabled) return;
             if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or
                 cm.computed_accessor_key_bindings.items.len > 0 or cm.computed_key_temp_reads.items.len > 0))
@@ -521,7 +520,16 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.computed_key_temp_bindings.items) |memo| {
                 const symbol = (try self.declareSyntheticTempInScope(memo.binding, span, scope)) orelse
                     std.debug.panic("computed class key temp binding has no exact SymbolId", .{});
-                try self.addSyntheticRefInScope(memo.computed_ref, symbol, scope, .{ .read = true });
+                try self.recordTempProducerSymbolId(memo.temp_producer_id, symbol);
+                try self.registerHoistedTempProducerBinding(memo.binding, memo.temp_producer_id);
+                try self.bindPendingTempProducerReferencesInScope(
+                    memo.temp_producer_id,
+                    symbol,
+                    memo.temp_span,
+                    scope,
+                );
+                if (!try self.trackKnownSyntheticTempReferenceByIdInScope(symbol, memo.computed_ref, scope, .{ .read = true }))
+                    try self.addSyntheticRefInScope(memo.computed_ref, symbol, scope, .{ .read = true });
             }
 
             for (cm.computed_accessor_key_bindings.items) |memo| {
@@ -529,6 +537,28 @@ pub fn Members(comptime Transformer: type) type {
                     std.debug.panic("computed auto-accessor key has no direct SymbolId", .{});
                 for (memo.references) |reference|
                     try self.addSyntheticRefInScope(reference, symbol, scope, .{ .read = true });
+            }
+        }
+
+        pub fn flushComputedKeyTempProducerReferences(
+            self: *Transformer,
+            cm: *ClassifiedMembers,
+            scope: @import("../../semantic/scope.zig").ScopeId,
+        ) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            for (cm.computed_key_temp_bindings.items) |memo| {
+                const producer_id = memo.temp_producer_id orelse
+                    std.debug.panic("computed class key temp has no producer ID", .{});
+                const raw_symbol = self.getSymbolIdAt(memo.binding) orelse
+                    std.debug.panic("computed class key temp binding has no exact SymbolId", .{});
+                if (self.temp_symbols_by_producer_id.get(producer_id) != raw_symbol)
+                    std.debug.panic("computed class key temp producer changed its exact SymbolId", .{});
+                try self.bindPendingTempProducerReferencesInScope(
+                    producer_id,
+                    @fromBackingInt(@intCast(raw_symbol)),
+                    memo.temp_span,
+                    scope,
+                );
             }
         }
 

@@ -192,6 +192,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             std.debug.panic("static computed-key memo has no output scope", .{});
                         const id = (try self.declareSyntheticInScope(memo.binding, member.span, .variable_var, static_key_memo_scope)) orelse
                             std.debug.panic("static computed-key memo has no direct SymbolId", .{});
+                        try self.recordTempProducerSymbolId(memo.temp_producer_id, id);
                         try self.addSyntheticRefInScope(memo.computed_ref, id, static_key_memo_scope, .{ .read = true });
                     }
                     try static_key_memos_out.append(self.allocator, memo.decl);
@@ -719,7 +720,13 @@ pub fn ES2022(comptime Transformer: type) type {
                                     {
                                         const temp_name_span = self.ast.getNode(temp_ref).data.string_ref;
                                         name_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, temp_name_span);
-                                        try es_helpers.trackKnownHoistedComputedKeyRef(self, name_ref, self.current_scope);
+                                        _ = try es_helpers.trackKnownHoistedTempRefFromProducerReference(
+                                            self,
+                                            temp_ref,
+                                            name_ref,
+                                            self.current_scope,
+                                            .{ .read = true },
+                                        );
                                     }
                                 } else if (key_node.tag == .computed_property_key) {
                                     const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, true);
@@ -731,6 +738,7 @@ pub fn ES2022(comptime Transformer: type) type {
                                     if (self.semantic_edit_enabled) {
                                         const id = (try self.declareSyntheticInScope(memo.binding, span, .variable_var, private_helper_scope)) orelse
                                             std.debug.panic("computed field key temp has no direct SymbolId", .{});
+                                        try self.recordTempProducerSymbolId(memo.temp_producer_id, id);
                                         temp_symbol = @backingInt(id);
                                     }
                                     key_ref = try exactTempRef(self, temp_name, temp_symbol);

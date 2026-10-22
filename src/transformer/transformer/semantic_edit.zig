@@ -166,6 +166,13 @@ pub fn syntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bo
     return tempOutputScopeIsDeferredIgnoringStateMachine(self, start);
 }
 
+/// Allow producer-ID references in a stable nested function scope to bind
+/// while an enclosing generator state machine is still being assembled.
+fn knownSyntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
+    if (!syntheticTempOutputScopeIsDeferred(self, start)) return false;
+    return self.state_machine_depth == 0 or tempOutputScopeIsDeferredIgnoringStateMachine(self, start);
+}
+
 /// Whether a function scope exists and is stable even when called from inside
 /// a state-machine transformation. Used by producers that can register a temp
 /// in the known wrapper owner and relocate only its references later.
@@ -3459,20 +3466,140 @@ pub fn registerGeneratedCallbackTempBinding(self: *Transformer, counter_index: u
     try self.callback_temp_bindings_by_counter.put(self.allocator, counter_index, binding);
 }
 
+/// Return the allocator producer already attached to one reference node.
+/// The spelling span is checked as metadata and never used to choose a producer.
+pub fn pendingTempProducerIdForReference(self: *Transformer, node: NodeIndex) Transformer.Error!?u64 {
+    if (!self.semantic_edit_enabled or node.isNone()) return null;
+    if (@backingInt(node) >= self.ast.nodes.items.len) return editError(error.InvalidSymbol);
+    const reference = self.ast.getNode(node);
+    if (reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) return null;
+    var found: ?u64 = null;
+    for (self.pending_temp_producer_refs.items) |pending| {
+        if (pending.node != node) continue;
+        if (pending.temp_producer_id == 0 or pending.scope.isNone() or
+            pending.name_span.start != reference.data.string_ref.start or
+            pending.name_span.end != reference.data.string_ref.end)
+            return editError(error.InvalidSymbol);
+        if (found) |existing| {
+            if (existing != pending.temp_producer_id) return editError(error.InvalidSymbol);
+        } else found = pending.temp_producer_id;
+    }
+    return found;
+}
+
+/// Keep the exact producer handle on a binding emitted by the allocator.
+/// Later read clones can copy the handle even while its SymbolId is deferred.
+pub fn registerHoistedTempProducerBinding(
+    self: *Transformer,
+    binding: NodeIndex,
+    temp_producer_id: ?u64,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const producer_id = temp_producer_id orelse return;
+    if (producer_id == 0 or binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
+        self.ast.getNode(binding).tag != .binding_identifier)
+        return editError(error.InvalidSymbol);
+    const entry = try self.hoisted_temp_producer_by_binding.getOrPut(self.allocator, @backingInt(binding));
+    if (entry.found_existing and entry.value_ptr.* != producer_id) return editError(error.InvalidSymbol);
+    entry.value_ptr.* = producer_id;
+}
+
+pub fn hoistedTempProducerIdForBinding(self: *Transformer, binding: NodeIndex) ?u64 {
+    if (!self.semantic_edit_enabled or binding.isNone()) return null;
+    return self.hoisted_temp_producer_by_binding.get(@backingInt(binding));
+}
+
+/// Resolve a bound SymbolId back to its allocator producer only when exactly
+/// one producer owns it. Ambiguity is not resolved from name or span.
+pub fn tempProducerIdForSymbolId(self: *Transformer, symbol_id: SymbolId) ?u64 {
+    if (!self.semantic_edit_enabled) return null;
+    var found: ?u64 = null;
+    var iter = self.temp_symbols_by_producer_id.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.* != @backingInt(symbol_id)) continue;
+        if (found != null) return null;
+        found = entry.key_ptr.*;
+    }
+    return found;
+}
+
+/// Record a deferred temp reference against the exact allocator producer.
+pub fn trackHoistedTempRefByProducerIdInScope(
+    self: *Transformer,
+    temp_producer_id: u64,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (temp_producer_id == 0 or node.isNone() or scope.isNone() or
+        @backingInt(node) >= self.ast.nodes.items.len)
+        return editError(error.InvalidSymbol);
+    const reference = self.ast.getNode(node);
+    if ((reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) or
+        reference.data.string_ref.start != name_span.start or reference.data.string_ref.end != name_span.end)
+        return editError(error.InvalidSymbol);
+    if (try pendingTempProducerIdForReference(self, node)) |existing| {
+        if (existing != temp_producer_id) return editError(error.InvalidSymbol);
+        if (!try trackPendingTempProducerReferenceInScope(self, node, scope, flags))
+            return editError(error.InvalidSymbol);
+        return;
+    }
+    if (self.getSymbolIdAt(node)) |raw_id| {
+        if (self.temp_symbols_by_producer_id.get(temp_producer_id)) |producer_symbol_id| {
+            if (raw_id != producer_symbol_id) return editError(error.InvalidSymbol);
+        }
+        return editError(error.InvalidSymbol);
+    }
+    if (!knownSyntheticTempOutputScopeIsDeferred(self, scope)) {
+        if (self.temp_symbols_by_producer_id.get(temp_producer_id)) |raw_id| {
+            if (try trackKnownSyntheticTempReferenceByIdInScope(
+                self,
+                @fromBackingInt(raw_id),
+                node,
+                scope,
+                flags,
+            )) return;
+        }
+    }
+    try trackDeferredTempProducerReference(self, temp_producer_id, name_span, node, scope, flags);
+}
+
 pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
     return trackHoistedTempRefInScope(self, name_span, node, self.current_scope, flags);
 }
 
 pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: NodeIndex, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     if (!self.semantic_edit_enabled or scope.isNone()) return;
+    if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return editError(error.InvalidSymbol);
+    const reference = self.ast.getNode(node);
+    if ((reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) or
+        reference.data.string_ref.start != name_span.start or reference.data.string_ref.end != name_span.end)
+        return editError(error.InvalidSymbol);
+    if (try pendingTempProducerIdForReference(self, node)) |producer_id| {
+        if (!try trackPendingTempProducerReferenceInScope(self, node, scope, flags))
+            return editError(error.InvalidSymbol);
+        if (producer_id == 0) return editError(error.InvalidSymbol);
+        return;
+    }
     if (self.static_field_initializer_depth == 0) {
         if (es_helpers.producerTempSymbolIdAtRef(self, node)) |producer_id| {
             if (try trackKnownSyntheticTempReferenceByIdInScope(self, producer_id, node, scope, flags)) return;
-        }
-        if (es_helpers.producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
-            if (try trackKnownSyntheticTempReferenceByIdInScope(self, producer_id, node, scope, flags)) return;
+            if (tempProducerIdForSymbolId(self, producer_id)) |temp_producer_id| {
+                return trackHoistedTempRefByProducerIdInScope(
+                    self,
+                    temp_producer_id,
+                    name_span,
+                    node,
+                    scope,
+                    flags,
+                );
+            }
+            return editError(error.InvalidSymbol);
         }
     }
+    if (es_helpers.hasTempAllocatorSpan(self, name_span)) return editError(error.InvalidSymbol);
     const chain_key = self.currentPendingTempRefKey(name_span);
     try self.generated_temp_spans.append(self.allocator, name_span);
     const index = self.pending_temp_refs.items.len;
@@ -3652,10 +3779,10 @@ pub fn trackKnownSyntheticTempReferenceByIdInScope(
     scope: ScopeId,
     flags: ReferenceFlags,
 ) Transformer.Error!bool {
-    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone() or
-        syntheticTempOutputScopeIsDeferred(self, scope)) return false;
+    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone()) return false;
 
     const editor = try editorFor(self);
+    const output_scope_deferred = knownSyntheticTempOutputScopeIsDeferred(self, scope);
     const raw_id = @backingInt(symbol_id);
     if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
     const reference = self.ast.getNode(node);
@@ -3668,8 +3795,11 @@ pub fn trackKnownSyntheticTempReferenceByIdInScope(
 
     if (self.getSymbolIdAt(node)) |existing_id| {
         if (existing_id != raw_id) return editError(error.InvalidSymbol);
-        const existing = (editor.referenceForNode(node) catch |err| return editError(err)) orelse
+        const maybe_existing = editor.referenceForNode(node) catch |err| return editError(err);
+        const existing = maybe_existing orelse {
+            if (output_scope_deferred) return false;
             return editError(error.InvalidSymbol);
+        };
         if (existing.symbol_id != symbol_id or !std.meta.eql(existing.flags, flags))
             return editError(error.InvalidSymbol);
         if (existing.scope_id != scope) {
@@ -3684,6 +3814,7 @@ pub fn trackKnownSyntheticTempReferenceByIdInScope(
         return true;
     }
 
+    if (output_scope_deferred) return false;
     try addSyntheticRefInScope(self, node, symbol_id, scope, flags);
     return true;
 }
@@ -3767,6 +3898,11 @@ pub fn bindHoistedTempWithProducerIdentity(
     temp_producer_id: ?u64,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
+    if (temp_producer_id == null and producer_symbol_id == null and es_helpers.hasTempAllocatorSpan(self, name_span))
+        return;
+    const pending_key = self.currentPendingTempRefKey(name_span);
+    if (temp_producer_id != null and self.pending_temp_ref_chains.contains(pending_key))
+        return editError(error.InvalidSymbol);
     // State-machine operations are assembled before the generated callback
     // scope exists. Leave exact refs and duplicate var declarations pending;
     // bindGeneratedState will attach them to the callback's temp declaration.
@@ -3784,7 +3920,10 @@ pub fn bindHoistedTempWithProducerIdentity(
         });
         return;
     }
-    const chain = self.pending_temp_ref_chains.fetchRemove(self.currentPendingTempRefKey(name_span));
+    const chain = if (temp_producer_id == null and !es_helpers.hasTempAllocatorSpan(self, name_span))
+        self.pending_temp_ref_chains.fetchRemove(pending_key)
+    else
+        null;
     const target_scope = if (binding_scope.isNone())
         @as(@import("../../semantic/scope.zig").ScopeId, @fromBackingInt(@intCast(
             self.scope_owner_map.get(self.parser_node_count - 1) orelse std.debug.panic("missing program scope for hoisted temp", .{}),
@@ -3910,7 +4049,7 @@ fn hasPendingTempProducerReferences(self: *Transformer, temp_producer_id: u64) b
     return false;
 }
 
-fn recordTempProducerSymbolId(self: *Transformer, temp_producer_id: ?u64, symbol_id: SymbolId) Transformer.Error!void {
+pub fn recordTempProducerSymbolId(self: *Transformer, temp_producer_id: ?u64, symbol_id: SymbolId) Transformer.Error!void {
     const producer_id = temp_producer_id orelse return;
     if (producer_id == 0) return editError(error.InvalidSymbol);
     const entry = try self.temp_symbols_by_producer_id.getOrPut(self.allocator, producer_id);
@@ -3919,7 +4058,7 @@ fn recordTempProducerSymbolId(self: *Transformer, temp_producer_id: ?u64, symbol
     entry.value_ptr.* = @backingInt(symbol_id);
 }
 
-fn bindPendingTempProducerReferencesInScope(
+pub fn bindPendingTempProducerReferencesInScope(
     self: *Transformer,
     temp_producer_id: ?u64,
     symbol_id: SymbolId,
@@ -4007,12 +4146,46 @@ pub fn bindSyntheticTempInScope(
     kind: SymbolKind,
     scope: @import("../../semantic/scope.zig").ScopeId,
 ) Transformer.Error!void {
+    return bindSyntheticTempWithProducerIdentityInScope(
+        self,
+        binding,
+        name_span,
+        declaration_span,
+        kind,
+        scope,
+        null,
+    );
+}
+
+pub fn bindSyntheticTempWithProducerIdentityInScope(
+    self: *Transformer,
+    binding: NodeIndex,
+    name_span: Span,
+    declaration_span: Span,
+    kind: SymbolKind,
+    scope: @import("../../semantic/scope.zig").ScopeId,
+    temp_producer_id: ?u64,
+) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     if (kind == .variable_var or self.state_machine_depth > 0)
-        return bindHoistedTemp(self, binding, name_span, declaration_span, scope);
+        return bindHoistedTempWithProducerIdentity(
+            self,
+            binding,
+            name_span,
+            declaration_span,
+            scope,
+            null,
+            temp_producer_id,
+        );
+    const pending_key = self.currentPendingTempRefKey(name_span);
+    if (temp_producer_id != null and self.pending_temp_ref_chains.contains(pending_key))
+        return editError(error.InvalidSymbol);
+    if (temp_producer_id == null and es_helpers.hasTempAllocatorSpan(self, name_span)) return;
     const chain = self.pending_temp_ref_chains.fetchRemove(self.currentPendingTempRefKey(name_span));
     const id = (try declareSyntheticInScope(self, binding, declaration_span, kind, scope)) orelse return;
     es_helpers.markStandaloneLateSyntheticTemp(self, id, scope);
+    try recordTempProducerSymbolId(self, temp_producer_id, id);
+    try bindPendingTempProducerReferencesInScope(self, temp_producer_id, id, name_span, scope);
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
@@ -4226,6 +4399,11 @@ pub fn trackUserReadFromBinding(self: *Transformer, target: NodeIndex, binding: 
         // callback has declared that temp. Preserve the exact allocator span
         // so bindGeneratedState can attach this new node to the callback-local
         // SymbolId; name-based lookup would be ambiguous across callbacks.
+        if (hoistedTempProducerIdForBinding(self, binding)) |producer_id| {
+            if (!try es_helpers.trackKnownHoistedTempRefByProducerId(self, producer_id, target, scope, .{ .read = true }))
+                return editError(error.InvalidSymbol);
+            return;
+        }
         _ = try es_helpers.trackKnownHoistedTempRef(self, target, scope, .{ .read = true });
         return;
     };

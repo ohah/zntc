@@ -305,7 +305,14 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
             const hoisted_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, home_span);
             if (transformer.getSymbolIdAt(write_ref)) |raw_id| {
                 const producer_id = @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
-                try transformer.bindHoistedTempWithProducerSymbol(hoisted_binding, home_span, span, scope, producer_id);
+                try transformer.bindHoistedTempWithProducerIdentity(
+                    hoisted_binding,
+                    home_span,
+                    span,
+                    scope,
+                    producer_id,
+                    home_temp_producer_id,
+                );
                 break :blk producer_id;
             }
             try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(home_span)));

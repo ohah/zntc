@@ -613,6 +613,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            try flushComputedKeyTempProducerReferences(self, &cm, iife_scope);
+
             // return ClassName;
             const class_return_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
@@ -1109,6 +1111,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            try flushComputedKeyTempProducerReferences(self, &cm, iife_scope);
+
             // return ClassName;
             const class_return_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
@@ -1203,6 +1207,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const members_mod = class_members.Members(Transformer);
         const classifyMembers = members_mod.classifyMembers;
         const bindComputedKeyTemps = members_mod.bindComputedKeyTemps;
+        const flushComputedKeyTempProducerReferences = members_mod.flushComputedKeyTempProducerReferences;
         const setupPrivateFieldMappings = members_mod.setupPrivateFieldMappings;
         const visitDeferredStaticBlocks = members_mod.visitDeferredStaticBlocks;
         const emitInstanceInits = members_mod.emitInstanceInits;
