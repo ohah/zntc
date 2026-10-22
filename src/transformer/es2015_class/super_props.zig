@@ -32,11 +32,27 @@ pub fn SuperProps(comptime Transformer: type) type {
             producer_symbol_id: ?SymbolId,
             temp_counter_index: u32,
         ) Transformer.Error!SuperTemp {
+            const allocated_span = self.temp_span_by_counter.get(temp_counter_index) orelse
+                std.debug.panic("super temp has no allocator span", .{});
+            if (allocated_span.start != name_span.start or allocated_span.end != name_span.end)
+                std.debug.panic("super temp disagrees with its allocator slot", .{});
+            const temp_producer_id = self.temp_producer_id_by_counter.get(temp_counter_index) orelse
+                std.debug.panic("super temp has no allocator producer ID", .{});
             const binding = if (self.semantic_edit_enabled and self.state_machine_depth == 0) blk: {
                 const owner_scope = self.nearestVarScope(self.current_scope);
-                if (producer_symbol_id) |symbol_id|
-                    break :blk try self.createSyntheticTempBindingWithIdentity(name_span, owner_scope, symbol_id);
-                break :blk try self.createSyntheticTempBinding(name_span, declaration_span, owner_scope);
+                const symbol_id = producer_symbol_id orelse
+                    (try self.reserveSyntheticTempSymbolForProducerInScope(
+                        temp_producer_id,
+                        name_span,
+                        declaration_span,
+                        owner_scope,
+                    )) orelse std.debug.panic("super temp producer did not reserve a SymbolId", .{});
+                try self.recordTempProducerSymbolId(temp_producer_id, symbol_id);
+                const slot_id = try self.temp_symbol_ids_by_counter.getOrPut(self.allocator, temp_counter_index);
+                if (slot_id.found_existing and slot_id.value_ptr.* != @backingInt(symbol_id))
+                    std.debug.panic("super temp allocator slot changed SymbolId", .{});
+                slot_id.value_ptr.* = @backingInt(symbol_id);
+                break :blk try self.createSyntheticTempBindingWithIdentity(name_span, owner_scope, symbol_id);
             } else null;
             const callback_binding = if (self.semantic_edit_enabled and self.state_machine_depth > 0)
                 try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span)

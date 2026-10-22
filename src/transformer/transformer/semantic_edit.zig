@@ -2730,6 +2730,38 @@ pub fn reserveSyntheticTempSymbolInScope(
     return id;
 }
 
+/// Reserve a generated temp identity by its allocator producer handle. Use
+/// this when a known-owner producer must create its binding before generic
+/// hoisting emits the declaration; the name span validates metadata but never
+/// selects an existing producer.
+pub fn reserveSyntheticTempSymbolForProducerInScope(
+    self: *Transformer,
+    temp_producer_id: u64,
+    name_span: Span,
+    declaration_span: Span,
+    lexical_scope: ScopeId,
+) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    if (temp_producer_id == 0 or lexical_scope.isNone()) return editError(error.InvalidSymbol);
+
+    const editor = try editorFor(self);
+    const owner_scope = variableScope(self, lexical_scope);
+    if (self.temp_symbols_by_producer_id.get(temp_producer_id)) |raw_id| {
+        if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
+        const id: SymbolId = @fromBackingInt(@intCast(raw_id));
+        const symbol = editor.symbols.items[raw_id];
+        if (symbol.scope_id != owner_scope or symbol.kind != .variable_var or
+            symbol.name.start != name_span.start or symbol.name.end != name_span.end or
+            !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(name_span)))
+            return editError(error.InvalidSymbol);
+        return id;
+    }
+
+    const id = editor.reserveSyntheticTempSymbol(name_span, declaration_span, lexical_scope) catch |err| return editError(err);
+    try recordTempProducerSymbolId(self, temp_producer_id, id);
+    return id;
+}
+
 pub const SyntheticTempReferenceIdentity = struct {
     symbol_id: SymbolId,
     reference_scope: ScopeId,
