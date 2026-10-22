@@ -746,12 +746,63 @@ async function makeAsyncWithNestedSyncFunction() {
   }
   return nested();
 }
+async function makeAsyncDeclaration() {
+  var methods = {
+    input: this.input,
+    read() { return super.read(); },
+  };
+  Object.setPrototypeOf(methods, base);
+  await 0;
+  return methods.read.call({ input: 46 });
+}
+var makeAsyncExpression = async function() {
+  var methods = {
+    input: this.input,
+    read() { return super.read(); },
+  };
+  Object.setPrototypeOf(methods, base);
+  return methods.read.call({ input: 47 });
+};
+class NestedAsyncFactory {
+  async make() {
+    var run = async () => {
+      var methods = {
+        input: this.input,
+        read() { return super.read(); },
+      };
+      Object.setPrototypeOf(methods, base);
+      return methods.read.call({ input: 48 });
+    };
+    return run();
+  }
+}
+async function makeAsyncDefault(methods = {
+  input: this.input,
+  read() { return super.read(); },
+}) {
+  Object.setPrototypeOf(methods, base);
+  return methods.read.call({ input: 49 });
+}
+class AsyncDefaultFactory {
+  async make(methods = {
+    input: this.input,
+    read() { return super.read(); },
+  }) {
+    Object.setPrototypeOf(methods, base);
+    return methods.read.call({ input: 50 });
+  }
+}
 var generatorValue = makeGenerator.call({ input: 7 }).next().value;
 var generatorMethodValue = GeneratorFactory.prototype.make.call({ input: 8 }).next().value;
 Promise.all([
   AsyncFactory.prototype.make.call({ input: 9 }),
   makeAsyncArrow.call({ input: 10 }),
   makeAsyncWithNestedSyncFunction.call({ input: 11 }),
+  makeAsyncDeclaration.call({ input: 12 }),
+  makeAsyncExpression.call({ input: 13 }),
+  NestedAsyncFactory.prototype.make.call({ input: 14 }),
+  makeAsyncDefault.call({ input: 15 }),
+  AsyncDefaultFactory.prototype.make.call({ input: 16 }),
 ]).then((asyncValues) => console.log(generatorValue, generatorMethodValue, ...asyncValues, _a, _b));`,
     });
     cleanup = fixture.cleanup;
@@ -783,7 +834,7 @@ Promise.all([
     const actual = spawnSync('node', [output], { encoding: 'utf8' });
     expect(actual.status, actual.stderr).toBe(0);
     expect(actual.stdout).toBe(native.stdout);
-    expect(actual.stdout).toBe('41 45 42 43 44 outer-a outer-b\n');
+    expect(actual.stdout).toBe('41 45 42 43 44 46 47 48 49 50 outer-a outer-b\n');
   });
 
   test('home temp scope detection stops at the nearest function owner across eleven hostile shapes', async () => {

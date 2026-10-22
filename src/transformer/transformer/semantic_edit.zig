@@ -3563,9 +3563,9 @@ pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: Nod
     }
 }
 
-/// Preserve a captured temp reference with the stable allocator identity kept
-/// by `TempCapture`. Deferred owners must not recover this handoff from text.
-pub fn trackCapturedTempReference(
+/// Preserve a deferred temp reference with its stable allocator identity.
+/// The name span validates the AST node; it is never the handoff key.
+pub fn trackDeferredTempProducerReference(
     self: *Transformer,
     temp_producer_id: u64,
     name_span: Span,
@@ -3594,6 +3594,18 @@ pub fn trackCapturedTempReference(
         .scope = scope,
         .flags = flags,
     });
+}
+
+/// Preserve captured temps through the same producer-owned handoff.
+pub fn trackCapturedTempReference(
+    self: *Transformer,
+    temp_producer_id: u64,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    return trackDeferredTempProducerReference(self, temp_producer_id, name_span, node, scope, flags);
 }
 
 /// Retarget a deferred producer-owned reference after lowering moves it into
