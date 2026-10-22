@@ -51,22 +51,32 @@ fn getDefineCandidateText(ast: *const Ast, node: Node) ?[]const u8 {
     };
 }
 
+/// Return the first define value that matches a candidate node. Keep this in
+/// one place so retained-graph preflight and transformation use identical
+/// normalization and first-match behavior.
+pub fn matchedDefineValue(ast: *const Ast, node: Node, defines: []const DefineEntry) ?[]const u8 {
+    const raw_text = getDefineCandidateText(ast, node) orelse return null;
+
+    var norm_buf: [DEFINE_KEY_NORM_BUF]u8 = undefined;
+    const text = if (std.mem.indexOfScalar(u8, raw_text, '?') != null)
+        normalizeOptionalChain(raw_text, &norm_buf) orelse return null
+    else
+        raw_text;
+
+    for (defines) |entry| {
+        if (matchDefineKey(text, entry.key)) return entry.value;
+    }
+    return null;
+}
+
+pub fn isStringLiteralDefineValue(value: []const u8) bool {
+    return value.len >= 2 and (value[0] == '"' or value[0] == '\'');
+}
+
 pub fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
     if (defines.len == 0) return false;
-
     for (ast.nodes.items) |node| {
-        const raw_text = getDefineCandidateText(ast, node) orelse continue;
-
-        // tryDefineReplace와 동일하게 optional chain을 정규화한 뒤 define key와 매칭한다.
-        var norm_buf: [DEFINE_KEY_NORM_BUF]u8 = undefined;
-        const text = if (std.mem.indexOfScalar(u8, raw_text, '?') != null)
-            normalizeOptionalChain(raw_text, &norm_buf) orelse continue
-        else
-            raw_text;
-
-        for (defines) |entry| {
-            if (matchDefineKey(text, entry.key)) return true;
-        }
+        if (matchedDefineValue(ast, node, defines) != null) return true;
     }
     return false;
 }
@@ -80,30 +90,16 @@ pub fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
 ///   - `globalThis.` / `window.` / `self.` 접두어는 번들 맥락에서 의미 없는
 ///     global root이므로 벗기고 define key와 비교.
 pub fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
-    const raw_text = getDefineCandidateText(self.ast, node) orelse return null;
-
-    // parser는 `a?.b`를 chain_expression 없이 static_member_expression + optional
-    // flag로 표현하므로, `?` 존재 여부로만 정규화 필요를 판별.
-    var norm_buf: [DEFINE_KEY_NORM_BUF]u8 = undefined;
-    const text = if (std.mem.indexOfScalar(u8, raw_text, '?') != null)
-        normalizeOptionalChain(raw_text, &norm_buf) orelse return null
-    else
-        raw_text;
-
-    for (self.options.define) |entry| {
-        if (!matchDefineKey(text, entry.key)) continue;
-        // intern map 이 같은 entry.value 의 두 번째 호출부터 hit → 캐시 효과 흡수.
-        const value_span = self.ast.addString(entry.value) catch return Error.OutOfMemory;
-        // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
-        // "production" → string_literal, false/true/숫자 → identifier_reference.
-        const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
-        if (is_string) return self.ast.addNode(.{
-            .tag = .string_literal,
-            .span = value_span,
-            .data = .{ .string_ref = value_span },
-        });
-        // 식별자 값(`true`·`undefined`·전역 이름)은 사용자 변수가 아니라 전역이다.
-        return es_helpers.makeGlobalRefFromSpan(self, value_span);
-    }
-    return null;
+    const value = matchedDefineValue(self.ast, node, self.options.define) orelse return null;
+    // intern map 이 같은 entry.value 의 두 번째 호출부터 hit → 캐시 효과 흡수.
+    const value_span = self.ast.addString(value) catch return Error.OutOfMemory;
+    // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
+    // "production" → string_literal, false/true/숫자 → identifier_reference.
+    if (isStringLiteralDefineValue(value)) return self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = value_span,
+        .data = .{ .string_ref = value_span },
+    });
+    // 식별자 값(`true`·`undefined`·전역 이름)은 사용자 변수가 아니라 전역이다.
+    return es_helpers.makeGlobalRefFromSpan(self, value_span);
 }

@@ -17,6 +17,92 @@ const es_helpers = @import("es_helpers.zig");
 const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
 const import_export_mod = @import("transformer/import_export.zig");
 
+test "define matching preserves the first matching entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "__BUILD__";
+    var ast = Ast.init(allocator, source);
+    const name = try ast.addString(source);
+    const node: Node = .{
+        .tag = .identifier_reference,
+        .span = .{ .start = 0, .end = @intCast(source.len) },
+        .data = .{ .string_ref = name },
+    };
+    const defines = [_]transformer_mod.DefineEntry{
+        .{ .key = "__BUILD__", .value = "\"first\"" },
+        .{ .key = "__BUILD__", .value = "\"second\"" },
+    };
+
+    try std.testing.expectEqualStrings(
+        "\"first\"",
+        @import("transformer/define.zig").matchedDefineValue(&ast, node, &defines).?,
+    );
+}
+
+test "define replacement removes the exact source reference from semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const __BUILD__ = 'source'; console.log(__BUILD__);";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var source_reference: ?NodeIndex = null;
+    var source_symbol_id: ?u32 = null;
+    for (analyzer.references.items) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "__BUILD__")) continue;
+        try std.testing.expect(source_reference == null);
+        source_reference = reference.node_index;
+        source_symbol_id = @backingInt(reference.symbol_id);
+    }
+    const replaced_reference = source_reference orelse return error.MissingDefineSourceReference;
+    const symbol_id = source_symbol_id orelse return error.MissingDefineSourceSymbol;
+
+    const defines = [_]transformer_mod.DefineEntry{
+        .{ .key = "__BUILD__", .value = "\"production\"" },
+    };
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .define = &defines });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    for (editor.references.items) |reference| {
+        try std.testing.expect(reference.node_index != replaced_reference);
+    }
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
+    for (edited.references) |reference| {
+        try std.testing.expect(reference.node_index != replaced_reference);
+    }
+    try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[symbol_id].reference_count);
+}
+
 test "#4819 anonymous default class binding lookup fails closed without semantic identity" {
     var ast = Ast.init(std.testing.allocator, "");
     defer ast.deinit();
