@@ -442,12 +442,48 @@ fn e2eWithSemanticSymbolNameOverride(
     output_name: []const u8,
     ascii_only: bool,
 ) !TestResult {
+    return e2eWithSemanticSymbolNameOverrideMode(
+        backing_allocator,
+        source,
+        original,
+        output_name,
+        ascii_only,
+        false,
+    );
+}
+
+fn e2eWithModuleSemanticSymbolNameOverride(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    original: []const u8,
+    output_name: []const u8,
+    ascii_only: bool,
+) !TestResult {
+    return e2eWithSemanticSymbolNameOverrideMode(
+        backing_allocator,
+        source,
+        original,
+        output_name,
+        ascii_only,
+        true,
+    );
+}
+
+fn e2eWithSemanticSymbolNameOverrideMode(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    original: []const u8,
+    output_name: []const u8,
+    ascii_only: bool,
+    is_module: bool,
+) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
+    if (is_module) parser.configureFromExtension(".mjs");
     _ = try parser.parse();
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
@@ -494,6 +530,39 @@ test "Codegen: SymbolId output name override reaches bindings and references" {
     );
     defer r.deinit();
     try std.testing.expectEqualStrings("let chosen=1;chosen++;", r.output);
+}
+
+test "Codegen: SymbolId output name override follows ESM export locals" {
+    const Case = struct {
+        source: []const u8,
+        output_name: []const u8,
+        expected: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosen", .expected = "export let chosen=1;export {chosen as publicName};" },
+        .{ .source = "export let original=1;export {original};", .output_name = "chosen", .expected = "export let chosen=1;export {chosen as original};" },
+        .{ .source = "export let original=1;export {original as first,original as second};", .output_name = "chosen", .expected = "export let chosen=1;export {chosen as first,chosen as second};" },
+        .{ .source = "export {original as publicName};export let original=1;", .output_name = "chosen", .expected = "export {chosen as publicName};export let chosen=1;" },
+        .{ .source = "export let original=1;export {original as chosen};", .output_name = "chosen", .expected = "export let chosen=1;export {chosen};" },
+        .{ .source = "export let original=1;let other=2;export {original as publicName,other as otherPublic};", .output_name = "chosen", .expected = "export let chosen=1;let other=2;export {chosen as publicName,other as otherPublic};" },
+        .{ .source = "export let original=1;export {original};", .output_name = "original", .expected = "export let original=1;export {original};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "renamedx", .expected = "export let renamedx=1;export {renamedx as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "oChosen", .expected = "export let oChosen=1;export {oChosen as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName};", .output_name = "chosenl", .expected = "export let chosenl=1;export {chosenl as publicName};" },
+        .{ .source = "export let original=1;export {original as publicName} from './remote';", .output_name = "chosen", .expected = "export let chosen=1;export {original as publicName} from \"./remote\";" },
+    };
+
+    for (cases) |case| {
+        var r = try e2eWithModuleSemanticSymbolNameOverride(
+            std.testing.allocator,
+            case.source,
+            "original",
+            case.output_name,
+            false,
+        );
+        defer r.deinit();
+        try std.testing.expectEqualStrings(case.expected, r.output);
+    }
 }
 
 test "Codegen: SymbolId output name override preserves object shorthand key" {
