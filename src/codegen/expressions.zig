@@ -608,10 +608,7 @@ pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: Shorthand
     if (idx.isNone()) return false;
     const n = self.ast.getNode(idx);
 
-    const sym_id: ?u32 = if (self.options.linking_metadata) |meta|
-        self.resolveSymbolId(idx, meta)
-    else
-        null;
+    const sym_id = self.sourceSymbolId(idx);
 
     // ---- 값 전용 치환: 대입 대상 자리에서는 emitNode 를 태우면 안 된다 ----
     // node_dispatch 는 이 둘을 `identifier_reference` 태그에만 건다. shorthand 대입 대상도
@@ -637,7 +634,16 @@ pub fn identifierEmitsSubstituted(self: anytype, idx: NodeIndex, slot: Shorthand
         }
     }
 
-    // 5) CJS 래퍼의 free `exports`/`module` — 파라미터를 짧은 이름으로 바꾼 경우.
+    // 5) Standalone transforms can select a SymbolId spelling without linker metadata.
+    // Match node_dispatch's finalSymbolName path so a shorthand key is not renamed with its value.
+    if (sym_id) |sid| {
+        if (self.finalSymbolName(sid)) |output_name| {
+            const original = self.ast.getText(n.data.string_ref);
+            if (!std.mem.eql(u8, original, output_name)) return true;
+        }
+    }
+
+    // 6) CJS 래퍼의 free `exports`/`module` — 파라미터를 짧은 이름으로 바꾼 경우.
     if (self.options.module_format == .cjs and sym_id == null and
         (n.tag == .identifier_reference or n.tag == .assignment_target_identifier))
     {

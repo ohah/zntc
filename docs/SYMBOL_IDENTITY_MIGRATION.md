@@ -440,6 +440,8 @@ Fallback을 제거할 조건은 모든 지원되는 Worklet 호출자가 semanti
 
 - 2026-10-22 (#6126): object-super `Home.Wrap.arrow`/`Home.Wrap.function`의 보류 reference는 원본 object expression `NodeIndex` producer handle로 묶고, method 문맥을 거쳐 final wrapper parameter `SymbolId`에 연결한다. 생성 이름 Span은 더 이상 handoff key가 아니다. 서로 다른 producer node, 중첩 method 문맥 복원, 동일 Span을 의도적으로 공유하는 producer를 확인했다. 서로 다른 source 입력 10개를 세 wrapper 모드로 검증했고 컴파일 가능한 구현 변이 10/10을 모두 검출했다. object-super 테스트 23/23, 전체 Debug `zig build test` 7,260/7,260, `zig build`, Zig 포맷과 `git diff --check`가 통과했다. 이번 변경은 이 object-super reference grouping에 한정되며, assignment-temp deferred handoff와 #6004/#4819의 나머지 범위는 계속 열린 상태다.
 
+- 2026-10-23: standalone semantic name override도 shorthand 확장 판정에서 `sourceSymbolId()`와 `finalSymbolName()`을 사용한다. 객체 리터럴 값과 destructuring assignment target에서 public key를 원문으로 유지하고 binding/reference만 최종 이름으로 출력한다. 중첩 객체, 배열, 호출 인자, 반환값, 조건식, spread, getter, assignment, 같은 길이·같은 앞/뒤 문자, 이름 변경 없음의 13개 fixture를 추가했다. 10개 컴파일 가능한 구현 변이가 모두 검출됐고, focused filter, 전체 Debug `zig build test`, `zig build`, Zig 포맷 및 `git diff --check`가 통과했다. 이는 standalone shorthand final-name 연결만 닫으며 전체 output-consumer 목록과 #4819 완료를 뜻하지 않는다.
+
 ## AST producer census baseline (#6120; `origin/main` `7346fc2cb48980257f9fc5a8625dc627eb7f0768`)
 
 Bounded source index는 AST binding constructor call expression **112곳, 70개 색인 함수, 35개 파일**이다. 한 call은 production caller가 없어 실제 도달 가능한 production expression은 111곳, 함수는 69개다. 기존 다섯 계열은 색인 110곳(도달 109곳)이며 `makeSyntheticBinding` 50/49, `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 20, `createSyntheticTempBinding` 10, `makeUsingBinding` 4다. `createSyntheticTempBindingWithIdentity`는 별도 도달 가능한 callsite 두 곳이다.
