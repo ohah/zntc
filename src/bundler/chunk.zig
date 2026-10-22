@@ -26,6 +26,7 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
 const SymbolRef = linker_mod.SymbolRef;
+const SymbolID = @import("symbol.zig").SymbolID;
 const metadata_mod = @import("linker/metadata.zig");
 const preamble_writer = @import("linker/preamble_writer.zig");
 
@@ -1733,6 +1734,8 @@ pub fn computeCrossChunkGlobalNames(
     // 3. 전역 deconflict — preferred(원본 local 명)로 시도, 충돌/예약이면 `$N`.
     var used: std.StringHashMapUnmanaged(void) = .empty;
     defer used.deinit(allocator);
+    var lazy_symbol_globals: std.AutoHashMapUnmanaged(SymbolID, []const u8) = .empty;
+    defer lazy_symbol_globals.deinit(allocator);
     // (#5456) 소비자 청크는 cross-chunk import 를 이 이름의 top-level 바인딩으로 받는다.
     // 어떤 모듈의 미해결 전역 참조(`typeof f`)와 같은 이름이면 그 참조를 가로챈다.
     // 단일 번들 경로의 `isReservedOrGlobal` 과 같은 기준으로 미해결 전역을 피한다
@@ -1750,6 +1753,21 @@ pub fn computeCrossChunkGlobalNames(
         for (lnk.global_identifiers) |name| try free_globals.put(allocator, name, {});
     }
     for (syms.items) |s| {
+        // Lazy export-all exposes a provider binding by its one local spelling.
+        // Two public export names may point to that same exact binding; assigning
+        // a different cross-chunk name to each alias makes a consumer request a
+        // second key the provider never emits. Reuse one name per exact local SID
+        // in lazy mode, while retaining distinct public-name contracts elsewhere.
+        const symbol_id = if (lnk.graph.lazy_compilation)
+            lazyCrossChunkExportSymbol(lnk, s.mod, s.name)
+        else
+            null;
+        if (symbol_id) |id| {
+            if (lazy_symbol_globals.get(id)) |global_name| {
+                try lnk.putCrossChunkGlobalName(s.mod, s.name, try allocator.dupe(u8, global_name));
+                continue;
+            }
+        }
         // (#4532 증상1) preserve-modules 는 전역명을 **ESM-wrap owner 로 한정**한다.
         // preserve-modules 는 모든 모듈이 자기 청크라 모든 import 가 cross-chunk 로 잡히는데:
         //  - non-wrap ESM provider(.none): codegen 이 소스 `export { tag }` 를 자연명 재방출 →
@@ -1815,8 +1833,18 @@ pub fn computeCrossChunkGlobalNames(
         const candidate = try deconflictGlobalNameAvoiding(allocator, &used, &free_globals, preferred);
         // candidate 소유권을 맵으로 이전. used 는 맵의 저장본을 borrow(used.deinit 가 키 미해제).
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
-        try used.put(allocator, lnk.getCrossChunkGlobalName(s.mod, s.name).?, {});
+        const global_name = lnk.getCrossChunkGlobalName(s.mod, s.name).?;
+        try used.put(allocator, global_name, {});
+        if (symbol_id) |id| try lazy_symbol_globals.put(allocator, id, global_name);
     }
+}
+
+fn lazyCrossChunkExportSymbol(lnk: *const Linker, module_index: u32, export_name: []const u8) ?SymbolID {
+    const module = lnk.getModule(module_index) orelse return null;
+    const eb = module.findExportBinding(export_name) orelse return null;
+    if (eb.kind != .local and !eb.hasSyntheticDefault(module.semanticSymbols())) return null;
+    const symbol_index = module.exportBindingSemanticIndex(eb.*) orelse return null;
+    return SymbolID.make(module.index, symbol_index);
 }
 
 /// (#4510) cross-chunk 공개명(`<head>$<모듈 태그>`)의 head 를 유효 식별자로 만든다.
