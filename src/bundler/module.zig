@@ -48,6 +48,20 @@ pub const EsmRuntimeInternalSymbolIds = struct {
     factory_local: SemanticSymbolId,
 };
 
+/// Symbol identities for graph-wide bindings in the raw ESM interop preamble.
+pub const EsmInteropRuntimeHelperSymbolIds = struct {
+    create: SemanticSymbolId,
+    get_proto_of: SemanticSymbolId,
+    def_prop: SemanticSymbolId,
+    get_own_prop_names: SemanticSymbolId,
+    get_own_prop_desc: SemanticSymbolId,
+    has_own: SemanticSymbolId,
+    copy_props: SemanticSymbolId,
+    to_esm: SemanticSymbolId,
+    export_helper: SemanticSymbolId,
+    to_common_js: SemanticSymbolId,
+};
+
 /// Symbol identities for lexical bindings in raw ESM interop helper templates.
 pub const EsmInteropRuntimeInternalSymbolIds = struct {
     copy_props_to: SemanticSymbolId,
@@ -512,6 +526,8 @@ pub const Module = struct {
     cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds = null,
     /// Exact identities for lexical locals in the raw ESM runtime helper body.
     esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds = null,
+    /// Exact producer identities for bindings in the raw ESM interop preamble.
+    esm_interop_runtime_helper_symbols: ?EsmInteropRuntimeHelperSymbolIds = null,
     /// Exact identities for lexical locals in raw ESM interop helper bodies.
     esm_interop_runtime_internal_symbols: ?EsmInteropRuntimeInternalSymbolIds = null,
     /// Exact identities for top-level locals in raw HMR runtime preambles.

@@ -1503,7 +1503,7 @@ test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
 test "linker: ESM interop raw locals recover by exact IDs and reject malformed rows" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.mjs", "export const value = 1;");
+    try writeFile(tmp.dir, "entry.mjs", "const __create=0,__getProtoOf=0,__defProp=0,__getOwnPropNames=0,__getOwnPropDesc=0,__hasOwn=0,__copyProps=0,__toESM=0,__export=0,__toCommonJS=0; export const value = 1;");
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
     defer r.linker.deinit();
@@ -1516,6 +1516,35 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     module.exports_kind = .esm;
     try graph_finalize.registerWrapperSymbols(r.graph);
     const names = try r.linker.esmInteropRuntimeInternalNames();
+    const helper_names = try r.linker.esmInteropRuntimeNames();
+    const helper_ids = module.esm_interop_runtime_helper_symbols orelse return error.TestUnexpectedResult;
+    inline for (@import("../runtime_helper_names.zig").ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+        const helper_id = @field(helper_ids, @tagName(helper));
+        const helper_symbol = module.semantic.?.symbols.items[@backingInt(helper_id)];
+        try std.testing.expectEqual(semantic_symbol.SyntheticKind.bundler_runtime_helper, helper_symbol.synthetic_kind.?);
+        try std.testing.expectEqual(semantic_symbol.SymbolKind.variable_var, helper_symbol.kind);
+        try std.testing.expectEqualStrings(
+            @import("../runtime_helper_names.zig").esmInteropRuntimeHelperBaseName(helper),
+            helper_symbol.synthetic_name,
+        );
+        try std.testing.expectEqualStrings(
+            helper_names.get(helper),
+            r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(helper_id))) orelse return error.TestUnexpectedResult,
+        );
+        try std.testing.expect(!std.mem.eql(
+            u8,
+            helper_names.get(helper),
+            @import("../runtime_helper_names.zig").esmInteropRuntimeHelperBaseName(helper),
+        ));
+    }
+    var invalid_helper_ids = helper_ids;
+    invalid_helper_ids.create = @fromBackingInt(@as(u32, 999_999));
+    module.esm_interop_runtime_helper_symbols = invalid_helper_ids;
+    try std.testing.expectError(error.EsmInteropRuntimeIdentityInvalid, r.linker.prepareEsmInteropRuntimeNames());
+    module.esm_interop_runtime_helper_symbols = null;
+    try std.testing.expectError(error.EsmInteropRuntimeIdentityMissing, r.linker.prepareEsmInteropRuntimeNames());
+    module.esm_interop_runtime_helper_symbols = helper_ids;
+
     const ids = module.esm_interop_runtime_internal_symbols orelse return error.TestUnexpectedResult;
     const expected = [_]struct { id: semantic_symbol.SymbolId, identity: []const u8, output_name: []const u8, kind: semantic_symbol.SymbolKind }{
         .{ .id = ids.copy_props_to, .identity = "copy_props.to", .output_name = names.copy_props_to, .kind = .parameter },
