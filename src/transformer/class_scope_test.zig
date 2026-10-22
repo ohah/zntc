@@ -643,8 +643,11 @@ fn expectES5SuperPropertyTempProducerIdentity(source: []const u8, operation: []c
         if (transformer.ast.nodes.items[raw].tag != .identifier_reference and
             transformer.ast.nodes.items[raw].tag != .assignment_target_identifier)
             continue;
-        const reference = (try editor.referenceForNode(@fromBackingInt(raw))) orelse continue;
-        try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+        const node_index: NodeIndex = @fromBackingInt(@intCast(raw));
+        for (edited.references) |reference| {
+            if (reference.node_index != node_index) continue;
+            try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+        }
     }
 }
 
