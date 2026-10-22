@@ -3849,11 +3849,15 @@ fn chunkRegistryId(
 /// 어떤 export 를 참조할지 몰라도(seed 미파싱) 찾을 수 있게 — demand-driven(chunk.exports_to)
 /// 이 아니라 export-all 이라 seed force-parse 유무와 무관히 결정적(초기 lazy 빌드와 동일).
 /// local name 키잉으로 동명 export(shared.v + dup.v, deconflict 로 local 구별) 충돌 회피.
+/// Direct local alias는 exact binding의 canonical local 이름으로 노출한다. Re-export는 현재
+/// 모듈에 local binding을 만들지 않으므로 건너뛴다. consumer는 canonical source의 실제 local
+/// 키를 요청하고, source가 다른 chunk에 있으면 그 provider가 자기 local 키를 노출한다.
+/// `re_export_namespace`는 별도 namespace local을 가지므로 계속 포함한다.
 /// entry 모듈 자신의 export 는 emitCjsEntryExports 담당 → 제외.
-/// **한계(RFC §6.3, 후속)**: export-name 과 local name 이 다른 케이스(① 소비 모듈이 entry
-/// 안에서 deconflict, ② `export { a as b }` 별칭, ③ re-export)는 소비자 imports_from 이
-/// export-name 키라 mismatch — `export const`/`export function` 처럼 export-name==local-name
-/// 인 일반 케이스만 정합(dev on-demand 의 대다수). mismatch 는 crash 가 아니라 미해결 참조.
+fn lazyEntryExportAllHasLocalBinding(kind: ExportBinding.Kind) bool {
+    return kind != .re_export_star and kind != .re_export;
+}
+
 fn emitLazyEntryExportAll(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
@@ -3874,12 +3878,12 @@ fn emitLazyEntryExportAll(
         if (mi >= module_count or mi == entry_mod_idx) continue;
         const m = graph.getModule(mod_idx) orelse continue;
         for (m.export_bindings) |eb| {
-            // `export * from './m'`(re_export_star)는 노출 이름이 `*` 하나뿐인데 로컬
-            // 심볼이 없어 `exports.* = *;`(invalid JS) 를 만든다. star 가 합치는 실제
-            // 이름들은 소스 모듈의 자기 바인딩으로 이미 순회되므로(같은 청크 hoist 시)
-            // 여기선 스킵한다. (`export * as ns`=re_export_namespace 는 실제 로컬 ns
-            // 심볼이 있으므로 스킵 대상 아님.)
-            if (eb.kind == .re_export_star) continue;
+            // `export * from './m'`는 `*` local이 없고, 명시적 re-export도 이 모듈에
+            // local binding을 만들지 않는다. 전자는 `exports.* = *`를 만들고, 후자는
+            // upstream export spelling을 local처럼 출력해 `ReferenceError`를 낼 수 있다.
+            // source local은 같은 청크면 source 모듈 순회에서, 다른 청크면 해당 provider에서
+            // 이미 노출된다. `export * as ns`는 실제 namespace local이 있어 계속 포함한다.
+            if (!lazyEntryExportAllHasLocalBinding(eb.kind)) continue;
             // 노출 키 = ExportBinding의 exact local identity. Name lookup은 anonymous
             // default facade와 같은 이름의 source binding을 혼동할 수 있다.
             const local = l.getCanonicalForExport(eb, @intCast(mi));
@@ -3897,6 +3901,13 @@ fn emitLazyEntryExportAll(
         try out.appendSlice(allocator, local);
         try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");
     }
+}
+
+test "lazy entry export-all includes only bindings owned by the current module" {
+    try std.testing.expect(lazyEntryExportAllHasLocalBinding(.local));
+    try std.testing.expect(!lazyEntryExportAllHasLocalBinding(.re_export));
+    try std.testing.expect(!lazyEntryExportAllHasLocalBinding(.re_export_star));
+    try std.testing.expect(lazyEntryExportAllHasLocalBinding(.re_export_namespace));
 }
 
 /// dev_split(wrap-all) 동적 청크의 entry 모듈(=`import()` 타겟) export 를 청크 `exports` 에
