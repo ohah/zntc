@@ -350,9 +350,17 @@ pub fn emitExportSpecifier(self: anytype, node: Node) !void {
     const exported_node = self.ast.getNode(exported_idx);
     const local_text = self.ast.getText(local_node.span);
     const exported_text = self.ast.getText(exported_node.span);
+    const output_local_text = if (self.sourceSymbolId(local_idx)) |sid|
+        (self.finalSymbolName(sid) orelse local_text)
+    else
+        local_text;
     try self.addSourceMapping(local_node.span);
-    try self.write(local_text);
-    if (!std.mem.eql(u8, local_text, exported_text)) {
+    if (std.mem.eql(u8, output_local_text, local_text)) {
+        try self.write(local_text);
+    } else {
+        try self.writeIdentifierText(output_local_text);
+    }
+    if (!std.mem.eql(u8, output_local_text, exported_text)) {
         try self.write(" as ");
         try self.addSourceMapping(exported_node.span);
         try self.write(exported_text);
