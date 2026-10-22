@@ -1051,7 +1051,9 @@ fn isDirectNamespaceNameInBody(self: anytype, body_idx: NodeIndex, name_idx: Nod
 
 fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u8) Error![]const u8 {
     const sid = self.sourceSymbolId(name_idx);
-    if (self.options.linking_metadata != null and self.options.generated_iife_scope_owner_map != null) {
+    if (self.options.generated_iife_scope_owner_map != null and
+        (self.options.linking_metadata != null or self.options.semantic_symbol_ids.len > 0))
+    {
         const declaration_sid = sid orelse return error.MissingNamespaceDeclarationSymbol;
         if (declaration_sid >= self.options.semantic_symbols.len) return error.InvalidNamespaceDeclarationSymbol;
         const symbol = self.options.semantic_symbols[declaration_sid];
