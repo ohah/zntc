@@ -1163,7 +1163,7 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     try std.testing.expectEqual(@as(usize, 1), live_owners);
 }
 
-fn checkDeferredCallbackTempSpanCollision(anchor: []const u8, producer_prefix_len: usize) !void {
+fn checkDeferredCallbackTempProducerIdOverlap(anchor: []const u8, producer_prefix_len: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1199,12 +1199,15 @@ fn checkDeferredCallbackTempSpanCollision(anchor: []const u8, producer_prefix_le
     try std.testing.expect(producer_prefix_len < anchor.len);
     const producer_binding = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, producer_span);
     const producer_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, producer_span);
+    const producer_write_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, producer_span);
+    const dead_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, producer_span);
     const decoy_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, anchor_span);
     try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(producer_ref));
 
     const producer_stmt = try es_helpers.makeExprStmt(&transformer, producer_ref, .EMPTY);
+    const producer_write_stmt = try es_helpers.makeExprStmt(&transformer, producer_write_ref, .EMPTY);
     const decoy_stmt = try es_helpers.makeExprStmt(&transformer, decoy_ref, .EMPTY);
-    const body_list = try transformer.ast.addNodeList(&.{ producer_stmt, decoy_stmt });
+    const body_list = try transformer.ast.addNodeList(&.{ producer_stmt, producer_write_stmt, decoy_stmt });
     const body = try transformer.ast.addNode(.{
         .tag = .block_statement,
         .span = .EMPTY,
@@ -1226,28 +1229,46 @@ fn checkDeferredCallbackTempSpanCollision(anchor: []const u8, producer_prefix_le
         .binding = producer_binding,
         .name_span = producer_span,
         .callback_local = true,
+        .temp_producer_id = 101,
     });
-    try transformer.trackHoistedTempRefInScope(producer_span, producer_ref, source_scope, .{ .read = true });
-    try transformer.trackHoistedTempRefInScope(anchor_span, decoy_ref, source_scope, .{ .read = true });
+    try transformer.trackDeferredTempProducerReference(101, producer_span, producer_ref, source_scope, .{ .read = true });
+    try transformer.trackDeferredTempProducerReference(101, producer_span, producer_write_ref, source_scope, .{ .write = true });
+    try transformer.trackDeferredTempProducerReference(101, producer_span, dead_ref, source_scope, .{ .read = true });
+    try transformer.trackDeferredTempProducerReference(202, anchor_span, decoy_ref, source_scope, .{ .read = true });
     try transformer.bindGeneratedState(source_scope, source_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const producer_symbol = transformer.getSymbolIdAt(producer_binding) orelse return error.MissingDeferredCallbackTempSymbol;
+    const producer_mapping = transformer.temp_symbols_by_producer_id.get(101) orelse
+        return error.MissingDeferredCallbackProducerMapping;
+    try std.testing.expectEqual(producer_symbol, producer_mapping);
     try std.testing.expectEqual(@as(?u32, producer_symbol), transformer.getSymbolIdAt(producer_ref));
+    try std.testing.expectEqual(@as(?u32, producer_symbol), transformer.getSymbolIdAt(producer_write_ref));
+    try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(dead_ref));
     try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(decoy_ref));
-    try std.testing.expect((try editor.referenceForNode(producer_ref)) != null);
+    const read_reference = (try editor.referenceForNode(producer_ref)) orelse return error.MissingDeferredCallbackReadReference;
+    const write_reference = (try editor.referenceForNode(producer_write_ref)) orelse return error.MissingDeferredCallbackWriteReference;
+    try std.testing.expect(read_reference.flags.read);
+    try std.testing.expect(!read_reference.flags.write);
+    try std.testing.expect(!write_reference.flags.read);
+    try std.testing.expect(write_reference.flags.write);
+    const callback_scope_raw = transformer.transformed_scope_owner_map.get(@backingInt(callback)) orelse
+        return error.MissingDeferredCallbackScope;
+    const callback_scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(callback_scope_raw);
+    try std.testing.expectEqual(callback_scope, editor.symbols.items[producer_symbol].scope_id);
+    try std.testing.expectEqual(callback_scope, read_reference.scope_id);
+    try std.testing.expectEqual(callback_scope, write_reference.scope_id);
+    try std.testing.expect((try editor.referenceForNode(dead_ref)) == null);
     try std.testing.expect((try editor.referenceForNode(decoy_ref)) == null);
-    const producer_key = @import("transformer.zig").PendingTempRefKey.fromSpan(producer_span, source_scope);
-    const decoy_key = @import("transformer.zig").PendingTempRefKey.fromSpan(anchor_span, source_scope);
-    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(producer_key));
-    try std.testing.expect(transformer.pending_temp_ref_chains.contains(decoy_key));
-    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
-    const decoy_chain = transformer.pending_temp_ref_chains.get(decoy_key).?;
-    try std.testing.expectEqual(decoy_ref, transformer.pending_temp_refs.items[decoy_chain.first].node);
-    try std.testing.expectEqual(anchor_span.end, transformer.pending_temp_refs.items[decoy_chain.first].name_end);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_producer_refs.items.len);
+    const decoy = transformer.pending_temp_producer_refs.items[0];
+    try std.testing.expectEqual(@as(u64, 202), decoy.temp_producer_id);
+    try std.testing.expectEqual(decoy_ref, decoy.node);
+    try std.testing.expectEqual(anchor_span.end, decoy.name_span.end);
 }
 
-test "#4819 deferred generator callback temp refs do not alias by span start" {
+test "#4819 deferred generator callback temp refs bind by producer ID despite span overlap" {
     const hostile = [_]struct { anchor: []const u8, prefix_len: usize }{
         .{ .anchor = "_amberProducer", .prefix_len = 6 },
         .{ .anchor = "_brightProducer", .prefix_len = 7 },
@@ -1260,7 +1281,7 @@ test "#4819 deferred generator callback temp refs do not alias by span start" {
         .{ .anchor = "_indigoProducer", .prefix_len = 7 },
         .{ .anchor = "_jasmineProducer", .prefix_len = 8 },
     };
-    for (hostile) |case| try checkDeferredCallbackTempSpanCollision(case.anchor, case.prefix_len);
+    for (hostile) |case| try checkDeferredCallbackTempProducerIdOverlap(case.anchor, case.prefix_len);
 }
 
 test "#6142 deferred callback temp producers keep identical spans separate by ID" {
