@@ -3377,6 +3377,110 @@ test "LazyCompilation PR-3b-ii: shared-off + export-all → 결정론 + entry cr
     try std.testing.expectEqual(@as(usize, 2), r2.outputs.?.len);
 }
 
+test "LazyDevSplitting: aliases of one local keep their cross-chunk keys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts",
+        \\const value = 'VALUE';
+        \\export { value as a, value as b };
+    );
+    try writeFile(tmp.dir, "heavy-a.ts",
+        \\import { a } from './shared';
+        \\export const ha = a;
+    );
+    try writeFile(tmp.dir, "heavy-b.ts",
+        \\import { b } from './shared';
+        \\export const hb = b;
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from './shared';
+        \\async function go() { const [a, b] = await Promise.all([import('./heavy-a'), import('./heavy-b')]); console.log(a.ha, b.hb); }
+        \\console.log('boot', a);
+        \\go();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const heavy_a_abs = try absPath(&tmp, "heavy-a.ts");
+    defer std.testing.allocator.free(heavy_a_abs);
+    const heavy_b_abs = try absPath(&tmp, "heavy-b.ts");
+    defer std.testing.allocator.free(heavy_b_abs);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .lazy_force_parse = &.{ heavy_a_abs, heavy_b_abs },
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    var entry_output: ?[]const u8 = null;
+    var heavy_b_output: ?[]const u8 = null;
+    for (result.outputs.?) |o| {
+        if (std.mem.eql(u8, o.path, "entry.js")) entry_output = o.contents;
+        if (std.mem.startsWith(u8, o.path, "heavy-b-")) heavy_b_output = o.contents;
+    }
+    try std.testing.expect(entry_output != null);
+    try std.testing.expect(heavy_b_output != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry_output.?, "exports.value = value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry_output.?, "exports.value$1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, heavy_b_output.?, "const { value } = __zntc_require(\"entry.js\")") != null);
+}
+
+test "LazyDevSplitting: aliases from distinct providers keep distinct symbols" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "source-a.ts", "export const value = 'A';");
+    try writeFile(tmp.dir, "source-b.ts", "export const value = 'B';");
+    try writeFile(tmp.dir, "heavy-a.ts",
+        \\import { value } from './source-a';
+        \\export const resultA = value;
+    );
+    try writeFile(tmp.dir, "heavy-b.ts",
+        \\import { value } from './source-b';
+        \\export const resultB = value;
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value as eagerA } from './source-a';
+        \\import { value as eagerB } from './source-b';
+        \\console.log(eagerA, eagerB);
+        \\async function load() { await Promise.all([import('./heavy-a'), import('./heavy-b')]); }
+        \\load();
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const heavy_a_abs = try absPath(&tmp, "heavy-a.ts");
+    defer std.testing.allocator.free(heavy_a_abs);
+    const heavy_b_abs = try absPath(&tmp, "heavy-b.ts");
+    defer std.testing.allocator.free(heavy_b_abs);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .code_splitting = true,
+        .lazy_compilation = true,
+        .lazy_force_parse = &.{ heavy_a_abs, heavy_b_abs },
+        .format = .iife,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    var entry_output: ?[]const u8 = null;
+    var heavy_b_output: ?[]const u8 = null;
+    for (result.outputs.?) |o| {
+        if (std.mem.eql(u8, o.path, "entry.js")) entry_output = o.contents;
+        if (std.mem.startsWith(u8, o.path, "heavy-b-")) heavy_b_output = o.contents;
+    }
+    try std.testing.expect(entry_output != null);
+    try std.testing.expect(heavy_b_output != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry_output.?, "exports.value$1 = value$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, heavy_b_output.?, "const { value$1 } = __zntc_require(\"entry.js\")") != null);
+}
+
 test "LazyDevSplitting: kill-switch — lazy_compilation=false 면 dev 단일 번들 보존" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

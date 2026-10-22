@@ -108,6 +108,134 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
     expect((require(/Route/).r as () => string)()).toBe('XVAL');
   });
 
+  test('lazy cross-chunk aliases of one SymbolId share one provider key across hostile fixtures', async () => {
+    const fixtures: {
+      label: string;
+      shared: string;
+      aliases: string[];
+      keys?: string[];
+      values?: string[];
+    }[] = [
+      {
+        label: 'two aliases in one export clause',
+        shared: "const value = () => 'VALUE';\nexport { value as a, value as b };",
+        aliases: ['a', 'b'],
+      },
+      {
+        label: 'aliases in separate export clauses',
+        shared: "let value = () => 'VALUE';\nexport { value as left };\nexport { value as right };",
+        aliases: ['left', 'right'],
+      },
+      {
+        label: 'function declaration aliases',
+        shared: "function value() { return 'VALUE'; }\nexport { value as a, value as b };",
+        aliases: ['a', 'b'],
+      },
+      {
+        label: 'named function expression aliases',
+        shared:
+          "const value = function namedValue() { return 'VALUE'; };\nexport { value as a, value as b };",
+        aliases: ['a', 'b'],
+      },
+      {
+        label: 'default and named aliases',
+        shared: "const value = () => 'VALUE';\nexport { value as default, value as named };",
+        aliases: ['default', 'named'],
+      },
+      {
+        label: 'reserved-word export alias',
+        shared: "const value = () => 'VALUE';\nexport { value as a, value as delete };",
+        aliases: ['a', 'delete'],
+      },
+      {
+        label: 'same binding with a suffix-shaped decoy',
+        shared:
+          "const value = () => 'VALUE';\nconst value$1 = () => 'DECOY';\nexport { value as a, value as b };",
+        aliases: ['a', 'b'],
+      },
+      {
+        label: 'three public aliases',
+        shared: "const value = () => 'VALUE';\nexport { value as a, value as b, value as c };",
+        aliases: ['a', 'b', 'c'],
+      },
+      {
+        label: 'synthetic-name-shaped public aliases',
+        shared: "const value = () => 'VALUE';\nexport { value as _default, value as _default$1 };",
+        aliases: ['_default', '_default$1'],
+      },
+      {
+        label: 'same binding plus a second independently exported binding',
+        shared:
+          "const value = () => 'VALUE';\nconst other = () => 'OTHER';\nexport { value as a, value as b, other as c, other as d };",
+        aliases: ['a', 'b', 'c', 'd'],
+        keys: ['value', 'value', 'other', 'other'],
+        values: ['VALUE', 'VALUE', 'OTHER', 'OTHER'],
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const importPath = './shared';
+      const lazyFiles = fixture.aliases.map((_, i) => `heavy-${i}.ts`);
+      const files: Record<string, string> = {
+        'shared.ts': fixture.shared,
+        'entry.ts':
+          `import { ${fixture.aliases[0]} as entryValue } from '${importPath}';\n` +
+          `globalThis.entryValue = entryValue();\n` +
+          lazyFiles
+            .map((file, i) => `globalThis.load${i} = () => import('./${file.slice(0, -3)}');`)
+            .join('\n'),
+      };
+      for (const [i, alias] of fixture.aliases.entries()) {
+        files[lazyFiles[i]] =
+          `import { ${alias} as imported } from '${importPath}';\n` +
+          `export function read() { return imported(); }`;
+      }
+
+      const { require, chunkText } = await loadDevSplit(files, lazyFiles);
+      try {
+        for (const [i] of fixture.aliases.entries()) {
+          expect(require(new RegExp(`heavy-${i}`)).read()).toBe(fixture.values?.[i] ?? 'VALUE');
+          expect(chunkText(new RegExp(`heavy-${i}`))).toMatch(
+            new RegExp(
+              `const\\s*\\{\\s*${fixture.keys?.[i] ?? 'value'}(?:\\s*:\\s*\\w+)?\\s*\\}\\s*=\\s*__zntc_require\\("entry\\.js"\\)`,
+            ),
+          );
+          expect(chunkText(new RegExp(`heavy-${i}`))).not.toContain(
+            `${fixture.keys?.[i] ?? 'value'}$1`,
+          );
+        }
+      } finally {
+        const closeFixture = cleanup;
+        cleanup = undefined;
+        await closeFixture?.();
+      }
+    }
+  });
+
+  test('lazy cross-chunk same spelling from different provider SymbolIds stays distinct', async () => {
+    const { require, chunkText } = await loadDevSplit(
+      {
+        'source-a.ts': "export const value = () => 'A';",
+        'source-b.ts': "export const value = () => 'B';",
+        'heavy-a.ts':
+          "import { value } from './source-a';\nexport function read() { return value(); }",
+        'heavy-b.ts':
+          "import { value } from './source-b';\nexport function read() { return value(); }",
+        'entry.ts':
+          "import { value as eagerA } from './source-a';\n" +
+          "import { value as eagerB } from './source-b';\n" +
+          'globalThis.eager = eagerA() + eagerB();\n' +
+          "globalThis.loadA = () => import('./heavy-a');\n" +
+          "globalThis.loadB = () => import('./heavy-b');",
+      },
+      ['heavy-a.ts', 'heavy-b.ts'],
+    );
+    expect(require(/heavy-a/).read()).toBe('A');
+    expect(require(/heavy-b/).read()).toBe('B');
+    expect(chunkText(/heavy-a/)).toMatch(/\{\s*value\s*\}\s*=\s*__zntc_require\("entry\.js"\)/);
+    expect(chunkText(/heavy-b/)).toMatch(/\{\s*value\$1\s*\}\s*=\s*__zntc_require\("entry\.js"\)/);
+  });
+
   test('lock: 함수 + const export 혼합 cross-chunk', async () => {
     const { require } = await loadDevSplit(
       {
