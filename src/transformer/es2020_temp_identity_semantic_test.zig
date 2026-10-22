@@ -4,6 +4,7 @@ const token_mod = @import("../lexer/token.zig");
 const Parser = @import("../parser/parser.zig").Parser;
 const ast_mod = @import("../parser/ast.zig");
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Transformer = @import("transformer.zig").Transformer;
@@ -42,7 +43,7 @@ fn checkExactES2020Temps(source: []const u8, expected_temp_count: usize, lower_d
     transformer.semantic_edit_enabled = true;
 
     _ = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, expected_temp_count), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, expected_temp_count), transformer.temp_symbols_by_producer_id.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
@@ -245,31 +246,28 @@ fn checkES2020GeneratorProducerHandle(
         _ = try ES2020.lowerNullishCoalescing(&transformer, parser.ast.getNode(expression_node));
     }
 
-    try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbols_by_producer_id.count());
     try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
-    var temp_iterator = transformer.synthetic_temp_symbol_ids.iterator();
-    const temp_entry = temp_iterator.next() orelse return error.MissingReservedTemp;
-    const raw_id = temp_entry.value_ptr.*;
+    var span_iterator = transformer.temp_span_by_counter.iterator();
+    const span_entry = span_iterator.next() orelse return error.MissingTempProducerCounter;
+    const counter = span_entry.key_ptr.*;
+    const name_span = span_entry.value_ptr.*;
+    const producer_id = transformer.temp_producer_id_by_counter.get(counter) orelse
+        return error.MissingGeneratorTempProducerIdentity;
+    const raw_id = transformer.temp_symbols_by_producer_id.get(producer_id) orelse
+        return error.MissingGeneratorTempProducerIdentity;
     const symbol_id: u32 = raw_id;
-    const symbol = editor.symbols.items[symbol_id];
+    const symbol = editor.symbols.items[raw_id];
     try std.testing.expectEqual(SymbolKind.variable_var, symbol.kind);
     try std.testing.expectEqual(function_scope, symbol.origin_scope);
     try std.testing.expectEqual(@as(?@TypeOf(symbol.synthetic_kind.?), null), symbol.synthetic_kind);
-    var producer_counter: ?u32 = null;
-    var span_iterator = transformer.temp_span_by_counter.iterator();
-    while (span_iterator.next()) |entry| {
-        const span = entry.value_ptr.*;
-        if (span.start == symbol.name.start and span.end == symbol.name.end) {
-            producer_counter = entry.key_ptr.*;
-            break;
-        }
-    }
-    const counter = producer_counter orelse return error.MissingTempProducerCounter;
     const recorded_id = transformer.temp_symbol_ids_by_counter.get(counter) orelse
         return error.MissingGeneratorTempProducerIdentity;
     try std.testing.expectEqual(@as(u32, @intCast(symbol_id)), recorded_id);
+    try std.testing.expectEqual(name_span.start, symbol.name.start);
+    try std.testing.expectEqual(name_span.end, symbol.name.end);
 
     var reference_count: usize = 0;
     var reads: usize = 0;
@@ -508,6 +506,172 @@ fn checkES2020DeferredTempProducerHandle(source: []const u8, expression: []const
     }
 }
 
+fn checkES2020KnownOwnerTempProducerSlotReuse(
+    source: []const u8,
+    expressions: [2][]const u8,
+    optional_chains: [2]bool,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var producer_ids: [2]u64 = undefined;
+    var producer_spans: [2]token_mod.Span = undefined;
+    var symbol_ids: [2]SymbolId = undefined;
+    var search_start: usize = 0;
+
+    for (expressions, optional_chains, 0..) |expression, optional_chain, index| {
+        if (index > 0) {
+            // Function-local allocator slots restart, but their producer IDs
+            // and semantic identities must remain distinct across owners.
+            transformer.temp_var_counter = 0;
+        }
+
+        const expression_start = std.mem.indexOfPos(u8, source, search_start, expression) orelse
+            return error.MissingKnownOwnerExpressionSpan;
+        const expression_end = expression_start + expression.len;
+        search_start = expression_end;
+        const expected_start: u32 = @intCast(expression_start);
+        const expected_end: u32 = @intCast(expression_end);
+
+        const expression_node = for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.span.start != expected_start or node.span.end != expected_end) continue;
+            if (optional_chain) {
+                if (ES2020.findOptionalChainBase(&transformer, node) != null)
+                    break @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(raw)));
+            } else if (node.tag == .logical_expression and
+                node.data.binary.flags == @backingInt(token_mod.Kind.question2))
+            {
+                break @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(raw)));
+            }
+        } else return error.MissingKnownOwnerExpression;
+
+        var function_owner: ?ast_mod.NodeIndex = null;
+        var function_width: usize = std.math.maxInt(usize);
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .function_declaration or node.span.start > expected_start or node.span.end < expected_end)
+                continue;
+            const width: usize = node.span.end - node.span.start;
+            if (width < function_width) {
+                function_owner = @fromBackingInt(@intCast(raw));
+                function_width = width;
+            }
+        }
+        const function = function_owner orelse return error.MissingKnownOwnerFunction;
+        const function_scope = transformer.originalFunctionScope(function);
+        if (function_scope.isNone()) return error.MissingKnownOwnerFunctionScope;
+        const function_node = parser.ast.getNode(function);
+        const function_flags = transformer.readU32(function_node.data.extra, ast_mod.FunctionExtra.flags);
+        const is_generator = (function_flags & ast_mod.FunctionFlags.is_generator) != 0;
+
+        var reference_scope = function_scope;
+        var block_width: usize = std.math.maxInt(usize);
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .block_statement or node.span.start > expected_start or node.span.end < expected_end)
+                continue;
+            const scope_raw = transformer.scope_owner_map.get(@intCast(raw)) orelse continue;
+            const width: usize = node.span.end - node.span.start;
+            if (width < block_width) {
+                reference_scope = @fromBackingInt(scope_raw);
+                block_width = width;
+            }
+        }
+        transformer.current_scope = reference_scope;
+        transformer.state_machine_depth = @intFromBool(is_generator);
+        transformer.generator_state_machine_scope = if (is_generator) function_scope else .none;
+        if (is_generator) try std.testing.expect(reference_scope != function_scope);
+        const reservation_scope = if (is_generator) transformer.nearestVarScope(reference_scope) else reference_scope;
+
+        if (optional_chain) {
+            const base = ES2020.findOptionalChainBase(&transformer, parser.ast.getNode(expression_node)) orelse
+                return error.MissingKnownOwnerOptionalChainBase;
+            _ = try ES2020.lowerOptionalChain(&transformer, parser.ast.getNode(expression_node), base);
+        } else {
+            _ = try ES2020.lowerNullishCoalescing(&transformer, parser.ast.getNode(expression_node));
+        }
+
+        if (transformer.temp_var_counter == 0) return error.MissingKnownOwnerTempSlot;
+        const counter_index = transformer.temp_var_counter - 1;
+        producer_ids[index] = transformer.temp_producer_id_by_counter.get(counter_index) orelse
+            return error.MissingKnownOwnerProducerId;
+        producer_spans[index] = transformer.temp_span_by_counter.get(counter_index) orelse
+            return error.MissingKnownOwnerTempSpan;
+        const raw_symbol_id = transformer.temp_symbols_by_producer_id.get(producer_ids[index]) orelse
+            return error.MissingKnownOwnerProducerSymbolId;
+        symbol_ids[index] = @fromBackingInt(raw_symbol_id);
+        try std.testing.expectEqual(
+            @as(?u32, raw_symbol_id),
+            transformer.temp_symbol_ids_by_counter.get(counter_index),
+        );
+        try std.testing.expectEqual(
+            producer_ids[index],
+            transformer.tempProducerIdForSymbolId(symbol_ids[index]) orelse return error.MissingUniqueTempProducer,
+        );
+
+        const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+        const symbol = editor.symbols.items[@intCast(raw_symbol_id)];
+        try std.testing.expectEqual(SymbolKind.variable_var, symbol.kind);
+        try std.testing.expectEqual(transformer.nearestVarScope(reference_scope), symbol.scope_id);
+        try std.testing.expectEqual(reservation_scope, symbol.origin_scope);
+        try std.testing.expectEqualStrings(transformer.ast.getText(producer_spans[index]), symbol.synthetic_name);
+
+        var reference_count: usize = 0;
+        var reads: usize = 0;
+        var writes: usize = 0;
+        for (editor.references.items) |reference| {
+            if (reference.symbol_id != symbol_ids[index] or reference.node_index.isNone()) continue;
+            try std.testing.expectEqual(reference_scope, reference.scope_id);
+            try std.testing.expectEqual(
+                @as(?u32, @backingInt(symbol_ids[index])),
+                transformer.getSymbolIdAt(reference.node_index),
+            );
+            if (reference.flags.read) reads += 1;
+            if (reference.flags.write) writes += 1;
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count >= 2);
+        try std.testing.expect(reads > 0);
+        try std.testing.expect(writes > 0);
+    }
+
+    try std.testing.expect(producer_ids[0] != producer_ids[1]);
+    try std.testing.expect(symbol_ids[0] != symbol_ids[1]);
+    try std.testing.expectEqualStrings(
+        transformer.ast.getText(producer_spans[0]),
+        transformer.ast.getText(producer_spans[1]),
+    );
+    for (producer_ids, symbol_ids) |producer_id, symbol_id| {
+        try std.testing.expectEqual(
+            @as(?u32, @backingInt(symbol_id)),
+            transformer.temp_symbols_by_producer_id.get(producer_id),
+        );
+        try std.testing.expectEqual(producer_id, transformer.tempProducerIdForSymbolId(symbol_id).?);
+    }
+}
+
 fn checkES2020DeferredTempProducerSlotReuse() !void {
     const source = "function first(make) { return make()?.field; } function second(make) { return make()?.field; }";
     const expressions = [_][]const u8{ "make()?.field", "make()?.field" };
@@ -716,4 +880,62 @@ test "#4819 ES2020 default-parameter temp keeps the lowered output identity" {
 
 test "#4819 ES2020 deferred temp keeps distinct producer IDs when the same allocator slot is reused" {
     try checkES2020DeferredTempProducerSlotReuse();
+}
+
+test "#4819 ES2020 known-owner temp reserves producer identity before hoist across ten hostile inputs" {
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { return make() ?? 1; } function second(make) { return make() ?? 2; }",
+        .{ "make() ?? 1", "make() ?? 2" },
+        .{ false, false },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make, fallback) { return make().value ?? fallback; } function second(make, fallback) { return make().value ?? 0; }",
+        .{ "make().value ?? fallback", "make().value ?? 0" },
+        .{ false, false },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make, key) { return make()?.[key]; } function second(make, key) { return make()?.[key]; }",
+        .{ "make()?.[key]", "make()?.[key]" },
+        .{ true, true },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { return make()?.field; } function second(make) { return make()?.field; }",
+        .{ "make()?.field", "make()?.field" },
+        .{ true, true },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { if (make) { return make() ?? 1; } return 0; } function second(make) { if (make) { return make() ?? 2; } return 0; }",
+        .{ "make() ?? 1", "make() ?? 2" },
+        .{ false, false },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function* first(make) { if (make) { yield make() ?? 1; } } function* second(make) { if (make) { yield make() ?? 2; } }",
+        .{ "make() ?? 1", "make() ?? 2" },
+        .{ false, false },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { try { return make()?.field; } catch (error) { return error; } } function second(make) { try { return make()?.field; } catch (error) { return error; } }",
+        .{ "make()?.field", "make()?.field" },
+        .{ true, true },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make, fallback) { return make().field ?? fallback; } function second(make, fallback) { return make().field ?? fallback; }",
+        .{ "make().field ?? fallback", "make().field ?? fallback" },
+        .{ false, false },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { return make()?.(); } function second(make) { return make()?.(); }",
+        .{ "make()?.()", "make()?.()" },
+        .{ true, true },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make) { return make()?.method(); } function second(make) { return make()?.method(); }",
+        .{ "make()?.method()", "make()?.method()" },
+        .{ true, true },
+    );
+    try checkES2020KnownOwnerTempProducerSlotReuse(
+        "function first(make, fallback) { return make()?.field ?? fallback; } function second(make, fallback) { return make()?.field ?? 0; }",
+        .{ "make()?.field ?? fallback", "make()?.field ?? 0" },
+        .{ false, false },
+    );
 }

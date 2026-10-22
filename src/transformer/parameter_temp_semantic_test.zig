@@ -10,7 +10,41 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const ESTarget = @import("compat.zig").ESTarget;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
+
+fn hasDirectProducerTempInScope(
+    transformer: *Transformer,
+    editor: *SemanticEditor,
+    source: []const u8,
+    scope: u32,
+    name: []const u8,
+) !bool {
+    const expression = "get()?.value";
+    const expression_start = std.mem.indexOf(u8, source, expression) orelse return error.MissingOptionalChainExpression;
+    const expression_start_u32: u32 = @intCast(expression_start);
+    const expression_end_u32: u32 = @intCast(expression_start + expression.len);
+    var producers = transformer.temp_symbols_by_producer_id.iterator();
+    while (producers.next()) |entry| {
+        const raw_id = entry.value_ptr.*;
+        if (raw_id >= editor.symbols.items.len) continue;
+        const symbol_id: SymbolId = @fromBackingInt(@intCast(raw_id));
+        try std.testing.expectEqual(
+            entry.key_ptr.*,
+            transformer.tempProducerIdForSymbolId(symbol_id) orelse return error.MissingTempProducerForSymbol,
+        );
+        const symbol = editor.symbols.items[raw_id];
+        if (symbol.declaration_span.start != expression_start_u32 or symbol.declaration_span.end != expression_end_u32)
+            continue;
+        if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, name) and
+            @backingInt(symbol.scope_id) == scope)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 fn checkParameterTempScopeImpl(source: []const u8, target: ESTarget, native_defaults: bool, expect_direct_reservation: ?bool) !void {
     try checkParameterTempScopeImplWithOutputScope(source, target, native_defaults, expect_direct_reservation, true);
@@ -79,19 +113,8 @@ fn checkParameterTempScopeImplWithOutputScope(
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     if (expect_direct_reservation) |expected_direct_reservation| {
-        const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
-        var reserved = false;
-        var ids = transformer.synthetic_temp_symbol_ids.valueIterator();
-        while (ids.next()) |raw_id| {
-            if (raw_id.* >= editor.symbols.items.len) continue;
-            const symbol = editor.symbols.items[raw_id.*];
-            if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
-                @backingInt(symbol.scope_id) == reference_scope)
-            {
-                reserved = true;
-                break;
-            }
-        }
+        var editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+        const reserved = try hasDirectProducerTempInScope(&transformer, &editor, source, reference_scope, "_a");
         try std.testing.expectEqual(expected_direct_reservation, reserved);
     }
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -171,19 +194,8 @@ fn expectArrowParameterTempDirectReservation(source: []const u8, target: ESTarge
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
 
-    const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
-    var reserved = false;
-    var ids = transformer.synthetic_temp_symbol_ids.valueIterator();
-    while (ids.next()) |raw_id| {
-        if (raw_id.* >= editor.symbols.items.len) continue;
-        const symbol = editor.symbols.items[raw_id.*];
-        if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
-            @backingInt(symbol.scope_id) == expected_scope)
-        {
-            reserved = true;
-            break;
-        }
-    }
+    var editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+    const reserved = try hasDirectProducerTempInScope(&transformer, &editor, source, expected_scope, "_a");
     try std.testing.expectEqual(expected, reserved);
 }
 
