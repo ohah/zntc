@@ -111,6 +111,8 @@ pub const PendingTempProducerReference = struct {
 /// record is aligned by index with `generator_temp_var_spans` so hoisting
 /// preserves emission order without recovering identity from a span.
 pub const GeneratorTempProducerIdentity = struct {
+    /// Allocator handle selected when this generator temp was created.
+    temp_producer_id: ?u64 = null,
     symbol_id: ?u32 = null,
     owner_scope: ScopeId = .none,
     producer_owned: bool = false,
