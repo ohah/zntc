@@ -444,7 +444,12 @@ pub const Transformer = struct {
     class_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// Sentinel inferred-name span start -> the runtime computed key that names
     /// an anonymous class value (#5527). `nameValue` reads the key instead.
-    runtime_key_class_names: std.AutoHashMapUnmanaged(u32, struct { key: NodeIndex, class_raw: u32, named: bool = false }) = .empty,
+    runtime_key_class_names: std.AutoHashMapUnmanaged(u32, struct {
+        key: NodeIndex,
+        class_raw: u32,
+        temp_producer_id: ?u64 = null,
+        named: bool = false,
+    }) = .empty,
     /// Base spelling → module-wide collision-free spelling. Dynamic-eval names
     /// that need scope-specific choices live in `scoped_synthetic_names`.
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
