@@ -26,6 +26,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+const EsmInteropRuntimeHelperSymbolIds = @import("module.zig").EsmInteropRuntimeHelperSymbolIds;
 const WrapperNameError = @import("module.zig").WrapperNameError;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
@@ -2415,6 +2416,46 @@ pub const Linker = struct {
         .{ .identity = "to_common_js.module", .kind = .parameter },
     };
 
+    fn validEsmInteropRuntimeHelperSymbol(
+        symbol_id: semantic_symbol.SymbolId,
+        symbols: []const semantic_symbol.Symbol,
+        helper: rt_names.EsmInteropRuntimeHelper,
+    ) bool {
+        if (symbol_id.isNone()) return false;
+        const raw: usize = @backingInt(symbol_id);
+        if (raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        return symbol.synthetic_kind == .bundler_runtime_helper and
+            symbol.kind == .variable_var and
+            std.mem.eql(u8, symbol.synthetic_name, rt_names.esmInteropRuntimeHelperBaseName(helper));
+    }
+
+    fn createEsmInteropRuntimeHelperSymbols(
+        arena: std.mem.Allocator,
+        semantic: *ModuleSemanticData,
+    ) !EsmInteropRuntimeHelperSymbolIds {
+        const rows_to_append: usize = rt_names.ESM_INTEROP_RUNTIME_HELPERS.len;
+        const max_symbol_count: usize = std.math.maxInt(u32);
+        if (semantic.symbols.items.len > max_symbol_count - rows_to_append)
+            return error.RuntimeHelperSymbolTableOverflow;
+        const start_len = semantic.symbols.items.len;
+        errdefer semantic.symbols.items.len = start_len;
+
+        var ids: EsmInteropRuntimeHelperSymbolIds = undefined;
+        inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+            const inner = try semantic_symbol.extendSymbol(
+                arena,
+                &semantic.symbols,
+                .variable_var,
+                .bundler_runtime_helper,
+                rt_names.esmInteropRuntimeHelperBaseName(helper),
+                Span.EMPTY,
+            );
+            @field(ids, @tagName(helper)) = inner;
+        }
+        return ids;
+    }
+
     /// Resolve all raw ESM interop helper bindings from graph-level synthetic
     /// SymbolIDs. Fully semantic-less graphs retain the canonical template
     /// names; a semantic graph must have a parse-backed owner for every helper.
@@ -2638,12 +2679,20 @@ pub const Linker = struct {
     pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
         var has_semantic_module = false;
         var anchor_index: ?ModuleIndex = null;
+        var helper_owner_index: ?ModuleIndex = null;
         var internal_owner_index = self.esm_interop_runtime_internal_owner;
         var modules = self.graph.modulesIterator();
         while (modules.next()) |m| {
             if (m.semantic == null) continue;
             has_semantic_module = true;
             if (m.parse_arena != null and anchor_index == null) anchor_index = m.index;
+            if (m.esm_interop_runtime_helper_symbols != null) {
+                if (helper_owner_index) |existing| {
+                    if (existing != m.index) return error.EsmInteropRuntimeHelperOwnerAmbiguous;
+                } else {
+                    helper_owner_index = m.index;
+                }
+            }
             const sem = m.semantic orelse continue;
             var module_has_internal_rows = m.esm_interop_runtime_internal_symbols != null;
             if (!module_has_internal_rows) {
@@ -2661,44 +2710,29 @@ pub const Linker = struct {
                     internal_owner_index = m.index;
                 }
             }
-            inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                const index = @backingInt(helper);
-                if (self.esm_interop_runtime_symbol_ids[index] == null) {
-                    const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
-                    if (findBundlerRuntimeHelperSymbol(&sem, base_name)) |inner| {
-                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    }
-                }
-            }
         }
 
         if (has_semantic_module) {
-            const owner_index = internal_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeInternalOwnerMissing;
-            if (anchor_index) |helper_owner_index| {
-                var owner = self.moduleAtMut(@backingInt(helper_owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
-                const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
-                const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
-                inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                    const index = @backingInt(helper);
-                    if (self.esm_interop_runtime_symbol_ids[index] == null) {
-                        const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
-                        const inner = try semantic_symbol.extendSymbol(
-                            arena,
-                            &sem.symbols,
-                            .variable_var,
-                            .bundler_runtime_helper,
-                            base_name,
-                            Span.EMPTY,
-                        );
-                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(helper_owner_index, @backingInt(inner));
-                    }
+            const helper_symbol_owner = helper_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeOwnerMissing;
+            var helper_owner = self.moduleAtMut(@backingInt(helper_symbol_owner)) orelse return error.EsmInteropRuntimeOwnerMissing;
+            const helper_sem = if (helper_owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
+            const helper_ids = if (helper_owner.esm_interop_runtime_helper_symbols) |ids| ids else blk: {
+                for (self.esm_interop_runtime_symbol_ids) |cached| {
+                    if (cached != null) return error.EsmInteropRuntimeIdentityMissing;
                 }
-            } else {
-                inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                    if (self.esm_interop_runtime_symbol_ids[@backingInt(helper)] == null) return error.EsmInteropRuntimeIdentityMissing;
-                }
+                const arena = if (helper_owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
+                const created = try createEsmInteropRuntimeHelperSymbols(arena, helper_sem);
+                helper_owner.esm_interop_runtime_helper_symbols = created;
+                break :blk created;
+            };
+            inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                const inner = @field(helper_ids, @tagName(helper));
+                if (!validEsmInteropRuntimeHelperSymbol(inner, helper_sem.symbols.items, helper))
+                    return error.EsmInteropRuntimeIdentityInvalid;
+                self.esm_interop_runtime_symbol_ids[@backingInt(helper)] = bundler_symbol.SymbolID.make(helper_symbol_owner, @backingInt(inner));
             }
 
+            const owner_index = internal_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeInternalOwnerMissing;
             self.esm_interop_runtime_internal_owner = owner_index;
             try self.prepareEsmInteropRuntimeInternalSymbols(owner_index);
             if (self.esm_interop_runtime_names != null) {
