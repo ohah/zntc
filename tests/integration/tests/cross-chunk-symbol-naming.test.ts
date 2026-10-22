@@ -38,6 +38,7 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
   ): Promise<{
     require: (re: RegExp) => Record<string, unknown>;
     chunkText: (re: RegExp) => string;
+    entryText: string;
   }> {
     const fixture = await createFixture(files);
     cleanup = fixture.cleanup;
@@ -77,6 +78,7 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
     return {
       require: (re: RegExp) => reqFn(Object.keys(mods).find((k) => re.test(k))!),
       chunkText: (re: RegExp) => lazyChunks.find((c) => re.test(c.path))!.text,
+      entryText: entry!.text,
     };
   }
 
@@ -234,6 +236,146 @@ describe('cross-chunk 심볼 네이밍 (이슈 #4101 방어 스위트)', () => {
     expect(require(/heavy-b/).read()).toBe('B');
     expect(chunkText(/heavy-a/)).toMatch(/\{\s*value\s*\}\s*=\s*__zntc_require\("entry\.js"\)/);
     expect(chunkText(/heavy-b/)).toMatch(/\{\s*value\$1\s*\}\s*=\s*__zntc_require\("entry\.js"\)/);
+  });
+
+  test('lazy entry export-all keeps re-export spellings out of local bindings', async () => {
+    const fixtures: {
+      label: string;
+      modules: Record<string, string>;
+      barrel: string;
+      aliases: string[];
+      values: string[];
+      read?: string;
+      forbiddenLocals?: string[];
+    }[] = [
+      {
+        label: 'one renamed alias',
+        modules: { 'shared.ts': "const value = () => 'VALUE';\nexport { value as original };" },
+        barrel: "export { original as left } from './shared';",
+        aliases: ['left'],
+        values: ['VALUE'],
+        forbiddenLocals: ['original'],
+      },
+      {
+        label: 'same-name re-export',
+        modules: { 'shared.ts': "export const value = () => 'VALUE';" },
+        barrel: "export { value } from './shared';",
+        aliases: ['value'],
+        values: ['VALUE'],
+      },
+      {
+        label: 'two aliases in one re-export clause',
+        modules: { 'shared.ts': "const value = () => 'VALUE';\nexport { value as original };" },
+        barrel: "export { original as left, original as right } from './shared';",
+        aliases: ['left', 'right'],
+        values: ['VALUE', 'VALUE'],
+        forbiddenLocals: ['original'],
+      },
+      {
+        label: 'aliases in separate re-export clauses',
+        modules: { 'shared.ts': "const value = () => 'VALUE';\nexport { value as original };" },
+        barrel:
+          "export { original as left } from './shared';\nexport { original as right } from './shared';",
+        aliases: ['left', 'right'],
+        values: ['VALUE', 'VALUE'],
+        forbiddenLocals: ['original'],
+      },
+      {
+        label: 'two-hop barrel chain',
+        modules: {
+          'shared.ts': "const value = () => 'VALUE';\nexport { value as original };",
+          'middle.ts': "export { original as forwarded } from './shared';",
+        },
+        barrel: "export { forwarded as finalName } from './middle';",
+        aliases: ['finalName'],
+        values: ['VALUE'],
+        forbiddenLocals: ['original', 'forwarded'],
+      },
+      {
+        label: 'synthetic default export alias',
+        modules: { 'shared.ts': "const value = () => 'VALUE';\nexport { value as default };" },
+        barrel: "export { default as component } from './shared';",
+        aliases: ['component'],
+        values: ['VALUE'],
+        forbiddenLocals: ['default'],
+      },
+      {
+        label: 'named default declaration alias',
+        modules: { 'shared.ts': "export default function Widget() { return 'VALUE'; }" },
+        barrel: "export { default as component } from './shared';",
+        aliases: ['component'],
+        values: ['VALUE'],
+        forbiddenLocals: ['default'],
+      },
+      {
+        label: 'reserved-word re-export name',
+        modules: { 'shared.ts': "const value = () => 'VALUE';\nexport { value as delete };" },
+        barrel: "export { delete as remove } from './shared';",
+        aliases: ['remove'],
+        values: ['VALUE'],
+        forbiddenLocals: ['delete'],
+      },
+      {
+        label: 'suffix-shaped decoy in provider',
+        modules: {
+          'shared.ts':
+            "const value = () => 'VALUE';\nconst value$1 = () => 'DECOY';\nexport { value as original };",
+        },
+        barrel: "export { original as left } from './shared';",
+        aliases: ['left'],
+        values: ['VALUE'],
+        forbiddenLocals: ['original'],
+      },
+      {
+        label: 'star re-export retains source local exports',
+        modules: { 'shared.ts': "export const value = () => 'VALUE';" },
+        barrel: "export * from './shared';",
+        aliases: ['value'],
+        values: ['VALUE'],
+      },
+      {
+        label: 'same local spelling from distinct source symbols',
+        modules: {
+          'source-a.ts': "const value = () => 'A';\nexport { value as original };",
+          'source-b.ts': "const value = () => 'B';\nexport { value as original };",
+        },
+        barrel:
+          "export { original as left } from './source-a';\nexport { original as right } from './source-b';",
+        aliases: ['left', 'right'],
+        values: ['A', 'B'],
+      },
+    ];
+
+    for (const [fixtureIndex, fixture] of fixtures.entries()) {
+      const files = { ...fixture.modules, 'barrel.ts': fixture.barrel };
+      const lazyFiles = fixture.aliases.map((_, i) => `heavy-${fixtureIndex}-${i}.ts`);
+      for (const [i, alias] of fixture.aliases.entries()) {
+        files[lazyFiles[i]] =
+          `import { ${alias} as imported } from './barrel';\n` +
+          `export function read() { return ${fixture.read ?? 'imported()'}; }`;
+      }
+      const eagerRead = (fixture.read ?? 'imported()').replaceAll('imported', 'eager');
+      files['entry.ts'] =
+        `import { ${fixture.aliases[0]} as eager } from './barrel';\n` +
+        `globalThis.eager = ${eagerRead};\n` +
+        lazyFiles
+          .map((file, i) => `globalThis.load${i} = () => import('./${file.slice(0, -3)}');`)
+          .join('\n');
+
+      const { require, entryText } = await loadDevSplit(files, lazyFiles);
+      try {
+        for (const [i] of fixture.aliases.entries()) {
+          expect(require(new RegExp(`heavy-${fixtureIndex}-${i}`)).read()).toBe(fixture.values[i]);
+        }
+        for (const local of fixture.forbiddenLocals ?? []) {
+          expect(entryText).not.toMatch(new RegExp(`exports\\.${local}\\s*=\\s*${local}`));
+        }
+      } finally {
+        const closeFixture = cleanup;
+        cleanup = undefined;
+        await closeFixture?.();
+      }
+    }
   });
 
   test('lock: 함수 + const export 혼합 cross-chunk', async () => {
