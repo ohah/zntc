@@ -646,6 +646,8 @@ test.afterAll(async () => {
 
 for (const c of cases) {
   test(`browser: ${c.name}`, async ({ page }) => {
+    // npm install below is allowed 120s; include build and browser checks too.
+    test.setTimeout(180_000);
     const caseDir = join(fixtureDir, c.name);
     await mkdir(caseDir, { recursive: true });
 
@@ -658,10 +660,9 @@ for (const c of cases) {
       stdio: 'pipe',
       timeout: 120000,
     });
-    expect(
-      install.status,
-      `npm install ${c.pkg} failed: ${install.stderr?.toString().slice(0, 200)}`,
-    ).toBe(0);
+    const installFailure =
+      install.error?.message ?? (install.stderr?.toString().slice(0, 200) || 'no stderr');
+    expect(install.status, `npm install ${c.pkg} failed: ${installFailure}`).toBe(0);
 
     await writeFile(join(caseDir, 'index.ts'), c.entry);
     const outFile = join(caseDir, 'bundle.js');
