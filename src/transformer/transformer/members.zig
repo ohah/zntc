@@ -497,7 +497,13 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
     if (!new_key.isNone() and try pe.runtimeKeyClass(self, key_idx, node.data.binary.right)) {
         const captured = try pe.captureRuntimeKey(self, self.ast.getNode(new_key).data.unary.operand, node.span);
         keyed = try self.ast.addNode(.{ .tag = .computed_property_key, .span = self.ast.getNode(new_key).span, .data = .{ .unary = .{ .operand = captured.key, .flags = 0 } } });
-        bound = try pe.bindRuntimeKeyClass(self, key_idx, node.data.binary.right, try es_helpers.makeIdentifierRefFromSpan(self, captured.temp.span));
+        bound = try pe.bindRuntimeKeyClassWithProducerId(
+            self,
+            key_idx,
+            node.data.binary.right,
+            try es_helpers.makeIdentifierRefFromSpan(self, captured.temp.span),
+            captured.temp.temp_producer_id,
+        );
     }
     var new_value = try self.visitNode(node.data.binary.right);
     new_value = try pe.finishRuntimeKeyClass(self, bound, node.data.binary.right, new_value, true, self.current_scope, node.span);

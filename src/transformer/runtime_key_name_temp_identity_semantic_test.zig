@@ -5,6 +5,7 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Span = @import("../lexer/token.zig").Span;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Transformer = @import("transformer.zig").Transformer;
 const es_helpers = @import("es_helpers.zig");
 const parameter_environment = @import("parameter_environment.zig");
@@ -117,6 +118,26 @@ fn checkRuntimeKeyNameTempIdentity(source: []const u8) !void {
     }
     try std.testing.expectEqual(@as(usize, 1), reads);
     try std.testing.expectEqual(@as(usize, 1), writes);
+
+    // Class lowering may recreate the key reference after the original temp
+    // was captured. Its fresh NodeIndex has no SymbolId, so the class naming
+    // handoff must carry the producer handle explicitly.
+    const fresh_key_ref = try es_helpers.makeIdentifierRefFromSpan(&transformer, captured.temp.span);
+    const fresh_value = try es_helpers.makeNumericLiteral(&transformer, 2);
+    const named_by_producer = try parameter_environment.nameByRuntimeKeyWithProducerId(
+        &transformer,
+        fresh_value,
+        fresh_key_ref,
+        null,
+        target_scope,
+        target_span,
+        captured.temp.temp_producer_id,
+    );
+    const named_node = transformer.ast.getNode(named_by_producer);
+    try std.testing.expectEqual(.call_expression, named_node.tag);
+    const named_args_start = transformer.ast.extra_data.items[named_node.data.extra + 1];
+    const named_key_ref: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[named_args_start + 1]));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(named_key_ref));
 }
 
 test "#4819 runtime computed-key name capture retains exact temp identity" {

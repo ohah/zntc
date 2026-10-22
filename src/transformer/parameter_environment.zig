@@ -909,6 +909,22 @@ fn isPlainBindingName(name: []const u8) bool {
 /// with "get"/"set" for accessors. The key is not evaluated again; a key that
 /// is not a known temp leaves the value unnamed (#5527).
 pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.NodeIndex, prefix: ?[]const u8, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    return nameByRuntimeKeyWithProducerId(self, value, key, prefix, scope, span, null);
+}
+
+/// Name a value through a computed-key reference whose exact temp producer was
+/// retained by a lowering handoff. The ref may be a fresh AST node that has no
+/// SymbolId yet, so pass the producer handle directly instead of recovering it
+/// from the generated name span.
+pub fn nameByRuntimeKeyWithProducerId(
+    self: anytype,
+    value: ast_mod.NodeIndex,
+    key: ast_mod.NodeIndex,
+    prefix: ?[]const u8,
+    scope: ScopeId,
+    span: @import("../lexer/token.zig").Span,
+    temp_producer_id: ?u64,
+) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (value.isNone() or key.isNone()) return value;
     const key_node = self.ast.getNode(key);
     const temp = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else key;
@@ -920,16 +936,35 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
     // declared with the class (`var _a = k`) is an ordinary read.
     const ref = blk: {
         const hoisted = try es_helpers.makeIdentifierRefFromSpan(self, self.ast.getNode(temp).data.string_ref);
-        const producer_id = es_helpers.producerTempSymbolIdAtRef(self, temp);
-        if (producer_id) |symbol_id| {
+        const producer_symbol_id = es_helpers.producerTempSymbolIdAtRef(self, temp);
+        if (producer_symbol_id) |symbol_id| {
+            if (temp_producer_id) |producer_id| {
+                const expected_raw_id = self.temp_symbols_by_producer_id.get(producer_id) orelse
+                    std.debug.panic("runtime computed-key producer has no SymbolId mapping", .{});
+                if (expected_raw_id != @backingInt(symbol_id))
+                    std.debug.panic("runtime computed-key producer changed its exact SymbolId", .{});
+            }
             if (try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, hoisted, scope, .{ .read = true }))
                 break :blk hoisted;
         }
-        if (try es_helpers.trackKnownHoistedTempRefFromProducerReference(self, temp, hoisted, scope, .{ .read = true })) {
+        const tracked_by_producer_id = if (temp_producer_id) |producer_id|
+            try es_helpers.trackKnownHoistedTempRefByProducerId(self, producer_id, hoisted, scope, .{ .read = true })
+        else
+            false;
+        const tracked_from_reference = if (tracked_by_producer_id)
+            false
+        else
+            try es_helpers.trackKnownHoistedTempRefFromProducerReference(self, temp, hoisted, scope, .{ .read = true });
+        if (tracked_by_producer_id or tracked_from_reference) {
             if (self.semantic_edit_enabled and !self.syntheticTempOutputScopeIsDeferred(scope)) {
                 const hoisted_symbol_id = self.getSymbolIdAt(hoisted) orelse
                     std.debug.panic("runtime computed-key name reference has no producer SymbolId", .{});
-                if (self.getSymbolIdAt(temp)) |key_symbol_id| {
+                if (temp_producer_id) |producer_id| {
+                    if (self.temp_symbols_by_producer_id.get(producer_id)) |expected_raw_id| {
+                        if (expected_raw_id != hoisted_symbol_id)
+                            std.debug.panic("runtime computed-key name reference changed its producer SymbolId", .{});
+                    }
+                } else if (self.getSymbolIdAt(temp)) |key_symbol_id| {
                     if (key_symbol_id != hoisted_symbol_id)
                         std.debug.panic("runtime computed-key name reference changed its producer SymbolId", .{});
                 }
@@ -938,7 +973,7 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
         }
         // A direct producer ID that cannot be attached at this deferred owner
         // must not fall through to a same-spelled source-name lookup.
-        if (producer_id != null) return value;
+        if (self.semantic_edit_enabled and (producer_symbol_id != null or temp_producer_id != null)) return value;
         if (self.semantic_edit_enabled and self.getSymbolIdAt(temp) == null) return value;
         // The key position keeps the emitted node: read the binding afresh.
         break :blk try self.makeUserRefNamedAtScope(self.ast.getText(self.ast.getNode(temp).data.string_ref), temp, scope);
@@ -994,13 +1029,42 @@ pub fn needsRuntimeKeyName(self: anytype, key: ast_mod.NodeIndex, source_value: 
 /// inferred name to the lowered key (`key_ref`, an identifier) (#5527).
 /// Returns the class to pass to `finishRuntimeKeyClass`, or null.
 pub fn bindRuntimeKeyClass(self: anytype, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex, key_ref: ast_mod.NodeIndex) std.mem.Allocator.Error!?u32 {
+    return bindRuntimeKeyClassWithProducerId(self, key, source_value, key_ref, null);
+}
+
+/// Bind runtime-key class naming while retaining a producer handle supplied by
+/// the key-capture producer. When omitted, recover only from identity already
+/// attached to the exact reference node.
+pub fn bindRuntimeKeyClassWithProducerId(
+    self: anytype,
+    key: ast_mod.NodeIndex,
+    source_value: ast_mod.NodeIndex,
+    key_ref: ast_mod.NodeIndex,
+    temp_producer_id: ?u64,
+) std.mem.Allocator.Error!?u32 {
     if (!(try runtimeKeyClass(self, key, source_value))) return null;
     const class_raw = anonymousClassRoot(self, source_value).?;
+    const producer_id = temp_producer_id orelse try runtimeKeyTempProducerId(self, key_ref);
     const sentinel = try self.ast.addUniqueString(" ");
-    try self.runtime_key_class_names.put(self.allocator, sentinel.start, .{ .key = key_ref, .class_raw = class_raw });
+    try self.runtime_key_class_names.put(self.allocator, sentinel.start, .{
+        .key = key_ref,
+        .class_raw = class_raw,
+        .temp_producer_id = producer_id,
+    });
     try self.class_inferred_names.put(self.allocator, class_raw, sentinel);
     if (self.parameter_inferred_names.getPtr(class_raw)) |slot| slot.* = sentinel;
     return sentinel.start;
+}
+
+fn runtimeKeyTempProducerId(self: anytype, key_ref: ast_mod.NodeIndex) std.mem.Allocator.Error!?u64 {
+    if (key_ref.isNone()) return null;
+    const key_node = self.ast.getNode(key_ref);
+    const temp_ref = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else key_ref;
+    if (temp_ref.isNone() or self.ast.getNode(temp_ref).tag != .identifier_reference) return null;
+    if (es_helpers.producerTempSymbolIdAtRef(self, temp_ref)) |symbol_id| {
+        if (self.tempProducerIdForSymbolId(symbol_id)) |producer_id| return producer_id;
+    }
+    return self.pendingTempProducerIdForReference(temp_ref);
 }
 
 /// Whether a class has its own static `name` member.
@@ -1068,7 +1132,7 @@ pub fn finishRuntimeKeyClass(self: anytype, bound: ?u32, source_value: ast_mod.N
     if (native_named and self.ast.getNode(output).tag == .class_expression) return output;
     // An own static `name` member is defined after NamedEvaluation and wins.
     if (try definesStaticName(self, @fromBackingInt(@intCast(entry.value.class_raw)))) return output;
-    return nameByRuntimeKey(self, output, entry.value.key, null, scope, span);
+    return nameByRuntimeKeyWithProducerId(self, output, entry.value.key, null, scope, span, entry.value.temp_producer_id);
 }
 
 /// An object literal lowered to `_a.k = function () {}` assignments loses the
@@ -1108,7 +1172,7 @@ pub fn preserveInferredName(self: anytype, source: ast_mod.NodeIndex, output: as
 fn nameValue(self: anytype, value: ast_mod.NodeIndex, name: @import("../lexer/token.zig").Span, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (self.runtime_key_class_names.getPtr(name.start)) |entry| {
         entry.named = true;
-        return nameByRuntimeKey(self, value, entry.key, null, self.current_scope, span);
+        return nameByRuntimeKeyWithProducerId(self, value, entry.key, null, self.current_scope, span, entry.temp_producer_id);
     }
     self.runtime_helpers.keep_names = true;
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
