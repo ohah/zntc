@@ -1087,6 +1087,7 @@ pub const Transformer = struct {
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
     pub const reserveSyntheticTempIdentityForReference = @import("transformer/semantic_edit.zig").reserveSyntheticTempIdentityForReference;
     pub const trackCapturedTempReference = @import("transformer/semantic_edit.zig").trackCapturedTempReference;
+    pub const trackDeferredTempProducerReference = @import("transformer/semantic_edit.zig").trackDeferredTempProducerReference;
     pub const SyntheticTempReferenceIdentity = @import("transformer/semantic_edit.zig").SyntheticTempReferenceIdentity;
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;

@@ -556,6 +556,14 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                     home.temp_counter_index orelse std.debug.panic("deferred object home has no allocator slot", .{}),
                     callback_binding,
                 );
+            const deferred_temp_producer_id: ?u64 = if (deferred_output_scope and callback_binding.isNone()) blk: {
+                const counter_index = home.temp_counter_index orelse
+                    std.debug.panic("deferred object home has no allocator slot", .{});
+                const producer_id = self.temp_producer_id_by_counter.get(counter_index) orelse
+                    std.debug.panic("deferred object home has no producer identity", .{});
+                if (producer_id == 0) std.debug.panic("deferred object home has an invalid producer identity", .{});
+                break :blk producer_id;
+            } else null;
             const symbol_id: ?SymbolId = if (parameter_output_scope != null) blk: {
                 const id = (try self.reserveSyntheticTempSymbolInScope(home.identity.span, span, output_scope)) orelse
                     std.debug.panic("lowered parameter object home temp has no SymbolId", .{});
@@ -586,6 +594,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                 output_scope,
                 symbol_id,
                 callback_binding,
+                deferred_temp_producer_id,
                 if (parameter_output_scope != null and parameter_output_scope.? != parent_scope)
                     parent_scope
                 else
@@ -710,6 +719,7 @@ fn trackHoistedHomeReferences(
     root_scope: ScopeId,
     symbol_id: ?SymbolId,
     callback_binding: NodeIndex,
+    deferred_temp_producer_id: ?u64,
     reparent_from_scope: ScopeId,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or root_scope.isNone()) return;
@@ -719,8 +729,10 @@ fn trackHoistedHomeReferences(
         try self.addSyntheticRefInScope(write_ref, id, root_scope, .{ .write = true })
     else if (!callback_binding.isNone())
         try self.trackGeneratedCallbackTempReference(callback_binding, write_ref, root_scope, .{ .write = true })
+    else if (deferred_temp_producer_id) |producer_id|
+        try self.trackDeferredTempProducerReference(producer_id, name_span, write_ref, root_scope, .{ .write = true })
     else
-        try self.trackHoistedTempRefInScope(name_span, write_ref, root_scope, .{ .write = true });
+        std.debug.panic("deferred object home has no exact producer identity", .{});
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var queue: std.ArrayList(Work) = .empty;
     defer queue.deinit(self.allocator);
@@ -750,8 +762,10 @@ fn trackHoistedHomeReferences(
                 try self.addSyntheticRefInScope(work.node, id, scope, .{ .read = true })
             else if (!callback_binding.isNone())
                 try self.trackGeneratedCallbackTempReference(callback_binding, work.node, scope, .{ .read = true })
+            else if (deferred_temp_producer_id) |producer_id|
+                try self.trackDeferredTempProducerReference(producer_id, name_span, work.node, scope, .{ .read = true })
             else
-                try self.trackHoistedTempRefInScope(name_span, work.node, scope, .{ .read = true });
+                std.debug.panic("deferred object home has no exact producer identity", .{});
         }
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try queue.append(self.allocator, .{ .node = child, .scope = scope });

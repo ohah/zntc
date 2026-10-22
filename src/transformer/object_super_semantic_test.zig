@@ -240,6 +240,9 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     transformer.current_scope = scope;
 
     const home_span = try es_helpers.makeTempVarSpan(&transformer);
+    const home_counter_index = transformer.temp_var_counter - 1;
+    const home_temp_producer_id = transformer.temp_producer_id_by_counter.get(home_counter_index) orelse
+        return error.MissingHomeTempProducerId;
     const home_identity = ObjectSuperHomeIdentity{ .producer_node = program, .span = home_span };
     const first_proto = try object_super.buildHomeProto(&transformer, home_identity, span);
     const first_ref = transformer.object_super_home_references.items[
@@ -291,7 +294,11 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
         .span = span,
         .data = .{ .list = values },
     });
-    const wrapped = try object_super.wrapWithHome(&transformer, .{ .identity = home_identity, .wrap = home_wrap }, root, span);
+    const wrapped = try object_super.wrapWithHome(&transformer, .{
+        .identity = home_identity,
+        .wrap = home_wrap,
+        .temp_counter_index = home_counter_index,
+    }, root, span);
     const write_ref = try findHomeWriteReference(&transformer, wrapped, root);
     const home_id = switch (home_wrap) {
         .assign => blk: {
@@ -301,8 +308,19 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
                 try transformer.bindHoistedTempWithProducerSymbol(hoisted_binding, home_span, span, scope, producer_id);
                 break :blk producer_id;
             }
-            try std.testing.expect(transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(home_span)));
-            try transformer.bindHoistedTemp(hoisted_binding, home_span, span, scope);
+            try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(home_span)));
+            try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_producer_refs.items.len);
+            for (transformer.pending_temp_producer_refs.items) |pending| {
+                try std.testing.expectEqual(home_temp_producer_id, pending.temp_producer_id);
+            }
+            try transformer.bindHoistedTempWithProducerIdentity(
+                hoisted_binding,
+                home_span,
+                span,
+                scope,
+                null,
+                home_temp_producer_id,
+            );
             const raw_id = transformer.getSymbolIdAt(hoisted_binding) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));
         },
