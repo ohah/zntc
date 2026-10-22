@@ -24,6 +24,7 @@ const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
 const linker_mod = @import("../linker.zig");
 const Linker = @import("../linker.zig").Linker;
+const SymbolID = @import("../symbol.zig").SymbolID;
 const RenameTable = @import("../symbol.zig").RenameTable;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
 const tree_shaker_mod = @import("../tree_shaker.zig");
@@ -145,6 +146,18 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const
         }
     }
     return sym.name;
+}
+
+/// Resolve the exact semantic identity behind a cross-chunk export key. Lazy namespace fan-out
+/// can discover several public aliases for one local binding; the provider exports that local
+/// only once, so the consumer must import the SymbolId once as well.
+fn crossChunkSemanticSymbolId(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ?SymbolID {
+    const l = linker orelse return null;
+    const module = l.getModule(sym.canonical_module) orelse return null;
+    const binding = module.findExportBinding(sym.name) orelse return null;
+    if (binding.kind != .local and !binding.hasSyntheticDefault(module.semanticSymbols())) return null;
+    const symbol_index = module.exportBindingSemanticIndex(binding.*) orelse return null;
+    return SymbolID.make(module.index, symbol_index);
 }
 
 /// (#4576) 소비자 청크에서 `binding` 에 대한 **유일** 로컬명을 발급한다. 아직 안 쓰였으면 binding
@@ -467,6 +480,9 @@ fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, de
 /// 못 찾으면 null(호출부가 다른 owner 또는 export 명 fallback 으로 진행). single-owner·collision
 /// 양 경로 공용 — 분리돼 있던 단순 해석/full 해석을 하나로 통일.
 fn resolveOwnerLocal(l: *Linker, graph: *const ModuleGraph, mod_idx: ModuleIndex, mi: u32, name: []const u8) ?[]const u8 {
+    // A lazy shared namespace object is a generated binding keyed by its exact target module.
+    // Its global alias must match the provider preamble; it has no ExportBinding to resolve.
+    if (l.getSharedNamespaceGlobalName(mi, name)) |global_name| return global_name;
     if (chunk_mod.nsReExportTarget(graph, mod_idx, name)) |ns_t| {
         // ensureSharedNsVar OOM 은 무시하고 canonical fallback 으로 진행(기존 패턴과 일관).
         if (l.ensureSharedNsVar(ns_t)) |ns_var| return ns_var else |_| {}
@@ -1305,6 +1321,22 @@ fn emitChunksImpl(
                 // lazy`)과 정확히 일치해야 한다 — reg_split(iife/umd/amd) 뿐 아니라 cjs_split
                 // 도 emitLazyEntryExportAll 로 local 명 키를 노출하므로 둘 다 포함.
                 const lazy_local_keys = graph.lazy_compilation and (reg_split or cjs_split);
+                var seen_lazy_symbols: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
+                defer seen_lazy_symbols.deinit(allocator);
+                var lazy_unique_symbols: std.ArrayListUnmanaged(chunk_mod.CrossChunkSym) = .empty;
+                defer lazy_unique_symbols.deinit(allocator);
+                var import_symbols = symbols.?.items;
+                if (lazy_local_keys) {
+                    try lazy_unique_symbols.ensureTotalCapacity(allocator, import_symbols.len);
+                    for (symbols.?.items) |sym| {
+                        if (crossChunkSemanticSymbolId(linker, sym)) |symbol_id| {
+                            const gop = try seen_lazy_symbols.getOrPut(allocator, symbol_id);
+                            if (gop.found_existing) continue;
+                        }
+                        lazy_unique_symbols.appendAssumeCapacity(sym);
+                    }
+                    import_symbols = lazy_unique_symbols.items;
+                }
 
                 // (#4587 target a) preserve-modules CJS 라이브 바인딩: dep 의 재할당(storage)
                 // export 를 구조분해(로드 시점 스냅샷)로 잡으면 순환에서 undefined 를 박제한다.
@@ -1331,7 +1363,7 @@ fn emitChunksImpl(
                         linker,
                         graph,
                         dep_mod_idx.?,
-                        symbols.?.items,
+                        import_symbols,
                         bind_arg,
                         lazy_local_keys,
                         options.minify_whitespace,
@@ -1347,7 +1379,7 @@ fn emitChunksImpl(
                 } else {
                     try chunk_output.appendSlice(allocator, if (reg_like) "const{" else "import{");
                 }
-                for (symbols.?.items, 0..) |sym, si| {
+                for (import_symbols, 0..) |sym, si| {
                     const name = sym.name;
                     const binding = crossChunkBindingName(linker, sym);
                     // #4101 cross-chunk 전역 네이밍: 심볼이 전역 이름을 가지면 그 이름이 곧
@@ -3871,6 +3903,8 @@ fn emitLazyEntryExportAll(
     const l = linker orelse return;
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     defer seen.deinit(allocator);
+    var seen_namespace_owners: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen_namespace_owners.deinit(allocator);
     var locals: std.ArrayListUnmanaged([]const u8) = .empty;
     defer locals.deinit(allocator);
     for (sorted_mods) |mod_idx| {
@@ -3878,11 +3912,45 @@ fn emitLazyEntryExportAll(
         if (mi >= module_count or mi == entry_mod_idx) continue;
         const m = graph.getModule(mod_idx) orelse continue;
         for (m.export_bindings) |eb| {
-            // `export * from './m'`는 `*` local이 없고, 명시적 re-export도 이 모듈에
-            // local binding을 만들지 않는다. 전자는 `exports.* = *`를 만들고, 후자는
-            // upstream export spelling을 local처럼 출력해 `ReferenceError`를 낼 수 있다.
-            // source local은 같은 청크면 source 모듈 순회에서, 다른 청크면 해당 provider에서
-            // 이미 노출된다. `export * as ns`는 실제 namespace local이 있어 계속 포함한다.
+            if (eb.kind == .re_export_star) continue;
+            // A namespace re-export has no source local binding. Its exact owner is the
+            // resolved target module's generated shared namespace object. In lazy mode that
+            // object is the provider key consumed by the dynamic chunk; forwarding the
+            // re-export spelling here (`exports.api = api`) refers to a local that does not
+            // exist and loses owner identity when several modules export `api`.
+            if (chunk_mod.nsReExportTarget(graph, mod_idx, eb.exported_name)) |target| {
+                const target_index = target.toU32();
+                _ = try l.ensureSharedNsVar(target);
+                const shared = l.ns_shared_inline_cache.get(target_index) orelse return error.SharedNamespaceOwnerMissing;
+                const ns_local = shared.var_name;
+                if (l.getSharedNamespaceGlobalName(target_index, ns_local)) |global_name| {
+                    const owner_seen = try seen_namespace_owners.getOrPut(allocator, target_index);
+                    if (owner_seen.found_existing) continue;
+                    const key_seen = try seen.getOrPut(allocator, global_name);
+                    if (key_seen.found_existing) continue;
+                    try locals.append(allocator, global_name);
+                    continue;
+                }
+
+                // If this namespace is local to the current chunk, no cross-chunk generated
+                // name exists. Read the export from its module namespace getter instead of
+                // naming the non-existent `export * as` local.
+                const gop = try seen.getOrPut(allocator, eb.exported_name);
+                if (gop.found_existing) continue;
+                const namespace_exports = try m.allocExportsName(allocator, &l.rename_table);
+                defer allocator.free(namespace_exports);
+                try out.appendSlice(allocator, "exports.");
+                try out.appendSlice(allocator, eb.exported_name);
+                try out.appendSlice(allocator, if (minify_whitespace) "=" else " = ");
+                try out.appendSlice(allocator, namespace_exports);
+                try out.appendSlice(allocator, ".");
+                try out.appendSlice(allocator, eb.exported_name);
+                try out.appendSlice(allocator, if (minify_whitespace) ";" else ";\n");
+                continue;
+            }
+            if (eb.kind == .re_export_namespace) continue;
+            // Ordinary named re-exports do not define a local in this module. Their canonical
+            // source owner is visited separately, so only local bindings reach the fallback.
             if (!lazyEntryExportAllHasLocalBinding(eb.kind)) continue;
             // 노출 키 = ExportBinding의 exact local identity. Name lookup은 anonymous
             // default facade와 같은 이름의 source binding을 혼동할 수 있다.

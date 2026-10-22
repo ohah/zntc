@@ -33,6 +33,55 @@ pub fn nsRewriteDisabled() bool {
     return ns_rewrite_disabled_env.enabled();
 }
 
+/// A shared namespace object is a generated binding owned by its target module. It does not
+/// have an ExportBinding/SymbolId in source semantic data, so match the module and the exact
+/// generated local name recorded when the object is created.
+pub fn isSharedNamespaceVar(self: *const Linker, module_index: u32, local_name: []const u8) bool {
+    const shared = self.ns_shared_inline_cache.get(module_index) orelse return false;
+    return std.mem.eql(u8, shared.var_name, local_name);
+}
+
+/// Keep generated namespace locals occupied while allocating cross-chunk names. The namespace
+/// owner itself temporarily releases its spelling when its global alias is selected.
+pub fn reserveSharedNamespaceVarNames(
+    self: *const Linker,
+    allocator: std.mem.Allocator,
+    used: *std.StringHashMapUnmanaged(void),
+) std.mem.Allocator.Error!void {
+    var names = self.ns_shared_var_names.keyIterator();
+    while (names.next()) |name| try used.put(allocator, name.*, {});
+}
+
+/// Record the lazy cross-chunk name for an exact generated namespace binding. The value borrows
+/// the cross-chunk name map, whose lifetime covers this linker build.
+pub fn assignSharedNamespaceGlobalName(
+    self: *const Linker,
+    module_index: u32,
+    local_name: []const u8,
+    global_name: []const u8,
+) std.mem.Allocator.Error!bool {
+    if (!self.isSharedNamespaceVar(module_index, local_name)) return false;
+    const mutable_self = @constCast(self);
+    try mutable_self.ns_shared_global_names.put(self.allocator, module_index, global_name);
+    // The shared-name allocator may run again later in metadata emission. Reserve the alias as
+    // another live spelling while it is in use; clearCrossChunkGlobalNames removes this key
+    // before releasing the borrowed global-name string.
+    try mutable_self.ns_shared_var_names.put(self.allocator, global_name, {});
+    return true;
+}
+
+/// Return a generated namespace binding's lazy global alias only when both owner and original
+/// local spelling match. This is the namespace equivalent of looking up a semantic binding by
+/// exact SymbolId.
+pub fn getSharedNamespaceGlobalName(
+    self: *const Linker,
+    module_index: u32,
+    local_name: []const u8,
+) ?[]const u8 {
+    if (!self.isSharedNamespaceVar(module_index, local_name)) return null;
+    return self.ns_shared_global_names.get(module_index);
+}
+
 /// ESM namespace import를 위한 namespace 객체 preamble 생성.
 /// namespace import/re-export에 대해 ns_member_rewrites + ns_inline_objects를 등록.
 /// buildMetadataForAst 내 3곳에서 동일 패턴을 공유. 캐시는 linker 전역
@@ -367,7 +416,8 @@ pub fn ensureSharedNsVar(
         const mutable_self = @constCast(self);
         mutable_self.ns_cache_mutex.lock();
         defer mutable_self.ns_cache_mutex.unlock();
-        if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| return cached.var_name;
+        if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached|
+            return self.getSharedNamespaceGlobalName(target_mod_idx, cached.var_name) orelse cached.var_name;
     }
     var exports: std.ArrayList(NsExportPair) = .empty;
     var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -416,7 +466,7 @@ fn getOrCreateSharedNamespaceVar(
     mutable_self.ns_cache_mutex.lock();
     if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| {
         mutable_self.ns_cache_mutex.unlock();
-        return cached.var_name;
+        return self.getSharedNamespaceGlobalName(target_mod_idx, cached.var_name) orelse cached.var_name;
     }
     mutable_self.ns_cache_mutex.unlock();
 
@@ -434,7 +484,7 @@ fn getOrCreateSharedNamespaceVar(
 
     if (self.ns_shared_inline_cache.get(target_mod_idx)) |raced| {
         self.allocator.free(object_literal);
-        return raced.var_name;
+        return self.getSharedNamespaceGlobalName(target_mod_idx, raced.var_name) orelse raced.var_name;
     }
 
     try ensureNsBaseRank(mutable_self);
@@ -490,6 +540,7 @@ pub fn appendSharedNamespacePreambleFiltered(
             if (!f.contains(target_mod_idx)) continue;
         }
         const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
+        const shared_var_name = self.getSharedNamespaceGlobalName(target_mod_idx, entry.var_name) orelse entry.var_name;
         // (#4101 / #4502) `entry.object_literal` 은 청크·rename 확정 *전*(computeCrossChunkLinks 의
         // ensureSharedNsVar)에 frozen 됐다 — getter 본문이 미-deconflict 원본 이름이다.
         // splitting emit(=`module_to_chunk` 세팅)에서는 이 리터럴이 **정의자 청크**(target 의 청크)
@@ -521,11 +572,11 @@ pub fn appendSharedNamespacePreambleFiltered(
                     helper_emitted = true;
                 }
                 try out.appendSlice(self.allocator, "var ");
-                try out.appendSlice(self.allocator, entry.var_name);
+                try out.appendSlice(self.allocator, shared_var_name);
                 try out.appendSlice(self.allocator, "={};");
                 try out.appendSlice(self.allocator, rt.NAMES.EXPORT_MIN);
                 try out.appendSlice(self.allocator, "(");
-                try out.appendSlice(self.allocator, entry.var_name);
+                try out.appendSlice(self.allocator, shared_var_name);
                 try out.appendSlice(self.allocator, ",");
                 try out.appendSlice(self.allocator, arrow_map);
                 try out.appendSlice(self.allocator, ");\n");
@@ -533,7 +584,7 @@ pub fn appendSharedNamespacePreambleFiltered(
             }
         }
         try out.appendSlice(self.allocator, "var ");
-        try out.appendSlice(self.allocator, entry.var_name);
+        try out.appendSlice(self.allocator, shared_var_name);
         try out.appendSlice(self.allocator, " = ");
         try out.appendSlice(self.allocator, obj_literal);
         try out.appendSlice(self.allocator, ";\n");
@@ -545,7 +596,7 @@ pub fn appendSharedNamespacePreambleFiltered(
             const literal = obj_literal;
             const export_count = std.mem.count(u8, literal, "get ");
             debug_log.print(.ns_inline_audit, "  - {s}: exports={d} bytes={d}\n", .{
-                entry.var_name,
+                shared_var_name,
                 export_count,
                 literal.len,
             });
@@ -725,7 +776,8 @@ pub fn collectSharedNamespaceDecls(
 
         const target_path = try allocator.dupe(u8, target.path);
         errdefer allocator.free(target_path);
-        const var_name = try allocator.dupe(u8, shared.var_name);
+        const emitted_name = self.getSharedNamespaceGlobalName(target_mod_idx, shared.var_name) orelse shared.var_name;
+        const var_name = try allocator.dupe(u8, emitted_name);
         errdefer allocator.free(var_name);
         const object_literal = try allocator.dupe(u8, shared.object_literal);
         errdefer allocator.free(object_literal);
@@ -1312,6 +1364,58 @@ fn testEmptyLinker(a: std.mem.Allocator, cache: *@import("../resolve_cache.zig")
     cache.* = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
     graph.* = @import("../graph.zig").ModuleGraph.init(a, cache);
     return Linker.init(a, graph, .esm);
+}
+
+test "lazy shared namespace global names follow the exact generated owner" {
+    const a = std.testing.allocator;
+    var cache: @import("../resolve_cache.zig").ResolveCache = undefined;
+    var graph: @import("../graph.zig").ModuleGraph = undefined;
+    var linker = testEmptyLinker(a, &cache, &graph);
+    defer linker.deinit();
+    defer graph.deinit();
+    defer cache.deinit();
+
+    const target = ModuleIndex.fromUsize(7);
+    const local_name = try a.dupe(u8, "shared_ns");
+    try linker.ns_shared_inline_cache.put(a, target.toU32(), .{
+        .var_name = local_name,
+        .object_literal = try a.dupe(u8, "{}"),
+    });
+    try linker.ns_shared_var_names.put(a, local_name, {});
+    const other_target = target.toU32() + 1;
+    const other_local_name = try a.dupe(u8, "shared_ns");
+    try linker.ns_shared_inline_cache.put(a, other_target, .{
+        .var_name = other_local_name,
+        .object_literal = try a.dupe(u8, "{}"),
+    });
+    try linker.ns_shared_var_names.put(a, other_local_name, {});
+
+    try std.testing.expect(linker.isSharedNamespaceVar(target.toU32(), "shared_ns"));
+    try std.testing.expect(!linker.isSharedNamespaceVar(target.toU32() + 2, "shared_ns"));
+    try std.testing.expect(!linker.isSharedNamespaceVar(target.toU32(), "other_ns"));
+
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    defer used.deinit(a);
+    try linker.reserveSharedNamespaceVarNames(a, &used);
+    try std.testing.expect(used.contains("shared_ns"));
+    _ = used.remove("shared_ns");
+
+    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(target.toU32(), "shared_ns", "shared_ns$2"));
+    try std.testing.expect(try linker.assignSharedNamespaceGlobalName(other_target, "shared_ns", "shared_ns$3"));
+    try std.testing.expectEqualStrings(
+        "shared_ns$2",
+        linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns").?,
+    );
+    try std.testing.expectEqualStrings("shared_ns$3", linker.getSharedNamespaceGlobalName(other_target, "shared_ns").?);
+    try std.testing.expect(linker.ns_shared_var_names.contains("shared_ns$2"));
+    try std.testing.expect(linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns$2") == null);
+    try std.testing.expectEqualStrings("shared_ns$2", try linker.ensureSharedNsVar(target));
+    try std.testing.expectEqualStrings("shared_ns$3", try linker.ensureSharedNsVar(@fromBackingInt(other_target)));
+    linker.clearCrossChunkGlobalNames();
+    try std.testing.expect(!linker.ns_shared_var_names.contains("shared_ns$2"));
+    try std.testing.expect(!linker.ns_shared_var_names.contains("shared_ns$3"));
+    try std.testing.expect(linker.getSharedNamespaceGlobalName(target.toU32(), "shared_ns") == null);
+    try std.testing.expectEqualStrings("shared_ns", try linker.ensureSharedNsVar(target));
 }
 
 test "#3966: rank → 결정적 ns var 이름 (rank 0 base_ns, rank N base_ns_{N+1})" {
