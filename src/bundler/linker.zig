@@ -1830,21 +1830,7 @@ pub const Linker = struct {
     /// A semantic graph missing the identity or its rename entry is an invariant
     /// failure; only fully semantic-less asset graphs use the fixed-name fallback.
     pub fn toBinaryRuntimeName(self: *const Linker) ![]const u8 {
-        var symbol_id = self.to_binary_runtime_symbol_id;
-        if (symbol_id == null) {
-            var modules = self.graph.modulesIterator();
-            while (modules.next()) |m| {
-                if (m.to_binary_runtime_symbol) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-                const sem = m.semantic orelse continue;
-                if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-            }
-        }
+        const symbol_id = try self.resolveToBinaryRuntimeSymbolId();
         if (symbol_id) |id| {
             if (self.rename_table.get(id)) |name| return name;
             if (self.to_binary_runtime_name) |name| return name;
@@ -1862,33 +1848,47 @@ pub const Linker = struct {
     /// independent rename passes. Single-bundle builds leave the SID in the
     /// normal NameToOwnersMap pass.
     pub fn prepareToBinaryRuntimeName(self: *Linker) !void {
-        if (self.to_binary_runtime_name != null) return;
-        if (self.to_binary_runtime_symbol_id == null) {
-            var modules = self.graph.modulesIterator();
-            while (modules.next()) |m| {
-                if (m.to_binary_runtime_symbol) |inner| {
-                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-                const sem = m.semantic orelse continue;
-                if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
-                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-            }
-        }
         if (!self.hasIncludedToBinaryRuntime()) return;
 
+        const symbol_id = try self.resolveToBinaryRuntimeSymbolId();
+        if (symbol_id) |id| {
+            self.to_binary_runtime_symbol_id = id;
+        } else if (self.hasSemanticRuntimeGraph()) {
+            return error.ToBinaryRuntimeIdentityMissing;
+        }
+        if (self.to_binary_runtime_name != null) return;
+
         const base = rt_names.helperName("__toBinary", self.minify_whitespace);
-        if (self.to_binary_runtime_symbol_id) |symbol_id| {
-            self.to_binary_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base, null);
+        if (symbol_id) |exact_id| {
+            self.to_binary_runtime_name = try self.calculateGraphWideRuntimeHelperName(exact_id, base, null);
             return;
         }
-        var semantic_modules = self.graph.modulesIterator();
-        while (semantic_modules.next()) |m| {
-            if (m.semantic != null) return error.ToBinaryRuntimeIdentityMissing;
-        }
         self.to_binary_runtime_name = try self.allocator.dupe(u8, base);
+    }
+
+    fn resolveToBinaryRuntimeSymbolId(self: *const Linker) !?bundler_symbol.SymbolID {
+        var found: ?bundler_symbol.SymbolID = null;
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |module| {
+            const inner = module.to_binary_runtime_symbol orelse continue;
+            if (!isModuleRuntimeHelperSymbol(module, inner, "__toBinary"))
+                return error.ToBinaryRuntimeIdentityInvalid;
+            const candidate = bundler_symbol.SymbolID.make(module.index, @backingInt(inner));
+            if (found) |existing| {
+                if (!std.meta.eql(existing, candidate)) return error.ToBinaryRuntimeIdentityInvalid;
+            } else {
+                found = candidate;
+            }
+        }
+
+        if (found) |exact_id| {
+            if (self.to_binary_runtime_symbol_id) |cached| {
+                if (std.meta.eql(cached, exact_id)) return cached;
+            }
+            return exact_id;
+        }
+        if (self.to_binary_runtime_symbol_id != null) return error.ToBinaryRuntimeIdentityInvalid;
+        return null;
     }
 
     fn calculateGraphWideRuntimeHelperName(
@@ -2029,13 +2029,14 @@ pub const Linker = struct {
         return false;
     }
 
-    fn findBundlerRuntimeHelperSymbol(sem: *const ModuleSemanticData, name: []const u8) ?semantic_symbol.SymbolId {
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind != .bundler_runtime_helper or
-                !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @fromBackingInt(@intCast(index));
-        }
-        return null;
+    fn isModuleRuntimeHelperSymbol(module: *const Module, symbol_id: semantic_symbol.SymbolId, name: []const u8) bool {
+        const semantic = module.semantic orelse return false;
+        const raw: usize = @backingInt(symbol_id);
+        if (raw >= semantic.symbols.items.len) return false;
+        const symbol = semantic.symbols.items[raw];
+        return symbol.synthetic_kind == .bundler_runtime_helper and
+            symbol.kind == .variable_var and
+            std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
     /// Return the final names for lexical bindings in the raw CJS helper body.
@@ -2156,21 +2157,32 @@ pub const Linker = struct {
             symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
-    /// The cached factory SymbolID is only trusted while its owner's symbol row
-    /// still is the `__esm` helper. A post-link semantic refresh (constant
-    /// materialization dropping a binding) renumbers the rows: the stale index
-    /// then names a helper-local such as `fn`, and `rename_table` has already
-    /// been remapped to the new numbering (#5629).
-    fn validEsmFactorySymbolId(self: *const Linker) ?bundler_symbol.SymbolID {
-        const cached = self.esm_factory_runtime_symbol_id orelse return null;
-        const owner = self.getModule(@backingInt(cached.module)) orelse return null;
-        const sem = owner.semantic orelse return null;
-        const raw: usize = @backingInt(cached.inner);
-        if (raw >= sem.symbols.items.len) return null;
-        const symbol = sem.symbols.items[raw];
-        if (symbol.synthetic_kind != .bundler_runtime_helper or !std.mem.eql(u8, symbol.synthetic_name, "__esm")) return null;
-        if (owner.esm_runtime_factory_symbol != cached.inner) return null;
-        return cached;
+    /// The Module-owned producer ID is authoritative. The Linker copy is only
+    /// a per-pass cache and must match that ID; never reconstruct either one
+    /// from a synthetic spelling after semantic reanalysis.
+    fn resolveEsmFactoryRuntimeSymbolId(self: *const Linker) !?bundler_symbol.SymbolID {
+        var found: ?bundler_symbol.SymbolID = null;
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |module| {
+            const inner = module.esm_runtime_factory_symbol orelse continue;
+            if (!isModuleRuntimeHelperSymbol(module, inner, "__esm"))
+                return error.EsmRuntimeFactoryIdentityInvalid;
+            const candidate = bundler_symbol.SymbolID.make(module.index, @backingInt(inner));
+            if (found) |existing| {
+                if (!std.meta.eql(existing, candidate)) return error.EsmRuntimeFactoryIdentityInvalid;
+            } else {
+                found = candidate;
+            }
+        }
+
+        if (found) |exact_id| {
+            if (self.esm_factory_runtime_symbol_id) |cached| {
+                if (std.meta.eql(cached, exact_id)) return cached;
+            }
+            return exact_id;
+        }
+        if (self.esm_factory_runtime_symbol_id != null) return error.EsmRuntimeFactoryIdentityInvalid;
+        return null;
     }
 
     /// Resolve the graph-level ESM factory name from its exact synthetic SID.
@@ -2182,21 +2194,7 @@ pub const Linker = struct {
             else
                 "__esm";
         }
-        var symbol_id = self.validEsmFactorySymbolId();
-        if (symbol_id == null) {
-            var modules = self.graph.modulesIterator();
-            while (modules.next()) |m| {
-                if (m.esm_runtime_factory_symbol) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-                const sem = m.semantic orelse continue;
-                if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-            }
-        }
+        const symbol_id = try self.resolveEsmFactoryRuntimeSymbolId();
         if (symbol_id) |id| {
             if (self.rename_table.get(id)) |name| return name;
             if (self.esm_factory_runtime_name) |name| return name;
@@ -2213,35 +2211,24 @@ pub const Linker = struct {
     /// Select a graph-wide ESM factory name before chunk helper preambles emit.
     pub fn prepareEsmRuntimeName(self: *Linker) !void {
         if (self.esm_factory_runtime_name != null) {
+            if (self.hasIncludedEsmRuntime()) {
+                self.esm_factory_runtime_symbol_id = try self.resolveEsmFactoryRuntimeSymbolId();
+                if (self.esm_factory_runtime_symbol_id == null and self.hasSemanticRuntimeGraph())
+                    return error.EsmRuntimeFactoryIdentityMissing;
+            }
             try self.prepareEsmRuntimeInternalNames();
             return;
-        }
-        if (self.esm_factory_runtime_symbol_id == null) {
-            var modules = self.graph.modulesIterator();
-            while (modules.next()) |m| {
-                if (m.esm_runtime_factory_symbol) |inner| {
-                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-                const sem = m.semantic orelse continue;
-                if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
-                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
-                    break;
-                }
-            }
         }
         if (!self.hasIncludedEsmRuntime()) return;
 
         const base = rt_names.helperName("__esm", self.minify_whitespace);
+        self.esm_factory_runtime_symbol_id = try self.resolveEsmFactoryRuntimeSymbolId();
         if (self.esm_factory_runtime_symbol_id) |symbol_id| {
             self.esm_factory_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base, null);
             try self.prepareEsmRuntimeInternalNames();
             return;
         }
-        var runtime_it = self.graph.modulesIterator();
-        while (runtime_it.next()) |m| {
-            if (m.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
-        }
+        if (self.hasSemanticRuntimeGraph()) return error.EsmRuntimeFactoryIdentityMissing;
         self.esm_factory_runtime_name = try self.allocRuntimeFactoryName(base);
         try self.prepareEsmRuntimeInternalNames();
     }
@@ -2301,45 +2288,10 @@ pub const Linker = struct {
     pub fn prepareEsmRuntimeInternalNames(self: *Linker) !void {
         if (!self.hasIncludedEsmRuntime()) return;
 
-        if (self.esm_factory_runtime_symbol_id) |cached| {
-            const owner = self.getModule(@backingInt(cached.module));
-            const semantic = if (owner) |module| module.semantic else null;
-            const raw: usize = @backingInt(cached.inner);
-            const current = if (owner) |module| module.esm_runtime_factory_symbol else null;
-            const valid = if (semantic) |sem|
-                raw < sem.symbols.items.len and
-                    sem.symbols.items[raw].synthetic_kind == .bundler_runtime_helper and
-                    std.mem.eql(u8, sem.symbols.items[raw].synthetic_name, "__esm") and
-                    current == cached.inner
-            else
-                false;
-            if (!valid) self.esm_factory_runtime_symbol_id = null;
-        }
-
-        if (self.esm_factory_runtime_symbol_id == null) {
-            var module_it = self.graph.modulesIterator();
-            while (module_it.next()) |module| {
-                const sem = module.semantic orelse continue;
-                const cached_id: ?semantic_symbol.SymbolId = blk: {
-                    if (module.esm_runtime_factory_symbol) |existing| {
-                        const raw: usize = @backingInt(existing);
-                        if (raw < sem.symbols.items.len and
-                            sem.symbols.items[raw].synthetic_kind == .bundler_runtime_helper and
-                            std.mem.eql(u8, sem.symbols.items[raw].synthetic_name, "__esm")) break :blk existing;
-                    }
-                    break :blk null;
-                };
-                const inner = cached_id orelse findBundlerRuntimeHelperSymbol(&sem, "__esm") orelse continue;
-                self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @backingInt(inner));
-                break;
-            }
-        }
+        self.esm_factory_runtime_symbol_id = try self.resolveEsmFactoryRuntimeSymbolId();
 
         const factory_id = self.esm_factory_runtime_symbol_id orelse {
-            var module_it = self.graph.modulesIterator();
-            while (module_it.next()) |module| {
-                if (module.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
-            }
+            if (self.hasSemanticRuntimeGraph()) return error.EsmRuntimeFactoryIdentityMissing;
             return;
         };
         const owner = self.moduleAtMut(@backingInt(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
@@ -2364,6 +2316,14 @@ pub const Linker = struct {
             };
         }
         try self.restoreEsmRuntimeInternalNames();
+    }
+
+    fn hasSemanticRuntimeGraph(self: *const Linker) bool {
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |module| {
+            if (module.semantic != null) return true;
+        }
+        return false;
     }
 
     fn findEsmRuntimeInternalSymbol(

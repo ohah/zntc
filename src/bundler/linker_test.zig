@@ -80,6 +80,32 @@ fn buildAndLinkWithTransformOptions(
     return .{ .linker = linker, .graph = graph, .cache = cache };
 }
 
+fn addGraphRuntimeHelperIdentity(module: *Module, name: []const u8) !semantic_symbol.SymbolId {
+    if (module.parse_arena == null) {
+        module.parse_arena = @import("module.zig").createParseArena(std.testing.allocator) orelse return error.OutOfMemory;
+    }
+    if (module.semantic == null) {
+        module.semantic = .{
+            .symbols = .empty,
+            .scopes = &.{},
+            .scope_maps = &.{},
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+    }
+    const arena = module.parse_arena.?.allocator();
+    const semantic = if (module.semantic) |*value| value else return error.TestUnexpectedResult;
+    return try semantic_symbol.extendSymbol(
+        arena,
+        &semantic.symbols,
+        .variable_var,
+        .bundler_runtime_helper,
+        name,
+        @import("../lexer/token.zig").Span.EMPTY,
+    );
+}
+
 fn writeCanonicalExportIdentityFixture(tmp: *std.testing.TmpDir) !void {
     try writeFile(
         tmp.dir,
@@ -1255,6 +1281,62 @@ test "linker: semantic-less binary entry assigns exact runtime SymbolIds" {
     try linker.computeRenamesForModules(&second_chunk, &.{});
     try std.testing.expectEqualStrings(saved_factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings(saved_binary_name, try linker.toBinaryRuntimeName());
+
+    const second_binary_module_mut = graph.moduleAtMut(second_binary_index) orelse return error.TestUnexpectedResult;
+    const duplicate_binary_inner = try addGraphRuntimeHelperIdentity(second_binary_module_mut, "__toBinary");
+    second_binary_module_mut.to_binary_runtime_symbol = duplicate_binary_inner;
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    second_binary_module_mut.to_binary_runtime_symbol = null;
+
+    const binary_module_mut = graph.moduleAtMut(binary_module.index) orelse return error.TestUnexpectedResult;
+    const binary_inner = binary_module_mut.to_binary_runtime_symbol orelse return error.TestUnexpectedResult;
+    const binary_raw: usize = @backingInt(binary_inner);
+    const binary_semantic = if (binary_module_mut.semantic) |*value| value else return error.TestUnexpectedResult;
+    const original_binary_symbol = binary_semantic.symbols.items[binary_raw];
+    const original_binary_linker_id = linker.to_binary_runtime_symbol_id;
+
+    // A matching semantic row is not a substitute for the producer's typed
+    // Module ID, even if the name search would find exactly one row.
+    binary_module_mut.to_binary_runtime_symbol = null;
+    linker.to_binary_runtime_symbol_id = null;
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityMissing, linker.toBinaryRuntimeName());
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityMissing, linker.prepareToBinaryRuntimeName());
+    linker.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(binary_module.index, std.math.maxInt(u32));
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    linker.to_binary_runtime_symbol_id = null;
+
+    // Duplicate same-name rows must not turn a missing producer handle into a
+    // first-match guess.
+    const decoy_raw: usize = if (binary_raw == 0) 1 else 0;
+    try std.testing.expect(decoy_raw < binary_semantic.symbols.items.len);
+    const original_decoy_symbol = binary_semantic.symbols.items[decoy_raw];
+    binary_semantic.symbols.items[decoy_raw].synthetic_kind = .bundler_runtime_helper;
+    binary_semantic.symbols.items[decoy_raw].kind = .variable_var;
+    binary_semantic.symbols.items[decoy_raw].synthetic_name = "__toBinary";
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityMissing, linker.toBinaryRuntimeName());
+    binary_semantic.symbols.items[decoy_raw] = original_decoy_symbol;
+
+    binary_module_mut.to_binary_runtime_symbol = @fromBackingInt(@intCast(std.math.maxInt(u32)));
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    binary_module_mut.to_binary_runtime_symbol = binary_inner;
+
+    binary_semantic.symbols.items[binary_raw].synthetic_kind = .runtime_helper_preamble;
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    binary_semantic.symbols.items[binary_raw] = original_binary_symbol;
+    binary_semantic.symbols.items[binary_raw].synthetic_name = "__toBinary$decoy";
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    binary_semantic.symbols.items[binary_raw] = original_binary_symbol;
+    binary_semantic.symbols.items[binary_raw].kind = .variable_let;
+    try std.testing.expectError(error.ToBinaryRuntimeIdentityInvalid, linker.toBinaryRuntimeName());
+    binary_semantic.symbols.items[binary_raw] = original_binary_symbol;
+
+    // A stale linker-side cache can be replaced only from the exact typed ID
+    // stored on its owner module.
+    linker.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(binary_module.index, std.math.maxInt(u32));
+    try std.testing.expectEqualStrings(saved_binary_name, try linker.toBinaryRuntimeName());
+    try linker.prepareToBinaryRuntimeName();
+    try std.testing.expectEqual(binary_id, linker.to_binary_runtime_symbol_id.?);
+    linker.to_binary_runtime_symbol_id = original_binary_linker_id;
 }
 
 test "linker: CJS runtime factory emission requires a graph SymbolId" {
@@ -1498,6 +1580,61 @@ test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
     const chunk_modules = [_]ModuleIndex{module_index};
     try r.linker.computeRenamesForModules(&chunk_modules, &.{});
     try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+
+    const factory_inner = module.esm_runtime_factory_symbol orelse return error.TestUnexpectedResult;
+    const factory_raw: usize = @backingInt(factory_inner);
+    const esm_semantic = if (module.semantic) |*value| value else return error.TestUnexpectedResult;
+    const original_factory_symbol = esm_semantic.symbols.items[factory_raw];
+    const original_factory_linker_id = r.linker.esm_factory_runtime_symbol_id;
+    const saved_esm_factory_name = try std.testing.allocator.dupe(u8, try r.linker.esmFactoryRuntimeName());
+    defer std.testing.allocator.free(saved_esm_factory_name);
+
+    const duplicate_index = try r.graph.addDisabledModule("runtime-helper-decoy");
+    const duplicate_module = r.graph.moduleAtMut(duplicate_index) orelse return error.TestUnexpectedResult;
+    const duplicate_factory_inner = try addGraphRuntimeHelperIdentity(duplicate_module, "__esm");
+    duplicate_module.esm_runtime_factory_symbol = duplicate_factory_inner;
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    duplicate_module.esm_runtime_factory_symbol = null;
+
+    // The semantic row remains present, but dropping both exact handles must
+    // not let the old synthetic-name search recover it.
+    module.esm_runtime_factory_symbol = null;
+    r.linker.esm_factory_runtime_symbol_id = null;
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityMissing, r.linker.esmFactoryRuntimeName());
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityMissing, r.linker.prepareEsmRuntimeName());
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityMissing, r.linker.prepareEsmRuntimeInternalNames());
+    r.linker.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module_index, std.math.maxInt(u32));
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    r.linker.esm_factory_runtime_symbol_id = null;
+
+    const decoy_raw: usize = if (factory_raw == 0) 1 else 0;
+    try std.testing.expect(decoy_raw < esm_semantic.symbols.items.len);
+    const original_decoy_symbol = esm_semantic.symbols.items[decoy_raw];
+    esm_semantic.symbols.items[decoy_raw].synthetic_kind = .bundler_runtime_helper;
+    esm_semantic.symbols.items[decoy_raw].kind = .variable_var;
+    esm_semantic.symbols.items[decoy_raw].synthetic_name = "__esm";
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityMissing, r.linker.esmFactoryRuntimeName());
+    esm_semantic.symbols.items[decoy_raw] = original_decoy_symbol;
+
+    module.esm_runtime_factory_symbol = @fromBackingInt(@intCast(std.math.maxInt(u32)));
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    module.esm_runtime_factory_symbol = factory_inner;
+
+    esm_semantic.symbols.items[factory_raw].synthetic_kind = .runtime_helper_preamble;
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    esm_semantic.symbols.items[factory_raw] = original_factory_symbol;
+    esm_semantic.symbols.items[factory_raw].synthetic_name = "__esm$decoy";
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    esm_semantic.symbols.items[factory_raw] = original_factory_symbol;
+    esm_semantic.symbols.items[factory_raw].kind = .variable_let;
+    try std.testing.expectError(error.EsmRuntimeFactoryIdentityInvalid, r.linker.esmFactoryRuntimeName());
+    esm_semantic.symbols.items[factory_raw] = original_factory_symbol;
+
+    r.linker.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module_index, std.math.maxInt(u32));
+    try std.testing.expectEqualStrings(saved_esm_factory_name, try r.linker.esmFactoryRuntimeName());
+    try r.linker.prepareEsmRuntimeName();
+    try std.testing.expectEqual(factory_inner, r.linker.esm_factory_runtime_symbol_id.?.inner);
+    r.linker.esm_factory_runtime_symbol_id = original_factory_linker_id;
 }
 
 test "linker: ESM interop raw locals recover by exact IDs and reject malformed rows" {
