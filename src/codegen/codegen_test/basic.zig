@@ -496,6 +496,68 @@ test "Codegen: SymbolId output name override reaches bindings and references" {
     try std.testing.expectEqualStrings("let chosen=1;chosen++;", r.output);
 }
 
+test "Codegen: SymbolId output name override preserves object shorthand key" {
+    var r = try e2eWithSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "let original=1;const obj={original};",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let chosen=1;const obj={original:chosen};", r.output);
+}
+
+test "Codegen: SymbolId output name override preserves assignment shorthand key" {
+    var r = try e2eWithSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "let original=1;const obj={original};({original}=obj);",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "let chosen=1;const obj={original:chosen};({original:chosen}=obj);",
+        r.output,
+    );
+}
+
+test "Codegen: SymbolId output name override preserves shorthand across hostile contexts" {
+    const Case = struct {
+        source: []const u8,
+        output_name: []const u8,
+        expected: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "let original=1;const obj={original};", .output_name = "chosen", .expected = "let chosen=1;const obj={original:chosen};" },
+        .{ .source = "let original=1;const obj={nested:{original}};", .output_name = "chosen", .expected = "let chosen=1;const obj={nested:{original:chosen}};" },
+        .{ .source = "let original=1;const obj=[{original}];", .output_name = "chosen", .expected = "let chosen=1;const obj=[{original:chosen}];" },
+        .{ .source = "let original=1;consume({original});", .output_name = "chosen", .expected = "let chosen=1;consume({original:chosen});" },
+        .{ .source = "let original=1;function make(){return {original}}", .output_name = "chosen", .expected = "let chosen=1;function make(){return{original:chosen};}" },
+        .{ .source = "let original=1;const obj=flag?{original}:{fallback:0};", .output_name = "chosen", .expected = "let chosen=1;const obj=flag?{original:chosen}:{fallback:0};" },
+        .{ .source = "let original=1;const obj={...base,original};", .output_name = "chosen", .expected = "let chosen=1;const obj={...base,original:chosen};" },
+        .{ .source = "let original=1;const obj={original};({original}=obj);", .output_name = "chosen", .expected = "let chosen=1;const obj={original:chosen};({original:chosen}=obj);" },
+        .{ .source = "let original=1;const obj={get value(){return original},original};", .output_name = "chosen", .expected = "let chosen=1;const obj={get value(){return chosen;},original:chosen};" },
+        .{ .source = "let original=1;const obj={original,alias:original};", .output_name = "renamedx", .expected = "let renamedx=1;const obj={original:renamedx,alias:renamedx};" },
+        .{ .source = "let original=1;const obj={original};", .output_name = "oChosen", .expected = "let oChosen=1;const obj={original:oChosen};" },
+        .{ .source = "let original=1;const obj={original};", .output_name = "chosenl", .expected = "let chosenl=1;const obj={original:chosenl};" },
+        .{ .source = "let original=1;const obj={original};", .output_name = "original", .expected = "let original=1;const obj={original};" },
+    };
+
+    for (cases) |case| {
+        var r = try e2eWithSemanticSymbolNameOverride(
+            std.testing.allocator,
+            case.source,
+            "original",
+            case.output_name,
+            false,
+        );
+        defer r.deinit();
+        try std.testing.expectEqualStrings(case.expected, r.output);
+    }
+}
+
 test "Codegen: SymbolId output name override follows identifier escaping options" {
     var r = try e2eWithSemanticSymbolNameOverride(
         std.testing.allocator,
