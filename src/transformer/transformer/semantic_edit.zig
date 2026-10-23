@@ -5063,7 +5063,7 @@ fn expectInvalidSemanticEditPanic(mode: []const u8, expected_error: []const u8) 
     try child_environ.put("ZTS_6029_HOSTILE_PANIC_MODE", mode);
 
     const child = try std.process.run(allocator, std.testing.io, .{
-        .argv = &.{ executable_path, "--test-filter", "#6029 hostile panic child" },
+        .argv = &.{executable_path},
         .environ_map = &child_environ,
     });
     defer allocator.free(child.stdout);
@@ -5170,23 +5170,32 @@ test "#6029 hostile panic child" {
     return error.HostileMutationWasAccepted;
 }
 
+fn isSemanticEditPanicChild() bool {
+    return std.testing.environ.containsUnemptyConstant("ZTS_6029_HOSTILE_PANIC_MODE");
+}
+
 test "#6029 hostile reject conflicting transformer/editor SID" {
+    if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("conflicting-transformer-editor", "InvalidSymbol");
 }
 
 test "#6029 hostile reject conflicting expected SID" {
+    if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("conflicting-expected", "InvalidSymbol");
 }
 
 test "#6029 hostile reject wrong reference symbol" {
+    if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("wrong-reference-symbol", "InvalidSymbol");
 }
 
 test "#6029 hostile reject wrong reference flags" {
+    if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("wrong-reference-flags", "InvalidSymbol");
 }
 
 test "#6029 hostile relocates existing reference to requested scope" {
+    if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
@@ -5206,6 +5215,7 @@ test "#6029 hostile relocates existing reference to requested scope" {
 }
 
 test "#6029 hostile reuses existing reference without double counting" {
+    if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
@@ -5227,6 +5237,7 @@ test "#6029 hostile reuses existing reference without double counting" {
 }
 
 test "#6029 hostile preserves copied SID while attaching reference" {
+    if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
@@ -5250,6 +5261,7 @@ test "#6029 hostile preserves copied SID while attaching reference" {
 }
 
 test "#6029 hostile preserves fallback addReference" {
+    if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
@@ -5271,6 +5283,7 @@ test "#6029 hostile preserves fallback addReference" {
 }
 
 test "#6029 hostile writes assigned SID to transformer map" {
+    if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
@@ -5290,5 +5303,6 @@ test "#6029 hostile writes assigned SID to transformer map" {
 }
 
 test "#6029 hostile fail closed on invalid existing reference" {
+    if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("invalid-existing-scope", "InvalidScope");
 }
