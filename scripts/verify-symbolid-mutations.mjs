@@ -181,7 +181,7 @@ const mutants = [
   {
     pr: 6106, file: "namespace", label: "drop fallback for invalid SymbolRefs",
     before: "const scope_index = module_scope.get(ib.local_name) orelse return null;\n    return @intCast(scope_index);",
-    after: "return null;",
+    after: "_ = module_scope;\n    return null;",
   },
   {
     pr: 6106, file: "namespace", label: "use the exported name for fallback lookup",
