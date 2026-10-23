@@ -3045,6 +3045,9 @@ pub const Linker = struct {
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
 
+        if (self.graph.jsx_runtime == .preserve and !self.manglerActive())
+            try self.resolvePreservedJsxImportNames(&name_to_owners);
+
         // Generated explicit globals have no SymbolId to rename. If a nested
         // source binding with the same spelling encloses one, rename that
         // exact binding so the emitted global reference remains external.
@@ -3057,6 +3060,66 @@ pub const Linker = struct {
 
         // 4. 주입된 래퍼 참조(require_x())가 소비자의 스코프 바인딩에 가려지는 것 방지 (#4533).
         try self.resolveWrapperConsumerShadows(&name_to_owners, null);
+    }
+
+    /// A preserved JSX import can be written with an uppercase local alias while
+    /// its provider's source export is lowercase (`import { x as Component }`).
+    /// Scope hoisting emits the provider's canonical name in the JSX tag, so give
+    /// that exact provider SymbolId an uppercase-safe canonical spelling too.
+    fn resolvePreservedJsxImportNames(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
+        var importer_it = self.graph.modulesIterator();
+        while (importer_it.next()) |importer| {
+            const importer_sem = importer.semantic orelse continue;
+            for (importer.import_bindings) |ib| {
+                if (ib.kind == .namespace) continue;
+                const local_sid = ib.local_symbol.semanticIndex() orelse continue;
+                if (ib.local_symbol.moduleIndex() != importer.index or
+                    local_sid >= importer_sem.symbols.items.len or
+                    !importer_sem.symbols.items[local_sid].requires_uppercase_first_char)
+                    continue;
+
+                const source: ?bundler_symbol.SymbolRef = blk: {
+                    if (ib.import_record_index < importer.import_records.len) {
+                        const target = importer.import_records[ib.import_record_index].resolved;
+                        if (!target.isNone()) {
+                            if (self.resolveSemanticExportSource(target, ib.imported_name)) |sr| break :blk sr;
+                        }
+                    }
+                    switch (ib.symbol) {
+                        .semantic => break :blk ib.symbol,
+                        .alias => |a| {
+                            if (a.module.isNone()) break :blk null;
+                            break :blk self.resolveSemanticExportSource(a.module, ib.imported_name);
+                        },
+                    }
+                };
+                const sr = source orelse continue;
+                if (sr != .semantic or sr.semantic.module.isNone() or sr.semantic.symbol.isNone()) continue;
+
+                const module_index = @backingInt(sr.semantic.module);
+                const symbol_index = @backingInt(sr.semantic.symbol);
+                const provider = self.getModule(module_index) orelse continue;
+                const provider_sem = provider.semantic orelse continue;
+                if (symbol_index >= provider_sem.symbols.items.len) continue;
+                const symbol_id = bundler_symbol.SymbolID.make(sr.semantic.module, symbol_index);
+                const current_name = self.rename_table.get(symbol_id) orelse
+                    provider_sem.symbols.items[symbol_index].preferredOutputName(provider.source);
+                if (current_name.len == 0 or !std.ascii.isLower(current_name[0])) continue;
+
+                const uppercase_name = try self.allocator.dupe(u8, current_name);
+                uppercase_name[0] = std.ascii.toUpper(uppercase_name[0]);
+                if (self.isCandidateAvailable(uppercase_name, module_index, name_to_owners)) {
+                    errdefer self.allocator.free(uppercase_name);
+                    try self.assignSymbolCanonical(symbol_id, uppercase_name);
+                } else {
+                    var suffix: u32 = 1;
+                    const selected = try self.findAvailableCandidate(uppercase_name, module_index, &suffix, name_to_owners);
+                    self.allocator.free(uppercase_name);
+                    errdefer self.allocator.free(selected);
+                    try self.assignSymbolCanonical(symbol_id, selected);
+                }
+            }
+        }
     }
 
     /// 소비자의 스코프 바인딩이 **주입된 래퍼 참조**를 가리는 걸 막는다 (#4533).
@@ -3822,6 +3885,8 @@ pub const Linker = struct {
 
         var candidates: std.ArrayListUnmanaged(um.TopLevelCandidate) = .empty;
         errdefer candidates.deinit(self.allocator);
+        var jsx_component_sources: std.AutoHashMapUnmanaged(um.ModuleSymKey, void) = .empty;
+        defer jsx_component_sources.deinit(self.allocator);
 
         // 두 set 을 한 module pass 로 채운다:
         //   - exported: candidate 단계 skip filter (entry export + external import 만)
@@ -3908,6 +3973,48 @@ pub const Linker = struct {
             }
         }
 
+        // Collect importer-side JSX component requirements before building Phase A
+        // candidates. Graph iteration order is not guaranteed to visit a provider
+        // after every importer, so discovering these while visiting candidates can
+        // leave an already-created provider candidate lowercase-safe by accident.
+        var jsx_importer_it = self.graph.modulesIterator();
+        while (jsx_importer_it.next()) |importer| {
+            if (self.graph.jsx_runtime != .preserve) break;
+            const sem = importer.semantic orelse continue;
+            for (importer.import_bindings) |ib| {
+                if (ib.kind == .namespace) continue;
+                const local_sid = ib.local_symbol.semanticIndex() orelse continue;
+                if (ib.local_symbol.moduleIndex() != importer.index or
+                    local_sid >= sem.symbols.items.len or
+                    !sem.symbols.items[local_sid].requires_uppercase_first_char)
+                    continue;
+
+                const source: ?bundler_symbol.SymbolRef = blk: {
+                    if (ib.import_record_index < importer.import_records.len) {
+                        const target = importer.import_records[ib.import_record_index].resolved;
+                        if (!target.isNone()) {
+                            if (self.resolveSemanticExportSource(target, ib.imported_name)) |sr| break :blk sr;
+                        }
+                    }
+                    switch (ib.symbol) {
+                        .semantic => break :blk ib.symbol,
+                        .alias => |a| {
+                            if (a.module.isNone()) break :blk null;
+                            break :blk self.resolveSemanticExportSource(a.module, ib.imported_name);
+                        },
+                    }
+                };
+                if (source) |sr| {
+                    if (sr == .semantic) {
+                        try jsx_component_sources.put(self.allocator, .{
+                            .module_index = @backingInt(sr.semantic.module),
+                            .symbol_id = @backingInt(sr.semantic.symbol),
+                        }, {});
+                    }
+                }
+            }
+        }
+
         for (0..mod_count) |mi| {
             const m = self.getModule(@intCast(mi)).?;
             const sem_opt = m.semantic;
@@ -3966,6 +4073,7 @@ pub const Linker = struct {
                                 .name = key,
                                 .ref_count = if (sym.reference_count == 0) 1 else sym.reference_count,
                                 .module_path = m.path,
+                                .requires_uppercase_first_char = self.graph.jsx_runtime == .preserve and sym.requires_uppercase_first_char,
                             });
                         }
                     }
@@ -3999,7 +4107,11 @@ pub const Linker = struct {
                             continue;
                         }
                         if (exported.contains(sym_name)) continue;
-                        if (sym_name.len <= 1) {
+                        const is_jsx_component = jsx_component_sources.contains(.{
+                            .module_index = @intCast(mi),
+                            .symbol_id = sym_idx,
+                        });
+                        if (sym_name.len <= 1 and !is_jsx_component) {
                             // candidate skip 한 1-char binding 도 reserved 에 등록 (#2965).
                             // entry deepEntry 의 \`const e = ...\` 같은 짧은 식별자는
                             // mangle 안 되고 source 그대로 emit 되므로 internal binding 의
@@ -4024,7 +4136,7 @@ pub const Linker = struct {
 
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
                         const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(mi))), sym_idx)) orelse sym_name;
-                        if (key.len <= 1) {
+                        if (key.len <= 1 and !is_jsx_component) {
                             // canonical_name 이 sym_name 과 다른 1-char 케이스도 reserve
                             // (위 sym_name 분기와 대칭 — #2965).
                             try reserved.put(self.allocator, key, {});
@@ -4038,6 +4150,8 @@ pub const Linker = struct {
                             .name = key,
                             .ref_count = sym.reference_count,
                             .module_path = m.path,
+                            .requires_uppercase_first_char = self.graph.jsx_runtime == .preserve and
+                                (sym.requires_uppercase_first_char or is_jsx_component),
                         });
                     }
                 }
@@ -4131,6 +4245,7 @@ pub const Linker = struct {
                             .name = key,
                             .ref_count = ref_count,
                             .module_path = m.path,
+                            .requires_uppercase_first_char = self.graph.jsx_runtime == .preserve and sym.requires_uppercase_first_char,
                         });
                     }
                 }
@@ -4220,10 +4335,18 @@ pub const Linker = struct {
                     .module_scope_symbols = bitsets[mi],
                     .cross_module_imports = ir_owned,
                     .wrapper_isolated = m.wrap_kind.isWrapped(),
+                    .preserve_jsx_components = self.graph.jsx_runtime == .preserve,
                 };
             } else {
                 modules[mi] = emptyInput(m.source, bitsets[mi]);
             }
+        }
+
+        for (candidates.items) |*candidate| {
+            if (jsx_component_sources.contains(.{
+                .module_index = candidate.module_index,
+                .symbol_id = candidate.symbol_id,
+            })) candidate.requires_uppercase_first_char = true;
         }
 
         // reserved 를 owned slice 로 직접 alloc — ArrayList 중간단계 생략.

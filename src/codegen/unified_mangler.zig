@@ -51,6 +51,8 @@ pub const ModuleMangleInput = struct {
     /// pool 후보). false (bare scope-hoist) 는 top-level 이 한 scope 라 globally
     /// unique 필수. J-step3a (RFC #3288) 측정용.
     wrapper_isolated: bool = false,
+    /// Keep mangled component bindings uppercase when JSX syntax is preserved.
+    preserve_jsx_components: bool = false,
 };
 
 /// Phase A 의 mangling 후보. 호출부가 빈도/필터링을 수행해 넘긴다
@@ -60,6 +62,8 @@ pub const TopLevelCandidate = struct {
     symbol_id: u32,
     name: []const u8,
     ref_count: u32,
+    /// A preserved bare JSX component tag must not start with a lowercase letter.
+    requires_uppercase_first_char: bool = false,
     /// `candidateLessThan` 의 tie-break — module_index 는 renumber 결정적이지만
     /// path 는 입력 의존이라 더 강한 invariant. caller 가 반드시 채워야 함.
     module_path: []const u8,
@@ -202,7 +206,10 @@ pub fn mangleAll(
                     phase_a_internal_wrapped += 1;
             }
         }
-        const new_name = mangler.nextNonReservedBase54Name(&name_counter, &name_buf, &reserved, &phase_a_skips_1char);
+        const new_name = if (cand.requires_uppercase_first_char)
+            mangler.nextNonReservedBase54NameUppercase(&name_counter, &name_buf, &reserved, null, &phase_a_skips_1char)
+        else
+            mangler.nextNonReservedBase54Name(&name_counter, &name_buf, &reserved, &phase_a_skips_1char);
         phase_a_slot_name_length_sum += new_name.len;
 
         // 일반적으로 production caller (linker.collectUnifiedInput) 는 candidate 의
@@ -266,6 +273,7 @@ pub fn mangleAll(
             .skip_symbols = m.module_scope_symbols,
             .external_reserved = &per_mod_reserved[i],
             .external_reserved_global = &global_reserved_set,
+            .preserve_jsx_components = m.preserve_jsx_components,
         });
         defer nested.deinit();
         phase_b_stats[i] = nested.stats;

@@ -92,6 +92,8 @@ pub const MangleInput = struct {
     /// `external_reserved` 가 *per-module* (예: Phase A 의 이 모듈 mangled 이름)
     /// 라면 본 필드는 *전 모듈 공통* (예: runtime helper 이름) 으로 분리된다.
     external_reserved_global: ?*const std.StringHashMapUnmanaged(void) = null,
+    /// Keep preserved JSX component bindings out of the lowercase intrinsic-name space.
+    preserve_jsx_components: bool = false,
     /// 변환 **뒤** AST 를 다시 분석한 심볼이면 이름이 원문이 아니라 `string_table` 에 있을 수
     /// 있다(`_loop`, `x$1` …). 주어지면 이름을 `source` 대신 이 AST 에서 읽는다 (#4759).
     ast: ?*const @import("../parser/ast.zig").Ast = null,
@@ -158,6 +160,19 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         };
     }
 
+    const slot_requires_uppercase: ?[]bool = if (input.preserve_jsx_components)
+        try allocator.alloc(bool, slot_count)
+    else
+        null;
+    defer if (slot_requires_uppercase) |flags| allocator.free(flags);
+    if (slot_requires_uppercase) |flags| {
+        @memset(flags, false);
+        for (symbol_to_slot, 0..) |maybe_slot, sym_idx| {
+            const slot_id = maybe_slot orelse continue;
+            if (symbols[sym_idx].requires_uppercase_first_char) flags[slot_id] = true;
+        }
+    }
+
     // slot 정렬: total_refs 내림차순, 동률이면 slot_id 오름차순
     const sorted_slots = try allocator.alloc(SlotSortEntry, slot_count);
     defer allocator.free(sorted_slots);
@@ -190,13 +205,23 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609).
         // K2-perf (#46): external_reserved_global 은 internal copy 하지 않고 lookup 시 직접
         // 검사 — caller 가 모듈마다 복제하지 않고 한 번만 build 후 share.
-        const name = nextNonReservedBase54NameTwo(
-            &name_counter,
-            &name_buf,
-            &reserved_names,
-            input.external_reserved_global,
-            &reserved_skips_1char,
-        );
+        const requires_uppercase = if (slot_requires_uppercase) |flags| flags[entry.slot_id] else false;
+        const name = if (requires_uppercase)
+            nextNonReservedBase54NameUppercase(
+                &name_counter,
+                &name_buf,
+                &reserved_names,
+                input.external_reserved_global,
+                &reserved_skips_1char,
+            )
+        else
+            nextNonReservedBase54NameTwo(
+                &name_counter,
+                &name_buf,
+                &reserved_names,
+                input.external_reserved_global,
+                &reserved_skips_1char,
+            );
         slot_names[entry.slot_id] = try allocator.dupe(u8, name);
         slot_name_length_sum += name.len;
     }
@@ -491,7 +516,7 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
     if (hasFixedOutputName(sym)) return true;
     if (preservesName(sym)) return true;
     if (std.mem.eql(u8, name, "arguments")) return true;
-    if (name.len <= 1) return true;
+    if (name.len <= 1 and !sym.requires_uppercase_first_char) return true;
     return false;
 }
 
@@ -604,6 +629,26 @@ pub fn nextNonReservedBase54NameTwo(
     while (reserved_a.contains(name) or (reserved_b != null and reserved_b.?.contains(name))) {
         if (name.len == 1) skips_1char.* += 1;
         name = nextBase54Name(counter, buf);
+    }
+    return name;
+}
+
+/// Emit a base54 name whose first character is safe for a preserved JSX component tag.
+pub fn nextNonReservedBase54NameUppercase(
+    counter: *u32,
+    buf: *[8]u8,
+    reserved_a: *const std.StringHashMapUnmanaged(void),
+    reserved_b: ?*const std.StringHashMapUnmanaged(void),
+    skips_1char: *usize,
+) []const u8 {
+    var name = nextBase54Name(counter, buf);
+    buf[0] = std.ascii.toUpper(buf[0]);
+    name = buf[0..name.len];
+    while (reserved_a.contains(name) or (reserved_b != null and reserved_b.?.contains(name))) {
+        if (name.len == 1) skips_1char.* += 1;
+        name = nextBase54Name(counter, buf);
+        buf[0] = std.ascii.toUpper(buf[0]);
+        name = buf[0..name.len];
     }
     return name;
 }
