@@ -605,10 +605,10 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     if (options.emit_decorator_metadata and
         (parser.is_flow or parser.source_mode != .ts or !options.experimental_decorators)) return false;
 
-    // The exact transform graph now covers TypeScript's legacy decorator
-    // lowering. Keep Flow and JavaScript decorator modes gated until their
-    // corresponding lowering paths receive the same exact-identity audit.
-    if (options.experimental_decorators and (parser.is_flow or parser.source_mode != .ts)) return false;
+    // The exact transform graph covers legacy decorator lowering for both
+    // TypeScript and JavaScript. Flow's legacy-decorator combination remains
+    // on the conservative analyzer until that parser/lowering pairing is audited.
+    if (options.experimental_decorators and parser.is_flow) return false;
 
     const facts = collectAstFacts(&parser.ast);
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
@@ -2535,6 +2535,63 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try accessor_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), accessor_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
+}
+
+test "#4819 JavaScript legacy decorators reuse the transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+    const legacy: TranspileOptions = .{ .minify_identifiers = true, .experimental_decorators = true };
+
+    var js_scanner = try Scanner.init(
+        allocator,
+        "function decorate(target) { return target; } @decorate class Box { @decorate method() {} }",
+    );
+    var js_parser = Parser.init(allocator, &js_scanner);
+    js_parser.configureFromExtension(".js");
+    _ = try js_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), js_parser.errors.items.len);
+    try std.testing.expect(!js_parser.is_flow);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &js_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &js_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &js_parser));
+
+    var unknown_scanner = try Scanner.init(
+        allocator,
+        "function decorate(target) { return target; } @decorate class Box {}",
+    );
+    var unknown_parser = Parser.init(allocator, &unknown_scanner);
+    unknown_parser.configureFromExtension(".unknown");
+    _ = try unknown_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), unknown_parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_parser));
+
+    var unknown_ts_scanner = try Scanner.init(
+        allocator,
+        "type Alias = number; function decorate(target) { return target; } " ++
+            "@decorate class Box { value: Alias = 1; }",
+    );
+    var unknown_ts_parser = Parser.init(allocator, &unknown_ts_scanner);
+    unknown_ts_parser.configureFromExtension(".unknown");
+    _ = try unknown_ts_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), unknown_ts_parser.errors.items.len);
+    try std.testing.expect(!canMangleWithTransformSemantic(legacy, &unknown_ts_parser));
+
+    var flow_scanner = try Scanner.init(
+        allocator,
+        "// @flow\nfunction decorate(target) { return target; } @decorate class Box {}",
+    );
+    var flow_parser = Parser.init(allocator, &flow_scanner);
+    flow_parser.configureFromExtension(".js");
+    _ = try flow_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), flow_parser.errors.items.len);
+    try std.testing.expect(flow_parser.is_flow);
+    try std.testing.expect(!canMangleWithTransformSemantic(legacy, &flow_parser));
 }
 
 test "#4819 Flow Stage 3 decorators reuse the transform semantic graph" {
