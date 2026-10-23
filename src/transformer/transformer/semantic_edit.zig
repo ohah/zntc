@@ -4947,3 +4947,362 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     self.tracked_runtime_helper_ref_index.clearRetainingCapacity();
     return result;
 }
+
+// Hostile regression fixtures for PR #6029. These deliberately seed conflicting
+// transformer/editor identities so hoisted-temp handoff rejects stale bindings.
+const HoistedTempHostileFixture = struct {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+
+    allocator: std.mem.Allocator,
+    scanner: Scanner,
+    parser: Parser,
+    analyzer: SemanticAnalyzer,
+    transformer: Transformer,
+    target_id: SymbolId,
+    other_id: SymbolId,
+    target_name_span: Span,
+    program_scope: ScopeId,
+    function_scope: ScopeId,
+    reference_node: NodeIndex,
+
+    fn init(allocator: std.mem.Allocator) !*HoistedTempHostileFixture {
+        const fixture = try allocator.create(HoistedTempHostileFixture);
+        fixture.allocator = allocator;
+        fixture.scanner = try Scanner.init(allocator, "const target = 0; function inner() { target; }");
+        fixture.parser = Parser.init(allocator, &fixture.scanner);
+        fixture.parser.configureFromExtension(".mjs");
+        const root = try fixture.parser.parse();
+        fixture.analyzer = SemanticAnalyzer.init(allocator, &fixture.parser.ast);
+        fixture.analyzer.is_module = true;
+        try fixture.analyzer.analyze();
+
+        fixture.program_scope = @fromBackingInt(@intCast(fixture.analyzer.scope_owner_map.get(@backingInt(root)) orelse
+            return error.MissingProgramScope));
+
+        var target_binding: ?NodeIndex = null;
+        var other_binding: ?NodeIndex = null;
+        var target_reference: ?NodeIndex = null;
+        for (fixture.parser.ast.nodes.items, 0..) |node, raw| {
+            const text = switch (node.tag) {
+                .binding_identifier, .identifier_reference => fixture.parser.ast.getText(node.data.string_ref),
+                else => continue,
+            };
+            if (node.tag == .binding_identifier and std.mem.eql(u8, text, "target")) {
+                target_binding = @fromBackingInt(@intCast(raw));
+            } else if (node.tag == .binding_identifier and std.mem.eql(u8, text, "inner")) {
+                other_binding = @fromBackingInt(@intCast(raw));
+            } else if (node.tag == .identifier_reference and std.mem.eql(u8, text, "target")) {
+                target_reference = @fromBackingInt(@intCast(raw));
+            }
+        }
+        const target_binding_node = target_binding orelse return error.MissingTargetBinding;
+        const other_binding_node = other_binding orelse return error.MissingAlternateBinding;
+        fixture.reference_node = target_reference orelse return error.MissingTargetReference;
+        fixture.target_name_span = fixture.parser.ast.getNode(target_binding_node).data.string_ref;
+        fixture.target_id = @fromBackingInt(@intCast(fixture.analyzer.symbol_ids.items[@backingInt(target_binding_node)] orelse
+            return error.MissingTargetSymbolId));
+        fixture.other_id = @fromBackingInt(@intCast(fixture.analyzer.symbol_ids.items[@backingInt(other_binding_node)] orelse
+            return error.MissingAlternateSymbolId));
+        fixture.function_scope = undefined;
+        for (fixture.analyzer.references.items) |reference| {
+            if (reference.node_index == fixture.reference_node) {
+                fixture.function_scope = reference.scope_id;
+                break;
+            }
+        }
+        if (fixture.function_scope.isNone()) return error.MissingReferenceScope;
+
+        fixture.transformer = try Transformer.init(allocator, &fixture.parser.ast, .{});
+        try fixture.transformer.initSymbolIds(fixture.analyzer.symbol_ids.items);
+        fixture.transformer.symbols = fixture.analyzer.symbols.items;
+        fixture.transformer.class_self_symbol_map = fixture.analyzer.class_self_symbol_map;
+        fixture.transformer.references = fixture.analyzer.references.items;
+        fixture.transformer.scopes = fixture.analyzer.scopes.items;
+        fixture.transformer.scope_maps = fixture.analyzer.scope_maps.items;
+        fixture.transformer.scope_owner_map = fixture.analyzer.scope_owner_map;
+        fixture.transformer.semantic_edit_enabled = true;
+        fixture.transformer.current_scope = fixture.program_scope;
+        return fixture;
+    }
+
+    fn syntheticReference(self: *HoistedTempHostileFixture) !NodeIndex {
+        return es_helpers.makeIdentifierRefFromSpan(&self.transformer, self.target_name_span);
+    }
+
+    fn setTransformerSymbol(self: *HoistedTempHostileFixture, node: NodeIndex, id: ?SymbolId) !void {
+        const raw = @backingInt(node);
+        if (self.transformer.symbol_ids.items.len <= raw) {
+            try self.transformer.symbol_ids.appendNTimes(
+                self.allocator,
+                null,
+                raw + 1 - self.transformer.symbol_ids.items.len,
+            );
+        }
+        self.transformer.symbol_ids.items[raw] = if (id) |symbol| @backingInt(symbol) else null;
+    }
+
+    fn setEditorSymbol(self: *HoistedTempHostileFixture, node: NodeIndex, id: ?SymbolId) !*SemanticEditor {
+        const editor = try editorFor(&self.transformer);
+        const raw = @backingInt(node);
+        if (editor.symbol_ids.items.len <= raw) {
+            try editor.symbol_ids.appendNTimes(editor.allocator, null, raw + 1 - editor.symbol_ids.items.len);
+        }
+        editor.symbol_ids.items[raw] = if (id) |symbol| @backingInt(symbol) else null;
+        return editor;
+    }
+};
+
+fn expectInvalidSemanticEditPanic(mode: []const u8, expected_error: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const executable_path = try std.process.executablePathAlloc(std.testing.io, allocator);
+    defer allocator.free(executable_path);
+
+    var child_environ = std.process.Environ.Map.init(allocator);
+    defer child_environ.deinit();
+    try child_environ.put("ZTS_6029_HOSTILE_PANIC_MODE", mode);
+
+    const child = try std.process.run(allocator, std.testing.io, .{
+        .argv = &.{executable_path},
+        .environ_map = &child_environ,
+    });
+    defer allocator.free(child.stdout);
+    defer allocator.free(child.stderr);
+
+    try std.testing.expect(!child.term.success());
+    const expected_message = try std.fmt.allocPrint(
+        allocator,
+        "invalid transform semantic edit: {s}",
+        .{expected_error},
+    );
+    defer allocator.free(expected_message);
+    try std.testing.expect(std.mem.indexOf(u8, child.stderr, expected_message) != null);
+}
+
+test "hostile SymbolId 6029 panic child" {
+    if (!std.testing.environ.containsUnemptyConstant("ZTS_6029_HOSTILE_PANIC_MODE")) return;
+    const allocator = std.testing.allocator;
+    const mode = try std.testing.environ.getAlloc(allocator, "ZTS_6029_HOSTILE_PANIC_MODE");
+    defer allocator.free(mode);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+
+    if (std.mem.eql(u8, mode, "conflicting-transformer-editor")) {
+        const editor = try fixture.setEditorSymbol(fixture.reference_node, fixture.other_id);
+        try bindPendingHoistedTempReference(
+            &fixture.transformer,
+            editor,
+            fixture.reference_node,
+            fixture.target_id,
+            fixture.function_scope,
+            .{ .read = true },
+        );
+    } else if (std.mem.eql(u8, mode, "conflicting-expected")) {
+        const node = try fixture.syntheticReference();
+        const editor = try fixture.setEditorSymbol(node, null);
+        try fixture.setTransformerSymbol(node, fixture.target_id);
+        try bindPendingHoistedTempReference(
+            &fixture.transformer,
+            editor,
+            node,
+            fixture.other_id,
+            fixture.function_scope,
+            .{ .read = true },
+        );
+    } else if (std.mem.eql(u8, mode, "wrong-reference-symbol")) {
+        const editor = try editorFor(&fixture.transformer);
+        var found = false;
+        for (editor.references.items) |*reference| {
+            if (reference.node_index != fixture.reference_node) continue;
+            reference.symbol_id = fixture.other_id;
+            found = true;
+            break;
+        }
+        if (!found) return error.MissingReferenceRecord;
+        try bindPendingHoistedTempReference(
+            &fixture.transformer,
+            editor,
+            fixture.reference_node,
+            fixture.target_id,
+            fixture.function_scope,
+            .{ .read = true },
+        );
+    } else if (std.mem.eql(u8, mode, "wrong-reference-flags")) {
+        const editor = try editorFor(&fixture.transformer);
+        var found = false;
+        for (editor.references.items) |*reference| {
+            if (reference.node_index != fixture.reference_node) continue;
+            reference.flags = .{ .write = true };
+            found = true;
+            break;
+        }
+        if (!found) return error.MissingReferenceRecord;
+        try bindPendingHoistedTempReference(
+            &fixture.transformer,
+            editor,
+            fixture.reference_node,
+            fixture.target_id,
+            fixture.function_scope,
+            .{ .read = true },
+        );
+    } else if (std.mem.eql(u8, mode, "invalid-existing-scope")) {
+        const editor = try editorFor(&fixture.transformer);
+        var found = false;
+        for (editor.references.items) |*reference| {
+            if (reference.node_index != fixture.reference_node) continue;
+            reference.scope_id = .none;
+            found = true;
+            break;
+        }
+        if (!found) return error.MissingReferenceRecord;
+        try bindPendingHoistedTempReference(
+            &fixture.transformer,
+            editor,
+            fixture.reference_node,
+            fixture.target_id,
+            fixture.program_scope,
+            .{ .read = true },
+        );
+    } else {
+        return error.UnknownHostilePanicMode;
+    }
+    return error.HostileMutationWasAccepted;
+}
+
+fn isSemanticEditPanicChild() bool {
+    return std.testing.environ.containsUnemptyConstant("ZTS_6029_HOSTILE_PANIC_MODE");
+}
+
+test "hostile SymbolId 6029 reject conflicting transformer/editor SID" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("conflicting-transformer-editor", "InvalidSymbol");
+}
+
+test "hostile SymbolId 6029 reject conflicting expected SID" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("conflicting-expected", "InvalidSymbol");
+}
+
+test "hostile SymbolId 6029 reject wrong reference symbol" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("wrong-reference-symbol", "InvalidSymbol");
+}
+
+test "hostile SymbolId 6029 reject wrong reference flags" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("wrong-reference-flags", "InvalidSymbol");
+}
+
+test "hostile SymbolId 6029 relocates existing reference to requested scope" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+    const editor = try editorFor(&fixture.transformer);
+    const before = try editor.referenceForNode(fixture.reference_node) orelse return error.MissingReferenceRecord;
+    try std.testing.expectEqual(fixture.function_scope, before.scope_id);
+    try bindPendingHoistedTempReference(
+        &fixture.transformer,
+        editor,
+        fixture.reference_node,
+        fixture.target_id,
+        fixture.program_scope,
+        .{ .read = true },
+    );
+    const after = try editor.referenceForNode(fixture.reference_node) orelse return error.MissingReferenceRecord;
+    try std.testing.expectEqual(fixture.program_scope, after.scope_id);
+}
+
+test "hostile SymbolId 6029 reuses existing reference without double counting" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+    const editor = try editorFor(&fixture.transformer);
+    const reference_count = editor.symbols.items[@backingInt(fixture.target_id)].reference_count;
+    const write_count = editor.symbols.items[@backingInt(fixture.target_id)].write_count;
+    const reference_len = editor.references.items.len;
+    try bindPendingHoistedTempReference(
+        &fixture.transformer,
+        editor,
+        fixture.reference_node,
+        fixture.target_id,
+        fixture.function_scope,
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(reference_len, editor.references.items.len);
+    try std.testing.expectEqual(reference_count, editor.symbols.items[@backingInt(fixture.target_id)].reference_count);
+    try std.testing.expectEqual(write_count, editor.symbols.items[@backingInt(fixture.target_id)].write_count);
+}
+
+test "hostile SymbolId 6029 preserves copied SID while attaching reference" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+    const node = try fixture.syntheticReference();
+    const editor = try fixture.setEditorSymbol(node, fixture.target_id);
+    try fixture.setTransformerSymbol(node, fixture.target_id);
+    const before = editor.symbols.items[@backingInt(fixture.target_id)].reference_count;
+    try bindPendingHoistedTempReference(
+        &fixture.transformer,
+        editor,
+        node,
+        fixture.target_id,
+        fixture.function_scope,
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(@as(?u32, @backingInt(fixture.target_id)), fixture.transformer.getSymbolIdAt(node));
+    try std.testing.expectEqual(@as(?u32, @backingInt(fixture.target_id)), editor.symbol_ids.items[@backingInt(node)]);
+    const reference = try editor.referenceForNode(node) orelse return error.MissingCopiedReference;
+    try std.testing.expectEqual(fixture.target_id, reference.symbol_id);
+    try std.testing.expectEqual(before + 1, editor.symbols.items[@backingInt(fixture.target_id)].reference_count);
+}
+
+test "hostile SymbolId 6029 preserves fallback addReference" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+    const node = try fixture.syntheticReference();
+    const editor = try fixture.setEditorSymbol(node, null);
+    try fixture.setTransformerSymbol(node, null);
+    try bindPendingHoistedTempReference(
+        &fixture.transformer,
+        editor,
+        node,
+        fixture.target_id,
+        fixture.function_scope,
+        .{ .read = true },
+    );
+    const reference = try editor.referenceForNode(node) orelse return error.MissingFallbackReference;
+    try std.testing.expectEqual(fixture.target_id, reference.symbol_id);
+    try std.testing.expect(reference.flags.read);
+    try std.testing.expect(!reference.flags.write);
+}
+
+test "hostile SymbolId 6029 writes assigned SID to transformer map" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try HoistedTempHostileFixture.init(arena.allocator());
+    const node = try fixture.syntheticReference();
+    const editor = try fixture.setEditorSymbol(node, null);
+    try fixture.setTransformerSymbol(node, null);
+    try bindPendingHoistedTempReference(
+        &fixture.transformer,
+        editor,
+        node,
+        fixture.target_id,
+        fixture.function_scope,
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(@as(?u32, @backingInt(fixture.target_id)), fixture.transformer.getSymbolIdAt(node));
+    try std.testing.expectEqual(@as(?u32, @backingInt(fixture.target_id)), editor.symbol_ids.items[@backingInt(node)]);
+}
+
+test "hostile SymbolId 6029 fail closed on invalid existing reference" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("invalid-existing-scope", "InvalidScope");
+}
