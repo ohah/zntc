@@ -4952,7 +4952,6 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
 // the isolated audit worktree; it is not part of the repository changes.
 const HoistedTempHostileFixture = struct {
     const Parser = @import("../../parser/parser.zig").Parser;
-    const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 
     allocator: std.mem.Allocator,
