@@ -6218,6 +6218,124 @@ fn canRetainGraphForSimpleDefineReferences(
     return found_define;
 }
 
+const SimpleConsoleDrop = struct {
+    object_reference: u32,
+};
+
+/// A dropped `console.member(...)` statement can keep the graph only when the
+/// removed call contains no nested bindings/references beyond its exact local
+/// `console` read. Literal-only arguments make the editor's unreachable-node
+/// pruning sufficient to remove that one reference without reanalysis.
+fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?SimpleConsoleDrop {
+    if (statement.tag != .expression_statement) return null;
+    const call_index = statement.data.unary.operand;
+    if (call_index.isNone() or @backingInt(call_index) >= ast.nodes.items.len) return null;
+    const call = ast.getNode(call_index);
+    if (call.tag != .call_expression) return null;
+    const extra = call.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return null;
+    const extras = ast.extra_data.items;
+    const callee_raw = extras[extra];
+    if (callee_raw >= ast.nodes.items.len) return null;
+    const callee = ast.nodes.items[callee_raw];
+    if (callee.tag != .static_member_expression) return null;
+    const member_extra = callee.data.extra;
+    if (member_extra >= extras.len or extras.len - member_extra < 2) return null;
+    const object_raw = extras[member_extra];
+    if (object_raw >= ast.nodes.items.len) return null;
+    const object = ast.nodes.items[object_raw];
+    if (object.tag != .identifier_reference or
+        !std.mem.eql(u8, ast.getText(object.data.string_ref), "console")) return null;
+
+    const args_start: usize = extras[extra + 1];
+    const args_len: usize = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return null;
+    for (extras[args_start .. args_start + args_len]) |raw_arg| {
+        if (raw_arg >= ast.nodes.items.len) return null;
+        switch (ast.nodes.items[raw_arg].tag) {
+            .boolean_literal,
+            .null_literal,
+            .numeric_literal,
+            .string_literal,
+            .bigint_literal,
+            .regexp_literal,
+            => {},
+            else => return null,
+        }
+    }
+    return .{
+        .object_reference = object_raw,
+    };
+}
+
+fn hasExactLocalReference(
+    semantic: *const ModuleSemanticData,
+    raw_node: u32,
+    expected_scope: u32,
+) bool {
+    if (raw_node >= semantic.symbol_ids.len) return false;
+    const symbol_id = semantic.symbol_ids[raw_node] orelse return false;
+    if (symbol_id >= semantic.symbols.items.len) return false;
+    var found = false;
+    for (semantic.references) |reference| {
+        if (reference.node_index.isNone() or @backingInt(reference.node_index) != raw_node) continue;
+        if (found or @backingInt(reference.symbol_id) != symbol_id or
+            reference.scope_id.isNone() or @backingInt(reference.scope_id) >= semantic.scopes.len or
+            @backingInt(reference.scope_id) != expected_scope) return false;
+        found = true;
+    }
+    const symbol = semantic.symbols.items[symbol_id];
+    return found and symbol.kind != .import_binding and symbol.synthetic_kind == null and
+        !symbol.scope_id.isNone() and @backingInt(symbol.scope_id) < semantic.scopes.len;
+}
+
+fn sourceReferenceScope(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    raw_node: u32,
+) ?u32 {
+    var current = raw_node;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        if (semantic.scope_owner_map.get(current)) |scope| {
+            if (scope >= semantic.scopes.len) return null;
+            return scope;
+        }
+        current = parents.get(current) orelse return null;
+    }
+    return null;
+}
+
+fn canRetainGraphForSimpleConsoleDrops(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) bool {
+    if (semantic.scopes.len == 0 or ast.nodes.items.len == 0) return false;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return false;
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    if (!collectRetainedPreflightParents(allocator, ast, root, &parents)) return false;
+    const reachable_nodes = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
+    defer allocator.free(reachable_nodes);
+    var found_drop = false;
+    for (reachable_nodes) |raw_node| {
+        const statement = ast.nodes.items[raw_node];
+        if (!drop_mod.isConsoleCallInAst(ast, statement)) continue;
+        found_drop = true;
+        const shape = simpleConsoleDropShape(ast, statement) orelse return false;
+        const expected_scope = sourceReferenceScope(ast, semantic, &parents, shape.object_reference) orelse return false;
+        if (!hasExactLocalReference(semantic, shape.object_reference, expected_scope)) return false;
+    }
+    return found_drop;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -6276,13 +6394,19 @@ fn canKeepPrepassSemanticGraph(
         semantic,
         options.define,
     );
+    const has_drop_console = options.drop_console and hasDroppedConsoleStatement(ast);
+    const retained_simple_console_drops = has_drop_console and canRetainGraphForSimpleConsoleDrops(
+        self.allocator,
+        ast,
+        semantic,
+    );
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators)) return false;
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators) or options.minify_syntax or
-        (options.drop_console and hasDroppedConsoleStatement(ast)) or
+        (has_drop_console and !retained_simple_console_drops) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
@@ -6299,7 +6423,8 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_simple_define or safe_styled_components or
+    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_simple_define or
+        retained_simple_console_drops or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
@@ -6623,6 +6748,302 @@ test "prepass records generated globals on fallback and gates define globals on 
             ),
         );
     }
+}
+
+const ConsolePreflightMutation = enum {
+    none,
+    empty_scope_map,
+    truncated_symbol_id_map,
+    missing_symbol_id,
+    invalid_symbol_id,
+    import_binding,
+    duplicate_reference,
+    missing_reference,
+    mismatched_reference_symbol,
+    invalid_reference_scope,
+    wrong_valid_reference_scope,
+    missing_scope_owner,
+    wrong_scope_owner,
+    invalid_binding_scope,
+    out_of_range_binding_scope,
+    synthetic_binding,
+    truncated_argument_slice,
+    invalid_argument_node,
+};
+
+fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMutation) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var target_raw: ?u32 = null;
+    var target_call_extra: ?usize = null;
+    for (try ast_walk.collectReachableNodeIndices(allocator, &parser.ast)) |raw| {
+        const statement = parser.ast.nodes.items[raw];
+        if (!drop_mod.isConsoleCallInAst(&parser.ast, statement)) continue;
+        const shape = simpleConsoleDropShape(&parser.ast, statement) orelse return false;
+        target_raw = shape.object_reference;
+        const call_idx = statement.data.unary.operand;
+        target_call_extra = parser.ast.getNode(call_idx).data.extra;
+        break;
+    }
+    var target_reference_index: ?usize = null;
+    if (target_raw) |raw| {
+        for (analyzer.references.items, 0..) |reference, index| {
+            if (!reference.node_index.isNone() and @backingInt(reference.node_index) == raw) {
+                target_reference_index = index;
+                break;
+            }
+        }
+    }
+    if (target_raw) |raw| {
+        switch (mutation) {
+            .none => {},
+            .empty_scope_map => analyzer.scopes.items.len = 0,
+            .truncated_symbol_id_map => analyzer.symbol_ids.items.len = raw,
+            .missing_symbol_id => {
+                if (raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
+                analyzer.symbol_ids.items[raw] = null;
+            },
+            .invalid_symbol_id => {
+                if (raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
+                analyzer.symbol_ids.items[raw] = @intCast(analyzer.symbols.items.len);
+            },
+            .import_binding => {
+                const symbol_id = if (raw < analyzer.symbol_ids.items.len)
+                    analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol
+                else
+                    return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].kind = .import_binding;
+            },
+            .duplicate_reference => {
+                const index = target_reference_index orelse return error.MissingTargetReference;
+                const reference = analyzer.references.items[index];
+                try analyzer.references.append(allocator, reference);
+            },
+            .missing_reference => {
+                const index = target_reference_index orelse return error.MissingTargetReference;
+                _ = analyzer.references.orderedRemove(index);
+            },
+            .mismatched_reference_symbol => {
+                const index = target_reference_index orelse return error.MissingTargetReference;
+                const expected = @backingInt(analyzer.references.items[index].symbol_id);
+                var replacement: ?u32 = null;
+                for (analyzer.symbols.items, 0..) |_, candidate| {
+                    if (candidate != expected) {
+                        replacement = @intCast(candidate);
+                        break;
+                    }
+                }
+                analyzer.references.items[index].symbol_id = @fromBackingInt(
+                    replacement orelse return error.MissingReplacementSymbol,
+                );
+            },
+            .invalid_reference_scope => {
+                const index = target_reference_index orelse return error.MissingTargetReference;
+                analyzer.references.items[index].scope_id = @fromBackingInt(@intCast(analyzer.scopes.items.len + 1));
+            },
+            .wrong_valid_reference_scope => {
+                const index = target_reference_index orelse return error.MissingTargetReference;
+                const expected = @backingInt(analyzer.references.items[index].scope_id);
+                var replacement: ?u32 = null;
+                for (analyzer.scopes.items, 0..) |_, candidate| {
+                    if (candidate != expected) {
+                        replacement = @intCast(candidate);
+                        break;
+                    }
+                }
+                analyzer.references.items[index].scope_id = @fromBackingInt(
+                    replacement orelse return error.MissingReplacementScope,
+                );
+            },
+            .missing_scope_owner => {
+                for (parser.ast.nodes.items, 0..) |node, raw_node| {
+                    if (node.tag == .program) {
+                        _ = analyzer.scope_owner_map.remove(@intCast(raw_node));
+                        break;
+                    }
+                }
+            },
+            .wrong_scope_owner => {
+                for (parser.ast.nodes.items, 0..) |node, raw_node| {
+                    if (node.tag == .program) {
+                        try analyzer.scope_owner_map.put(
+                            allocator,
+                            @intCast(raw_node),
+                            @intCast(analyzer.scopes.items.len + 1),
+                        );
+                        break;
+                    }
+                }
+            },
+            .invalid_binding_scope => {
+                const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].scope_id = .none;
+            },
+            .out_of_range_binding_scope => {
+                const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].scope_id = @fromBackingInt(@intCast(analyzer.scopes.items.len + 1));
+            },
+            .synthetic_binding => {
+                const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].synthetic_kind = .runtime_helper_import;
+            },
+            .truncated_argument_slice => {
+                const extra = target_call_extra orelse return error.MissingTargetCall;
+                parser.ast.extra_data.items[extra + 1] = @intCast(parser.ast.extra_data.items.len);
+            },
+            .invalid_argument_node => {
+                const extra = target_call_extra orelse return error.MissingTargetCall;
+                const args_start = parser.ast.extra_data.items[extra + 1];
+                if (args_start >= parser.ast.extra_data.items.len) return error.MissingTargetArgument;
+                parser.ast.extra_data.items[args_start] = @intCast(parser.ast.nodes.items.len);
+            },
+        }
+    } else if (mutation != .none) {
+        return false;
+    }
+
+    const semantic = ModuleSemanticData{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    return canRetainGraphForSimpleConsoleDrops(allocator, &parser.ast, &semantic);
+}
+
+test "simple drop-console retains only exact local reads with scalar arguments" {
+    const source = "const console = {}; const other = 1; console.log(\"ok\");";
+    const unsafe_sources = [_][]const u8{
+        "console.log(\"global\");",
+        "const console = {}; console.log(other);",
+        "const console = {}; console.log(() => 1);",
+        "const console = {}; console.log({ value: 1 });",
+        "const console = {}; console.log(...[]);",
+        "const console = {}; console.log(\"ok\"); console.warn(other);",
+        "import console from 'pkg'; console.log(\"ok\");",
+        "const console = {}; console[\"log\"](\"ok\");",
+        "const console = {}; console.log.call(console, \"ok\");",
+        "const console = {}; console.log(class Local {});",
+        "const console = {}; console.log(async () => 1);",
+        "const console = {}; console.log(`value ${other}`);",
+    };
+    for (unsafe_sources) |unsafe_source| {
+        try std.testing.expect(!try canRetainConsoleDropForTest(unsafe_source, .none));
+    }
+
+    const mutations = [_]ConsolePreflightMutation{
+        .empty_scope_map,
+        .truncated_symbol_id_map,
+        .missing_symbol_id,
+        .invalid_symbol_id,
+        .import_binding,
+        .duplicate_reference,
+        .missing_reference,
+        .mismatched_reference_symbol,
+        .invalid_reference_scope,
+        .wrong_valid_reference_scope,
+        .missing_scope_owner,
+        .wrong_scope_owner,
+        .invalid_binding_scope,
+        .out_of_range_binding_scope,
+        .synthetic_binding,
+        .truncated_argument_slice,
+        .invalid_argument_node,
+    };
+    for (mutations) |mutation| {
+        const mutation_source = if (mutation == .wrong_valid_reference_scope)
+            "const console = {}; function read() { console.log(\"ok\"); }"
+        else
+            source;
+        try std.testing.expect(!try canRetainConsoleDropForTest(mutation_source, mutation));
+    }
+    try std.testing.expect(!try canRetainConsoleDropForTest("const value = 1;", .none));
+
+    try std.testing.expect(try canRetainConsoleDropForTest(
+        "const console = {}; console.log(\"ok\", 1, true, null, 1n, /x/);",
+        .none,
+    ));
+}
+
+test "simple drop-console graph is retained by the full prepass gate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const console = {}; console.log(\"ok\");";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const test_context = .{
+        .allocator = allocator,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    var allow_super_get = false;
+    var allow_super_set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(
+        &test_context,
+        &module,
+        .{ .strip_types = true, .drop_console = true },
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+    ));
 }
 
 const DefinePreflightMutation = enum {
