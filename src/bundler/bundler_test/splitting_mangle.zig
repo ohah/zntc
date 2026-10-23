@@ -13,6 +13,55 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
+fn isIdentifierByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
+}
+
+fn isWhitespaceByte(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+fn outputDeclaresIdentifier(output: []const u8, name: []const u8) bool {
+    const keywords = [_][]const u8{ "function ", "var ", "let ", "const ", "class " };
+    var buf: [160]u8 = undefined;
+    for (keywords) |keyword| {
+        const pattern = std.fmt.bufPrint(&buf, "{s}{s}", .{ keyword, name }) catch continue;
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, output, from, pattern)) |pos| {
+            const after = pos + pattern.len;
+            if (after == output.len or !isIdentifierByte(output[after])) return true;
+            from = pos + 1;
+        }
+    }
+    return false;
+}
+
+fn splitExportLocalName(output: []const u8, public_name: []const u8) ![]const u8 {
+    var marker_buf: [160]u8 = undefined;
+    const marker = try std.fmt.bufPrint(&marker_buf, " as {s}", .{public_name});
+    const marker_pos = std.mem.indexOf(u8, output, marker) orelse return error.TestUnexpectedResult;
+
+    var end = marker_pos;
+    while (end > 0 and isWhitespaceByte(output[end - 1])) end -= 1;
+    var start = end;
+    while (start > 0 and isIdentifierByte(output[start - 1])) start -= 1;
+    if (start == end) return error.TestUnexpectedResult;
+    return output[start..end];
+}
+
+fn pathBasename(path: []const u8) []const u8 {
+    var start: usize = 0;
+    for (path, 0..) |c, index| {
+        if (c == '/' or c == '\\') start = index + 1;
+    }
+    return path[start..];
+}
+
+fn importRefersToOutput(import_path: []const u8, output_path: []const u8) bool {
+    return std.mem.eql(u8, import_path, output_path) or
+        std.mem.eql(u8, pathBasename(import_path), pathBasename(output_path));
+}
+
 // ============================================================
 // 1. dynamic import 청크의 내부(비-export) 로컬은 mangle 된다.
 // ============================================================
@@ -104,17 +153,39 @@ test "SplitMangle: cross-chunk import 이름과 export 이름이 minify 후에�
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
 
-    var has_internal = false;
-    var import_count: usize = 0;
-    var export_count: usize = 0;
-    for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "anotherInternalHelper") != null) has_internal = true;
-        // 경계 심볼은 import/export 양쪽에 같은 public 이름으로 등장해야 cross-chunk 가 깨지지 않음.
-        if (std.mem.indexOf(u8, o.contents, "sharedExportedValue") != null) import_count += 1;
+    var provider_index: ?usize = null;
+    for (outs, 0..) |out, index| {
+        for (out.exports) |name| {
+            if (std.mem.eql(u8, name, "sharedExportedValue")) {
+                provider_index = index;
+                break;
+            }
+        }
+        if (provider_index != null) break;
     }
-    // 내부 헬퍼는 mangle.
-    try std.testing.expect(!has_internal);
-    // 경계 심볼은 최소 한 청크(export)와 한 청크(import)에 등장 → 2개 이상 파일에서 발견.
-    try std.testing.expect(import_count >= 2);
-    _ = &export_count;
+    const provider_idx = provider_index orelse return error.TestUnexpectedResult;
+    const provider = outs[provider_idx];
+    const local_name = try splitExportLocalName(provider.contents, "sharedExportedValue");
+
+    // 실제 chunk export alias와 declaration을 연결한다. 공개 계약 이름은 유지되지만
+    // provider 내부 local은 minify 되고, writer가 그 local을 export 해야 한다.
+    try std.testing.expect(!std.mem.eql(u8, local_name, "sharedExportedValue"));
+    try std.testing.expect(outputDeclaresIdentifier(provider.contents, local_name));
+    try std.testing.expect(std.mem.indexOf(u8, provider.contents, "anotherInternalHelper") == null);
+
+    var found_consumer = false;
+    for (outs, 0..) |out, index| {
+        if (index == provider_idx) continue;
+        var imports_provider = false;
+        for (out.imports) |import_path| {
+            if (importRefersToOutput(import_path, provider.path)) {
+                imports_provider = true;
+                break;
+            }
+        }
+        if (!imports_provider) continue;
+        found_consumer = true;
+        try std.testing.expect(std.mem.indexOf(u8, out.contents, "sharedExportedValue") != null);
+    }
+    try std.testing.expect(found_consumer);
 }
