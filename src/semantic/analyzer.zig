@@ -1233,6 +1233,14 @@ pub const SemanticAnalyzer = struct {
         return null;
     }
 
+    fn markJsxComponentSymbol(self: *SemanticAnalyzer, node_idx: NodeIndex) void {
+        const node_raw = @backingInt(node_idx);
+        if (node_raw >= self.symbol_ids.items.len) return;
+        const symbol_id = self.symbol_ids.items[node_raw] orelse return;
+        if (symbol_id >= self.symbols.items.len) return;
+        self.symbols.items[symbol_id].requires_uppercase_first_char = true;
+    }
+
     /// 식별자 참조를 해결한다.
     /// 현재 스코프부터 부모 체인을 따라 올라가며 scope_maps로 O(1) 조회.
     /// 심볼을 찾으면 reference_count를 증가시킨다.
@@ -2110,6 +2118,7 @@ pub const SemanticAnalyzer = struct {
                 const name = self.ast.getSourceText(node.span);
                 if (name.len > 0 and !std.ascii.isLower(name[0])) {
                     self.resolveIdentifier(name, idx, .{ .read = true });
+                    self.markJsxComponentSymbol(idx);
                 }
             },
             // <Foo.Bar> / <foo.bar>: root 식별자는 항상 변수 reference (대소문자 무관).

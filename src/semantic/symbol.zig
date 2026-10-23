@@ -417,6 +417,10 @@ pub const Symbol = struct {
     /// Linkers and codegen consume this only after its exact SymbolId exists.
     output_name_hint: []const u8 = "",
 
+    /// JSX component bindings must keep a non-lowercase initial output character
+    /// when JSX is preserved, since lowercase JSX tags are intrinsic elements.
+    requires_uppercase_first_char: bool = false,
+
     /// Owner symbol for virtual references attached to an emitted binding,
     /// such as an enum member property owned by its generated IIFE parameter.
     synthetic_owner_id: ?SymbolId = null,

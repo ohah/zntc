@@ -26,6 +26,40 @@ fn fnBody(code: []const u8, sig: []const u8, ret_marker: []const u8) ?[]const u8
     return code[start .. ret_idx + ret_marker.len];
 }
 
+fn jsxIdentifierByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
+}
+
+fn hasFunctionDeclaration(code: []const u8, name: []const u8) bool {
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, code, search_from, "function ")) |pos| {
+        const name_start = pos + "function ".len;
+        const name_end = name_start + name.len;
+        if (name_end <= code.len and
+            std.mem.eql(u8, code[name_start..name_end], name) and
+            (name_end == code.len or !jsxIdentifierByte(code[name_end]))) return true;
+        search_from = name_start;
+    }
+    return false;
+}
+
+fn jsxNamePairForProbe(code: []const u8, search_from: usize) !struct { root: []const u8, value: []const u8, next: usize } {
+    const marker = "probe={";
+    const probe_pos = std.mem.indexOfPos(u8, code, search_from, marker) orelse return error.TestUnexpectedResult;
+    var opening = probe_pos;
+    while (opening > 0 and code[opening] != '<') opening -= 1;
+    if (code[opening] != '<') return error.TestUnexpectedResult;
+    var root_start = opening + 1;
+    while (root_start < code.len and (code[root_start] == ' ' or code[root_start] == '\t')) root_start += 1;
+    var root_end = root_start;
+    while (root_end < code.len and jsxIdentifierByte(code[root_end])) root_end += 1;
+    const value_start = probe_pos + marker.len;
+    var value_end = value_start;
+    while (value_end < code.len and jsxIdentifierByte(code[value_end])) value_end += 1;
+    if (root_start == root_end or value_start == value_end) return error.TestUnexpectedResult;
+    return .{ .root = code[root_start..root_end], .value = code[value_start..value_end], .next = value_end };
+}
+
 fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !helpers.Bundled {
     // RN/Hermes 환경 시뮬레이션: block_scoping (let → var) 강제 lowering.
     return helpers.bundleEntry(backing, tmp, entry_name, .{
@@ -347,4 +381,102 @@ test "#4470 preserve: JSX 엘리먼트/member 태그가 deconflict rename 을 �
     // 실제 심볼을 가리켜야 한다.
     try testing.expect(std.mem.indexOf(u8, code, "<Widget ") != null);
     try testing.expect(std.mem.indexOf(u8, code, ".Panel") != null);
+}
+
+test "#6185 preserve JSX root and value use one component-safe final name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.jsx", "export function VeryLongSharedComponent() { return null; }");
+    try writeFile(tmp.dir, "b.jsx", "export function VeryLongSharedComponent() { return null; }");
+    try writeFile(tmp.dir, "entry.jsx",
+        \\import { VeryLongSharedComponent as LongImportedComponentA } from './a.jsx';
+        \\import { VeryLongSharedComponent as LongImportedComponentB } from './b.jsx';
+        \\export const first = <LongImportedComponentA probe={LongImportedComponentA} />;
+        \\export const second = <LongImportedComponentB probe={LongImportedComponentB} />;
+    );
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.jsx", .{
+        .jsx_runtime = .preserve,
+        .minify_identifiers = true,
+    });
+    defer r.deinit();
+    const code = r.code();
+    try testing.expect(!r.result.hasErrors());
+    try testing.expect(std.mem.indexOf(u8, code, "VeryLongSharedComponent") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "LongImportedComponentA") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "LongImportedComponentB") == null);
+    const first = try jsxNamePairForProbe(code, 0);
+    const second = try jsxNamePairForProbe(code, first.next);
+    try testing.expectEqualStrings(first.root, first.value);
+    try testing.expectEqualStrings(second.root, second.value);
+    try testing.expect(!std.mem.eql(u8, first.root, second.root));
+    try testing.expect(!std.ascii.isLower(first.root[0]));
+    try testing.expect(!std.ascii.isLower(second.root[0]));
+    try testing.expect(hasFunctionDeclaration(code, first.root));
+    try testing.expect(hasFunctionDeclaration(code, second.root));
+}
+
+test "#6185 preserve JSX one-character imported component gets uppercase Phase A name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "short.jsx", "export function x() { return null; }");
+    try writeFile(tmp.dir, "entry.jsx",
+        \\import { x as ImportedComponent } from './short.jsx';
+        \\export const view = <ImportedComponent probe={ImportedComponent} />;
+    );
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.jsx", .{
+        .jsx_runtime = .preserve,
+        .minify_identifiers = true,
+    });
+    defer r.deinit();
+    try testing.expect(!r.result.hasErrors());
+    const code = r.code();
+    const pair = try jsxNamePairForProbe(code, 0);
+    try testing.expectEqualStrings(pair.root, pair.value);
+    try testing.expect(!std.ascii.isLower(pair.root[0]));
+    try testing.expect(hasFunctionDeclaration(code, pair.root));
+}
+
+test "#6185 preserve JSX nested component gets uppercase Phase B name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.jsx",
+        \\export function App() {
+        \\  function VeryLongNestedComponent() { return null; }
+        \\  return <VeryLongNestedComponent probe={VeryLongNestedComponent} />;
+        \\}
+    );
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.jsx", .{
+        .jsx_runtime = .preserve,
+        .minify_identifiers = true,
+    });
+    defer r.deinit();
+    try testing.expect(!r.result.hasErrors());
+    const code = r.code();
+    const pair = try jsxNamePairForProbe(code, 0);
+    try testing.expectEqualStrings(pair.root, pair.value);
+    try testing.expect(!std.ascii.isLower(pair.root[0]));
+    try testing.expect(hasFunctionDeclaration(code, pair.root));
+}
+
+test "#6185 preserve JSX imported component stays uppercase without identifier minification" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "component.jsx", "export function x() { return null; }");
+    try writeFile(tmp.dir, "entry.jsx",
+        \\import { x as ImportedComponent } from './component.jsx';
+        \\function X() { return null; }
+        \\export const view = <ImportedComponent probe={ImportedComponent} />;
+    );
+    var r = try helpers.bundleEntry(testing.allocator, &tmp, "entry.jsx", .{
+        .jsx_runtime = .preserve,
+        .minify_identifiers = false,
+    });
+    defer r.deinit();
+    try testing.expect(!r.result.hasErrors());
+    const code = r.code();
+    const pair = try jsxNamePairForProbe(code, 0);
+    try testing.expectEqualStrings(pair.root, pair.value);
+    try testing.expect(!std.ascii.isLower(pair.root[0]));
+    try testing.expect(!std.mem.eql(u8, pair.root, "X"));
+    try testing.expect(hasFunctionDeclaration(code, pair.root));
 }

@@ -28,6 +28,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
 
     try testing.expect(ana.symbols.items.len > 0); // 비어있으면 검증 무의미
     ana.symbols.items[0].output_name_hint = "deferred_output_name";
+    ana.symbols.items[0].requires_uppercase_first_char = true;
 
     try testing.expect(ana.scope_maps.items.len > 0); // 맵 round-trip 검증 의미 보장
     try testing.expect(ana.scope_owner_map.count() > 0);
@@ -91,6 +92,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
         try testing.expectEqual(s1.declaration_span, s2.declaration_span);
         try testing.expectEqualStrings(s1.synthetic_name, s2.synthetic_name);
         try testing.expectEqualStrings(s1.output_name_hint, s2.output_name_hint);
+        try testing.expectEqual(s1.requires_uppercase_first_char, s2.requires_uppercase_first_char);
         try testing.expectEqual(s1.synthetic_owner_id, s2.synthetic_owner_id);
     }
 
@@ -457,6 +459,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.write_count = 0;
             s.const_kind = .number;
             s.synthetic_kind = null;
+            s.requires_uppercase_first_char = false;
             s.synthetic_owner_id = null;
             try symbols.append(a, s);
 

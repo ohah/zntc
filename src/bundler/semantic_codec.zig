@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v15: SyntheticKind includes exact lexical-this and arguments capture bindings.
-pub const FORMAT_VERSION: u32 = 15;
+// v16: Symbol records include the preserved-JSX component-name constraint.
+pub const FORMAT_VERSION: u32 = 16;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -71,6 +71,7 @@ comptime {
         "kind:semantic.symbol.SymbolKind;decl_flags:semantic.symbol.DeclFlags;declaration_span:lexer.token.Span;" ++
         "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
         "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;output_name_hint:[]const u8;" ++
+        "requires_uppercase_first_char:bool;" ++
         "synthetic_owner_id:?semantic.symbol.SymbolId;";
     if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
         @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
@@ -132,6 +133,7 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     try putU8(buf, alloc, if (s.synthetic_kind) |k| @backingInt(k) else 0xFF);
     try putBytes(buf, alloc, s.synthetic_name);
     try putBytes(buf, alloc, s.output_name_hint);
+    try putU8(buf, alloc, @intFromBool(s.requires_uppercase_first_char));
     try putU32(buf, alloc, if (s.synthetic_owner_id) |owner| @backingInt(owner) else NULL_U32);
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
@@ -383,6 +385,7 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
     s.synthetic_name = if (name_text.len == 0) "" else try arena.dupe(u8, name_text);
     const output_name_hint = try r.bytes();
     s.output_name_hint = if (output_name_hint.len == 0) "" else try arena.dupe(u8, output_name_hint);
+    s.requires_uppercase_first_char = (try r.byte()) != 0;
     const owner_id = try r.u32v();
     s.synthetic_owner_id = if (owner_id == NULL_U32) null else @fromBackingInt(@intCast(owner_id));
     return s;
