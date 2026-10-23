@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testBinary = path.join(root, "zig-out/bin/lib-unit-test");
-const testFilter = "hostile";
+const compileTestFilter = "hostile";
 const files = {
   hoist: path.join(root, "src/transformer/transformer/semantic_edit.zig"),
   namespace: path.join(root, "src/bundler/linker/metadata.zig"),
@@ -79,16 +79,16 @@ function writeSources(sources) {
 }
 
 function build(label) {
-  const result = run("zig", ["build", "test-bin", "-Dtest-filter=" + testFilter]);
+  const result = run("zig", ["build", "test-bin", "-Dtest-filter=" + compileTestFilter]);
   if (result.status !== 0) {
     fail(label + ": mutation did not compile:\n" + tail(result.output));
   }
 }
 
-function runTargetTest(expectPass, label) {
-  const result = run(testBinary, []);
+function runTargetTest(expectPass, filter, label) {
+  const result = run(testBinary, ["--test-filter", filter]);
   if (expectPass && result.status !== 0) {
-    fail(label + ": baseline hostile tests failed:\n" + tail(result.output));
+    fail(label + ": baseline hostile tests failed:\n" + result.output.trim());
   }
   if (!expectPass && result.status === 0) {
     fail(label + ": mutant escaped all hostile tests");
@@ -212,14 +212,16 @@ if (process.argv.includes("--check-only")) {
 } else {
   try {
     build("baseline");
-    runTargetTest(true, "baseline");
-    console.log("BASELINE PASS");
+    runTargetTest(true, "#6029 hostile", "baseline PR #6029");
+    runTargetTest(true, "namespace hostile", "baseline PR #6106");
+    console.log("BASELINE PASS: PR #6029 and PR #6106 hostile tests");
 
     for (const [index, mutant] of mutants.entries()) {
       writeSources(mutate(originals, mutant));
       try {
         build("mutant " + (index + 1));
-        runTargetTest(false, "mutant " + (index + 1));
+        const filter = mutant.pr === 6029 ? "#6029 hostile" : "namespace hostile";
+        runTargetTest(false, filter, "mutant " + (index + 1));
         const familyIndex = mutants.slice(0, index + 1).filter((entry) => entry.pr === mutant.pr).length;
         const familyTotal = mutants.filter((entry) => entry.pr === mutant.pr).length;
         console.log("KILLED PR #" + mutant.pr + " " + familyIndex + "/" + familyTotal + ": " + mutant.label);
