@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createFixture, runZntc } from './helpers';
@@ -29,6 +30,12 @@ const cases: Record<string, { file: string; source: string; expected: string }> 
       'const B = class { get #a() { return 1; } set #a(v) {} t() { return this.#a; } };\nconsole.log(new B().t());\n',
     expected: '1\n',
   },
+  'a decorated long private accessor with identifier minification': {
+    file: 'entry.ts',
+    source:
+      "const log: string[] = [];\nfunction d(value: any, ctx: any) { log.push(ctx.name + ':' + ctx.private); return { init(v: number) { return v * 10; }, get() { return value.get.call(this) + 1; }, set(v: number) { value.set.call(this, v); } }; }\nclass A { @d accessor #veryLongPrivateName = 1; read() { class Inner { #veryLongInnerPrivateName = 2; read() { return this.#veryLongInnerPrivateName; } } return this.#veryLongPrivateName + new Inner().read(); } write(v: number) { this.#veryLongPrivateName = v; } }\nclass B { #veryLongTopLevelPrivateName = 3; read() { return this.#veryLongTopLevelPrivateName; } }\nconst a = new A(); a.write(5); console.log(log.join(), a.read(), new B().read());\n",
+    expected: '#veryLongPrivateName:true 8 3\n',
+  },
 };
 
 describe('decorated private auto-accessors (#5669)', () => {
@@ -46,6 +53,7 @@ describe('decorated private auto-accessors (#5669)', () => {
       ['--target=es2015', '--minify'],
       ['--target=es5'],
       ['--bundle', '--target=es5'],
+      ['--bundle', '--target=esnext', '--minify-identifiers'],
     ]) {
       test(`${name}, ${args.join(' ')}`, async () => {
         const created = await createFixture({ [file]: source });
@@ -53,6 +61,16 @@ describe('decorated private auto-accessors (#5669)', () => {
         const out = join(created.dir, 'out.cjs');
         const result = await runZntc([join(created.dir, file), ...args, '-o', out]);
         expect(result.exitCode, result.stderr).toBe(0);
+        if (
+          name === 'a decorated long private accessor with identifier minification' &&
+          args.includes('--minify-identifiers')
+        ) {
+          const emitted = readFileSync(out, 'utf8');
+          expect(emitted).not.toMatch(/(?<!["'])#veryLongPrivateName\b/);
+          expect(emitted).not.toContain('#veryLongInnerPrivateName');
+          expect(emitted).not.toContain('#veryLongTopLevelPrivateName');
+          expect(emitted).toContain('"#veryLongPrivateName"');
+        }
         const run = spawnSync('node', [out], { encoding: 'utf8' });
         expect(run.status, run.stderr).toBe(0);
         expect(run.stdout).toBe(expected);
