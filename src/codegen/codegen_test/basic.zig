@@ -9,6 +9,7 @@ const e2eWithComments = helpers.e2eWithComments;
 const e2eSourceMap = helpers.e2eSourceMap;
 const TransformOptions = helpers.TransformOptions;
 const CodegenOptions = helpers.CodegenOptions;
+const ModuleFormat = @import("../options.zig").ModuleFormat;
 const Scanner = helpers.Scanner;
 const Parser = helpers.Parser;
 const Transformer = helpers.Transformer;
@@ -449,6 +450,7 @@ fn e2eWithSemanticSymbolNameOverride(
         output_name,
         ascii_only,
         false,
+        .esm,
     );
 }
 
@@ -466,6 +468,25 @@ fn e2eWithModuleSemanticSymbolNameOverride(
         output_name,
         ascii_only,
         true,
+        .esm,
+    );
+}
+
+fn e2eWithCjsModuleSemanticSymbolNameOverride(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    original: []const u8,
+    output_name: []const u8,
+    ascii_only: bool,
+) !TestResult {
+    return e2eWithSemanticSymbolNameOverrideMode(
+        backing_allocator,
+        source,
+        original,
+        output_name,
+        ascii_only,
+        true,
+        .cjs,
     );
 }
 
@@ -476,6 +497,7 @@ fn e2eWithSemanticSymbolNameOverrideMode(
     output_name: []const u8,
     ascii_only: bool,
     is_module: bool,
+    module_format: ModuleFormat,
 ) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
@@ -499,8 +521,12 @@ fn e2eWithSemanticSymbolNameOverrideMode(
 
     var binding_sid: ?u32 = null;
     for (transformer.ast.nodes.items, 0..) |node, raw_idx| {
-        if (node.tag != .binding_identifier or
-            !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), original)) continue;
+        const node_name = switch (node.tag) {
+            .binding_identifier => transformer.ast.getText(node.data.string_ref),
+            .identifier_reference, .import_default_specifier, .import_namespace_specifier => transformer.ast.getText(node.span),
+            else => continue,
+        };
+        if (!std.mem.eql(u8, node_name, original)) continue;
         if (raw_idx >= transformer.symbol_ids.items.len) continue;
         binding_sid = transformer.symbol_ids.items[raw_idx] orelse continue;
         break;
@@ -512,6 +538,7 @@ fn e2eWithSemanticSymbolNameOverrideMode(
     var cg = Codegen.initWithOptions(allocator, transformer.ast, .{
         .minify_whitespace = true,
         .ascii_only = ascii_only,
+        .module_format = module_format,
         .semantic_symbol_ids = transformer.symbol_ids.items,
         .semantic_symbols = analyzer.symbols.items,
         .semantic_symbol_name_overrides = &names,
@@ -560,6 +587,132 @@ test "Codegen: SymbolId output name override follows ESM export locals" {
             case.output_name,
             false,
         );
+        defer r.deinit();
+        try std.testing.expectEqualStrings(case.expected, r.output);
+    }
+}
+
+test "Codegen: SymbolId output name override reaches ESM named import local" {
+    var r = try e2eWithModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import {original} from './dep';original;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("import {original as chosen} from \"./dep\";chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches ESM default import local" {
+    var r = try e2eWithModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import original from './dep';original;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("import chosen from \"./dep\";chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches ESM namespace import local" {
+    var r = try e2eWithModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import * as original from './dep';original.value;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("import * as chosen from \"./dep\";chosen.value;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches CJS named import local" {
+    var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import {original} from './dep';original;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const {original:chosen}=require(\"./dep\");chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches CJS default import local" {
+    var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import original from './dep';original;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const chosen=require(\"./dep\").default;chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches CJS namespace import local" {
+    var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "import * as original from './dep';original.value;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const chosen=require(\"./dep\");chosen.value;", r.output);
+}
+
+test "Codegen: SymbolId output name override follows ESM and CJS import locals" {
+    const Case = struct {
+        is_cjs: bool = false,
+        source: []const u8,
+        output_name: []const u8 = "chosen",
+        expected: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "import {original} from './dep';original;", .expected = "import {original as chosen} from \"./dep\";chosen;" },
+        .{ .source = "import {remote as original} from './dep';original;", .expected = "import {remote as chosen} from \"./dep\";chosen;" },
+        .{ .source = "import {\"odd-key\" as original} from './dep';original;", .expected = "import {\"odd-key\" as chosen} from \"./dep\";chosen;" },
+        .{ .source = "import {original,other} from './dep';original;other;", .expected = "import {original as chosen,other} from \"./dep\";chosen;other;" },
+        .{ .source = "import original,{other} from './dep';original;other;", .expected = "import chosen, {other} from \"./dep\";chosen;other;" },
+        .{ .source = "import original from './dep';original;", .expected = "import chosen from \"./dep\";chosen;" },
+        .{ .source = "import * as original from './dep';original.value;", .expected = "import * as chosen from \"./dep\";chosen.value;" },
+        .{ .source = "import {original} from './dep';function f(original){return original;}original;", .expected = "import {original as chosen} from \"./dep\";function f(original){return original;}chosen;" },
+        .{ .source = "import {original as local} from './dep';local;", .output_name = "original", .expected = "import {original as original} from \"./dep\";original;" },
+        .{ .source = "import {original} from './dep';original;", .output_name = "renamedx", .expected = "import {original as renamedx} from \"./dep\";renamedx;" },
+        .{ .source = "import {original} from './dep';original;", .output_name = "oChosen", .expected = "import {original as oChosen} from \"./dep\";oChosen;" },
+        .{ .source = "import {original} from './dep';original;", .output_name = "chosenl", .expected = "import {original as chosenl} from \"./dep\";chosenl;" },
+        .{ .source = "import {original} from './dep';export {original as publicName};", .expected = "import {original as chosen} from \"./dep\";export {chosen as publicName};" },
+        .{ .source = "import {original} from './dep';original;", .is_cjs = true, .expected = "const {original:chosen}=require(\"./dep\");chosen;" },
+        .{ .source = "import {remote as original} from './dep';original;", .is_cjs = true, .expected = "const {remote:chosen}=require(\"./dep\");chosen;" },
+        .{ .source = "import {\"odd-key\" as original} from './dep';original;", .is_cjs = true, .expected = "const {\"odd-key\":chosen}=require(\"./dep\");chosen;" },
+        .{ .source = "import {original,other} from './dep';original;other;", .is_cjs = true, .expected = "const {original:chosen,other}=require(\"./dep\");chosen;other;" },
+        .{ .source = "import original,{other} from './dep';original;other;", .is_cjs = true, .expected = "const {\"default\":chosen,other}=require(\"./dep\");chosen;other;" },
+        .{ .source = "import original from './dep';original;", .is_cjs = true, .expected = "const chosen=require(\"./dep\").default;chosen;" },
+        .{ .source = "import * as original from './dep';original.value;", .is_cjs = true, .expected = "const chosen=require(\"./dep\");chosen.value;" },
+        .{ .source = "import {original} from './dep';function f(original){return original;}original;", .is_cjs = true, .expected = "const {original:chosen}=require(\"./dep\");function f(original){return original;}chosen;" },
+        .{ .source = "import {original} from './dep';original;", .output_name = "original", .is_cjs = true, .expected = "const {original}=require(\"./dep\");original;" },
+    };
+
+    for (cases) |case| {
+        var r = if (case.is_cjs)
+            try e2eWithCjsModuleSemanticSymbolNameOverride(
+                std.testing.allocator,
+                case.source,
+                if (std.mem.startsWith(u8, case.source, "import {original as local}")) "local" else "original",
+                case.output_name,
+                false,
+            )
+        else
+            try e2eWithModuleSemanticSymbolNameOverride(
+                std.testing.allocator,
+                case.source,
+                if (std.mem.startsWith(u8, case.source, "import {original as local}")) "local" else "original",
+                case.output_name,
+                false,
+            );
         defer r.deinit();
         try std.testing.expectEqualStrings(case.expected, r.output);
     }
