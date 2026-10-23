@@ -6448,15 +6448,15 @@ fn shouldRecordPrepassExplicitGlobals(
     ast: *const ast_mod.Ast,
     options: TransformOptions,
     flow_match_has_generated_globals: bool,
-    lowered_object_spread_global: bool,
-    lowered_exponentiation_global: bool,
+    has_lowered_object_spread: bool,
+    has_lowered_exponentiation: bool,
     safe_builtin_worklet: bool,
     lowered_simple_static_class_field_global: bool,
 ) bool {
     // Identifier-valued defines such as `undefined` are explicit globals.
     // The retained graph must carry their sidecar so later linking cannot
     // resolve them to a same-spelled source binding.
-    return flow_match_has_generated_globals or lowered_object_spread_global or lowered_exponentiation_global or
+    return flow_match_has_generated_globals or has_lowered_object_spread or has_lowered_exponentiation or
         safe_builtin_worklet or
         (can_keep_semantic_graph and define_mod.astUsesDefine(ast, options.define)) or
         lowered_simple_static_class_field_global;
@@ -6570,6 +6570,59 @@ test "primitive defines retain only an exact local reference graph" {
         false,
         false,
     ));
+}
+
+test "prepass records generated globals on fallback and gates define globals on retention" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const flag = 1; console.log(flag);");
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    const defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "false" }};
+    const options_with_define: TransformOptions = .{ .define = &defines };
+    const Case = struct {
+        name: []const u8,
+        can_keep: bool = false,
+        flow: bool = false,
+        object_spread: bool = false,
+        exponentiation: bool = false,
+        worklet: bool = false,
+        static_class: bool = false,
+        options: TransformOptions = .{},
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{ .name = "no generated global", .expected = false },
+        .{ .name = "object spread global survives reanalysis", .object_spread = true, .expected = true },
+        .{ .name = "exponentiation global survives reanalysis", .exponentiation = true, .expected = true },
+        .{ .name = "Flow helper global survives reanalysis", .flow = true, .expected = true },
+        .{ .name = "built-in worklet global survives reanalysis", .worklet = true, .expected = true },
+        .{ .name = "downlevel class global survives reanalysis", .static_class = true, .expected = true },
+        .{ .name = "multiple lowerer globals survive reanalysis", .object_spread = true, .exponentiation = true, .expected = true },
+        .{ .name = "retained define records its explicit global", .can_keep = true, .options = options_with_define, .expected = true },
+        .{ .name = "reanalyzed define leaves global discovery to analyzer", .options = options_with_define, .expected = false },
+        .{ .name = "retained graph without generated globals adds no sidecar", .can_keep = true, .expected = false },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            shouldRecordPrepassExplicitGlobals(
+                case.can_keep,
+                &parser.ast,
+                case.options,
+                case.flow,
+                case.object_spread,
+                case.exponentiation,
+                case.worklet,
+                case.static_class,
+            ),
+        );
+    }
 }
 
 const DefinePreflightMutation = enum {
@@ -7128,8 +7181,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         ast_ptr,
         opts,
         flow_match_generated_globals.has_match,
-        lowered_object_spread_global,
-        lowered_exponentiation_global,
+        has_lowered_object_spread,
+        has_lowered_exponentiation,
         safe_builtin_worklet,
         downlevel_static_public_class_field_scan orelse (opts.unsupported.class or opts.unsupported.class_field),
     );
