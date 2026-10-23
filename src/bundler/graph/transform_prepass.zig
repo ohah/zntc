@@ -6220,6 +6220,8 @@ fn canRetainGraphForSimpleDefineReferences(
 
 const SimpleConsoleDrop = struct {
     object_reference: u32,
+    arguments_start: usize,
+    arguments_len: usize,
 };
 
 fn isPrimitiveConsoleTemplateSubstitution(ast: *const ast_mod.Ast, raw_child: u32) bool {
@@ -6260,13 +6262,12 @@ fn isRetainableConsoleTemplateArgument(ast: *const ast_mod.Ast, index: ast_mod.N
     return true;
 }
 
-/// A dropped direct `console.member(...)` statement can keep the graph only
-/// when the removed call contains no nested bindings/references beyond its
-/// exact local `console` read or an exact unresolved global reference. Literal
-/// computed keys and literal-only arguments are side-effect free, including
-/// templates whose interpolations are primitive literals, so unreachable node
-/// pruning is sufficient to remove a local read; the unresolved spelling
-/// remains conservatively reserved in the graph.
+/// A dropped direct `console.member(...)` statement can keep the graph when
+/// each argument is a literal/template or one exact local identifier read.
+/// The semantic editor removes all references that become unreachable with the
+/// dropped statement. Literal computed keys and primitive template
+/// interpolations add no graph edges; unresolved global spellings remain
+/// conservatively reserved.
 fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?SimpleConsoleDrop {
     if (statement.tag != .expression_statement) return null;
     const call_index = statement.data.unary.operand;
@@ -6310,6 +6311,7 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
             .string_literal,
             .bigint_literal,
             .regexp_literal,
+            .identifier_reference,
             => {},
             .template_literal => {
                 if (!isRetainableConsoleTemplateArgument(
@@ -6322,7 +6324,37 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
     }
     return .{
         .object_reference = object_raw,
+        .arguments_start = args_start,
+        .arguments_len = args_len,
     };
+}
+
+/// Collect exact `console` read nodes for the graph-retained drop path. The
+/// transformer uses these to instantiate semantic editing before finishing;
+/// finishSemanticEdit then removes every reference in the now-unreachable
+/// dropped call, including the direct local identifier arguments.
+fn collectRetainedConsoleObjectReferences(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+) ?[]ast_mod.NodeIndex {
+    if (ast.nodes.items.len == 0) return null;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return null;
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return null;
+    defer allocator.free(reachable_nodes);
+
+    var references: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    for (reachable_nodes) |raw_node| {
+        const statement = ast.nodes.items[raw_node];
+        if (!drop_mod.isConsoleCallInAst(ast, statement)) continue;
+        const shape = simpleConsoleDropShape(ast, statement) orelse return null;
+        references.append(allocator, @fromBackingInt(shape.object_reference)) catch return null;
+    }
+    return references.toOwnedSlice(allocator) catch null;
 }
 
 fn hasExactLocalReference(
@@ -6394,6 +6426,14 @@ fn canRetainGraphForSimpleConsoleDrops(
                 semantic,
                 @fromBackingInt(shape.object_reference),
             )) return false;
+        const args_end = shape.arguments_start + shape.arguments_len;
+        if (args_end > ast.extra_data.items.len) return false;
+        for (ast.extra_data.items[shape.arguments_start..args_end]) |raw_argument| {
+            if (raw_argument >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[raw_argument].tag != .identifier_reference) continue;
+            const argument_scope = sourceReferenceScope(ast, semantic, &parents, raw_argument) orelse return false;
+            if (!hasExactLocalReference(semantic, raw_argument, argument_scope)) return false;
+        }
     }
     return found_drop;
 }
@@ -6834,6 +6874,16 @@ const ConsolePreflightMutation = enum {
     remove_unresolved_reference,
     unexpected_symbol_id,
     non_string_computed_property,
+    argument_missing_symbol_id,
+    argument_invalid_symbol_id,
+    argument_duplicate_reference,
+    argument_missing_reference,
+    argument_mismatched_reference_symbol,
+    argument_invalid_reference_scope,
+    argument_wrong_valid_reference_scope,
+    argument_import_binding,
+    argument_synthetic_binding,
+    argument_missing_scope_owner,
 };
 
 fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMutation) !bool {
@@ -6846,6 +6896,7 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
     parser.configureFromExtension(".js");
     defer parser.deinit();
     _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     defer analyzer.deinit();
@@ -6854,6 +6905,7 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
     try analyzer.analyze();
 
     var target_raw: ?u32 = null;
+    var target_argument_raw: ?u32 = null;
     var target_call_extra: ?usize = null;
     var target_computed_property: ?usize = null;
     for (try ast_walk.collectReachableNodeIndices(allocator, &parser.ast)) |raw| {
@@ -6861,6 +6913,14 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
         if (!drop_mod.isConsoleCallInAst(&parser.ast, statement)) continue;
         const shape = simpleConsoleDropShape(&parser.ast, statement) orelse return false;
         target_raw = shape.object_reference;
+        for (parser.ast.extra_data.items[shape.arguments_start .. shape.arguments_start + shape.arguments_len]) |raw_argument| {
+            if (raw_argument < parser.ast.nodes.items.len and
+                parser.ast.nodes.items[raw_argument].tag == .identifier_reference)
+            {
+                target_argument_raw = raw_argument;
+                break;
+            }
+        }
         const call_idx = statement.data.unary.operand;
         target_call_extra = parser.ast.getNode(call_idx).data.extra;
         const callee_raw = parser.ast.extra_data.items[target_call_extra.?];
@@ -6871,11 +6931,15 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
         break;
     }
     var target_reference_index: ?usize = null;
+    var target_argument_reference_index: ?usize = null;
     if (target_raw) |raw| {
         for (analyzer.references.items, 0..) |reference, index| {
             if (!reference.node_index.isNone() and @backingInt(reference.node_index) == raw) {
                 target_reference_index = index;
-                break;
+            }
+            if (target_argument_raw) |argument_raw| {
+                if (!reference.node_index.isNone() and @backingInt(reference.node_index) == argument_raw)
+                    target_argument_reference_index = index;
             }
         }
     }
@@ -7001,6 +7065,77 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
                 const property_raw = target_computed_property orelse return error.MissingComputedProperty;
                 parser.ast.nodes.items[property_raw].tag = .identifier_reference;
             },
+            .argument_missing_symbol_id => {
+                const argument_raw = target_argument_raw orelse return error.MissingTargetArgument;
+                if (argument_raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
+                analyzer.symbol_ids.items[argument_raw] = null;
+            },
+            .argument_invalid_symbol_id => {
+                const argument_raw = target_argument_raw orelse return error.MissingTargetArgument;
+                if (argument_raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
+                analyzer.symbol_ids.items[argument_raw] = @intCast(analyzer.symbols.items.len);
+            },
+            .argument_duplicate_reference => {
+                const index = target_argument_reference_index orelse return error.MissingTargetReference;
+                const reference = analyzer.references.items[index];
+                try analyzer.references.append(allocator, reference);
+            },
+            .argument_missing_reference => {
+                const index = target_argument_reference_index orelse return error.MissingTargetReference;
+                _ = analyzer.references.orderedRemove(index);
+            },
+            .argument_mismatched_reference_symbol => {
+                const index = target_argument_reference_index orelse return error.MissingTargetReference;
+                const expected = @backingInt(analyzer.references.items[index].symbol_id);
+                var replacement: ?u32 = null;
+                for (analyzer.symbols.items, 0..) |_, candidate| {
+                    if (candidate != expected) {
+                        replacement = @intCast(candidate);
+                        break;
+                    }
+                }
+                analyzer.references.items[index].symbol_id = @fromBackingInt(
+                    replacement orelse return error.MissingReplacementSymbol,
+                );
+            },
+            .argument_invalid_reference_scope => {
+                const index = target_argument_reference_index orelse return error.MissingTargetReference;
+                analyzer.references.items[index].scope_id = @fromBackingInt(@intCast(analyzer.scopes.items.len + 1));
+            },
+            .argument_wrong_valid_reference_scope => {
+                const index = target_argument_reference_index orelse return error.MissingTargetReference;
+                const expected = @backingInt(analyzer.references.items[index].scope_id);
+                var replacement: ?u32 = null;
+                for (analyzer.scopes.items, 0..) |_, candidate| {
+                    if (candidate != expected) {
+                        replacement = @intCast(candidate);
+                        break;
+                    }
+                }
+                analyzer.references.items[index].scope_id = @fromBackingInt(
+                    replacement orelse return error.MissingReplacementScope,
+                );
+            },
+            .argument_import_binding => {
+                const argument_raw = target_argument_raw orelse return error.MissingTargetArgument;
+                const symbol_id = analyzer.symbol_ids.items[argument_raw] orelse return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].kind = .import_binding;
+            },
+            .argument_synthetic_binding => {
+                const argument_raw = target_argument_raw orelse return error.MissingTargetArgument;
+                const symbol_id = analyzer.symbol_ids.items[argument_raw] orelse return error.MissingTargetSymbol;
+                analyzer.symbols.items[symbol_id].synthetic_kind = .runtime_helper_import;
+            },
+            .argument_missing_scope_owner => {
+                const argument_raw = target_argument_raw orelse return error.MissingTargetArgument;
+                if (argument_raw >= parser.ast.nodes.items.len) return error.MissingTargetArgument;
+                for (parser.ast.nodes.items, 0..) |node, raw_node| {
+                    if (node.tag == .program) {
+                        _ = analyzer.scope_owner_map.remove(@intCast(raw_node));
+                        break;
+                    }
+                }
+            },
         }
     } else if (mutation != .none) {
         return false;
@@ -7077,6 +7212,15 @@ test "simple drop-console shape accepts primitive template interpolations and re
         try std.testing.expect(retained.is_console_call);
         try std.testing.expect(retained.shape != null);
     }
+    for ([_][]const u8{
+        "console.log(value);",
+        "console.log(first, second);",
+        "console[`log`](value, `literal`);",
+    }) |source| {
+        const retained = try simpleConsoleDropShapeForTest(source);
+        try std.testing.expect(retained.is_console_call);
+        try std.testing.expect(retained.shape != null);
+    }
 
     // Ten compileable hostile forms must stay on reanalysis: each either adds
     // a source reference, executes user code, or creates a nested runtime value.
@@ -7099,20 +7243,38 @@ test "simple drop-console shape accepts primitive template interpolations and re
     }
 }
 
-test "simple drop-console retains exact local and unresolved global reads with scalar arguments" {
+test "simple drop-console retains exact local reads and scalar arguments" {
     const source = "const console = {}; const other = 1; console.log(\"ok\");";
+    const local_argument_source = "const console = {}; const other = 1; console.log(other);";
+    const multiple_local_arguments_source = "const console = {}; const first = 1; const second = 2; console.log(first, second);";
     const global_source = "console.log(\"ok\");";
     const computed_source = "const console = {}; const other = 1; console[\"log\"](\"ok\");";
     const computed_global_source = "console['log'](\"ok\");";
     const template_key_source = "const console = {}; console[`log`](`ok`);";
     const template_argument_source = "console.log(`ok`);";
+    const imported_argument_source = "import { other } from './values.js'; console.log(other);";
+    const hostile_identifier_arguments = [_][]const u8{
+        "console.log(notDeclared);",
+        "import { value } from './values.js'; console.log(value);",
+        "const record = {}; console.log(record.value);",
+        "function read() { return 1; } console.log(read());",
+        "let value = 1; console.log(value = 2);",
+        "let value = 1; console.log(++value);",
+        "const values = []; console.log(...values);",
+        "const value = {}; console.log(value?.child);",
+        "const value = 1; console.log((value, 1));",
+        "const value = 1; console.log({ value });",
+    };
+    for (hostile_identifier_arguments) |hostile_source| {
+        try std.testing.expect(!try canRetainConsoleDropForTest(hostile_source, .none));
+    }
     const unsafe_sources = [_][]const u8{
         "console.log(other);",
         "console.log(() => 1);",
         "console.log({ value: 1 });",
         "console.log(...[]);",
         "console.log(`value ${other}`);",
-        "const console = {}; console.log(other);",
+        "const console = {}; console.log(other + 1);",
         "const console = {}; console.log(() => 1);",
         "const console = {}; console.log({ value: 1 });",
         "const console = {}; console.log(...[]);",
@@ -7128,6 +7290,9 @@ test "simple drop-console retains exact local and unresolved global reads with s
         "const console = {}; console[`log${getKey()}`](\"ok\");",
         "const console = {}; console[`log` + suffix](\"ok\");",
         "const console = {}; console.log(`value ${other}`);",
+        "import { other } from './values.js'; console.log(other);",
+        "const console = {}; console.log(value);",
+        "const console = {}; console.log(other, getValue());",
         "const console = {}; console.log(`value ${getValue()}`);",
         "const console = {}; console.log(`${left}${right}`);",
         "const console = {}; console.log(...[`ok`]);",
@@ -7168,11 +7333,32 @@ test "simple drop-console retains exact local and unresolved global reads with s
         .remove_unresolved_reference,
         .unexpected_symbol_id,
         .non_string_computed_property,
+        .argument_missing_symbol_id,
+        .argument_invalid_symbol_id,
+        .argument_duplicate_reference,
+        .argument_missing_reference,
+        .argument_mismatched_reference_symbol,
+        .argument_invalid_reference_scope,
+        .argument_wrong_valid_reference_scope,
+        .argument_import_binding,
+        .argument_synthetic_binding,
+        .argument_missing_scope_owner,
     };
     for (mutations) |mutation| {
         const mutation_source = switch (mutation) {
             .wrong_valid_reference_scope => "const console = {}; function read() { console.log(\"ok\"); }",
+            .argument_wrong_valid_reference_scope => "const console = {}; const other = 1; function nested() {} console.log(other);",
             .remove_unresolved_reference, .unexpected_symbol_id => "const sentinel = 1; console.log(\"ok\");",
+            .argument_missing_symbol_id,
+            .argument_invalid_symbol_id,
+            .argument_duplicate_reference,
+            .argument_missing_reference,
+            .argument_mismatched_reference_symbol,
+            .argument_invalid_reference_scope,
+            .argument_import_binding,
+            .argument_synthetic_binding,
+            .argument_missing_scope_owner,
+            => local_argument_source,
             .non_string_computed_property => computed_source,
             else => source,
         };
@@ -7180,10 +7366,13 @@ test "simple drop-console retains exact local and unresolved global reads with s
     }
     try std.testing.expect(!try canRetainConsoleDropForTest("const value = 1;", .none));
     try std.testing.expect(try canRetainConsoleDropForTest(global_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(local_argument_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(multiple_local_arguments_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(computed_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(computed_global_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(template_key_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(template_argument_source, .none));
+    try std.testing.expect(!try canRetainConsoleDropForTest(imported_argument_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(
         "const console = {}; console[`log`](`ok`, 1, true, null, 1n, /x/);",
         .none,
@@ -7198,6 +7387,17 @@ test "simple drop-console retains exact local and unresolved global reads with s
         const mutation_source = switch (mutation) {
             .wrong_valid_reference_scope => "const console = {}; function read() { console[\"log\"](\"ok\"); }",
             .remove_unresolved_reference, .unexpected_symbol_id => "const sentinel = 1; console['log'](\"ok\");",
+            .argument_wrong_valid_reference_scope => "const console = {}; const other = 1; function nested() {} console.log(other);",
+            .argument_missing_symbol_id,
+            .argument_invalid_symbol_id,
+            .argument_duplicate_reference,
+            .argument_missing_reference,
+            .argument_mismatched_reference_symbol,
+            .argument_invalid_reference_scope,
+            .argument_import_binding,
+            .argument_synthetic_binding,
+            .argument_missing_scope_owner,
+            => local_argument_source,
             else => computed_source,
         };
         try std.testing.expect(!try canRetainConsoleDropForTest(mutation_source, mutation));
@@ -7781,7 +7981,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             @as(?bool, false);
     var allow_es5_async_method_super_get = false;
     var allow_es5_async_method_super_set = false;
-    const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
+    var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(
             self,
@@ -7791,6 +7991,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             &allow_es5_async_method_super_get,
             &allow_es5_async_method_super_set,
         );
+    var retained_console_object_references: []ast_mod.NodeIndex = &.{};
+    if (can_keep_semantic_graph and opts.drop_console and hasDroppedConsoleStatement(ast_ptr)) {
+        if (collectRetainedConsoleObjectReferences(arena_alloc, ast_ptr)) |references| {
+            retained_console_object_references = references;
+        } else {
+            // The graph gate should make this collection infallible apart from
+            // allocation failure. Keep the analyzer fallback as the recovery
+            // path if its preflight evidence cannot be reproduced here.
+            can_keep_semantic_graph = false;
+        }
+    }
     // Class lowering removes source class nodes. Cache the derived-class
     // evidence before transforming so its helper imports can be admitted only
     // for modules that passed the full retained-graph preflight.
@@ -7894,6 +8105,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    for (retained_console_object_references) |reference| {
+        transformer.removeSemanticReference(reference) catch return;
+    }
     if (transformer.finishSemanticEdit() catch return) |edited| {
         module.semantic.?.applyEdit(edited);
         transformer.symbols = module.semantic.?.symbols.items;
