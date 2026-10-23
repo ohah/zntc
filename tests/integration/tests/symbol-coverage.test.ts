@@ -2209,7 +2209,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   }
 
-  test('Stage 3 decorator graph retention keeps downlevel, direct-eval, and legacy cases on reanalysis', () => {
+  test('Stage 3 decorator graph retention keeps downlevel and direct-eval cases on reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-negative-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -2233,11 +2233,6 @@ describe('symbol identity coverage gate (#4819)', () => {
           ...stage3Source.split('\n'),
           'console.log(observe());',
         ].join('\n'),
-      },
-      {
-        name: 'legacy decorators',
-        args: ['--target=esnext', '--experimental-decorators'],
-        source: stage3Source,
       },
     ];
 
@@ -2268,6 +2263,167 @@ describe('symbol identity coverage gate (#4819)', () => {
         const sourceMode = modes.find((line) => line.includes('entry.ts'));
         expect(sourceMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
         expect(sourceMode, fixture.name).toContain('semantic_graph=reanalyzed');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const target of ['esnext', 'es2022'] as const) {
+    for (const minifyIdentifiers of [false, true]) {
+      test(`legacy decorator bundling retains its exact ${target} prepass graph${minifyIdentifiers ? ' with identifier minification' : ''}`, () => {
+        const dir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-retained-graph-'));
+        const input = join(dir, 'entry.ts');
+        const referenceFile = join(dir, 'reference.js');
+        const output = join(dir, 'out.cjs');
+        const source = [
+          'const __decorateClass = 7, __decorateParam = 8, __metadata = 9, __defProp2 = 10;',
+          'const events: Record<string, number> = { class: 0, property: 0, method: 0, parameter: 0, computed: 0 };',
+          'function classDec(target: any): any { events.class++; return target; }',
+          'function propertyDec(target: any, key: string): void { events.property++; }',
+          [
+            'function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor {',
+            '  events.method++;',
+            '  const original = descriptor.value;',
+            '  descriptor.value = function(...args: any[]) { return original.apply(this, args) + 1; };',
+            '  return descriptor;',
+            '}',
+          ].join('\n'),
+          'function parameterDec(target: any, key: string, index: number): void { events.parameter++; }',
+          'function computedKey(): string { events.computed++; return "computed"; }',
+          '@classDec',
+          'class Example {',
+          '  @propertyDec value: number = 2;',
+          '  @methodDec method(@parameterDec first: number, value: number): number { return (first ?? 0) + value + 40; }',
+          '  @methodDec [computedKey()](): number { return 2; }',
+          '  static self(): typeof Example { return Example; }',
+          '}',
+          'console.log(new Example().value, new Example().method(undefined, 3), new Example().computed(), Example.self() === Example, events.class, events.property, events.method, events.parameter, events.computed, __decorateClass, __decorateParam, __metadata, __defProp2);',
+        ].join('\n');
+        writeFileSync(input, source);
+        const reference = ts.transpileModule(source, {
+          compilerOptions: {
+            experimentalDecorators: true,
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.CommonJS,
+          },
+        }).outputText;
+        writeFileSync(referenceFile, reference);
+
+        try {
+          const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
+          expect(oracle.status, oracle.stderr).toBe(0);
+
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              `--target=${target}`,
+              '--experimental-decorators',
+              '--platform=node',
+              '--format=cjs',
+              ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, proc.stderr).toBe(0);
+
+          const stderr = proc.stderr ?? '';
+          const mode = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+          expect(mode, stderr).toContain('semantic_graph=retained');
+          const report = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+          expect(report, stderr).toBeDefined();
+          expect(exactSchemaProblems(report ?? '')).toEqual([]);
+          expect(Number(report?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+          expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+          const owner = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+          expect(owner, stderr).toBeDefined();
+          expect(scopeOwnerAuditProblems(owner ?? '')).toEqual([]);
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout, `${target}: differs from TypeScript 5 output`).toBe(oracle.stdout);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test('legacy decorator bundling keeps unsupported graph combinations on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-legacy-decorator-retained-negative-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const source = [
+      'function mark(value: any): any { return value; }',
+      '@mark class Example { @mark method() { return 42; } }',
+      'console.log(new Example().method());',
+    ].join('\n');
+    const cases = [
+      { name: 'ES5 class lowering', args: ['--target=es5', '--experimental-decorators'], source },
+      {
+        name: 'syntax minification',
+        args: ['--target=esnext', '--experimental-decorators', '--minify-syntax'],
+        source,
+      },
+      {
+        name: 'direct eval',
+        args: ['--target=esnext', '--experimental-decorators'],
+        source: [
+          'function observe() { return eval("typeof _classThis"); }',
+          source,
+          'console.log(observe());',
+        ].join('\n'),
+      },
+      {
+        name: 'decorator metadata',
+        args: [
+          '--target=esnext',
+          '--experimental-decorators',
+          '--tsconfig-raw={"compilerOptions":{"emitDecoratorMetadata":true}}',
+        ],
+        source,
+      },
+    ];
+
+    try {
+      for (const fixture of cases) {
+        writeFileSync(input, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.ts',
+            ...fixture.args,
+            '--platform=node',
+            '--format=cjs',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const mode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
