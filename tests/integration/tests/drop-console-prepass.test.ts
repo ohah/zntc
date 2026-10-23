@@ -108,4 +108,14 @@ describe('drop console graph pre-pass gate', () => {
     expect(dynamic_argument.stderr).toContain('semantic_graph=reanalyzed');
     expect(dynamic_argument.stdout).toBe('42');
   });
+
+  test('primitive template interpolations keep the retained graph', async () => {
+    const result = await bundle(
+      'console.log(`number ${1}, string ${"literal"}, boolean ${true}, null ${null}, bigint ${1n}`); ' +
+        'const answer = 41; process.stdout.write(String(answer + 1));',
+    );
+    expect(result.stderr).toContain('semantic_graph=retained');
+    expect(result.code).not.toContain('console.log');
+    expect(result.stdout).toBe('42');
+  });
 });
