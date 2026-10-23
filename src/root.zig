@@ -48,6 +48,7 @@ test {
     _ = app;
     _ = transpile;
     _ = @import("transformer/cooked_name.zig");
+    _ = @import("transformer/qualified_type_name.zig");
     _ = @import("test_arena.zig");
     _ = @import("env_flag.zig");
     _ = @import("build_id.zig");

@@ -40,8 +40,11 @@ pub fn serializeTypeAnnotation(self: anytype, type_ann_idx: NodeIndex) Error!Nod
         // names retain a lexical base reference and explicit property nodes.
         .ts_type_reference => blk: {
             if (qualified_type_name.typeReferenceName(self.ast, type_node)) |name| {
-                if (qualified_type_name.isSimpleQualifiedPath(name)) {
-                    break :blk makeQualifiedMetadataTypeRef(self, name);
+                if (std.mem.indexOfScalar(u8, name, '.') != null) {
+                    if (try qualified_type_name.parseQualifiedPath(self.allocator, name)) |path| {
+                        defer path.deinit(self.allocator);
+                        break :blk try makeQualifiedMetadataTypeRef(self, path.parts);
+                    }
                 }
             }
             const src_text = self.ast.getText(type_node.span);
@@ -164,8 +167,11 @@ fn serializeTypeAt(self: anytype, anchor: NodeIndex, pos: u32) Error!?NodeIndex 
     if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
         std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
         return try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
-    if (qualified_type_name.isSimpleQualifiedPath(type_name)) {
-        return try makeQualifiedMetadataTypeRef(self, type_name);
+    if (std.mem.indexOfScalar(u8, type_name, '.') != null) {
+        if (try qualified_type_name.parseQualifiedPath(self.allocator, type_name)) |path| {
+            defer path.deinit(self.allocator);
+            return try makeQualifiedMetadataTypeRef(self, path.parts);
+        }
     }
     // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
     return try makeTypeReferenceGuard(self, type_name);
@@ -206,15 +212,14 @@ fn findTypeAnnotationForParam(self: anytype, param_idx: NodeIndex, type_start: u
     return best;
 }
 
-/// Build `Namespace.Type` as a lexical base reference plus property names.
-/// Only the base can be a variable symbol; qualified suffixes are properties.
-fn makeQualifiedMetadataTypeRef(self: anytype, name: []const u8) Error!NodeIndex {
-    var parts = std.mem.splitScalar(u8, name, '.');
-    const base_name = parts.next() orelse return makeMetadataNameRef(self, name);
-    var expression = try makeMetadataTypeNameRef(self, base_name) orelse
+/// Build a qualified type as one lexical base reference plus property names.
+/// Only the first component can be a variable symbol; suffixes are properties.
+fn makeQualifiedMetadataTypeRef(self: anytype, parts: []const []const u8) Error!NodeIndex {
+    if (parts.len < 2) return makeMetadataNameRef(self, "Object");
+    var expression = try makeMetadataTypeNameRef(self, parts[0]) orelse
         return makeMetadataNameRef(self, "Object");
     const zero_span = Span{ .start = 0, .end = 0 };
-    while (parts.next()) |property_name| {
+    for (parts[1..]) |property_name| {
         const property = try es_helpers.makePropertyName(self, property_name);
         expression = try es_helpers.makeStaticMember(self, expression, property, zero_span);
     }
