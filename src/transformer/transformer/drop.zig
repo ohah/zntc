@@ -23,6 +23,10 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
     return drop_scan.isConsoleCallInAst(ast, node);
 }
 
+pub fn isNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, index: ast_mod.NodeIndex) bool {
+    return drop_scan.isNoSubstitutionTemplateLiteral(ast, index);
+}
+
 fn hasDroppedLabel(self: *const Transformer, node: Node) bool {
     return drop_scan.isDroppedLabel(self.ast, node, self.options.drop_labels);
 }
