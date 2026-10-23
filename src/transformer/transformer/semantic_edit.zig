@@ -5266,7 +5266,8 @@ test "#6029 hostile preserves fallback addReference" {
     );
     const reference = try editor.referenceForNode(node) orelse return error.MissingFallbackReference;
     try std.testing.expectEqual(fixture.target_id, reference.symbol_id);
-    try std.testing.expect(std.meta.eql(.{ .read = true }, reference.flags));
+    try std.testing.expect(reference.flags.read);
+    try std.testing.expect(!reference.flags.write);
 }
 
 test "#6029 hostile writes assigned SID to transformer map" {
