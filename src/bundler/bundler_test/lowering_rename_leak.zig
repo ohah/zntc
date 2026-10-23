@@ -480,3 +480,30 @@ test "#6185 preserve JSX imported component stays uppercase without identifier m
     try testing.expect(!std.mem.eql(u8, pair.root, "X"));
     try testing.expect(hasFunctionDeclaration(code, pair.root));
 }
+
+test "#6185 preserve JSX multi-entry provider export keeps component-safe name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "component.jsx", "export function x() { return null; }");
+    try writeFile(tmp.dir, "consumer.jsx",
+        \\import { x as ImportedComponent } from './component.jsx';
+        \\export const view = <ImportedComponent probe={ImportedComponent} />;
+    );
+    const component_entry = try helpers.absPath(&tmp, "component.jsx");
+    defer testing.allocator.free(component_entry);
+    const consumer_entry = try helpers.absPath(&tmp, "consumer.jsx");
+    defer testing.allocator.free(consumer_entry);
+    var b = @import("../bundler.zig").Bundler.init(testing.allocator, .{
+        .entry_points = &.{ component_entry, consumer_entry },
+        .jsx_runtime = .preserve,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    var result = try b.bundle(testing.io);
+    defer result.deinit(testing.allocator);
+    try testing.expect(!result.hasErrors());
+    const pair = try jsxNamePairForProbe(result.output, 0);
+    try testing.expectEqualStrings(pair.root, pair.value);
+    try testing.expect(!std.ascii.isLower(pair.root[0]));
+    try testing.expect(hasFunctionDeclaration(result.output, pair.root));
+}
