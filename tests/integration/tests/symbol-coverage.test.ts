@@ -2430,6 +2430,184 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Flow legacy decorator bundling retains exact identities across ten hostile inputs', () => {
+    const fixtures = [
+      {
+        name: 'decorated class name stays separate from a shadowing parameter',
+        expected: 'inner:Box outer class:Box',
+        source: `// @flow
+          const events = [];
+          function decorate(target: any): any { events.push('class:' + target.name); return target; }
+          const value = 'outer';
+          function create(value: string): string {
+            @decorate class Box { static read(): string { return value; } }
+            return Box.read() + ':' + Box.name;
+          }
+          console.log(create('inner'), value, events.join(','));`,
+      },
+      {
+        name: 'class replacement retains the original typed class binding',
+        expected: '41 Box',
+        source: `// @flow
+          function wrap(target: any): any {
+            return class extends target { static wrapped(): number { return this.value + 1; } };
+          }
+          @wrap class Box { static value: number = 40; }
+          console.log(Box.wrapped(), Object.getPrototypeOf(Box).name);`,
+      },
+      {
+        name: 'method decorator keeps typed default parameter shadowing',
+        expected: 'innerouter read',
+        source: `// @flow
+          const label = 'outer';
+          const events = [];
+          function decorate(target: any, key?: string, descriptor?: any): any { events.push(key); return descriptor; }
+          class Box {
+            @decorate read(value: string = label): string { const label: string = 'inner'; return label + value; }
+          }
+          console.log(new Box().read(), events.join(','));`,
+      },
+      {
+        name: 'static field and block ordering precedes member decoration',
+        expected: '1 field,block,decor:method',
+        source: `// @flow
+          const events = [];
+          function decorate(target: any, key?: string): void { events.push('decor:' + key); }
+          class Box {
+            static field: number = events.push('field');
+            static { events.push('block'); }
+            @decorate method(): void {}
+          }
+          console.log(Box.field, events.join(','));`,
+      },
+      {
+        name: 'computed decorator key evaluates once',
+        expected: '1 1 method1',
+        source: `// @flow
+          let count = 0;
+          const events = [];
+          function key(): string { count++; return 'method' + count; }
+          function decorate(target: any, name?: string, descriptor?: any): any { events.push(name); return descriptor; }
+          class Box { @decorate [key()](): number { return count; } }
+          console.log(new Box().method1(), count, events.join(','));`,
+      },
+      {
+        name: 'decorated method retains a lowered private field reference',
+        expected: '9',
+        source: `// @flow
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor; }
+          class Box {
+            #value: number = 7;
+            @decorate read(delta: number): number { return this.#value + delta; }
+          }
+          console.log(new Box().read(2));`,
+      },
+      {
+        name: 'decorated static method retains its private static field owner',
+        expected: '5',
+        source: `// @flow
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor; }
+          class Box {
+            static #value: number = 5;
+            @decorate static read(): number { return Box.#value; }
+          }
+          console.log(Box.read());`,
+      },
+      {
+        name: 'block class self binding stays distinct from an outer name',
+        expected: 'Widget outer',
+        source: `// @flow
+          const Widget = 'outer';
+          let result: string;
+          function decorate(target: any): any { return target; }
+          {
+            @decorate class Widget { static read(): string { return Widget.name; } }
+            result = Widget.read();
+          }
+          console.log(result, Widget);`,
+      },
+      {
+        name: 'decorator replacement retains inherited super references',
+        expected: 'base:decorated',
+        source: `// @flow
+          class Base { read(): string { return 'base'; } }
+          function derive(target: any): any {
+            return class extends target { read(): string { return super.read() + ':decorated'; } };
+          }
+          @derive class Box extends Base {}
+          console.log(new Box().read());`,
+      },
+      {
+        name: 'source bindings colliding with decorator helpers remain separate',
+        expected: 'user-class:user-param user-class user-param',
+        source: `// @flow
+          const __decorateClass = 'user-class';
+          const __decorateParam = 'user-param';
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor ?? target; }
+          @decorate class Box { @decorate read(): string { return __decorateClass + ':' + __decorateParam; } }
+          console.log(new Box().read(), __decorateClass, __decorateParam);`,
+      },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-legacy-decorator-bundle-'));
+
+    try {
+      for (const [index, fixture] of fixtures.entries()) {
+        const input = join(dir, `input-${index}.js`);
+        writeFileSync(input, fixture.source);
+        for (const minifyIdentifiers of [false, true]) {
+          const output = join(dir, `output-${index}-${minifyIdentifiers}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              input,
+              '--flow',
+              '--experimental-decorators',
+              '--target=esnext',
+              '--platform=node',
+              '--format=cjs',
+              ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '-o',
+              output,
+            ],
+            {
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          const context = `${fixture.name} (${minifyIdentifiers ? 'minified' : 'plain'}): ${proc.stderr}`;
+          expect(proc.status, context).toBe(0);
+          const stderr = proc.stderr ?? '';
+          const mode = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+          expect(mode, context).toContain('semantic_graph=retained');
+          const report = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+          expect(report, context).toBeDefined();
+          expect(exactSchemaProblems(report ?? '')).toEqual([]);
+          expect(Number(report?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+          expect(Number(report?.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+          const owner = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+          expect(owner, context).toBeDefined();
+          expect(scopeOwnerAuditProblems(owner ?? '')).toEqual([]);
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+          expect(
+            actual.stdout.trim(),
+            `${fixture.name} (${minifyIdentifiers ? 'minified' : 'plain'}):\n${readFileSync(output, 'utf8')}`,
+          ).toBe(fixture.expected);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('Stage 3 strict-module bundling rejects with before decorator lowering', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-with-boundary-'));
     const input = join(dir, 'entry.js');

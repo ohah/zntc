@@ -6032,18 +6032,17 @@ fn canRetainStage3DecoratorGraph(
 
 /// Legacy decorators are lowered by the transformer even when class syntax
 /// remains native. Their helper imports and generated references are recorded
-/// in the edited semantic graph, but Flow, metadata, syntax minification,
-/// downlevel syntax, and plugins with undeclared graph effects stay on the
-/// conservative analyzer path.
+/// in the edited semantic graph. Flow input is supported when it is a runtime
+/// module; `.js.flow` and `.jsx.flow` declaration files, metadata, syntax
+/// minification, downlevel syntax, and plugins with undeclared graph effects
+/// stay on the conservative analyzer path.
 fn canRetainLegacyDecoratorGraph(
-    flow: bool,
     module: *const Module,
     ast: *const ast_mod.Ast,
     options: TransformOptions,
 ) bool {
     return ast.has_decorator and
         options.experimental_decorators and
-        !flow and
         !isFlowPath(module.path) and
         !options.unsupportedGraphPrePassFeatureUsed(ast) and
         !options.emit_decorator_metadata and
@@ -6057,7 +6056,7 @@ fn canRetainLegacyDecoratorGraph(
         !ast.has_ts_export_equals;
 }
 
-test "legacy decorator graph retention gate excludes Flow and graph-changing modes" {
+test "legacy decorator graph retention gate includes Flow and excludes graph-changing modes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -6071,60 +6070,68 @@ test "legacy decorator graph retention gate excludes Flow and graph-changing mod
 
     var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.ts");
     const options: TransformOptions = .{ .experimental_decorators = true };
-    try std.testing.expect(canRetainLegacyDecoratorGraph(false, &module, &parser.ast, options));
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(true, &module, &parser.ast, options));
+    try std.testing.expect(canRetainLegacyDecoratorGraph(&module, &parser.ast, options));
 
-    const flow_module = Module.init(@fromBackingInt(@as(u32, 1)), "input.js.flow");
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &flow_module, &parser.ast, options));
+    var flow_scanner = try Scanner.init(
+        allocator,
+        "// @flow\nfunction mark(value) { return value; } @mark class Example { @mark method() {} }",
+    );
+    defer flow_scanner.deinit();
+    var flow_parser = @import("../../parser/parser.zig").Parser.init(allocator, &flow_scanner);
+    flow_parser.configureFromExtension(".js");
+    defer flow_parser.deinit();
+    _ = try flow_parser.parse();
+    try std.testing.expect(flow_parser.is_flow);
+    try std.testing.expectEqual(@as(usize, 0), flow_parser.errors.items.len);
+    try std.testing.expect(flow_parser.ast.has_decorator);
+
+    const flow_module = Module.init(@fromBackingInt(@as(u32, 1)), "input.js");
+    try std.testing.expect(canRetainLegacyDecoratorGraph(&flow_module, &flow_parser.ast, options));
+    const flow_declaration_module = Module.init(@fromBackingInt(@as(u32, 2)), "input.js.flow");
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&flow_declaration_module, &flow_parser.ast, options));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .emit_decorator_metadata = true },
     ));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .minify_syntax = true },
     ));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .unsupported = .{ .class = true } },
     ));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .react_refresh = true },
     ));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .styled_components = true },
     ));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(
-        false,
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .emotion = true },
     ));
     var jsx_ast = parser.ast;
     jsx_ast.has_jsx = true;
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &jsx_ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &jsx_ast, options));
     var ts_namespace_ast = parser.ast;
     ts_namespace_ast.has_ts_namespace_or_enum = true;
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_namespace_ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &ts_namespace_ast, options));
     var ts_import_equals_ast = parser.ast;
     ts_import_equals_ast.has_ts_import_equals = true;
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_import_equals_ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &ts_import_equals_ast, options));
     var ts_export_equals_ast = parser.ast;
     ts_export_equals_ast.has_ts_export_equals = true;
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_export_equals_ast, options));
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &parser.ast, .{}));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &ts_export_equals_ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &parser.ast, .{}));
 }
 
 fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
@@ -6578,7 +6585,6 @@ fn canKeepPrepassSemanticGraph(
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const retained_stage3_decorators = canRetainStage3DecoratorGraph(ast, options);
     const retained_legacy_decorators = canRetainLegacyDecoratorGraph(
-        self.flow,
         module,
         ast,
         options,
@@ -8118,7 +8124,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const allow_stage3_decorator_helpers = can_keep_semantic_graph and
         canRetainStage3DecoratorGraph(ast_ptr, opts);
     const allow_legacy_decorator_helpers = can_keep_semantic_graph and
-        canRetainLegacyDecoratorGraph(self.flow, module, ast_ptr, opts);
+        canRetainLegacyDecoratorGraph(module, ast_ptr, opts);
     const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await;
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse

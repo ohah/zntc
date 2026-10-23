@@ -11,6 +11,7 @@ const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const Span = @import("../../lexer/token.zig").Span;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Ast = @import("../../parser/ast.zig").Ast;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const bundler_symbol = @import("../symbol.zig");
 const federation = @import("../federation.zig"); // PR-1 (#3459) mfRemoteGlobalName/matchesRemoteSpec 단일소스
@@ -424,6 +425,35 @@ fn synchronizeClassSelfNames(
     renames: *std.AutoHashMapUnmanaged(u32, []const u8),
     allocator: std.mem.Allocator,
 ) !void {
+    if (sem.class_self_symbol_map.count() == 0) return;
+    // Prepass transforms can retain semantic anchors for the original source
+    // class after replacing its declaration with a named class expression.
+    // Match the preserved anchor to an emitted declaration by the exact outer
+    // SymbolId so copied declarations still synchronize while class-expression
+    // lowerings do not inherit the outer variable's renamed spelling.
+    var emitted_class_outer_ids: ?std.DynamicBitSet = null;
+    if (ast.transformed_root) |root| {
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+        defer allocator.free(reachable);
+
+        var output_ids = try std.DynamicBitSet.initEmpty(allocator, sem.symbols.items.len);
+        errdefer output_ids.deinit();
+        for (reachable) |raw| {
+            if (raw >= ast.nodes.items.len) continue;
+            const class_node = ast.nodes.items[raw];
+            if (class_node.tag != .class_declaration) continue;
+            const name_raw = ast.extra_data.items[class_node.data.extra + @import("../../parser/ast.zig").ClassExtra.name];
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(name_raw));
+            if (name_idx.isNone()) continue;
+            const name_node = @backingInt(name_idx);
+            if (name_node >= sem.symbol_ids.len) return error.InvalidClassDeclarationOutputName;
+            const outer_id = sem.symbol_ids[name_node] orelse return error.MissingClassDeclarationOutputSymbolId;
+            if (outer_id < output_ids.capacity()) output_ids.set(outer_id);
+        }
+        emitted_class_outer_ids = output_ids;
+    }
+    defer if (emitted_class_outer_ids) |*ids| ids.deinit();
+
     var it = sem.class_self_symbol_map.iterator();
     while (it.next()) |entry| {
         const class_idx = entry.key_ptr.*;
@@ -435,6 +465,9 @@ fn synchronizeClassSelfNames(
         const name_idx = ast.extra_data.items[class_node.data.extra + @import("../../parser/ast.zig").ClassExtra.name];
         if (name_idx >= sem.symbol_ids.len) std.debug.panic("class outer binding node is outside semantic table", .{});
         const outer_id = sem.symbol_ids[name_idx] orelse std.debug.panic("class outer binding has no SymbolId", .{});
+        if (emitted_class_outer_ids) |ids| {
+            if (outer_id >= ids.capacity() or !ids.isSet(outer_id)) continue;
+        }
         if (outer_id == inner_id) std.debug.panic("class outer and self SymbolId collapsed", .{});
         // ES5 class lowering keeps the source class node in a retained graph but
         // moves the self binding into the IIFE as the constructor function's own
