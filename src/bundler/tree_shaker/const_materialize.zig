@@ -303,8 +303,9 @@ fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
 }
 
 /// Keep the existing semantic graph when numeric materialization skipped the
-/// syntax minifier. Old prepass ref deltas are excluded because emitter minify
-/// consumes them against the base semantic counts.
+/// syntax minifier. The edit removes only exact, currently reachable reads and
+/// preserves symbol indices, so prepass ref deltas remain aligned for emitter
+/// minify to apply to the updated base reference counts.
 fn markConstMaterializedRetainingGraph(
     self: *TreeShaker,
     m: *Module,
@@ -352,12 +353,7 @@ fn minifyAndResyncModule(
         defer resync_scope.end();
 
         if (const_profile.policy.stableImportExportSyntax()) {
-            const has_stale_ref_deltas = if (m.transform_cache) |cache|
-                cache.ref_deltas.len > 0
-            else
-                false;
-            const retained = skip_minify and m.semantic != null and !has_stale_ref_deltas and
-                materialized.tracked_nodes_complete and
+            const retained = skip_minify and m.semantic != null and materialized.tracked_nodes_complete and
                 markConstMaterializedRetainingGraph(self, m, materialized_nodes);
             if (!retained) markConstMaterializedAndResync(self, m);
         } else {
@@ -667,4 +663,138 @@ pub fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !vo
             try enqueueStaticImporters(self, &queue, &queued, idx, mod_count);
         }
     }
+}
+
+test "numeric post-pass retains graph when prepass ref deltas exist" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+    const source = "const value=7; if(false) console.log(value); console.log(value); function read(){return value;}";
+
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const minify_mod = @import("../../transformer/minify.zig");
+    const ModuleGraph = @import("../graph.zig").ModuleGraph;
+    const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    scanner.is_module = true;
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var value_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (symbol.kind == .variable_const and std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) {
+            value_symbol = @intCast(index);
+            break;
+        }
+    }
+    const value_id = value_symbol orelse return error.MissingValueSymbol;
+
+    // This field is graph-owned naming metadata. A full analyzer rebuild drops
+    // it, so preserving it proves this call took the same-graph path.
+    analyzer.symbols.items[value_id].output_name_hint = "retained-graph-marker";
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "test.js");
+    module.source = source;
+    module.ast = parser.ast;
+    module.parse_arena = &arena;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const prepass_ref_deltas = try arena_alloc.alloc(u32, module.semantic.?.symbols.items.len);
+    @memset(prepass_ref_deltas, 0);
+    module.transform_cache = .{
+        .runtime_helpers = .{},
+        .symbol_ids = module.semantic.?.symbol_ids,
+        .ref_deltas = prepass_ref_deltas,
+    };
+
+    var prepass_minify_ctx = minify_mod.MinifyCtx.fromSemantic(
+        &module.semantic.?,
+        module.semantic.?.symbol_ids,
+        false,
+    );
+    prepass_minify_ctx.ref_deltas = prepass_ref_deltas;
+    const root: NodeIndex = module.ast.?.transformed_root orelse @fromBackingInt(
+        @intCast(module.ast.?.nodes.items.len - 1),
+    );
+    minify_mod.minify(&module.ast.?, prepass_minify_ctx, arena_alloc, root);
+    try std.testing.expect(prepass_ref_deltas[value_id] > 0);
+
+    const reachable_nodes = try ast_walk.collectReachableNodeIndices(allocator, &module.ast.?);
+    defer allocator.free(reachable_nodes);
+    var materialized_node: ?NodeIndex = null;
+    for (reachable_nodes) |raw| {
+        if (raw >= module.semantic.?.symbol_ids.len) continue;
+        if (module.ast.?.nodes.items[raw].tag != .identifier_reference) continue;
+        if (module.semantic.?.symbol_ids[raw] != value_id) continue;
+        materialized_node = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    const node_index = materialized_node orelse return error.MissingReachableValueReference;
+    const literal_span = try module.ast.?.addString("7");
+    module.ast.?.nodes.items[@backingInt(node_index)] = .{
+        .tag = .numeric_literal,
+        .span = literal_span,
+        .data = .{ .none = 0 },
+    };
+
+    var resolve_cache = ResolveCache.init(allocator, .{});
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph.init(allocator, &resolve_cache);
+    defer graph.deinit();
+    var linker = Linker.init(allocator, &graph, .esm);
+    defer linker.deinit();
+    var shaker = try TreeShaker.init(allocator, &graph, &linker);
+    defer shaker.deinit();
+
+    minifyAndResyncModule(
+        &shaker,
+        &module,
+        module.semantic.?,
+        &module.ast.?,
+        .{ .policy = .numeric_post_pass },
+        .{ .changed = true, .tracked_nodes_complete = true },
+        &.{node_index},
+        true,
+    );
+
+    const semantic = &module.semantic.?;
+    try std.testing.expectEqualStrings("retained-graph-marker", semantic.symbols.items[value_id].output_name_hint);
+    try std.testing.expectEqual(semantic.symbol_ids.ptr, module.transform_cache.?.symbol_ids.ptr);
+    try std.testing.expect(semantic.symbol_ids[@backingInt(node_index)] == null);
+    try std.testing.expectEqual(@as(u32, 2), semantic.symbols.items[value_id].reference_count);
+    try std.testing.expectEqual(@as(usize, 2), semantic.references.len);
+    for (semantic.references) |reference| {
+        try std.testing.expect(reference.node_index != node_index);
+    }
+    try std.testing.expectEqual(semantic.symbol_ids.len, module.transform_cache.?.symbol_ids.len);
+    try std.testing.expectEqual(semantic.symbols.items.len, module.transform_cache.?.ref_deltas.len);
+    try std.testing.expectEqual(@as(u32, 1), module.transform_cache.?.ref_deltas[value_id]);
+    try std.testing.expectEqual(
+        @as(u32, 1),
+        semantic.symbols.items[value_id].reference_count - module.transform_cache.?.ref_deltas[value_id],
+    );
+    try std.testing.expect(module.prebuilt_stmt_info != null);
+    try std.testing.expect(shaker.ast_mutated_after_link);
 }
