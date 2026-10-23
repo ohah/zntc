@@ -605,10 +605,9 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     if (options.emit_decorator_metadata and
         (parser.is_flow or parser.source_mode != .ts or !options.experimental_decorators)) return false;
 
-    // The exact transform graph covers legacy decorator lowering for both
-    // TypeScript and JavaScript. Flow's legacy-decorator combination remains
-    // on the conservative analyzer until that parser/lowering pairing is audited.
-    if (options.experimental_decorators and parser.is_flow) return false;
+    // Flow's type-only syntax does not change the exact graph edits made by
+    // legacy decorator lowering. Keep Flow runtime constructs without complete
+    // graph support behind the facts gate below.
 
     const facts = collectAstFacts(&parser.ast);
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
@@ -2537,7 +2536,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
-test "#4819 JavaScript legacy decorators reuse the transform semantic graph" {
+test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2591,10 +2590,59 @@ test "#4819 JavaScript legacy decorators reuse the transform semantic graph" {
     _ = try flow_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), flow_parser.errors.items.len);
     try std.testing.expect(flow_parser.is_flow);
-    try std.testing.expect(!canMangleWithTransformSemantic(legacy, &flow_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &flow_parser));
+
+    var unknown_flow_scanner = try Scanner.init(
+        allocator,
+        "// @flow\nfunction decorate(target) { return target; } @decorate class Box {}",
+    );
+    var unknown_flow_parser = Parser.init(allocator, &unknown_flow_scanner);
+    unknown_flow_parser.configureFromExtension(".unknown");
+    _ = try unknown_flow_parser.parse();
+    try std.testing.expect(unknown_flow_parser.is_flow);
+    try std.testing.expect(unknown_flow_parser.source_mode == .js_lenient);
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_flow_parser));
+
+    var complex_flow_scanner = try Scanner.init(
+        allocator,
+        "// @flow\nfunction decorate(target, key, descriptor) { return descriptor; } " ++
+            "const key = 'read'; class Box { #value: number = 7; @decorate [key](delta: number): number { " ++
+            "return this.#value + delta; } }",
+    );
+    var complex_flow_parser = Parser.init(allocator, &complex_flow_scanner);
+    complex_flow_parser.configureFromExtension(".js");
+    _ = try complex_flow_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), complex_flow_parser.errors.items.len);
+    try std.testing.expect(complex_flow_parser.is_flow);
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &complex_flow_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &complex_flow_parser));
+
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .experimental_decorators = true,
+    }, &flow_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &flow_parser));
+
+    var incomplete_flow_scanner = try Scanner.init(
+        allocator,
+        "namespace N { export const value = 1; } @decorate class Box {}",
+    );
+    var incomplete_flow_parser = Parser.init(allocator, &incomplete_flow_scanner);
+    incomplete_flow_parser.configureFromExtension(".ts");
+    _ = try incomplete_flow_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), incomplete_flow_parser.errors.items.len);
+    incomplete_flow_parser.is_flow = true;
+    try std.testing.expect(!canMangleWithTransformSemantic(legacy, &incomplete_flow_parser));
 }
 
-test "#4819 Flow Stage 3 decorators reuse the transform semantic graph" {
+test "#4819 Flow Stage 3 and legacy decorators reuse the transform semantic graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2607,7 +2655,7 @@ test "#4819 Flow Stage 3 decorators reuse the transform semantic graph" {
     try std.testing.expect(parser.is_flow);
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
     }, &parser));
