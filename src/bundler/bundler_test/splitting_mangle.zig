@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const Bundler = @import("../bundler.zig").Bundler;
+const Linker = @import("../linker.zig").Linker;
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -74,6 +75,24 @@ fn parseIdentifier(output: []const u8, cursor: *usize) ![]const u8 {
     return output[start..cursor.*];
 }
 
+fn consoleLogsIdentifierAsFirstArgument(output: []const u8, name: []const u8) bool {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, output, from, "console.log(")) |pos| {
+        var cursor = pos + "console.log(".len;
+        skipWhitespace(output, &cursor);
+        const end = cursor + name.len;
+        if (end <= output.len and std.mem.eql(u8, output[cursor..end], name) and
+            (end == output.len or !isIdentifierByte(output[end])))
+        {
+            cursor = end;
+            skipWhitespace(output, &cursor);
+            if (cursor < output.len and (output[cursor] == ',' or output[cursor] == ')')) return true;
+        }
+        from = pos + 1;
+    }
+    return false;
+}
+
 fn identifierInitializedWith(output: []const u8, value: []const u8) ![]const u8 {
     var marker_buf: [160]u8 = undefined;
     const marker = try std.fmt.bufPrint(&marker_buf, "\"{s}\"", .{value});
@@ -114,20 +133,44 @@ fn crossChunkImportLocal(output: []const u8, provider_path: []const u8, export_n
     if (close >= reference_pos) return error.TestUnexpectedResult;
 
     var cursor = open + 1;
-    const imported_key = try parseIdentifier(output, &cursor);
-    if (!std.mem.eql(u8, imported_key, export_name)) return error.TestUnexpectedResult;
-    skipWhitespace(output, &cursor);
-    if (cursor < close and output[cursor] == ':') {
-        cursor += 1;
-        return parseIdentifier(output, &cursor);
+    while (cursor < close) {
+        const imported_key = try parseIdentifier(output, &cursor);
+        skipWhitespace(output, &cursor);
+        const local_name = if (cursor < close and output[cursor] == ':') blk: {
+            cursor += 1;
+            break :blk try parseIdentifier(output, &cursor);
+        } else imported_key;
+        if (std.mem.eql(u8, imported_key, export_name)) return local_name;
+        skipWhitespace(output, &cursor);
+        if (cursor < close and output[cursor] == ',') {
+            cursor += 1;
+            continue;
+        }
+        break;
     }
-    return imported_key;
+    return error.TestUnexpectedResult;
 }
 
-fn expectSplitIdentityConnection(is_iife: bool) !void {
+const SplitIdentityFile = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
+const SplitIdentityFixture = struct {
+    name: []const u8,
+    public_name: []const u8,
+    cross_chunk_key: ?[]const u8 = null,
+    entry_source: []const u8,
+    lazy_source: []const u8,
+    shared_source: []const u8,
+    collision_source: []const u8,
+    extra_files: []const SplitIdentityFile = &.{},
+};
+
+fn expectSplitIdentityConnection(is_iife: bool, fixture: SplitIdentityFixture) !void {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const entry = try writeSplitIdentityFixtures(&tmp);
+    const entry = try writeSplitIdentityFixtures(&tmp, fixture);
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
@@ -144,7 +187,9 @@ fn expectSplitIdentityConnection(is_iife: bool) !void {
     var provider_index: ?usize = null;
     for (outs, 0..) |out, index| {
         for (out.exports) |name| {
-            if (std.mem.eql(u8, name, "providerLongBindingName")) {
+            if (std.mem.eql(u8, name, fixture.public_name) and
+                std.mem.indexOf(u8, out.contents, "PROVIDER_VALUE_MARKER") != null)
+            {
                 provider_index = index;
                 break;
             }
@@ -153,10 +198,11 @@ fn expectSplitIdentityConnection(is_iife: bool) !void {
     }
     const provider_idx = provider_index orelse return error.TestUnexpectedResult;
     const provider = outs[provider_idx];
+    const cross_chunk_key = fixture.cross_chunk_key orelse fixture.public_name;
     const provider_local = try identifierInitializedWith(provider.contents, "PROVIDER_VALUE_MARKER");
-    const exported_local = try exportAssignmentLocal(provider.contents, "providerLongBindingName");
+    const exported_local = try exportAssignmentLocal(provider.contents, cross_chunk_key);
     try std.testing.expect(std.mem.eql(u8, provider_local, exported_local));
-    try std.testing.expect(!std.mem.eql(u8, provider_local, "providerLongBindingName"));
+    try std.testing.expect(!std.mem.eql(u8, provider_local, fixture.public_name));
     try std.testing.expect(outputDeclaresIdentifier(provider.contents, provider_local));
 
     var found_entry = false;
@@ -175,7 +221,8 @@ fn expectSplitIdentityConnection(is_iife: bool) !void {
             }
         }
         try std.testing.expect(imports_provider);
-        const consumer_local = try crossChunkImportLocal(out.contents, provider.path, "providerLongBindingName", is_iife);
+        const consumer_local = try crossChunkImportLocal(out.contents, provider.path, cross_chunk_key, is_iife);
+        try std.testing.expect(!Linker.isReservedName(consumer_local));
 
         if (is_entry) {
             found_entry = true;
@@ -185,9 +232,7 @@ fn expectSplitIdentityConnection(is_iife: bool) !void {
             const collision_local = try identifierInitializedWith(out.contents, "ENTRY_COLLISION_MARKER");
             try std.testing.expect(!std.mem.eql(u8, consumer_local, collision_local));
             try std.testing.expect(outputDeclaresIdentifier(out.contents, collision_local));
-            var collision_body_buf: [128]u8 = undefined;
-            const collision_body = try std.fmt.bufPrint(&collision_body_buf, "console.log({s})", .{collision_local});
-            try std.testing.expect(std.mem.indexOf(u8, out.contents, collision_body) != null);
+            try std.testing.expect(consoleLogsIdentifierAsFirstArgument(out.contents, collision_local));
         }
         if (is_lazy) {
             found_lazy = true;
@@ -328,32 +373,116 @@ test "SplitMangle: cross-chunk import 이름과 export 이름이 minify 후에�
     try std.testing.expect(found_consumer);
 }
 
-fn writeSplitIdentityFixtures(tmp: *std.testing.TmpDir) ![]const u8 {
-    try writeFile(tmp.dir, "entry.ts",
-        \\import { providerLongBindingName as entryLongImportedName } from './shared';
-        \\import './collision';
-        \\const lazy = import('./lazy');
-        \\console.log(entryLongImportedName, "ENTRY_CONSUMER_MARKER", lazy);
-    );
-    try writeFile(tmp.dir, "lazy.ts",
-        \\import { providerLongBindingName as lazyLongImportedName } from './shared';
-        \\export const lazyResultLongName = lazyLongImportedName + 1;
-        \\console.log(lazyLongImportedName, "LAZY_CONSUMER_MARKER");
-    );
-    try writeFile(tmp.dir, "shared.ts",
-        \\export const providerLongBindingName = "PROVIDER_VALUE_MARKER";
-    );
-    try writeFile(tmp.dir, "collision.ts",
-        \\const providerLongBindingName = "ENTRY_COLLISION_MARKER";
-        \\console.log(providerLongBindingName);
-    );
+fn writeSplitIdentityFixtures(tmp: *std.testing.TmpDir, fixture: SplitIdentityFixture) ![]const u8 {
+    try writeFile(tmp.dir, "entry.ts", fixture.entry_source);
+    try writeFile(tmp.dir, "lazy.ts", fixture.lazy_source);
+    try writeFile(tmp.dir, "shared.ts", fixture.shared_source);
+    try writeFile(tmp.dir, "collision.ts", fixture.collision_source);
+    for (fixture.extra_files) |file| try writeFile(tmp.dir, file.name, file.source);
     return absPath(tmp, "entry.ts");
 }
 
-test "SplitMangle: CJS provider and consumer identity stays connected after minification" {
-    try expectSplitIdentityConnection(false);
-}
+test "SplitMangle: ten hostile inputs keep CJS and IIFE provider-consumer identities connected" {
+    const fixtures = [_]SplitIdentityFixture{
+        .{
+            .name = "aliased imports with an entry-local collision",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './shared';\nexport const lazyResultLongName = lazyLongImportedName + 1;\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+        },
+        .{
+            .name = "direct imports reuse the provider spelling in separate chunks",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(providerLongBindingName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName } from './shared';\nconsole.log(providerLongBindingName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+        },
+        .{
+            .name = "synthetic-name-shaped aliases stay distinct from a decoy",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as _default$1 } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(_default$1, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName as _default$2 } from './shared';\nconsole.log(_default$2, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconst _default$1 = \"DECOY_MARKER\";\nconsole.log(providerLongBindingName, _default$1);\n",
+        },
+        .{
+            .name = "one-hop named re-export barrel",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './barrel';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './barrel';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+            .extra_files = &.{.{ .name = "barrel.ts", .source = "export { providerLongBindingName } from './shared';\n" }},
+        },
+        .{
+            .name = "two-hop named re-export aliases",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './barrel';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './barrel';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+            .extra_files = &.{
+                .{ .name = "bridge.ts", .source = "export { providerLongBindingName as bridgeLongAlias } from './shared';\n" },
+                .{ .name = "barrel.ts", .source = "export { bridgeLongAlias as providerLongBindingName } from './bridge';\n" },
+            },
+        },
+        .{
+            .name = "default export key survives provider and consumer local mangling",
+            .public_name = "default",
+            .cross_chunk_key = "providerLongBindingName",
+            .entry_source = "import { default as entryLongImportedName, auxiliaryLongName } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", auxiliaryLongName, lazy);\n",
+            .lazy_source = "import { default as lazyLongImportedName, auxiliaryLongName } from './shared';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\", auxiliaryLongName);\n",
+            .shared_source = "const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\nexport { providerLongBindingName as default };\nexport const auxiliaryLongName = \"AUXILIARY_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+        },
+        .{
+            .name = "reserved word export key survives provider and consumer local mangling",
+            .public_name = "delete",
+            .cross_chunk_key = "providerLongBindingName",
+            .entry_source = "import { delete as entryLongImportedName } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { delete as lazyLongImportedName } from './shared';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\nexport { providerLongBindingName as delete };\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+        },
+        .{
+            .name = "nested same-spelled parameters do not capture imported identities",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nfunction shadow(entryLongImportedName) { return entryLongImportedName; }\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", lazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './shared';\nfunction shadow(lazyLongImportedName) { return lazyLongImportedName; }\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+        },
+        .{
+            .name = "two providers with the same source spelling remain owner-specific",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './shared';\nimport { providerLongBindingName as secondProviderLongName } from './second';\nimport './collision';\nconst lazy = import('./lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", secondProviderLongName, lazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './shared';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconsole.log(providerLongBindingName);\n",
+            .extra_files = &.{.{ .name = "second.ts", .source = "export const providerLongBindingName = \"SECOND_PROVIDER_MARKER\";\n" }},
+        },
+        .{
+            .name = "suffix-shaped decoy and multiple lazy consumers stay distinct",
+            .public_name = "providerLongBindingName",
+            .entry_source = "import { providerLongBindingName as entryLongImportedName } from './shared';\nimport { providerLongBindingName$1 as suffixShapedDecoy } from './shared';\nimport './collision';\nconst lazy = import('./lazy');\nconst secondLazy = import('./second-lazy');\nconsole.log(entryLongImportedName, \"ENTRY_CONSUMER_MARKER\", suffixShapedDecoy, lazy, secondLazy);\n",
+            .lazy_source = "import { providerLongBindingName as lazyLongImportedName } from './shared';\nconsole.log(lazyLongImportedName, \"LAZY_CONSUMER_MARKER\");\n",
+            .shared_source = "export const providerLongBindingName = \"PROVIDER_VALUE_MARKER\";\nexport const providerLongBindingName$1 = \"SUFFIX_DECOY_MARKER\";\n",
+            .collision_source = "const providerLongBindingName = \"ENTRY_COLLISION_MARKER\";\nconst providerLongBindingName$1 = \"ENTRY_SUFFIX_DECOY_MARKER\";\nconsole.log(providerLongBindingName, providerLongBindingName$1);\n",
+            .extra_files = &.{.{ .name = "second-lazy.ts", .source = "import { providerLongBindingName as secondLazyImportedName } from './shared';\nconsole.log(secondLazyImportedName, \"LAZY_CONSUMER_MARKER\");\n" }},
+        },
+    };
 
-test "SplitMangle: IIFE provider and consumer identity stays connected after minification" {
-    try expectSplitIdentityConnection(true);
+    for (fixtures) |fixture| {
+        expectSplitIdentityConnection(false, fixture) catch |err| {
+            std.debug.print("CJS split identity fixture failed: {s}\n", .{fixture.name});
+            return err;
+        };
+        expectSplitIdentityConnection(true, fixture) catch |err| {
+            std.debug.print("IIFE split identity fixture failed: {s}\n", .{fixture.name});
+            return err;
+        };
+    }
 }
