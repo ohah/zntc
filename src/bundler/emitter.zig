@@ -2396,7 +2396,7 @@ pub fn emitModule(
     // class 별 독립 범위로 `#a`, `#b`, ... 단축. JS 언어 규약상 private name 은 선언된
     // class body 바깥에서 참조 불가 → per-class 안전. minify_identifiers 플래그와 묶음.
     if (options.minify_identifiers) {
-        @import("../codegen/private_mangler.zig").manglePrivateFields(transformer.ast);
+        @import("../codegen/private_mangler.zig").manglePrivateFields(transformer.ast, root);
     }
 
     // 인접 선언 merge (#1588) — tree-shake 직후에 실행해 skip_nodes 결정과 충돌 방지.

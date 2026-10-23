@@ -20,8 +20,10 @@
 //!   - class body 어딘가에 direct `eval(...)` 호출이 있으면 skip — eval 이 private name 을
 //!     동적으로 참조할 수 있음 (실제론 eval 안에서 private 접근 불가하지만 보수적).
 //!   - TS `declare class` 는 emit 대상 아님 — parser 가 이미 walk 안 함.
-//!   - decorator metadata 에 영향 — `emit_decorator_metadata` 와 private field 조합은 드물어
-//!     현 단계에서 별도 처리 없음 (추후 필요 시 class-level skip).
+//!   - Stage 3 decorator `context.name` is an observable source-name string and stays unchanged;
+//!     only private identifier syntax is mangled. Bundler traversal starts from the emitted root
+//!     so stale pre-transform class nodes cannot apply a second class-local mapping.
+//!   - Legacy `emit_decorator_metadata` with native private fields remains a separate audit case.
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -32,26 +34,44 @@ const Span = @import("../lexer/token.zig").Span;
 const ast_walk = @import("../parser/ast_walk.zig");
 
 /// 모든 class 의 private field 이름을 mangle 한다. ast 를 in-place 수정.
-pub fn manglePrivateFields(ast: *Ast) void {
-    var i: u32 = 0;
-    while (i < ast.nodes.items.len) : (i += 1) {
-        const tag = ast.nodes.items[i].tag;
-        if (tag == .class_declaration or tag == .class_expression) {
-            processClass(ast, i);
-        }
-    }
+pub fn manglePrivateFields(ast: *Ast, root: NodeIndex) void {
+    var ctx = MangleReachableClassesCtx{
+        .ast = ast,
+        .processed_bodies = .empty,
+    };
+    defer ctx.processed_bodies.deinit(ast.allocator);
+    ast_walk.walkPreorderIterative(ast.allocator, ast, root, &ctx, mangleReachableClassVisit) catch {};
+}
+
+const MangleReachableClassesCtx = struct {
+    ast: *Ast,
+    processed_bodies: std.AutoHashMapUnmanaged(u32, void),
+};
+
+fn mangleReachableClassVisit(ctx: *MangleReachableClassesCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    if (node.tag != .class_declaration and node.tag != .class_expression) return .descend;
+    const body_idx = classBodyIndex(ctx.ast, node) orelse return .descend;
+    // Transforms can leave source and emitted class nodes in the arena together. Only emitted
+    // nodes are reachable from `root`; dedupe a shared class body so it is mangled once.
+    if (ctx.processed_bodies.contains(body_idx)) return .descend;
+    ctx.processed_bodies.put(ctx.ast.allocator, body_idx, {}) catch return .stop;
+    processClass(ctx.ast, @backingInt(idx));
+    return .descend;
+}
+
+fn classBodyIndex(ast: *const Ast, class: Node) ?u32 {
+    const e = class.data.extra;
+    // ClassExtra.body = 2
+    if (!ast.hasExtra(e, 2)) return null;
+    const body_idx = ast.readExtra(e, 2);
+    if (body_idx >= ast.nodes.items.len or ast.nodes.items[body_idx].tag != .class_body) return null;
+    return body_idx;
 }
 
 fn processClass(ast: *Ast, class_ni: u32) void {
     const class = ast.nodes.items[class_ni];
-    const e = class.data.extra;
-    // ClassExtra.body = 2
-    if (!ast.hasExtra(e, 2)) return;
-    const body_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 2)));
-    if (body_idx.isNone()) return;
-    const body_ni = @backingInt(body_idx);
-    if (body_ni >= ast.nodes.items.len) return;
-    if (ast.nodes.items[body_ni].tag != .class_body) return;
+    const body_ni = classBodyIndex(ast, class) orelse return;
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(body_ni));
 
     // 보수적 safety: body 안 direct eval 이 있으면 전체 skip.
     if (containsDirectEval(ast, body_idx)) return;

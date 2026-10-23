@@ -11,7 +11,7 @@ fn mangleAndGen(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
     _ = try parser.parse();
     var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
-    manglePrivateFields(t.ast);
+    manglePrivateFields(t.ast, root);
     var cg = Codegen.initWithOptions(allocator, t.ast, .{ .minify_whitespace = true });
     return try cg.generate(root);
 }
@@ -26,4 +26,20 @@ test "private mangle: generated 이름이 생존 원본과 충돌 안 함 (#4283
         \\class C { #zzzzz = 1; #a = 2; m() { return this.#zzzzz + this.#a; } }
     );
     try std.testing.expectEqualStrings("class C{#b=1;#a=2;m(){return this.#b+this.#a;}}", out);
+}
+
+test "private mangle: nested class uses its own private-name map" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const out = try mangleAndGen(a,
+        \\class Outer { #a = 0; #veryLongShared = 1; read() {
+        \\  class Inner { #veryLongShared = 2; read() { return this.#veryLongShared; } }
+        \\  return new Inner().read() + this.#veryLongShared + this.#a;
+        \\} }
+    );
+    try std.testing.expectEqualStrings(
+        "class Outer{#a=0;#b=1;read(){class Inner{#a=2;read(){return this.#a;}}return new Inner().read()+this.#b+this.#a;}}",
+        out,
+    );
 }
