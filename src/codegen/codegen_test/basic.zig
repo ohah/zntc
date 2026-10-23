@@ -718,6 +718,78 @@ test "Codegen: SymbolId output name override follows ESM and CJS import locals" 
     }
 }
 
+test "Codegen: SymbolId output name override reaches CJS named export local" {
+    var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "const original=1;export {original as publicName};",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const chosen=1;exports.publicName=chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override reaches CJS declaration export local" {
+    var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "export const original=1;original;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const chosen=1;exports.original=chosen;chosen;", r.output);
+}
+
+test "Codegen: SymbolId output name override follows CJS export locals" {
+    const Case = struct {
+        source: []const u8,
+        output_name: []const u8 = "chosen",
+        expected: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "const original=1;export {original};", .expected = "const chosen=1;exports.original=chosen;" },
+        .{ .source = "const original=1;export {original as publicName};", .expected = "const chosen=1;exports.publicName=chosen;" },
+        .{ .source = "const original=1;export {original as publicName,original as otherPublic};", .expected = "const chosen=1;exports.publicName=chosen;exports.otherPublic=chosen;" },
+        .{ .source = "const original=1;let other=2;export {original as publicName,other as otherPublic};", .expected = "const chosen=1;let other=2;exports.publicName=chosen;exports.otherPublic=other;" },
+        .{ .source = "const original=1;export {original as chosen};", .expected = "const chosen=1;exports.chosen=chosen;" },
+        .{ .source = "const original=1;export {original as publicName};", .output_name = "original", .expected = "const original=1;exports.publicName=original;" },
+        .{ .source = "const original=1;export {original as publicName};", .output_name = "renamedx", .expected = "const renamedx=1;exports.publicName=renamedx;" },
+        .{ .source = "const original=1;export {original as publicName};", .output_name = "oChosen", .expected = "const oChosen=1;exports.publicName=oChosen;" },
+        .{ .source = "const original=1;export {original as publicName};", .output_name = "chosenl", .expected = "const chosenl=1;exports.publicName=chosenl;" },
+        .{ .source = "const original=1;function f(original){return original;}export {original as publicName};f(original);", .expected = "const chosen=1;function f(original){return original;}exports.publicName=chosen;f(chosen);" },
+        .{ .source = "export {original as publicName};const original=1;", .expected = "exports.publicName=chosen;const chosen=1;" },
+        .{ .source = "export var original=1;original;", .expected = "var chosen=1;exports.original=chosen;chosen;" },
+        .{ .source = "export let original=1;original;", .expected = "let chosen=1;exports.original=chosen;chosen;" },
+        .{ .source = "export const original=1;original;", .expected = "const chosen=1;exports.original=chosen;chosen;" },
+        .{ .source = "export const original=1,other=2;original;other;", .expected = "const chosen=1,other=2;exports.original=chosen;exports.other=other;chosen;other;" },
+        .{ .source = "export function original(){return 1;}original();", .expected = "function chosen(){return 1;}exports.original=chosen;chosen();" },
+        .{ .source = "export class original{}", .expected = "class chosen{}exports.original=chosen;" },
+        .{ .source = "export const original=1;function f(original){return original;}original;", .expected = "const chosen=1;exports.original=chosen;function f(original){return original;}chosen;" },
+        .{ .source = "const original=1;export {original as publicName};original;", .expected = "const chosen=1;exports.publicName=chosen;chosen;" },
+        .{ .source = "const original=1;export {original as publicName};", .output_name = "oChosenl", .expected = "const oChosenl=1;exports.publicName=oChosenl;" },
+    };
+
+    for (cases) |case| {
+        var r = try e2eWithCjsModuleSemanticSymbolNameOverride(
+            std.testing.allocator,
+            case.source,
+            "original",
+            case.output_name,
+            false,
+        );
+        defer r.deinit();
+        try std.testing.expectEqualStrings(case.expected, r.output);
+    }
+}
+
+test "Codegen CJS: named source re-export keeps the remote property name" {
+    var r = try e2eCJS(std.testing.allocator, "export {remote as publicName} from './dep';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("exports.publicName=require(\"./dep\").remote;", r.output);
+}
+
 test "Codegen: SymbolId output name override preserves object shorthand key" {
     var r = try e2eWithSemanticSymbolNameOverride(
         std.testing.allocator,
