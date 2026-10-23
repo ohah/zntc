@@ -144,7 +144,7 @@ fn transpileFastPathDisabledByEnv() bool {
     return fast_path_disabled_env.enabled();
 }
 
-fn collectAstFacts(ast: *const Ast) AstFacts {
+fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMemory}!AstFacts {
     var facts: AstFacts = .{};
 
     for (ast.nodes.items) |node| {
@@ -195,7 +195,7 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
             .ts_type_reference => {
                 if (qualified_type_name.typeReferenceName(ast, node)) |name| {
                     if (std.mem.indexOfScalar(u8, name, '.') != null and
-                        !qualified_type_name.isSimpleQualifiedPath(name))
+                        !(try qualified_type_name.isSimpleQualifiedPath(allocator, name)))
                     {
                         facts.has_unsupported_qualified_metadata_type_reference = true;
                     }
@@ -609,7 +609,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     // legacy decorator lowering. Keep Flow runtime constructs without complete
     // graph support behind the facts gate below.
 
-    const facts = collectAstFacts(&parser.ast);
+    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
     if (parser.source_mode == .ts) {
         return !facts.has_unhandled_runtime_syntax and
@@ -745,6 +745,7 @@ fn reserveFlowEnumCodegenNames(
 }
 
 fn buildTransformPlan(
+    allocator: std.mem.Allocator,
     options: TranspileOptions,
     parser: *const Parser,
     ast: *const Ast,
@@ -778,7 +779,7 @@ fn buildTransformPlan(
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
 
-    const facts = collectAstFacts(ast);
+    const facts = try collectAstFacts(allocator, ast);
     if (facts.has_non_named_import) {
         return .{ .semantic = .full, .reason = .import_shape_requires_full_semantic };
     }
@@ -1533,7 +1534,7 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    const transform_plan = try buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
+    const transform_plan = try buildTransformPlan(arena_alloc, options, &parser, &parser.ast, fast_path_disabled);
     // 포맷 문자열을 변경하면 `tests/benchmark/profile.ts` 의 `tracePlan` 정규식도
     // 함께 갱신해야 한다 — `semantic=...`, `reason=...` 키 이름을 그대로 유지.
     debug_log.print(
@@ -2275,7 +2276,7 @@ fn testTransformPlan(source: []const u8, file_path: []const u8, options: Transpi
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
-    return buildTransformPlan(options, &parser, &parser.ast, false);
+    return buildTransformPlan(allocator, options, &parser, &parser.ast, false);
 }
 
 test "#4819 downlevel JS script mangling reuses transform semantic graph" {
@@ -2469,14 +2470,14 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
 
     var unsupported_qualified_metadata_scanner = try Scanner.init(
         allocator,
-        "namespace Types { export class Local {} } function decorate(value: Types . Local) {} " ++
-            "class Box { @decorate method(value: Types . Local) {} }",
+        "namespace Types { export class Local {} } function decorate(value: Types /* comment */ . Local) {} " ++
+            "class Box { @decorate method(value: Types /* comment */ . Local) {} }",
     );
     var unsupported_qualified_metadata_parser = Parser.init(allocator, &unsupported_qualified_metadata_scanner);
     unsupported_qualified_metadata_parser.configureFromExtension(".ts");
     _ = try unsupported_qualified_metadata_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), unsupported_qualified_metadata_parser.errors.items.len);
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
         .emit_decorator_metadata = true,

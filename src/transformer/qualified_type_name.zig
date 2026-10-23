@@ -1,5 +1,17 @@
 const std = @import("std");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
+const Kind = @import("../lexer/token.zig").Kind;
 const ast_mod = @import("../parser/ast.zig");
+
+pub const QualifiedPath = struct {
+    /// Canonical identifier spelling for each component, owned by the caller allocator.
+    parts: [][]const u8,
+
+    pub fn deinit(self: QualifiedPath, allocator: std.mem.Allocator) void {
+        for (self.parts) |part| allocator.free(part);
+        allocator.free(self.parts);
+    }
+};
 
 /// Return the spelling of a TypeScript type reference's qualified name,
 /// excluding generic arguments. The parser stores the name's source bounds in
@@ -14,35 +26,92 @@ pub fn typeReferenceName(ast: *const ast_mod.Ast, node: ast_mod.Node) ?[]const u
     return ast.source[name_start..name_end];
 }
 
-/// The metadata graph can represent a qualified path when every component is
-/// a plain ASCII identifier. Other spellings stay on the established analysis
-/// path until their source tokens can be preserved individually.
-pub fn isSimpleQualifiedPath(name: []const u8) bool {
-    var parts = std.mem.splitScalar(u8, name, '.');
-    var count: usize = 0;
-    while (parts.next()) |part| {
-        if (part.len == 0 or !isIdentifierStart(part[0])) return false;
-        for (part[1..]) |c| {
-            if (!isIdentifierContinue(c)) return false;
-        }
-        count += 1;
+/// Parse a TypeScript qualified type path using the source lexer, then retain
+/// canonical component names for the generated lexical reference and property
+/// nodes. Lexer token spans keep comments and spacing out of emitted names.
+pub fn parseQualifiedPath(allocator: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error!?QualifiedPath {
+    var scanner = Scanner.init(allocator, name) catch return error.OutOfMemory;
+    defer scanner.deinit();
+
+    var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+    var returned = false;
+    defer if (!returned) {
+        for (parts.items) |part| allocator.free(part);
+        parts.deinit(allocator);
+    };
+
+    scanner.next() catch return error.OutOfMemory;
+    while (true) {
+        if (!isIdentifierName(scanner.token.kind)) return null;
+        const span = scanner.token.span;
+        if (span.start >= span.end or span.end > name.len) return null;
+        const raw = name[span.start..span.end];
+        const decoded = Scanner.decodeIdentifierEscapesAlloc(allocator, raw) catch return error.OutOfMemory;
+        const canonical = if (decoded.ptr == raw.ptr)
+            allocator.dupe(u8, decoded) catch {
+                return error.OutOfMemory;
+            }
+        else
+            decoded;
+        parts.append(allocator, canonical) catch {
+            allocator.free(canonical);
+            return error.OutOfMemory;
+        };
+
+        scanner.next() catch return error.OutOfMemory;
+        if (scanner.token.kind == .eof) break;
+        if (scanner.token.kind != .dot) return null;
+        scanner.next() catch return error.OutOfMemory;
     }
-    return count > 1;
+
+    if (parts.items.len < 2) return null;
+    const owned_parts = parts.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    returned = true;
+    return .{ .parts = owned_parts };
 }
 
-fn isIdentifierStart(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or
-        (c >= 'A' and c <= 'Z') or c == '_' or c == '$';
+/// True when the source is exactly a qualified identifier path, with ordinary
+/// JavaScript trivia/comments accepted between tokens.
+pub fn isSimpleQualifiedPath(allocator: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error!bool {
+    var path = (try parseQualifiedPath(allocator, name)) orelse return false;
+    defer path.deinit(allocator);
+    return true;
 }
 
-fn isIdentifierContinue(c: u8) bool {
-    return isIdentifierStart(c) or (c >= '0' and c <= '9');
+fn isIdentifierName(kind: Kind) bool {
+    return kind == .identifier or kind.isKeyword();
 }
 
-test "qualified TypeScript paths accept only plain ASCII identifier components" {
-    try std.testing.expect(isSimpleQualifiedPath("Types.Local"));
-    try std.testing.expect(isSimpleQualifiedPath("Outer.Inner.Local"));
-    try std.testing.expect(!isSimpleQualifiedPath("Local"));
-    try std.testing.expect(!isSimpleQualifiedPath("Types . Local"));
-    try std.testing.expect(!isSimpleQualifiedPath("命名.Local"));
+test "qualified TypeScript paths preserve Unicode escapes and token boundaries" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        source: []const u8,
+        expected: ?[]const []const u8,
+    }{
+        .{ .source = "Types.Local", .expected = &.{ "Types", "Local" } },
+        .{ .source = "Outer.Inner.Local", .expected = &.{ "Outer", "Inner", "Local" } },
+        .{ .source = "Types . Local", .expected = &.{ "Types", "Local" } },
+        .{ .source = "Types.default", .expected = &.{ "Types", "default" } },
+        .{ .source = "Types /* comment */ . Local", .expected = &.{ "Types", "Local" } },
+        .{ .source = "Types.\n// line comment\nLocal", .expected = &.{ "Types", "Local" } },
+        .{ .source = "命名 . 型", .expected = &.{ "命名", "型" } },
+        .{ .source = "\\u547d\\u540d.Local", .expected = &.{ "命名", "Local" } },
+        .{ .source = "Types.\\u578b", .expected = &.{ "Types", "型" } },
+        .{ .source = "Types.Local<string>", .expected = null },
+        .{ .source = "Types...Local", .expected = null },
+        .{ .source = "Types.Local.", .expected = null },
+        .{ .source = "Types.", .expected = null },
+        .{ .source = "Local", .expected = null },
+    };
+    for (cases) |case| {
+        var parsed = try parseQualifiedPath(allocator, case.source);
+        if (case.expected) |expected| {
+            try std.testing.expect(parsed != null);
+            defer parsed.?.deinit(allocator);
+            try std.testing.expectEqual(expected.len, parsed.?.parts.len);
+            for (expected, parsed.?.parts) |want, got| try std.testing.expectEqualStrings(want, got);
+        } else {
+            try std.testing.expect(parsed == null);
+        }
+    }
 }

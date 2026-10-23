@@ -2097,4 +2097,149 @@ console.log(events.join('|'));
       /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
     );
   });
+
+  test('qualified metadata paths retain exact identities across hostile trivia and Unicode names', async () => {
+    const fixtures = [
+      {
+        name: 'space around the separator with a shadowed lexical base',
+        declarations: 'namespace Types { export class Local {} }',
+        typeName: 'Types . Local',
+        runtimeName: 'Types.Local',
+        shadowed: true,
+      },
+      {
+        name: 'block comment before the separator',
+        declarations: 'namespace Types { export class Local {} }',
+        typeName: 'Types /* base comment */ . Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'line comment before the separator',
+        declarations: 'namespace Types { export class Local {} }',
+        typeName: 'Types // base comment\n . Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'multi-level path with comments at each boundary',
+        declarations: 'namespace Outer { export namespace Inner { export class Local {} } }',
+        typeName: 'Outer /* outer */ . Inner /* inner */ . Local',
+        runtimeName: 'Outer.Inner.Local',
+      },
+      {
+        name: 'Unicode namespace identifier',
+        declarations: 'namespace 命名 { export class Local {} }',
+        typeName: '命名 . Local',
+        runtimeName: '命名.Local',
+      },
+      {
+        name: 'Unicode property identifier',
+        declarations: 'namespace Types { export class 型 {} }',
+        typeName: 'Types . 型',
+        runtimeName: 'Types.型',
+      },
+      {
+        name: 'escaped Unicode namespace identifier',
+        declarations: 'namespace 命名 { export class Local {} }',
+        typeName: '\\u547d\\u540d . Local',
+        runtimeName: '命名.Local',
+      },
+      {
+        name: 'escaped Unicode property identifier',
+        declarations: 'namespace Types { export class 型 {} }',
+        typeName: 'Types . \\u578b',
+        runtimeName: 'Types.型',
+      },
+      {
+        name: 'generic qualified type with trivia',
+        declarations: 'namespace Types { export class Generic<T> {} }',
+        typeName: 'Types /* generic */ . Generic<string>',
+        runtimeName: 'Types.Generic',
+      },
+      {
+        name: 'nested Unicode property path',
+        declarations: 'namespace Outer { export namespace Inner { export class 型 {} } }',
+        typeName: 'Outer . Inner . 型',
+        runtimeName: 'Outer.Inner.型',
+      },
+    ];
+    const fixture = await createFixture({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    for (const [index, item] of fixtures.entries()) {
+      const source = `${item.declarations}
+        function decorate(_target: any, _key?: string, descriptor?: PropertyDescriptor): any { return descriptor; }
+        let observed: any;
+        (Reflect as any).metadata = (key: string, value: any) => {
+          if (key === 'design:paramtypes') observed = value[0];
+          return () => {};
+        };
+        function read(${item.shadowed ? 'Types: any' : ''}) {
+          class Box { @decorate method(value: ${item.typeName}): void {} }
+          return observed === ${item.runtimeName};
+        }
+        console.log(read(${item.shadowed ? '{ Local: class LocalType {} }' : ''}));
+      `;
+      const input = `input-${index}.ts`;
+      writeFileSync(join(fixture.dir, input), source);
+      const reference = ts.transpileModule(source, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          emitDecoratorMetadata: true,
+          target: ts.ScriptTarget.ES2020,
+          module: ts.ModuleKind.CommonJS,
+        },
+      }).outputText;
+      const referencePath = join(fixture.dir, `reference-${index}.js`);
+      writeFileSync(referencePath, reference);
+      const native = spawnSync('node', [referencePath], { encoding: 'utf8' });
+      expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+      expect(native.stdout.trim(), item.name).toBe('true');
+
+      for (const minifyIdentifiers of [false, true]) {
+        const output = join(fixture.dir, `output-${index}-${minifyIdentifiers}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            input,
+            '--target=es2020',
+            ...(minifyIdentifiers ? ['--minify-identifiers', '--minify-syntax'] : []),
+            '-o',
+            output,
+          ],
+          {
+            cwd: fixture.dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(
+          proc.status,
+          `${item.name} (${minifyIdentifiers ? 'minified' : 'plain'}): ${proc.stderr}`,
+        ).toBe(0);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${item.name} (${minifyIdentifiers ? 'minified' : 'plain'})`).toBe(
+          native.stdout,
+        );
+
+        if (minifyIdentifiers) {
+          const exact = proc.stderr
+            .split('\n')
+            .find((line) => line.includes(`zntc: symbol-identity ${input}:`));
+          expect(exact, item.name).toBeDefined();
+          expect(exact).toContain('missing_binding=0');
+          expect(exact).toContain('unclassified_reference=0');
+          expect(exact).toContain('shadowed_external_reference=0');
+          expect(exact).toContain('clean=1');
+          expect(proc.stderr).toMatch(
+            /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
+          );
+        }
+      }
+    }
+  });
 });
