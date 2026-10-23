@@ -1300,7 +1300,7 @@ pub fn buildMetadataForAst(
                 break :blk_eff target_name;
             } else target_name;
             if (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0])) {
-                if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                if (importBindingLocalSemanticIndex(ib, &module_scope, module_index)) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
                     // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
