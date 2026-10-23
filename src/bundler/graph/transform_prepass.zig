@@ -6253,7 +6253,10 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
         if (extras.len - member_extra < 3 or
             (extras[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) return null;
         const property_raw = extras[member_extra + 1];
-        if (property_raw >= ast.nodes.items.len or ast.nodes.items[property_raw].tag != .string_literal) return null;
+        if (property_raw >= ast.nodes.items.len) return null;
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(property_raw));
+        if (ast.nodes.items[property_raw].tag != .string_literal and
+            !drop_mod.isNoSubstitutionTemplateLiteral(ast, property_idx)) return null;
     }
 
     const args_start: usize = extras[extra + 1];
@@ -6269,6 +6272,12 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
             .bigint_literal,
             .regexp_literal,
             => {},
+            .template_literal => {
+                if (!drop_mod.isNoSubstitutionTemplateLiteral(
+                    ast,
+                    @fromBackingInt(@intCast(raw_arg)),
+                )) return null;
+            },
             else => return null,
         }
     }
@@ -6976,11 +6985,58 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
     return canRetainGraphForSimpleConsoleDrops(allocator, &parser.ast, &semantic);
 }
 
+const SimpleConsoleDropTestShape = struct {
+    is_console_call: bool,
+    shape: ?SimpleConsoleDrop,
+};
+
+fn simpleConsoleDropShapeForTest(source: []const u8) !SimpleConsoleDropTestShape {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .expression_statement) return .{
+            .is_console_call = drop_mod.isConsoleCallInAst(&parser.ast, node),
+            .shape = simpleConsoleDropShape(&parser.ast, node),
+        };
+    }
+    return .{ .is_console_call = false, .shape = null };
+}
+
+test "simple drop-console shape accepts static and rejects interpolated template literals" {
+    const static = try simpleConsoleDropShapeForTest(
+        "const console = {}; console[`log`](`ok`);",
+    );
+    try std.testing.expect(static.is_console_call);
+    try std.testing.expect(static.shape != null);
+
+    const dynamic_key = try simpleConsoleDropShapeForTest(
+        "const console = {}; console[`log${suffix}`](\"ok\");",
+    );
+    try std.testing.expect(!dynamic_key.is_console_call);
+    try std.testing.expect(dynamic_key.shape == null);
+
+    const dynamic_argument = try simpleConsoleDropShapeForTest(
+        "const console = {}; console.log(`value ${other}`);",
+    );
+    try std.testing.expect(dynamic_argument.is_console_call);
+    try std.testing.expect(dynamic_argument.shape == null);
+}
+
 test "simple drop-console retains exact local and unresolved global reads with scalar arguments" {
     const source = "const console = {}; const other = 1; console.log(\"ok\");";
     const global_source = "console.log(\"ok\");";
     const computed_source = "const console = {}; const other = 1; console[\"log\"](\"ok\");";
     const computed_global_source = "console['log'](\"ok\");";
+    const template_key_source = "const console = {}; console[`log`](`ok`);";
+    const template_argument_source = "console.log(`ok`);";
     const unsafe_sources = [_][]const u8{
         "console.log(other);",
         "console.log(() => 1);",
@@ -6997,7 +7053,16 @@ test "simple drop-console retains exact local and unresolved global reads with s
         "const console = {}; console[getKey()](\"ok\");",
         "const console = {}; console[Symbol.iterator](\"ok\");",
         "const console = {}; console[0](\"ok\");",
-        "const console = {}; console[`log`](\"ok\");",
+        "const console = {}; console[`lo${g}`](\"ok\");",
+        "const console = {}; console[`log${suffix}`](\"ok\");",
+        "const console = {}; console[`${prefix}log`](\"ok\");",
+        "const console = {}; console[`log${getKey()}`](\"ok\");",
+        "const console = {}; console[`log` + suffix](\"ok\");",
+        "const console = {}; console.log(`value ${other}`);",
+        "const console = {}; console.log(`value ${getValue()}`);",
+        "const console = {}; console.log(`${left}${right}`);",
+        "const console = {}; console.log(...[`ok`]);",
+        "console[`log${suffix}`](\"ok\");",
         "const console = {}; console?.[\"log\"](\"ok\");",
         "const console = {}; console[\"log\"]?.(\"ok\");",
         "const console = {}; console[\"log\"](other);",
@@ -7048,6 +7113,12 @@ test "simple drop-console retains exact local and unresolved global reads with s
     try std.testing.expect(try canRetainConsoleDropForTest(global_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(computed_source, .none));
     try std.testing.expect(try canRetainConsoleDropForTest(computed_global_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(template_key_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(template_argument_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(
+        "const console = {}; console[`log`](`ok`, 1, true, null, 1n, /x/);",
+        .none,
+    ));
 
     try std.testing.expect(try canRetainConsoleDropForTest(
         "const console = {}; console.log(\"ok\", 1, true, null, 1n, /x/);",

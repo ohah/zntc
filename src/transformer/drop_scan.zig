@@ -35,6 +35,14 @@ pub fn isDroppedLabel(ast: *const ast_mod.Ast, node: Node, labels: []const []con
     return false;
 }
 
+pub fn isNoSubstitutionTemplateLiteral(ast: *const ast_mod.Ast, index: ast_mod.NodeIndex) bool {
+    if (index.isNone() or @as(usize, @backingInt(index)) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(index);
+    if (node.tag != .template_literal) return false;
+    const list = node.data.list;
+    return list.len == 0 and list.start <= ast.extra_data.items.len;
+}
+
 /// expression_statement가 console.* 호출인지 판별.
 /// console.log(...), console["log"](...), console.warn(...) 등.
 pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
@@ -53,7 +61,7 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
     if (callee_idx.isNone() or @as(usize, @backingInt(callee_idx)) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
 
-    // 직접 member 호출만 대상으로 한다. 계산 멤버는 부작용 없는 string literal key만 허용한다.
+    // 직접 member 호출만 대상으로 한다. 계산 멤버는 부작용 없는 정적 key만 허용한다.
     if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
 
     // left가 identifier "console"
@@ -68,8 +76,9 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
         if (ast.extra_data.items.len - me < 3 or
             (ast.extra_data.items[me + 2] & ast_mod.MemberFlags.optional_chain) != 0) return false;
         const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[me + 1]));
-        if (property_idx.isNone() or @as(usize, @backingInt(property_idx)) >= ast.nodes.items.len or
-            ast.getNode(property_idx).tag != .string_literal) return false;
+        if (property_idx.isNone() or @as(usize, @backingInt(property_idx)) >= ast.nodes.items.len) return false;
+        if (ast.getNode(property_idx).tag != .string_literal and
+            !isNoSubstitutionTemplateLiteral(ast, property_idx)) return false;
     }
 
     return std.mem.eql(u8, ast.getText(obj.data.string_ref), "console");

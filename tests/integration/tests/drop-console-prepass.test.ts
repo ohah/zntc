@@ -79,4 +79,33 @@ describe('drop console graph pre-pass gate', () => {
     expect(unresolved.code).not.toContain("console['log']");
     expect(unresolved.stdout).toBe('42');
   });
+
+  test('no-substitution template keys and arguments keep the retained graph', async () => {
+    const local = await bundle(
+      'const console = {}; console[`log`](`remove me`); const answer = 41; process.stdout.write(String(answer + 1));',
+    );
+    expect(local.stderr).toContain('semantic_graph=retained');
+    expect(local.code).not.toContain('console[`log`]');
+    expect(local.stdout).toBe('42');
+
+    const unresolved = await bundle(
+      'console[`log`](`remove me`, 1, true); const answer = 41; process.stdout.write(String(answer + 1));',
+    );
+    expect(unresolved.stderr).toContain('semantic_graph=retained');
+    expect(unresolved.code).not.toContain('console[`log`]');
+    expect(unresolved.stdout).toBe('42');
+
+    const dynamic_key = await bundle(
+      'const console = { log(value) { process.stdout.write(value); } }; const prefix = ""; console[`${prefix}log`]("keep"); process.stdout.write("42");',
+    );
+    expect(dynamic_key.code).toContain('console');
+    expect(dynamic_key.stderr).not.toContain('symbol-identity-prepass-mode');
+    expect(dynamic_key.stdout).toBe('keep42');
+
+    const dynamic_argument = await bundle(
+      'const console = {}; function evaluate() { process.stdout.write("unexpected"); return 1; } console.log(`value ${evaluate()}`); process.stdout.write("42");',
+    );
+    expect(dynamic_argument.stderr).toContain('semantic_graph=reanalyzed');
+    expect(dynamic_argument.stdout).toBe('42');
+  });
 });
