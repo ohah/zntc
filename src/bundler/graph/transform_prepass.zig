@@ -6222,11 +6222,12 @@ const SimpleConsoleDrop = struct {
     object_reference: u32,
 };
 
-/// A dropped `console.member(...)` statement can keep the graph only when the
-/// removed call contains no nested bindings/references beyond its exact local
-/// `console` read or an exact unresolved global reference. Literal-only
-/// arguments make unreachable-node pruning sufficient to remove a local read;
-/// the unresolved spelling remains conservatively reserved in the graph.
+/// A dropped direct `console.member(...)` statement can keep the graph only
+/// when the removed call contains no nested bindings/references beyond its
+/// exact local `console` read or an exact unresolved global reference. Literal
+/// computed keys and literal-only arguments are side-effect free, so unreachable
+/// node pruning is sufficient to remove a local read; the unresolved spelling
+/// remains conservatively reserved in the graph.
 fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?SimpleConsoleDrop {
     if (statement.tag != .expression_statement) return null;
     const call_index = statement.data.unary.operand;
@@ -6236,17 +6237,24 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return null;
     const extras = ast.extra_data.items;
+    if ((extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return null;
     const callee_raw = extras[extra];
     if (callee_raw >= ast.nodes.items.len) return null;
     const callee = ast.nodes.items[callee_raw];
-    if (callee.tag != .static_member_expression) return null;
+    if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return null;
     const member_extra = callee.data.extra;
-    if (member_extra >= extras.len or extras.len - member_extra < 2) return null;
+    if (member_extra > extras.len or extras.len - member_extra < 2) return null;
     const object_raw = extras[member_extra];
     if (object_raw >= ast.nodes.items.len) return null;
     const object = ast.nodes.items[object_raw];
     if (object.tag != .identifier_reference or
         !std.mem.eql(u8, ast.getText(object.data.string_ref), "console")) return null;
+    if (callee.tag == .computed_member_expression) {
+        if (extras.len - member_extra < 3 or
+            (extras[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) return null;
+        const property_raw = extras[member_extra + 1];
+        if (property_raw >= ast.nodes.items.len or ast.nodes.items[property_raw].tag != .string_literal) return null;
+    }
 
     const args_start: usize = extras[extra + 1];
     const args_len: usize = extras[extra + 2];
@@ -6777,6 +6785,7 @@ const ConsolePreflightMutation = enum {
     invalid_argument_node,
     remove_unresolved_reference,
     unexpected_symbol_id,
+    non_string_computed_property,
 };
 
 fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMutation) !bool {
@@ -6798,6 +6807,7 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
 
     var target_raw: ?u32 = null;
     var target_call_extra: ?usize = null;
+    var target_computed_property: ?usize = null;
     for (try ast_walk.collectReachableNodeIndices(allocator, &parser.ast)) |raw| {
         const statement = parser.ast.nodes.items[raw];
         if (!drop_mod.isConsoleCallInAst(&parser.ast, statement)) continue;
@@ -6805,6 +6815,11 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
         target_raw = shape.object_reference;
         const call_idx = statement.data.unary.operand;
         target_call_extra = parser.ast.getNode(call_idx).data.extra;
+        const callee_raw = parser.ast.extra_data.items[target_call_extra.?];
+        const callee = parser.ast.nodes.items[callee_raw];
+        if (callee.tag == .computed_member_expression) {
+            target_computed_property = parser.ast.extra_data.items[callee.data.extra + 1];
+        }
         break;
     }
     var target_reference_index: ?usize = null;
@@ -6934,6 +6949,10 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
                 if (raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
                 analyzer.symbol_ids.items[raw] = symbol_id;
             },
+            .non_string_computed_property => {
+                const property_raw = target_computed_property orelse return error.MissingComputedProperty;
+                parser.ast.nodes.items[property_raw].tag = .identifier_reference;
+            },
         }
     } else if (mutation != .none) {
         return false;
@@ -6960,6 +6979,8 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
 test "simple drop-console retains exact local and unresolved global reads with scalar arguments" {
     const source = "const console = {}; const other = 1; console.log(\"ok\");";
     const global_source = "console.log(\"ok\");";
+    const computed_source = "const console = {}; const other = 1; console[\"log\"](\"ok\");";
+    const computed_global_source = "console['log'](\"ok\");";
     const unsafe_sources = [_][]const u8{
         "console.log(other);",
         "console.log(() => 1);",
@@ -6972,7 +6993,17 @@ test "simple drop-console retains exact local and unresolved global reads with s
         "const console = {}; console.log(...[]);",
         "const console = {}; console.log(\"ok\"); console.warn(other);",
         "import console from 'pkg'; console.log(\"ok\");",
-        "const console = {}; console[\"log\"](\"ok\");",
+        "const console = {}; console[key](\"ok\");",
+        "const console = {}; console[getKey()](\"ok\");",
+        "const console = {}; console[Symbol.iterator](\"ok\");",
+        "const console = {}; console[0](\"ok\");",
+        "const console = {}; console[`log`](\"ok\");",
+        "const console = {}; console?.[\"log\"](\"ok\");",
+        "const console = {}; console[\"log\"]?.(\"ok\");",
+        "const console = {}; console[\"log\"](other);",
+        "const console = {}; console[\"log\"](...[]);",
+        "import console from 'pkg'; console[\"log\"](\"ok\");",
+        "const console = {}; console[\"log\"].call(console, \"ok\");",
         "const console = {}; console.log.call(console, \"ok\");",
         "const console = {}; console.log(class Local {});",
         "const console = {}; console.log(async () => 1);",
@@ -7002,29 +7033,42 @@ test "simple drop-console retains exact local and unresolved global reads with s
         .invalid_argument_node,
         .remove_unresolved_reference,
         .unexpected_symbol_id,
+        .non_string_computed_property,
     };
     for (mutations) |mutation| {
         const mutation_source = switch (mutation) {
             .wrong_valid_reference_scope => "const console = {}; function read() { console.log(\"ok\"); }",
             .remove_unresolved_reference, .unexpected_symbol_id => "const sentinel = 1; console.log(\"ok\");",
+            .non_string_computed_property => computed_source,
             else => source,
         };
         try std.testing.expect(!try canRetainConsoleDropForTest(mutation_source, mutation));
     }
     try std.testing.expect(!try canRetainConsoleDropForTest("const value = 1;", .none));
     try std.testing.expect(try canRetainConsoleDropForTest(global_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(computed_source, .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(computed_global_source, .none));
 
     try std.testing.expect(try canRetainConsoleDropForTest(
         "const console = {}; console.log(\"ok\", 1, true, null, 1n, /x/);",
         .none,
     ));
+
+    for (mutations) |mutation| {
+        const mutation_source = switch (mutation) {
+            .wrong_valid_reference_scope => "const console = {}; function read() { console[\"log\"](\"ok\"); }",
+            .remove_unresolved_reference, .unexpected_symbol_id => "const sentinel = 1; console['log'](\"ok\");",
+            else => computed_source,
+        };
+        try std.testing.expect(!try canRetainConsoleDropForTest(mutation_source, mutation));
+    }
 }
 
 test "simple drop-console graph is retained by the full prepass gate" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "const console = {}; console.log(\"ok\");";
+    const source = "const console = {}; console[\"log\"](\"ok\");";
 
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
