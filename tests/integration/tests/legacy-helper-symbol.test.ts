@@ -2242,4 +2242,149 @@ console.log(events.join('|'));
       }
     }
   });
+
+  test('bundled qualified metadata keeps exact identities across ten hostile inputs', async () => {
+    const cases = [
+      {
+        name: 'plain imported namespace path',
+        typeName: 'Types.Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'spaces around the property separator',
+        typeName: 'Types . Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'block comment at the namespace boundary',
+        typeName: 'Types /* boundary */ . Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'line comment before the property separator',
+        typeName: 'Types // boundary\n . Local',
+        runtimeName: 'Types.Local',
+      },
+      {
+        name: 'nested imported namespace path',
+        typeName: 'Types.Inner.Local',
+        runtimeName: 'Types.Inner.Local',
+      },
+      {
+        name: 'comments between nested namespace components',
+        typeName: 'Types /* outer */ . Inner /* inner */ . Local',
+        runtimeName: 'Types.Inner.Local',
+      },
+      {
+        name: 'Unicode namespace and property names',
+        typeName: 'Types.命名.型',
+        runtimeName: 'Types.命名.型',
+      },
+      {
+        name: 'escaped Unicode property name',
+        typeName: String.raw`Types.命名.\u578b`,
+        runtimeName: 'Types.命名.型',
+      },
+      {
+        name: 'generic qualified type serializes its runtime constructor',
+        typeName: 'Types.Generic<string>',
+        runtimeName: 'Types.Generic',
+      },
+      {
+        name: 'shadowed namespace base resolves in the parameter scope',
+        typeName: 'Types.Local',
+        runtimeName: 'Types.Local',
+        shadowed: true,
+      },
+    ];
+    const typesSource = `
+export class Local {}
+export namespace Inner { export class Local {} }
+export namespace 命名 { export class 型 {} }
+export class Generic<T> {}
+`;
+    const fixture = await createFixture({
+      'types.ts': typesSource,
+      'package.json': '{"type":"commonjs"}',
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          experimentalDecorators: true,
+          emitDecoratorMetadata: true,
+          verbatimModuleSyntax: true,
+        },
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    const referenceOptions: ts.TranspileOptions = {
+      compilerOptions: {
+        experimentalDecorators: true,
+        emitDecoratorMetadata: true,
+        target: ts.ScriptTarget.ESNext,
+        module: ts.ModuleKind.CommonJS,
+      },
+    };
+    writeFileSync(
+      join(fixture.dir, 'types.js'),
+      ts.transpileModule(typesSource, referenceOptions).outputText,
+    );
+
+    for (const [index, item] of cases.entries()) {
+      const inputSource = `
+import * as Types from './types';
+function decorate(_target: any, _key?: string, descriptor?: PropertyDescriptor): any { return descriptor; }
+let observed: any;
+(Reflect as any).metadata = function (key: string, value: any) {
+  if (key === 'design:paramtypes') observed = value[0];
+  return function () {};
+};
+${item.shadowed ? 'const importedNamespace = Types;\nfunction read(Types: any) {' : ''}
+class Box { @decorate method(value: ${item.typeName}): void {} }
+${item.shadowed ? 'return observed === Types.Local;\n}\nconsole.log(read({ Local: importedNamespace.Local }));' : `console.log(observed === ${item.runtimeName});`}
+`;
+      const input = `input-${index}.ts`;
+      writeFileSync(join(fixture.dir, input), inputSource);
+      const referencePath = join(fixture.dir, `reference-${index}.js`);
+      writeFileSync(referencePath, ts.transpileModule(inputSource, referenceOptions).outputText);
+      const reference = spawnSync('node', [referencePath], { encoding: 'utf8' });
+      expect(reference.status, `${item.name}: ${reference.stderr}`).toBe(0);
+      expect(reference.stdout.trim(), item.name).toBe('true');
+
+      const output = join(fixture.dir, `out-${index}.cjs`);
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, `${item.name}: ${proc.stderr}`).toBe(0);
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, `${item.name}: ${runtime.stderr}`).toBe(0);
+      expect(runtime.stdout, item.name).toBe(reference.stdout);
+
+      const mode = proc.stderr
+        .split('\n')
+        .find((line) => line.includes('symbol-identity-prepass-mode') && line.includes(input));
+      expect(mode, item.name).toContain('semantic_graph=retained');
+      const exact = proc.stderr
+        .split('\n')
+        .find((line) => line.includes('symbol-identity-prepass ') && line.includes(input));
+      expect(exact, item.name).toContain('missing_binding=0');
+      expect(exact).toContain('unclassified_reference=0');
+      expect(exact).toContain('shadowed_external_reference=0');
+      expect(exact).toContain('clean=1');
+    }
+  });
 });

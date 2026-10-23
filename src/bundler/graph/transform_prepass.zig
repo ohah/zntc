@@ -6003,15 +6003,27 @@ fn runtimeHelpersSafeForRetainedGraph(
     if (allow_es5_async_method_super_get) other_helpers.super_get = false;
     if (allow_es5_async_method_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
-    if (allow_legacy_decorator_helpers) other_helpers.legacy_decorator = false;
+    if (allow_legacy_decorator_helpers) {
+        other_helpers.legacy_decorator = false;
+        if (helpers.legacy_decorator) other_helpers.metadata = false;
+    }
     return !other_helpers.hasAny();
+}
+
+test "retained legacy decorators admit their tracked metadata helper" {
+    const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
+    const helpers: RuntimeHelpers = .{ .legacy_decorator = true, .metadata = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false));
+    const metadata_only: RuntimeHelpers = .{ .metadata = true };
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false));
 }
 
 /// Stage 3 decorators are always lowered by the transformer, even when the
 /// selected JavaScript target leaves class syntax native. Keep that narrow
 /// path on the edited semantic graph only when no other syntax lowering or
-/// plugin can change the same scopes. Legacy decorators and decorator
-/// metadata have distinct graph effects and remain on semantic reanalysis.
+/// plugin can change the same scopes. Legacy metadata is admitted separately
+/// below because its helper references are recorded in the edited graph.
 fn canRetainStage3DecoratorGraph(
     ast: *const ast_mod.Ast,
     options: TransformOptions,
@@ -6033,9 +6045,10 @@ fn canRetainStage3DecoratorGraph(
 /// Legacy decorators are lowered by the transformer even when class syntax
 /// remains native. Their helper imports and generated references are recorded
 /// in the edited semantic graph. Flow input is supported when it is a runtime
-/// module; `.js.flow` and `.jsx.flow` declaration files, metadata, syntax
-/// minification, downlevel syntax, and plugins with undeclared graph effects
-/// stay on the conservative analyzer path.
+/// module; `.js.flow` and `.jsx.flow` declaration files, syntax minification,
+/// downlevel syntax, and plugins with undeclared graph effects stay on the
+/// conservative analyzer path. Metadata can use this path when its generated
+/// helper references are also admitted by the retained-graph gate.
 fn canRetainLegacyDecoratorGraph(
     module: *const Module,
     ast: *const ast_mod.Ast,
@@ -6045,7 +6058,6 @@ fn canRetainLegacyDecoratorGraph(
         options.experimental_decorators and
         !isFlowPath(module.path) and
         !options.unsupportedGraphPrePassFeatureUsed(ast) and
-        !options.emit_decorator_metadata and
         !options.minify_syntax and
         !options.react_refresh and
         !options.styled_components and
@@ -6089,7 +6101,7 @@ test "legacy decorator graph retention gate includes Flow and excludes graph-cha
     try std.testing.expect(canRetainLegacyDecoratorGraph(&flow_module, &flow_parser.ast, options));
     const flow_declaration_module = Module.init(@fromBackingInt(@as(u32, 2)), "input.js.flow");
     try std.testing.expect(!canRetainLegacyDecoratorGraph(&flow_declaration_module, &flow_parser.ast, options));
-    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+    try std.testing.expect(canRetainLegacyDecoratorGraph(
         &module,
         &parser.ast,
         .{ .experimental_decorators = true, .emit_decorator_metadata = true },
@@ -6132,6 +6144,11 @@ test "legacy decorator graph retention gate includes Flow and excludes graph-cha
     ts_export_equals_ast.has_ts_export_equals = true;
     try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &ts_export_equals_ast, options));
     try std.testing.expect(!canRetainLegacyDecoratorGraph(&module, &parser.ast, .{}));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        &module,
+        &parser.ast,
+        .{ .emit_decorator_metadata = true },
+    ));
 }
 
 fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
@@ -6624,7 +6641,7 @@ fn canKeepPrepassSemanticGraph(
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or
         (options.experimental_decorators and !retained_legacy_decorators) or
-        options.emit_decorator_metadata) return false;
+        (options.emit_decorator_metadata and !retained_legacy_decorators)) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await
     // into a generated async IIFE, so keep that case on the full resync path.
