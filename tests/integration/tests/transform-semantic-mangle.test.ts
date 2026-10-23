@@ -1066,7 +1066,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe('50');
   });
 
-  test('simple local string defines retain exact references and other define shapes reanalyze', async () => {
+  test('simple local string and primitive defines retain exact references; unsafe shapes reanalyze', async () => {
     const fixture = await createFixture({
       'retained.js': `const __BUILD__ = 'source'; console.log(__BUILD__);`,
       'global.js': `console.log(__BUILD__);`,
@@ -1119,7 +1119,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         file: 'non-string.js',
         define: '--define:__BUILD__=false',
         flags: [] as string[],
-        mode: 'reanalyzed' as const,
+        mode: 'retained' as const,
         expected: 'false',
       },
       {
