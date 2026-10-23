@@ -5974,6 +5974,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
     allow_derived_class_helpers: bool,
     allow_stage3_decorator_helpers: bool,
+    allow_legacy_decorator_helpers: bool,
     allow_async_helper: bool,
     allow_es5_async_method_super_get: bool,
     allow_es5_async_method_super_set: bool,
@@ -6002,6 +6003,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     if (allow_es5_async_method_super_get) other_helpers.super_get = false;
     if (allow_es5_async_method_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
+    if (allow_legacy_decorator_helpers) other_helpers.legacy_decorator = false;
     return !other_helpers.hasAny();
 }
 
@@ -6026,6 +6028,103 @@ fn canRetainStage3DecoratorGraph(
         !ast.has_ts_namespace_or_enum and
         !ast.has_ts_import_equals and
         !ast.has_ts_export_equals;
+}
+
+/// Legacy decorators are lowered by the transformer even when class syntax
+/// remains native. Their helper imports and generated references are recorded
+/// in the edited semantic graph, but Flow, metadata, syntax minification,
+/// downlevel syntax, and plugins with undeclared graph effects stay on the
+/// conservative analyzer path.
+fn canRetainLegacyDecoratorGraph(
+    flow: bool,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+) bool {
+    return ast.has_decorator and
+        options.experimental_decorators and
+        !flow and
+        !isFlowPath(module.path) and
+        !options.unsupportedGraphPrePassFeatureUsed(ast) and
+        !options.emit_decorator_metadata and
+        !options.minify_syntax and
+        !options.react_refresh and
+        !options.styled_components and
+        !options.emotion and
+        !ast.has_jsx and
+        !ast.has_ts_namespace_or_enum and
+        !ast.has_ts_import_equals and
+        !ast.has_ts_export_equals;
+}
+
+test "legacy decorator graph retention gate excludes Flow and graph-changing modes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function mark(value: any): any { return value; } @mark class Example { @mark method() {} }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.ts");
+    const options: TransformOptions = .{ .experimental_decorators = true };
+    try std.testing.expect(canRetainLegacyDecoratorGraph(false, &module, &parser.ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(true, &module, &parser.ast, options));
+
+    const flow_module = Module.init(@fromBackingInt(@as(u32, 1)), "input.js.flow");
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &flow_module, &parser.ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .emit_decorator_metadata = true },
+    ));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .minify_syntax = true },
+    ));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .unsupported = .{ .class = true } },
+    ));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .react_refresh = true },
+    ));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .styled_components = true },
+    ));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(
+        false,
+        &module,
+        &parser.ast,
+        .{ .experimental_decorators = true, .emotion = true },
+    ));
+    var jsx_ast = parser.ast;
+    jsx_ast.has_jsx = true;
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &jsx_ast, options));
+    var ts_namespace_ast = parser.ast;
+    ts_namespace_ast.has_ts_namespace_or_enum = true;
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_namespace_ast, options));
+    var ts_import_equals_ast = parser.ast;
+    ts_import_equals_ast.has_ts_import_equals = true;
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_import_equals_ast, options));
+    var ts_export_equals_ast = parser.ast;
+    ts_export_equals_ast.has_ts_export_equals = true;
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &ts_export_equals_ast, options));
+    try std.testing.expect(!canRetainLegacyDecoratorGraph(false, &module, &parser.ast, .{}));
 }
 
 fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
@@ -6478,6 +6577,12 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const retained_stage3_decorators = canRetainStage3DecoratorGraph(ast, options);
+    const retained_legacy_decorators = canRetainLegacyDecoratorGraph(
+        self.flow,
+        module,
+        ast,
+        options,
+    );
     var retainable_async_method_super_get = false;
     var retainable_async_method_super_set = false;
     const safe_graph_subset = options.unsupported.hasAny() and
@@ -6503,15 +6608,16 @@ fn canKeepPrepassSemanticGraph(
         semantic,
     );
     if ((ast.has_jsx and !graph_editable_jsx) or
-        (ast.has_decorator and !retained_stage3_decorators)) return false;
+        (ast.has_decorator and !retained_stage3_decorators and !retained_legacy_decorators)) return false;
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators) or options.minify_syntax or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or options.minify_syntax or
         (has_drop_console and !retained_simple_console_drops) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
-        (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
+        (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or
+        (options.experimental_decorators and !retained_legacy_decorators) or
         options.emit_decorator_metadata) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await
@@ -6525,7 +6631,7 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_simple_define or
+    var found_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
         retained_simple_console_drops or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
@@ -6749,6 +6855,7 @@ test "primitive defines retain only an exact local reference graph" {
     const Plugin = @import("../plugin.zig").Plugin;
     const test_context = .{
         .allocator = allocator,
+        .flow = false,
         .worklet_transform = false,
         .plugins = &[_]Plugin{},
         .styled_components = false,
@@ -7445,6 +7552,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
     const Plugin = @import("../plugin.zig").Plugin;
     const test_context = .{
         .allocator = allocator,
+        .flow = false,
         .worklet_transform = false,
         .plugins = &[_]Plugin{},
         .styled_components = false,
@@ -8009,6 +8117,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasReachableDerivedClass(ast_ptr);
     const allow_stage3_decorator_helpers = can_keep_semantic_graph and
         canRetainStage3DecoratorGraph(ast_ptr, opts);
+    const allow_legacy_decorator_helpers = can_keep_semantic_graph and
+        canRetainLegacyDecoratorGraph(self.flow, module, ast_ptr, opts);
     const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await;
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
@@ -8236,6 +8346,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.runtime_helpers,
         allow_derived_class_helpers,
         allow_stage3_decorator_helpers,
+        allow_legacy_decorator_helpers,
         allow_async_helper,
         allow_es5_async_method_super_get,
         allow_es5_async_method_super_set,
