@@ -23,7 +23,8 @@
 //!   - Stage 3 decorator `context.name` is an observable source-name string and stays unchanged;
 //!     only private identifier syntax is mangled. Bundler traversal starts from the emitted root
 //!     so stale pre-transform class nodes cannot apply a second class-local mapping.
-//!   - Legacy `emit_decorator_metadata` with native private fields remains a separate audit case.
+//!   - Legacy `emit_decorator_metadata` emits type metadata, not private-name keys; native private
+//!     names with legacy metadata are covered by the #6190 output-boundary audit.
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
