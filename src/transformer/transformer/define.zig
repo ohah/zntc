@@ -73,6 +73,17 @@ pub fn isStringLiteralDefineValue(value: []const u8) bool {
     return value.len >= 2 and (value[0] == '"' or value[0] == '\'');
 }
 
+/// `tryDefineReplace` emits non-string values as explicit-global identifier
+/// references. These exact primitive spellings have no source SymbolId edge;
+/// the retained graph path preserves their explicit-global sidecar so names
+/// such as `undefined` cannot bind to a same-spelled source local.
+pub fn isGraphSafePrimitiveDefineValue(value: []const u8) bool {
+    return std.mem.eql(u8, value, "true") or
+        std.mem.eql(u8, value, "false") or
+        std.mem.eql(u8, value, "null") or
+        std.mem.eql(u8, value, "undefined");
+}
+
 pub fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
     if (defines.len == 0) return false;
     for (ast.nodes.items) |node| {

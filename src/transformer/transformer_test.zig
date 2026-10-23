@@ -40,6 +40,14 @@ test "define matching preserves the first matching entry" {
     );
 }
 
+test "define primitive graph safety accepts only exact values" {
+    const is_safe = @import("transformer/define.zig").isGraphSafePrimitiveDefineValue;
+    const safe_values = [_][]const u8{ "true", "false", "null", "undefined" };
+    for (safe_values) |value| try std.testing.expect(is_safe(value));
+    const rejected_values = [_][]const u8{ "True", "falsey", "0", "NaN", "globalThis.value", "(false)" };
+    for (rejected_values) |value| try std.testing.expect(!is_safe(value));
+}
+
 test "define replacement removes the exact source reference from semantic graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -96,6 +104,83 @@ test "define replacement removes the exact source reference from semantic graph"
     for (editor.references.items) |reference| {
         try std.testing.expect(reference.node_index != replaced_reference);
     }
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
+    for (edited.references) |reference| {
+        try std.testing.expect(reference.node_index != replaced_reference);
+    }
+    try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[symbol_id].reference_count);
+}
+
+test "define primitive replacement removes the local edge and marks its explicit global node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const undefined = 'shadowed'; const __BUILD__ = 'source'; console.log(__BUILD__);";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var source_reference: ?NodeIndex = null;
+    var source_symbol_id: ?u32 = null;
+    for (analyzer.references.items) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "__BUILD__")) continue;
+        source_reference = reference.node_index;
+        source_symbol_id = @backingInt(reference.symbol_id);
+    }
+    const replaced_reference = source_reference orelse return error.MissingDefineSourceReference;
+    const symbol_id = source_symbol_id orelse return error.MissingDefineSourceSymbol;
+
+    const defines = [_]transformer_mod.DefineEntry{.{ .key = "__BUILD__", .value = "undefined" }};
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .define = &defines });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.record_explicit_global_references = true;
+
+    _ = try transformer.transform();
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    for (editor.references.items) |reference| {
+        try std.testing.expect(reference.node_index != replaced_reference);
+    }
+
+    var generated_global_node: ?u32 = null;
+    var explicit_it = transformer.explicit_global_reference_nodes.keyIterator();
+    while (explicit_it.next()) |raw| {
+        if (raw.* >= transformer.ast.nodes.items.len) continue;
+        const node = transformer.ast.nodes.items[raw.*];
+        if (node.tag == .identifier_reference and
+            std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "undefined"))
+        {
+            generated_global_node = raw.*;
+            break;
+        }
+    }
+    const global_raw = generated_global_node orelse return error.MissingExplicitGlobalDefineNode;
+    try std.testing.expect(transformer.symbol_ids.items[global_raw] == null);
+
     const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
     for (edited.references) |reference| {
         try std.testing.expect(reference.node_index != replaced_reference);
