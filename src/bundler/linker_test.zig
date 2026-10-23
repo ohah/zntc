@@ -3422,6 +3422,14 @@ test "namespace hostile metadata rejects foreign and alias SymbolRefs, preservin
         const mutable_scope_maps = @constCast(semantic.scope_maps);
         const binding = &entry.import_bindings[binding_index];
 
+        // A valid same-module SymbolRef wins over a poisoned spelling map and
+        // keeps the namespace rewrite attached to the captured binding SID.
+        try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+        var local_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer local_metadata.deinit();
+        try std.testing.expect(local_metadata.ns_member_rewrites.get(binding_symbol) != null);
+        try std.testing.expect(local_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+
         // A valid-looking SID from another module must fail closed, even when its
         // numeric symbol index happens to overlap with a local binding.
         binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(provider_index, binding_symbol);
