@@ -6163,10 +6163,11 @@ fn hasNestedWorkletFunctionScope(
     return false;
 }
 
-/// Retain the graph for string-valued define replacements only when every
-/// matching AST candidate is one exact, bound local identifier read. Composite
-/// expressions and dynamic scopes retain the full semantic reanalysis path.
-fn canRetainGraphForStringDefineReferences(
+/// Retain the graph for string and primitive define replacements only
+/// when every matching AST candidate is one exact, bound local identifier
+/// read. Composite expressions and dynamic scopes retain the full semantic
+/// reanalysis path.
+fn canRetainGraphForSimpleDefineReferences(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6198,7 +6199,9 @@ fn canRetainGraphForStringDefineReferences(
     for (ast.nodes.items, 0..) |node, raw| {
         const value = define_mod.matchedDefineValue(ast, node, defines) orelse continue;
         found_define = true;
-        if (node.tag != .identifier_reference or !define_mod.isStringLiteralDefineValue(value)) return false;
+        if (node.tag != .identifier_reference or
+            (!define_mod.isStringLiteralDefineValue(value) and
+                !define_mod.isGraphSafePrimitiveDefineValue(value))) return false;
         if (raw >= semantic.symbol_ids.len) return false;
         const symbol_id = semantic.symbol_ids[raw] orelse return false;
         if (symbol_id >= semantic.symbols.items.len) return false;
@@ -6267,7 +6270,7 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_set,
         );
     const uses_define = define_mod.astUsesDefine(ast, options.define);
-    const retained_string_define = uses_define and canRetainGraphForStringDefineReferences(
+    const retained_simple_define = uses_define and canRetainGraphForSimpleDefineReferences(
         self.allocator,
         ast,
         semantic,
@@ -6280,7 +6283,7 @@ fn canKeepPrepassSemanticGraph(
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators) or options.minify_syntax or
         (options.drop_console and hasDroppedConsoleStatement(ast)) or
-        hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_string_define) or
+        hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata) return false;
@@ -6296,7 +6299,7 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_string_define or safe_styled_components or
+    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or retained_simple_define or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
@@ -6440,6 +6443,25 @@ fn canKeepPrepassSemanticGraph(
     return safe_graph;
 }
 
+fn shouldRecordPrepassExplicitGlobals(
+    can_keep_semantic_graph: bool,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    flow_match_has_generated_globals: bool,
+    lowered_object_spread_global: bool,
+    lowered_exponentiation_global: bool,
+    safe_builtin_worklet: bool,
+    lowered_simple_static_class_field_global: bool,
+) bool {
+    // Identifier-valued defines such as `undefined` are explicit globals.
+    // The retained graph must carry their sidecar so later linking cannot
+    // resolve them to a same-spelled source binding.
+    return flow_match_has_generated_globals or lowered_object_spread_global or lowered_exponentiation_global or
+        safe_builtin_worklet or
+        (can_keep_semantic_graph and define_mod.astUsesDefine(ast, options.define)) or
+        lowered_simple_static_class_field_global;
+}
+
 fn isBuiltinWorkletPluginSet(plugins: anytype) bool {
     return plugins.len == 1 and std.mem.eql(u8, plugins[0].name, "reanimated-worklet");
 }
@@ -6457,6 +6479,271 @@ test "worklet graph retention admits only the built-in plugin" {
     try std.testing.expect(!isBuiltinWorkletPluginSet(&custom));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&mixed));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&.{}));
+}
+
+test "primitive defines retain only an exact local reference graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const flag = 1; function read() { return flag; }";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const test_context = .{
+        .allocator = allocator,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    const primitive_defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "false" }};
+    const unsupported_defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "globalThis.value" }};
+    var allow_super_get = false;
+    var allow_super_set = false;
+    const primitive_options: TransformOptions = .{ .strip_types = true, .define = &primitive_defines };
+    const primitive_graph_retained = canKeepPrepassSemanticGraph(
+        &test_context,
+        &module,
+        primitive_options,
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+    );
+    try std.testing.expect(primitive_graph_retained);
+    try std.testing.expect(shouldRecordPrepassExplicitGlobals(
+        primitive_graph_retained,
+        &parser.ast,
+        primitive_options,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    const unsupported_graph_retained = canKeepPrepassSemanticGraph(
+        &test_context,
+        &module,
+        .{ .strip_types = true, .define = &unsupported_defines },
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+    );
+    try std.testing.expect(!unsupported_graph_retained);
+    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(
+        unsupported_graph_retained,
+        &parser.ast,
+        .{ .strip_types = true, .define = &unsupported_defines },
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+}
+
+const DefinePreflightMutation = enum {
+    none,
+    truncated_symbol_id_map,
+    missing_symbol_id,
+    invalid_symbol_id,
+    import_binding,
+    duplicate_reference,
+    missing_reference,
+    mismatched_reference_symbol,
+    invalid_reference_scope,
+    invalid_binding_scope,
+    out_of_range_binding_scope,
+    synthetic_binding,
+};
+
+fn canRetainSimpleDefineForTest(
+    source: []const u8,
+    key: []const u8,
+    value: []const u8,
+    mutation: DefinePreflightMutation,
+) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    const defines = [_]define_mod.DefineEntry{.{ .key = key, .value = value }};
+    var target_raw: ?usize = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (define_mod.matchedDefineValue(&parser.ast, node, &defines) != null) {
+            target_raw = raw;
+            break;
+        }
+    }
+    const raw = target_raw orelse return false;
+
+    var target_reference_index: ?usize = null;
+    for (analyzer.references.items, 0..) |reference, index| {
+        if (!reference.node_index.isNone() and @backingInt(reference.node_index) == raw) {
+            target_reference_index = index;
+            break;
+        }
+    }
+    switch (mutation) {
+        .none => {},
+        .truncated_symbol_id_map => analyzer.symbol_ids.items.len = raw,
+        .missing_symbol_id => {
+            analyzer.symbol_ids.items[raw] = null;
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            analyzer.references.items[index].symbol_id = @fromBackingInt(0);
+        },
+        .invalid_symbol_id => {
+            const invalid_id: u32 = @intCast(analyzer.symbols.items.len);
+            analyzer.symbol_ids.items[raw] = invalid_id;
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            analyzer.references.items[index].symbol_id = @fromBackingInt(invalid_id);
+        },
+        .import_binding => {
+            const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+            analyzer.symbols.items[symbol_id].kind = .import_binding;
+        },
+        .duplicate_reference => {
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            const reference = analyzer.references.items[index];
+            try analyzer.references.append(allocator, reference);
+        },
+        .missing_reference => {
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            _ = analyzer.references.orderedRemove(index);
+        },
+        .mismatched_reference_symbol => {
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            const expected = @backingInt(analyzer.references.items[index].symbol_id);
+            var replacement: ?u32 = null;
+            for (analyzer.symbols.items, 0..) |_, candidate| {
+                if (candidate != expected) {
+                    replacement = @intCast(candidate);
+                    break;
+                }
+            }
+            analyzer.references.items[index].symbol_id = @fromBackingInt(
+                replacement orelse return error.MissingReplacementSymbol,
+            );
+        },
+        .invalid_reference_scope => {
+            const index = target_reference_index orelse return error.MissingTargetReference;
+            analyzer.references.items[index].scope_id = @fromBackingInt(@intCast(analyzer.scopes.items.len + 1));
+        },
+        .invalid_binding_scope => {
+            const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+            analyzer.symbols.items[symbol_id].scope_id = .none;
+        },
+        .out_of_range_binding_scope => {
+            const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+            analyzer.symbols.items[symbol_id].scope_id = @fromBackingInt(@intCast(analyzer.scopes.items.len + 1));
+        },
+        .synthetic_binding => {
+            const symbol_id = analyzer.symbol_ids.items[raw] orelse return error.MissingTargetSymbol;
+            analyzer.symbols.items[symbol_id].synthetic_kind = .runtime_helper_import;
+        },
+    }
+
+    const semantic = ModuleSemanticData{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    return canRetainGraphForSimpleDefineReferences(allocator, &parser.ast, &semantic, &defines);
+}
+
+test "simple define graph preflight rejects hostile syntax and graph evidence" {
+    const local_source = "const flag = 1; function read() { return flag; }";
+    const HostileCase = struct {
+        source: []const u8,
+        key: []const u8,
+        value: []const u8,
+        mutation: DefinePreflightMutation,
+    };
+    const cases = [_]HostileCase{
+        .{ .source = local_source, .key = "flag", .value = "0", .mutation = .none },
+        .{ .source = local_source, .key = "flag", .value = "globalThis.value", .mutation = .none },
+        .{ .source = "const object = {}; function read() { return object.flag; }", .key = "object.flag", .value = "false", .mutation = .none },
+        .{ .source = "const object = {}; function read() { return object?.flag; }", .key = "object.flag", .value = "false", .mutation = .none },
+        .{ .source = "function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
+        .{ .source = "import { flag } from 'pkg'; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .truncated_symbol_id_map },
+        .{ .source = "const flag = 1; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .missing_symbol_id },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .invalid_symbol_id },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .import_binding },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .duplicate_reference },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .missing_reference },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .mismatched_reference_symbol },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .invalid_reference_scope },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .invalid_binding_scope },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .out_of_range_binding_scope },
+        .{ .source = local_source, .key = "flag", .value = "false", .mutation = .synthetic_binding },
+    };
+    for (cases) |case| {
+        try std.testing.expect(!try canRetainSimpleDefineForTest(
+            case.source,
+            case.key,
+            case.value,
+            case.mutation,
+        ));
+    }
+    try std.testing.expect(!try canRetainSimpleDefineForTest(local_source, "missing", "false", .none));
+    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "\"production\"", .none));
+    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "true", .none));
+    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "false", .none));
+    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "null", .none));
+    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "undefined", .none));
 }
 
 fn printPrepassExact(
@@ -6836,11 +7123,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
-    transformer.record_explicit_global_references =
-        flow_match_generated_globals.has_match or has_lowered_object_spread or has_lowered_exponentiation or
-        safe_builtin_worklet or
-        (downlevel_static_public_class_field_scan orelse
-            (opts.unsupported.class or opts.unsupported.class_field));
+    transformer.record_explicit_global_references = shouldRecordPrepassExplicitGlobals(
+        can_keep_semantic_graph,
+        ast_ptr,
+        opts,
+        flow_match_generated_globals.has_match,
+        lowered_object_spread_global,
+        lowered_exponentiation_global,
+        safe_builtin_worklet,
+        downlevel_static_public_class_field_scan orelse (opts.unsupported.class or opts.unsupported.class_field),
+    );
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
