@@ -3296,4 +3296,187 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       expect(minified.stdout, item.name).toBe(reference.stdout);
     }
   });
+
+  test('legacy Flow decorators retain exact SymbolIds across ten hostile inputs', async () => {
+    const fixtures = [
+      {
+        name: 'class-name binding stays separate from a shadowing Flow parameter',
+        target: 'esnext',
+        source: `
+          // @flow
+          const events = [];
+          function decorate(target: any): any { events.push('class:' + target.name); return target; }
+          const value = 'outer';
+          function create(value: string): string {
+            @decorate class Box { static read(): string { return value; } }
+            return Box.read() + ':' + Box.name;
+          }
+          console.log(create('inner'), value, events.join(','));
+        `,
+        expected: 'inner:Box outer class:Box',
+      },
+      {
+        name: 'class replacement retains the original typed class binding',
+        target: 'es2015',
+        source: `
+          // @flow
+          function wrap(target: any): any {
+            return class extends target { static wrapped(): number { return this.value + 1; } };
+          }
+          @wrap class Box { static value: number = 40; }
+          console.log(Box.wrapped(), Object.getPrototypeOf(Box).name);
+        `,
+        expected: '41 Box',
+      },
+      {
+        name: 'method decorator keeps typed default parameter shadowing',
+        target: 'es5',
+        source: `
+          // @flow
+          const label = 'outer';
+          const events = [];
+          function decorate(target: any, key?: string, descriptor?: any): any { events.push(key); return descriptor; }
+          class Box {
+            @decorate read(value: string = label): string { const label: string = 'inner'; return label + value; }
+          }
+          console.log(new Box().read(), events.join(','));
+        `,
+        expected: 'innerouter read',
+      },
+      {
+        name: 'static field and block ordering remains before the member decorator',
+        target: 'es2022',
+        source: `
+          // @flow
+          const events = [];
+          function decorate(target: any, key?: string): void { events.push('decor:' + key); }
+          class Box {
+            static field: number = events.push('field');
+            static { events.push('block'); }
+            @decorate method(): void {}
+          }
+          console.log(Box.field, events.join(','));
+        `,
+        expected: '1 field,block,decor:method',
+      },
+      {
+        name: 'computed decorator key evaluates once and keeps its producer identity',
+        target: 'esnext',
+        source: `
+          // @flow
+          let count = 0;
+          const events = [];
+          function key(): string { count++; return 'method' + count; }
+          function decorate(target: any, name?: string, descriptor?: any): any { events.push(name); return descriptor; }
+          class Box { @decorate [key()](): number { return count; } }
+          console.log(new Box().method1(), count, events.join(','));
+        `,
+        expected: '1 1 method1',
+      },
+      {
+        name: 'decorated method keeps a lowered typed private field reference',
+        target: 'es2021',
+        source: `
+          // @flow
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor; }
+          class Box {
+            #value: number = 7;
+            @decorate read(delta: number): number { return this.#value + delta; }
+          }
+          console.log(new Box().read(2));
+        `,
+        expected: '9',
+      },
+      {
+        name: 'decorated static method retains its private static field owner',
+        target: 'es2021',
+        source: `
+          // @flow
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor; }
+          class Box {
+            static #value: number = 5;
+            @decorate static read(): number { return Box.#value; }
+          }
+          console.log(Box.read());
+        `,
+        expected: '5',
+      },
+      {
+        name: 'block class self binding stays distinct from the outer name',
+        target: 'es5',
+        source: `
+          // @flow
+          const Widget = 'outer';
+          let result: string;
+          function decorate(target: any): any { return target; }
+          {
+            @decorate class Widget { static read(): string { return Widget.name; } }
+            result = Widget.read();
+          }
+          console.log(result, Widget);
+        `,
+        expected: 'Widget outer',
+      },
+      {
+        name: 'decorator replacement keeps inherited super method references',
+        target: 'es2015',
+        source: `
+          // @flow
+          class Base { read(): string { return 'base'; } }
+          function derive(target: any): any {
+            return class extends target { read(): string { return super.read() + ':decorated'; } };
+          }
+          @derive class Box extends Base {}
+          console.log(new Box().read());
+        `,
+        expected: 'base:decorated',
+      },
+      {
+        name: 'user bindings colliding with decorator helpers remain separate',
+        target: 'esnext',
+        source: `
+          // @flow
+          const __decorateClass = 'user-class';
+          const __decorateParam = 'user-param';
+          function decorate(target: any, key?: string, descriptor?: any): any { return descriptor ?? target; }
+          @decorate class Box { @decorate read(): string { return __decorateClass + ':' + __decorateParam; } }
+          console.log(new Box().read(), __decorateClass, __decorateParam);
+        `,
+        expected: 'user-class:user-param user-class user-param',
+      },
+    ];
+    const fixture = await createFixture(
+      Object.fromEntries(fixtures.map((item, index) => [`input-${index}.js`, item.source])),
+    );
+    cleanup = fixture.cleanup;
+
+    for (const [index, item] of fixtures.entries()) {
+      const input = join(fixture.dir, `input-${index}.js`);
+      const referenceOutput = join(fixture.dir, `reference-${index}.js`);
+      const minifiedOutput = join(fixture.dir, `minified-${index}.js`);
+      const commonArgs = [input, '--flow', '--experimental-decorators', `--target=${item.target}`];
+      const referenceResult = await runZntc([...commonArgs, '-o', referenceOutput]);
+      expect(referenceResult.exitCode, `${item.name}: ${referenceResult.stderr}`).toBe(0);
+      const minifiedResult = await runZntc(
+        [...commonArgs, '--minify-identifiers', '-o', minifiedOutput],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(minifiedResult.exitCode, `${item.name}: ${minifiedResult.stderr}`).toBe(0);
+      const identity = minifiedResult.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(identity, `${item.name}: ${minifiedResult.stderr}`).toBeDefined();
+      expect(identity, item.name).toContain('clean=1');
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity, `${item.name}: ${counter}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+
+      const reference = await runNode(referenceOutput);
+      const minified = await runNode(minifiedOutput);
+      expect(reference.stderr, item.name).toBe('');
+      expect(minified.stderr, item.name).toBe('');
+      expect(reference.stdout.trim(), item.name).toBe(item.expected);
+      expect(minified.stdout, item.name).toBe(reference.stdout);
+    }
+  });
 });
