@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { transpile } from '../../../packages/core/index';
 import { createFixture, runNode, runZntc } from './helpers';
 
 const EXACT_ZERO_COUNTERS = [
@@ -3045,6 +3046,80 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
           '5,3,5,99,zero,outer-m',
         );
       }
+    }
+  });
+
+  test('unknown-extension JavaScript preserves ten hostile SymbolId cases after minification', () => {
+    const fixtures = [
+      {
+        name: 'parameter shadowing',
+        source: `const name = 'outer'; function read(name) { return name; } console.log(read('inner'), name);`,
+        expected: 'inner outer',
+      },
+      {
+        name: 'closure mutation and default parameter',
+        source: `function make(value) { let state = value; return function step(delta = 1) { state += delta; return state; }; } const run = make(3); console.log(run(), run(4), run());`,
+        expected: '4 8 9',
+      },
+      {
+        name: 'computed destructuring key and inner shadow',
+        source: `const key = 'value'; function read({ [key]: value = 2 } = {}) { const key = 'shadow'; return value + ':' + key; } console.log(read({ value: 4 }), read());`,
+        expected: '4:shadow 2:shadow',
+      },
+      {
+        name: 'switch block binding',
+        source: `const value = 'outer'; function read(key) { switch (key) { case 0: { const value = 'zero'; return value; } default: return value; } } console.log(read(0), read(1));`,
+        expected: 'zero outer',
+      },
+      {
+        name: 'per-iteration closure binding',
+        source: `function collect(values) { const callbacks = []; for (let value of values) callbacks.push(() => value); return callbacks.map(run => run()).join(','); } console.log(collect([1, 2, 3]));`,
+        expected: '1,2,3',
+      },
+      {
+        name: 'catch binding distinct from outer binding',
+        source: `const error = 'outer'; try { throw 'inner'; } catch (error) { console.log(error); } console.log(error);`,
+        expected: 'inner\nouter',
+      },
+      {
+        name: 'class field and method parameter owners',
+        source: `const value = 5; class Box { value = 2; read(value) { return this.value + value; } } console.log(new Box().read(3), value);`,
+        expected: '5 5',
+      },
+      {
+        name: 'direct eval observes its local binding',
+        source: `function read(value) { const local = value + 1; return eval('local'); } console.log(read(6));`,
+        expected: '7',
+      },
+      {
+        name: 'with keeps dynamic object lookup separate from outer binding',
+        source: `const value = 'outer'; const holder = { value: 'with' }; let result = ''; with (holder) { result = value; } console.log(result, value);`,
+        expected: 'with outer',
+      },
+      {
+        name: 'sloppy duplicate parameters retain last-argument behavior',
+        source: `function read(value, value) { return value; } console.log(read('first', 'second'));`,
+        expected: 'second',
+      },
+    ];
+
+    const run = (code: string): string => {
+      const output: string[] = [];
+      const consoleStub = {
+        log: (...values: unknown[]) => output.push(values.map(String).join(' ')),
+      };
+      new Function('console', code)(consoleStub);
+      return output.join('\n');
+    };
+
+    for (const fixture of fixtures) {
+      const baseline = run(fixture.source);
+      expect(baseline, fixture.name).toBe(fixture.expected);
+      const { code } = transpile(fixture.source, {
+        filename: 'fixture.unknown',
+        minifyIdentifiers: true,
+      });
+      expect(run(code), fixture.name).toBe(baseline);
     }
   });
 });
