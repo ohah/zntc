@@ -6222,11 +6222,50 @@ const SimpleConsoleDrop = struct {
     object_reference: u32,
 };
 
+fn isPrimitiveConsoleTemplateSubstitution(ast: *const ast_mod.Ast, raw_child: u32) bool {
+    if (raw_child >= ast.nodes.items.len) return false;
+    return switch (ast.nodes.items[raw_child].tag) {
+        .boolean_literal,
+        .null_literal,
+        .numeric_literal,
+        .string_literal,
+        .bigint_literal,
+        => true,
+        else => false,
+    };
+}
+
+fn isRetainableConsoleTemplateArgument(ast: *const ast_mod.Ast, index: ast_mod.NodeIndex) bool {
+    if (index.isNone() or @backingInt(index) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(index);
+    if (node.tag != .template_literal) return false;
+    if (drop_mod.isNoSubstitutionTemplateLiteral(ast, index)) return true;
+
+    // Interpolated templates use alternating template_element and expression
+    // nodes. Retain only primitive literal substitutions: they add no graph
+    // references, bindings, or observable evaluation when console drops them.
+    const list = node.data.list;
+    const extras = ast.extra_data.items;
+    if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
+        list.len > extras.len - list.start) return false;
+    for (0..list.len) |offset| {
+        const raw_child = extras[list.start + offset];
+        if (raw_child >= ast.nodes.items.len) return false;
+        if (offset % 2 == 0) {
+            if (ast.nodes.items[raw_child].tag != .template_element) return false;
+        } else if (!isPrimitiveConsoleTemplateSubstitution(ast, raw_child)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// A dropped direct `console.member(...)` statement can keep the graph only
 /// when the removed call contains no nested bindings/references beyond its
 /// exact local `console` read or an exact unresolved global reference. Literal
-/// computed keys and literal-only arguments are side-effect free, so unreachable
-/// node pruning is sufficient to remove a local read; the unresolved spelling
+/// computed keys and literal-only arguments are side-effect free, including
+/// templates whose interpolations are primitive literals, so unreachable node
+/// pruning is sufficient to remove a local read; the unresolved spelling
 /// remains conservatively reserved in the graph.
 fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?SimpleConsoleDrop {
     if (statement.tag != .expression_statement) return null;
@@ -6273,7 +6312,7 @@ fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?Sim
             .regexp_literal,
             => {},
             .template_literal => {
-                if (!drop_mod.isNoSubstitutionTemplateLiteral(
+                if (!isRetainableConsoleTemplateArgument(
                     ast,
                     @fromBackingInt(@intCast(raw_arg)),
                 )) return null;
@@ -7000,6 +7039,7 @@ fn simpleConsoleDropShapeForTest(source: []const u8) !SimpleConsoleDropTestShape
     parser.configureFromExtension(".js");
     defer parser.deinit();
     _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     for (parser.ast.nodes.items) |node| {
         if (node.tag == .expression_statement) return .{
@@ -7010,7 +7050,7 @@ fn simpleConsoleDropShapeForTest(source: []const u8) !SimpleConsoleDropTestShape
     return .{ .is_console_call = false, .shape = null };
 }
 
-test "simple drop-console shape accepts static and rejects interpolated template literals" {
+test "simple drop-console shape accepts primitive template interpolations and rejects dynamic ones" {
     const static = try simpleConsoleDropShapeForTest(
         "const console = {}; console[`log`](`ok`);",
     );
@@ -7023,11 +7063,40 @@ test "simple drop-console shape accepts static and rejects interpolated template
     try std.testing.expect(!dynamic_key.is_console_call);
     try std.testing.expect(dynamic_key.shape == null);
 
-    const dynamic_argument = try simpleConsoleDropShapeForTest(
-        "const console = {}; console.log(`value ${other}`);",
-    );
-    try std.testing.expect(dynamic_argument.is_console_call);
-    try std.testing.expect(dynamic_argument.shape == null);
+    const primitive_arguments = [_][]const u8{
+        "console.log(`value ${1}`);",
+        "console.log(`value ${'text'}`);",
+        "console.log(`value ${true}`);",
+        "console.log(`value ${false}`);",
+        "console.log(`value ${null}`);",
+        "console.log(`value ${1n}`);",
+        "console.log(`${1} and ${'two'}`);",
+    };
+    for (primitive_arguments) |source| {
+        const retained = try simpleConsoleDropShapeForTest(source);
+        try std.testing.expect(retained.is_console_call);
+        try std.testing.expect(retained.shape != null);
+    }
+
+    // Ten compileable hostile forms must stay on reanalysis: each either adds
+    // a source reference, executes user code, or creates a nested runtime value.
+    const dynamic_arguments = [_][]const u8{
+        "const value = 1; console.log(`value ${value}`);",
+        "console.log(`value ${getValue()}`);",
+        "let value = 0; console.log(`value ${value = 1}`);",
+        "let value = 0; console.log(`value ${++value}`);",
+        "console.log(`value ${{ value: 1 }}`);",
+        "console.log(`value ${[1]}`);",
+        "console.log(`value ${/x/}`);",
+        "console.log(`value ${tag`nested`}`);",
+        "const object = {}; console.log(`value ${object + 1}`);",
+        "console.log(`value ${condition ? getValue() : 2}`);",
+    };
+    for (dynamic_arguments) |source| {
+        const dynamic = try simpleConsoleDropShapeForTest(source);
+        try std.testing.expect(dynamic.is_console_call);
+        try std.testing.expect(dynamic.shape == null);
+    }
 }
 
 test "simple drop-console retains exact local and unresolved global reads with scalar arguments" {
