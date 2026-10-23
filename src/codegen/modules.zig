@@ -71,15 +71,13 @@ pub fn emitImportSpecifiers(self: anytype, specs_start: u32, specs_len: u32) !vo
         switch (spec_node.tag) {
             .import_default_specifier => {
                 if (!first) try self.write(",");
-                try self.addSourceMapping(spec_node.span);
-                try self.writeNodeSpan(spec_node);
+                try emitSpecifierWithRename(self, spec, spec_node);
                 first = false;
             },
             .import_namespace_specifier => {
                 if (!first) try self.write(",");
                 try self.write("* as ");
-                try self.addSourceMapping(spec_node.span);
-                try self.writeNodeSpan(spec_node);
+                try emitSpecifierWithRename(self, spec, spec_node);
                 first = false;
             },
             .import_specifier => {
@@ -252,14 +250,12 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
 /// 이 노드들은 identifier_reference가 아니라 별도 태그이므로 emitNode에서 renames를 거치지 않음.
 pub fn emitSpecifierWithRename(self: anytype, idx: NodeIndex, spec: Node) !void {
     try self.addSourceMapping(spec.span);
-    if (self.options.linking_metadata) |meta| {
-        const ni = @backingInt(idx);
-        if (ni < meta.symbol_ids.len) {
-            if (meta.symbol_ids[ni]) |sid| {
-                if (meta.renames.get(sid)) |renamed| {
-                    try self.write(renamed);
-                    return;
-                }
+    if (self.sourceSymbolId(idx)) |sid| {
+        if (self.finalSymbolName(sid)) |name| {
+            const source_name = self.ast.getText(spec.span);
+            if (!std.mem.eql(u8, name, source_name)) {
+                try self.writeIdentifierText(name);
+                return;
             }
         }
     }
@@ -277,18 +273,19 @@ pub fn emitImportSpecifierRename(self: anytype, spec_node: Node, sep: []const u8
     const imported_node = self.ast.getNode(imported);
     try self.addSourceMapping(imported_node.span);
     try self.writeSpan(imported_node.span);
-    // local이 rename 되었거나 원본 imported와 다른 경우 → separator + local 출력
+    // local의 source spelling 또는 exact SymbolId final name이 imported와 다르면
+    // separator + local을 출력해 remote property key와 로컬 binding을 구분한다.
     const needs_rename = blk: {
-        if (local.isNone() or @backingInt(local) == @backingInt(imported)) break :blk false;
+        if (local.isNone()) break :blk false;
         // 원본 텍스트가 다르면 항상 rename 필요 (import { foo as bar })
         const imp_text = self.ast.getText(self.ast.getNode(imported).span);
         const loc_text = self.ast.getText(self.ast.getNode(local).span);
         if (!std.mem.eql(u8, imp_text, loc_text)) break :blk true;
-        // 원본 텍스트가 같아도 linker가 rename했으면 separator 필요
-        // (e.g., import { Foo } → {Foo: Foo$1})
-        if (self.options.linking_metadata) |meta| {
-            if (self.resolveSymbolId(local, meta)) |sid| {
-                if (meta.renames.get(sid)) |_| break :blk true;
+        // 원본 text가 같아도 semantic override/linker final name이 다르면
+        // (e.g., import { Foo } → {Foo as Foo$1}) separator가 필요하다.
+        if (self.sourceSymbolId(local)) |sid| {
+            if (self.finalSymbolName(sid)) |name| {
+                if (!std.mem.eql(u8, imp_text, name)) break :blk true;
             }
         }
         break :blk false;
