@@ -54,4 +54,13 @@ describe('drop console graph pre-pass gate', () => {
     expect(result.code).not.toContain('console.log');
     expect(result.stdout).toBe('42');
   });
+
+  test('unresolved global console literal calls keep the retained graph', async () => {
+    const result = await bundle(
+      'console.log("remove me", 1, true); const answer = 41; process.stdout.write(String(answer + 1));',
+    );
+    expect(result.stderr).toContain('zntc: symbol-identity-prepass-mode ');
+    expect(result.code).not.toContain('console.log');
+    expect(result.stdout).toBe('42');
+  });
 });

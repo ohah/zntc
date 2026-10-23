@@ -6224,8 +6224,9 @@ const SimpleConsoleDrop = struct {
 
 /// A dropped `console.member(...)` statement can keep the graph only when the
 /// removed call contains no nested bindings/references beyond its exact local
-/// `console` read. Literal-only arguments make the editor's unreachable-node
-/// pruning sufficient to remove that one reference without reanalysis.
+/// `console` read or an exact unresolved global reference. Literal-only
+/// arguments make unreachable-node pruning sufficient to remove a local read;
+/// the unresolved spelling remains conservatively reserved in the graph.
 fn simpleConsoleDropShape(ast: *const ast_mod.Ast, statement: ast_mod.Node) ?SimpleConsoleDrop {
     if (statement.tag != .expression_statement) return null;
     const call_index = statement.data.unary.operand;
@@ -6331,7 +6332,12 @@ fn canRetainGraphForSimpleConsoleDrops(
         found_drop = true;
         const shape = simpleConsoleDropShape(ast, statement) orelse return false;
         const expected_scope = sourceReferenceScope(ast, semantic, &parents, shape.object_reference) orelse return false;
-        if (!hasExactLocalReference(semantic, shape.object_reference, expected_scope)) return false;
+        if (!hasExactLocalReference(semantic, shape.object_reference, expected_scope) and
+            !isUnresolvedSourceIdentifierReference(
+                ast,
+                semantic,
+                @fromBackingInt(shape.object_reference),
+            )) return false;
     }
     return found_drop;
 }
@@ -6769,6 +6775,8 @@ const ConsolePreflightMutation = enum {
     synthetic_binding,
     truncated_argument_slice,
     invalid_argument_node,
+    remove_unresolved_reference,
+    unexpected_symbol_id,
 };
 
 fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMutation) !bool {
@@ -6911,6 +6919,21 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
                 if (args_start >= parser.ast.extra_data.items.len) return error.MissingTargetArgument;
                 parser.ast.extra_data.items[args_start] = @intCast(parser.ast.nodes.items.len);
             },
+            .remove_unresolved_reference => {
+                if (!analyzer.unresolved_references.remove("console")) return error.MissingUnresolvedReference;
+            },
+            .unexpected_symbol_id => {
+                var sentinel_symbol: ?u32 = null;
+                for (analyzer.symbols.items, 0..) |symbol, symbol_idx| {
+                    if (std.mem.eql(u8, parser.ast.getText(symbol.name), "sentinel")) {
+                        sentinel_symbol = @intCast(symbol_idx);
+                        break;
+                    }
+                }
+                const symbol_id = sentinel_symbol orelse return error.MissingTargetSymbol;
+                if (raw >= analyzer.symbol_ids.items.len) return error.MissingTargetSymbol;
+                analyzer.symbol_ids.items[raw] = symbol_id;
+            },
         }
     } else if (mutation != .none) {
         return false;
@@ -6934,10 +6957,15 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
     return canRetainGraphForSimpleConsoleDrops(allocator, &parser.ast, &semantic);
 }
 
-test "simple drop-console retains only exact local reads with scalar arguments" {
+test "simple drop-console retains exact local and unresolved global reads with scalar arguments" {
     const source = "const console = {}; const other = 1; console.log(\"ok\");";
+    const global_source = "console.log(\"ok\");";
     const unsafe_sources = [_][]const u8{
-        "console.log(\"global\");",
+        "console.log(other);",
+        "console.log(() => 1);",
+        "console.log({ value: 1 });",
+        "console.log(...[]);",
+        "console.log(`value ${other}`);",
         "const console = {}; console.log(other);",
         "const console = {}; console.log(() => 1);",
         "const console = {}; console.log({ value: 1 });",
@@ -6972,15 +7000,19 @@ test "simple drop-console retains only exact local reads with scalar arguments" 
         .synthetic_binding,
         .truncated_argument_slice,
         .invalid_argument_node,
+        .remove_unresolved_reference,
+        .unexpected_symbol_id,
     };
     for (mutations) |mutation| {
-        const mutation_source = if (mutation == .wrong_valid_reference_scope)
-            "const console = {}; function read() { console.log(\"ok\"); }"
-        else
-            source;
+        const mutation_source = switch (mutation) {
+            .wrong_valid_reference_scope => "const console = {}; function read() { console.log(\"ok\"); }",
+            .remove_unresolved_reference, .unexpected_symbol_id => "const sentinel = 1; console.log(\"ok\");",
+            else => source,
+        };
         try std.testing.expect(!try canRetainConsoleDropForTest(mutation_source, mutation));
     }
     try std.testing.expect(!try canRetainConsoleDropForTest("const value = 1;", .none));
+    try std.testing.expect(try canRetainConsoleDropForTest(global_source, .none));
 
     try std.testing.expect(try canRetainConsoleDropForTest(
         "const console = {}; console.log(\"ok\", 1, true, null, 1n, /x/);",
