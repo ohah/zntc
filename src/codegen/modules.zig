@@ -392,6 +392,12 @@ pub fn emitExportNamedCJS(self: anytype, decl: NodeIndex, specs_start: u32, spec
             const exported_idx = spec.data.binary.right;
             const exported_text = self.ast.getText(self.ast.getNode(exported_idx).span);
             const local_text = self.ast.getText(self.ast.getNode(local_idx).span);
+            // Re-export local은 원격 property key이므로 원문을 보존하고,
+            // 현재 모듈 export는 source binding의 exact 최종 이름을 쓴다.
+            const output_local_text = if (has_source)
+                local_text
+            else
+                outputNameForSymbol(self, local_idx, local_text);
 
             try self.write(self.options.cjs_exports_name);
             try self.writeByte('.');
@@ -402,10 +408,19 @@ pub fn emitExportNamedCJS(self: anytype, decl: NodeIndex, specs_start: u32, spec
                 try self.emitNode(source);
                 try self.write(").");
             }
-            try self.write(local_text);
+            if (std.mem.eql(u8, output_local_text, local_text)) {
+                try self.write(local_text);
+            } else {
+                try self.writeIdentifierText(output_local_text);
+            }
             try self.writeByte(';');
         }
     }
+}
+
+fn outputNameForSymbol(self: anytype, idx: NodeIndex, source_name: []const u8) []const u8 {
+    const sid = self.sourceSymbolId(idx) orelse return source_name;
+    return self.finalSymbolName(sid) orelse source_name;
 }
 
 /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력.
@@ -425,20 +440,16 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
                 if (!name_idx.isNone()) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.getText(name_node.data.string_ref);
-                    // linker가 rename한 경우 변수 참조는 rename된 이름을 사용해야 함
-                    // (예: JSON named export에서 $id → $id$1로 충돌 회피 시)
-                    const ref_name = if (self.options.linking_metadata) |meta|
-                        if (self.resolveSymbolId(name_idx, meta)) |sid|
-                            (meta.renames.get(sid) orelse name)
-                        else
-                            name
-                    else
-                        name;
+                    const ref_name = outputNameForSymbol(self, name_idx, name);
                     try self.write(self.options.cjs_exports_name);
                     try self.writeByte('.');
                     try self.write(name);
                     try self.writeByte('=');
-                    try self.write(ref_name);
+                    if (std.mem.eql(u8, ref_name, name)) {
+                        try self.write(name);
+                    } else {
+                        try self.writeIdentifierText(ref_name);
+                    }
                     try self.writeByte(';');
                 }
             }
@@ -449,18 +460,16 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
             if (!name_idx.isNone()) {
                 const name_node = self.ast.getNode(name_idx);
                 const name = self.ast.getText(name_node.data.string_ref);
-                const ref_name = if (self.options.linking_metadata) |meta|
-                    if (self.resolveSymbolId(name_idx, meta)) |sid|
-                        (meta.renames.get(sid) orelse name)
-                    else
-                        name
-                else
-                    name;
+                const ref_name = outputNameForSymbol(self, name_idx, name);
                 try self.write(self.options.cjs_exports_name);
                 try self.writeByte('.');
                 try self.write(name);
                 try self.writeByte('=');
-                try self.write(ref_name);
+                if (std.mem.eql(u8, ref_name, name)) {
+                    try self.write(name);
+                } else {
+                    try self.writeIdentifierText(ref_name);
+                }
                 try self.writeByte(';');
             }
         },
