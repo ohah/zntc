@@ -118,4 +118,30 @@ describe('drop console graph pre-pass gate', () => {
     expect(result.code).not.toContain('console.log');
     expect(result.stdout).toBe('42');
   });
+
+  test('exact local identifier arguments update the retained graph', async () => {
+    const local = await bundle(
+      'const console = {}; const onlyForLog = 40; console.log(onlyForLog); ' +
+        'const answer = 41; process.stdout.write(String(answer + 1));',
+    );
+    expect(local.stderr).toContain('semantic_graph=retained');
+    expect(local.code).not.toContain('console.log');
+    expect(local.stderr).not.toContain('symbol-debt-node');
+    expect(local.stderr).not.toContain('symbol-identity-resolution');
+    expect(local.stderr).not.toContain('symbol-reference-scope');
+    expect(local.stdout).toBe('42');
+
+    const multiple = await bundle(
+      'const firstOnlyForLog = 1; const secondOnlyForLog = 2; ' +
+        'console[`log`](firstOnlyForLog, secondOnlyForLog); ' +
+        'process.stdout.write("42");',
+    );
+    expect(multiple.stderr).toContain('semantic_graph=retained');
+    expect(multiple.code).not.toContain('console[`log`]');
+    expect(multiple.stdout).toBe('42');
+
+    const unresolved = await bundle('console.log(notDeclared); process.stdout.write("42");');
+    expect(unresolved.stderr).toContain('semantic_graph=reanalyzed');
+    expect(unresolved.stdout).toBe('42');
+  });
 });
