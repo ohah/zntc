@@ -3045,7 +3045,7 @@ pub const Linker = struct {
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
 
-        if (self.graph.jsx_runtime == .preserve and !self.manglerActive())
+        if (self.graph.jsx_runtime == .preserve)
             try self.resolvePreservedJsxImportNames(&name_to_owners);
 
         // Generated explicit globals have no SymbolId to rename. If a nested
