@@ -273,7 +273,7 @@
 
 | 위치 | Binding identity와 owner | Consumer / handoff | 출력 모드 | 경계 / 후속 이슈 | 근거 |
 | --- | --- | --- | --- | --- | --- |
-| [splitParameterBodyVarBinding / `makeExactSyntheticBinding` L4312](../src/transformer/transformer/semantic_edit.zig#L4312) | exact new .parameter SID is declared in the existing function ScopeId while original shared SID remains body var | AST parameter node gets new ID; parameter_environment caller rebinds initializer refs to it, body refs remain on original ID | Fresh `__zntc_param_env_N` staging spelling; exact parameter identity is retained for semantic output/minification | No semantic graph returns before this call; no missing-ID path in supported graph mode | split helper validates original owner/kind, declares new parameter ID in same scope, and updates exact AST node |
+| [splitParameterBodyVarBinding / `makeExactSyntheticBinding` (`7346fc2` L4340)](https://github.com/ohah/zntc/blob/7346fc2cb48980257f9fc5a8625dc627eb7f0768/src/transformer/transformer/semantic_edit.zig#L4340) | exact new .parameter SID is declared in the existing function ScopeId while original shared SID remains body var | AST parameter node gets new ID; parameter_environment caller rebinds initializer refs to it, body refs remain on original ID | Fresh `__zntc_param_env_N` staging spelling; exact parameter identity is retained for semantic output/minification | No semantic graph returns before this call; no missing-ID path in supported graph mode | split helper validates original owner/kind, declares new parameter ID in same scope, and updates exact AST node |
 
 ### `src/transformer/transformer/stage3_decorator_helpers.zig`
 

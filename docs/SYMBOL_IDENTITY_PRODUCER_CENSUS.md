@@ -45,7 +45,7 @@
 | [`src/transformer/transformer/flow.zig`](../src/transformer/transformer/flow.zig) | `visitFlowMatch`: `makeSyntheticBinding` L338 |
 | [`src/transformer/transformer/lists.zig`](../src/transformer/transformer/lists.zig) | `buildVarDecl`: `makeSyntheticBinding` L200<br>`hoistTempVarsWithScope`: `makeSyntheticBinding` L384,386 |
 | [`src/transformer/transformer/refresh.zig`](../src/transformer/transformer/refresh.zig) | `appendRefreshRegistration`: `makeExactSyntheticBinding` L138<br>`maybeRegisterRefreshSignature`: `makeExactSyntheticBinding` L593 |
-| [`src/transformer/transformer/semantic_edit.zig`](../src/transformer/transformer/semantic_edit.zig) | `splitParameterBodyVarBinding`: `makeExactSyntheticBinding` L4312 |
+| [`semantic_edit.zig` at `7346fc2` L4340](https://github.com/ohah/zntc/blob/7346fc2cb48980257f9fc5a8625dc627eb7f0768/src/transformer/transformer/semantic_edit.zig#L4340) | `splitParameterBodyVarBinding`: `makeExactSyntheticBinding` |
 | [`src/transformer/transformer/stage3_decorator_helpers.zig`](../src/transformer/transformer/stage3_decorator_helpers.zig) | `buildAccessObject`: `makeSyntheticBinding` L496,544,599,601<br>`buildMetadataDecl`: `makeExactSyntheticBindingFromSpan` L726<br>`buildSetterMethodWithHandles`: `makeSyntheticBinding` L1102<br>`makeLetWithBinding`: `makeSyntheticBinding` L942<br>`makeLetWithExactBinding`: `makeExactSyntheticBinding` L950 |
 | [`src/transformer/transformer/stage3_decorator_transform.zig`](../src/transformer/transformer/stage3_decorator_transform.zig) | `valueParam`: `makeSyntheticBinding` L1717 |
 | [`src/transformer/transformer/styled_components.zig`](../src/transformer/transformer/styled_components.zig) | `forwardTemplateInterpolations`: `makeSyntheticBinding` L1431<br>`maybeExtractCssProp`: `makeSyntheticBinding` L1778,1813 |
@@ -67,5 +67,6 @@
 - 다섯 constructor 계열의 현재 분포: `makeSyntheticBinding` 50, `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 21, `createSyntheticTempBinding` 9, `makeUsingBinding` 4. 별도 `createSyntheticTempBindingWithIdentity`는 production callsite 2곳이다.
 - `es2015_class/super_props.zig::beginSuperTemp`의 기존 `createSyntheticTempBinding` 호출은 없어졌다. 현재 semantic 경로는 producer `SymbolId`를 확보한 뒤 `createSyntheticTempBindingWithIdentity`를 사용한다.
 - `object_super.zig::wrapWithHome`에는 `_args` alias parameter를 만드는 `makeExactSyntheticBindingFromSpan` callsite가 추가됐다. 이 binding과 alias references는 wrapper parameter `ScopeId` 및 exact `SymbolId`를 공유한다. Alias는 native parameter list가 dynamic lookup 때문에 유지될 때만 생성되고, current final-name marker는 `_obj` home parameter에만 붙는다. 따라서 `_args`의 조기 spelling은 이 dynamic-scope 경계에 남으며 누락된 `SymbolId` handoff로 세지 않는다.
+- `semantic_edit.zig`의 `splitParameterBodyVarBinding` 호출은 census snapshot `7346fc2`에서 L4340이고, 현재 main `ec7b100d`에서는 L4595다 ([현재 main source](https://github.com/ohah/zntc/blob/ec7b100d2eef3e9a07c16d9389a00a2dfcde594d/src/transformer/transformer/semantic_edit.zig#L4595)). 위 census 행은 snapshot 커밋에 고정해 source-line drift를 분리한다.
 
 이 delta도 bounded AST constructor 분모만 갱신한다. 전체 producer 누락 수나 #4819 완료 여부를 뜻하지 않는다.
