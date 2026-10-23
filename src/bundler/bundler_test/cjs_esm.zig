@@ -8,6 +8,30 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
+fn cjsEntryExportLocalName(output: []const u8, export_name: []const u8) ![]const u8 {
+    var marker_buf: [160]u8 = undefined;
+    const marker = try std.fmt.bufPrint(&marker_buf, "exports.{s}", .{export_name});
+    const marker_pos = std.mem.indexOf(u8, output, marker) orelse return error.TestUnexpectedResult;
+    const equals_pos = std.mem.indexOfPos(u8, output, marker_pos + marker.len, "=") orelse
+        return error.TestUnexpectedResult;
+    var start = equals_pos + 1;
+    while (start < output.len and (output[start] == ' ' or output[start] == '\t' or output[start] == '\n' or output[start] == '\r')) start += 1;
+    var end = start;
+    while (end < output.len and (std.ascii.isAlphanumeric(output[end]) or output[end] == '_' or output[end] == '$')) end += 1;
+    if (start == end) return error.TestUnexpectedResult;
+    return output[start..end];
+}
+
+fn functionDefinitionContains(output: []const u8, name: []const u8, marker: []const u8) bool {
+    var pattern_buf: [192]u8 = undefined;
+    const pattern = std.fmt.bufPrint(&pattern_buf, "function {s}(", .{name}) catch return false;
+    const function_pos = std.mem.indexOf(u8, output, pattern) orelse return false;
+    const body_start = std.mem.indexOfPos(u8, output, function_pos + pattern.len, "{") orelse return false;
+    const body_end = std.mem.indexOfPos(u8, output, body_start + 1, "}") orelse return false;
+    const marker_pos = std.mem.indexOfPos(u8, output, body_start + 1, marker) orelse return false;
+    return marker_pos < body_end;
+}
+
 // ============================================================
 // CJS Wrapping Tests
 // ============================================================
@@ -149,6 +173,37 @@ test "#4819 hostile: CJS wrapper parameter mangling stays disabled for direct ev
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(exports,module)=>{") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
+test "#6181 CJS writer uses linker-final local names for colliding re-exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export function sharedName() { return 'provider-a'; }");
+    try writeFile(tmp.dir, "b.ts", "export function sharedName() { return 'provider-b'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\export { sharedName as firstValue } from './a';
+        \\export { sharedName as secondValue } from './b';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+        .platform = .node,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const first_local = try cjsEntryExportLocalName(result.output, "firstValue");
+    const second_local = try cjsEntryExportLocalName(result.output, "secondValue");
+    try std.testing.expect(!std.mem.eql(u8, first_local, second_local));
+    try std.testing.expect(functionDefinitionContains(result.output, first_local, "provider-a"));
+    try std.testing.expect(functionDefinitionContains(result.output, second_local, "provider-b"));
 }
 
 test "CJS: import * as ns of ESM-that-export*-from-CJS → __toESM(require()) after wrapper (#3975)" {
