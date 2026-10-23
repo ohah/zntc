@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testBinary = path.join(root, "zig-out/bin/lib-unit-test");
-const testFilterFor = (pr) => pr === 6029 ? "6029 hostile" : "namespace hostile";
+const testFilterFor = (pr) => pr === 6029 ? "hostile SymbolId 6029" : "namespace hostile";
 const files = {
   hoist: path.join(root, "src/transformer/transformer/semantic_edit.zig"),
   namespace: path.join(root, "src/bundler/linker/metadata.zig"),

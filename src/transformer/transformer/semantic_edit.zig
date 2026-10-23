@@ -5079,7 +5079,7 @@ fn expectInvalidSemanticEditPanic(mode: []const u8, expected_error: []const u8) 
     try std.testing.expect(std.mem.indexOf(u8, child.stderr, expected_message) != null);
 }
 
-test "#6029 hostile panic child" {
+test "hostile SymbolId 6029 panic child" {
     if (!std.testing.environ.containsUnemptyConstant("ZTS_6029_HOSTILE_PANIC_MODE")) return;
     const allocator = std.testing.allocator;
     const mode = try std.testing.environ.getAlloc(allocator, "ZTS_6029_HOSTILE_PANIC_MODE");
@@ -5174,27 +5174,27 @@ fn isSemanticEditPanicChild() bool {
     return std.testing.environ.containsUnemptyConstant("ZTS_6029_HOSTILE_PANIC_MODE");
 }
 
-test "#6029 hostile reject conflicting transformer/editor SID" {
+test "hostile SymbolId 6029 reject conflicting transformer/editor SID" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("conflicting-transformer-editor", "InvalidSymbol");
 }
 
-test "#6029 hostile reject conflicting expected SID" {
+test "hostile SymbolId 6029 reject conflicting expected SID" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("conflicting-expected", "InvalidSymbol");
 }
 
-test "#6029 hostile reject wrong reference symbol" {
+test "hostile SymbolId 6029 reject wrong reference symbol" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("wrong-reference-symbol", "InvalidSymbol");
 }
 
-test "#6029 hostile reject wrong reference flags" {
+test "hostile SymbolId 6029 reject wrong reference flags" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("wrong-reference-flags", "InvalidSymbol");
 }
 
-test "#6029 hostile relocates existing reference to requested scope" {
+test "hostile SymbolId 6029 relocates existing reference to requested scope" {
     if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5214,7 +5214,7 @@ test "#6029 hostile relocates existing reference to requested scope" {
     try std.testing.expectEqual(fixture.program_scope, after.scope_id);
 }
 
-test "#6029 hostile reuses existing reference without double counting" {
+test "hostile SymbolId 6029 reuses existing reference without double counting" {
     if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5236,7 +5236,7 @@ test "#6029 hostile reuses existing reference without double counting" {
     try std.testing.expectEqual(write_count, editor.symbols.items[@backingInt(fixture.target_id)].write_count);
 }
 
-test "#6029 hostile preserves copied SID while attaching reference" {
+test "hostile SymbolId 6029 preserves copied SID while attaching reference" {
     if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5260,7 +5260,7 @@ test "#6029 hostile preserves copied SID while attaching reference" {
     try std.testing.expectEqual(before + 1, editor.symbols.items[@backingInt(fixture.target_id)].reference_count);
 }
 
-test "#6029 hostile preserves fallback addReference" {
+test "hostile SymbolId 6029 preserves fallback addReference" {
     if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5282,7 +5282,7 @@ test "#6029 hostile preserves fallback addReference" {
     try std.testing.expect(!reference.flags.write);
 }
 
-test "#6029 hostile writes assigned SID to transformer map" {
+test "hostile SymbolId 6029 writes assigned SID to transformer map" {
     if (isSemanticEditPanicChild()) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5302,7 +5302,7 @@ test "#6029 hostile writes assigned SID to transformer map" {
     try std.testing.expectEqual(@as(?u32, @backingInt(fixture.target_id)), editor.symbol_ids.items[@backingInt(node)]);
 }
 
-test "#6029 hostile fail closed on invalid existing reference" {
+test "hostile SymbolId 6029 fail closed on invalid existing reference" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("invalid-existing-scope", "InvalidScope");
 }
