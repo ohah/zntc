@@ -82,6 +82,9 @@ const AstFacts = struct {
     has_import_declaration: bool = false,
     /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
     has_non_named_import: bool = false,
+    /// The legacy lenient source mode silently accepts TypeScript syntax. Such
+    /// input must keep the established analyzer until its source type is known.
+    has_typescript_syntax: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
     /// Runtime transforms whose graph edits are not certified for Flow-mode input yet.
@@ -145,6 +148,9 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     var facts: AstFacts = .{};
 
     for (ast.nodes.items) |node| {
+        if (std.mem.startsWith(u8, @tagName(node.tag), "ts_")) {
+            facts.has_typescript_syntax = true;
+        }
         switch (node.tag) {
             .import_declaration => facts.has_import_declaration = true,
             .import_default_specifier,
@@ -610,6 +616,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         return !facts.has_unhandled_runtime_syntax and
             !(options.emit_decorator_metadata and facts.has_unsupported_qualified_metadata_type_reference);
     }
+    if (parser.source_mode == .js_lenient) return !facts.has_typescript_syntax;
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2303,6 +2310,42 @@ test "#4819 downlevel JS script mangling reuses transform semantic graph" {
     parser.is_module = false;
     parser.ast.has_jsx = true;
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+}
+
+test "#4819 extensionless JavaScript uses the transform semantic graph without TypeScript syntax" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(
+        allocator,
+        "function read(value) { const local = value + 1; return local; }",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+
+    const typed_sources = [_][]const u8{
+        "const value: number = 1;",
+        "type Value = string; const value: Value = 'x';",
+        "interface Value { name: string } const value: Value = { name: 'x' };",
+        "const value = 1 as number;",
+        "const value = 1 satisfies number;",
+        "declare const value: number;",
+        "enum Value { A }",
+        "function read<T>(value: T): T { return value; }",
+    };
+    for (typed_sources) |source| {
+        var typed_scanner = try Scanner.init(allocator, source);
+        var typed_parser = Parser.init(allocator, &typed_scanner);
+        typed_parser.configureFromExtension(".unknown");
+        _ = try typed_parser.parse();
+        try std.testing.expect(typed_parser.source_mode == .js_lenient);
+        try std.testing.expect(!canMangleWithTransformSemantic(minify, &typed_parser));
+    }
 }
 
 test "#4819 class lowering reuses transform semantic graph" {
