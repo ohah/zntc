@@ -95,7 +95,7 @@ function runTargetTest(expectPass, label) {
     fail(label + ": baseline hostile tests failed:\n" + result.output.trim());
   }
   if (!expectPass && result.status === 0) {
-    fail(label + ": mutant escaped all hostile tests:\n" + testSummary(result.output));
+    fail(label + ": mutant escaped all hostile tests:\n" + result.output.trim());
   }
   console.log(label + ": " + testSummary(result.output));
   return result.output;
