@@ -166,7 +166,7 @@ const mutants = [
   {
     pr: 6106, file: "namespace", label: "accept a valid SymbolRef from another module",
     before: "if (ib.local_symbol.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;",
-    after: "if (false) return null;",
+    after: "if (false and ib.local_symbol.moduleIndex() != ModuleIndex.fromUsize(module_index)) return null;",
   },
   {
     pr: 6106, file: "namespace", label: "reject valid local SymbolRefs as foreign",
