@@ -3380,6 +3380,75 @@ test "namespace re-export metadata uses the import binding SymbolId under a host
     }
 }
 
+test "namespace hostile metadata rejects foreign and alias SymbolRefs, preserving invalid fallback" {
+    const allocator = std.testing.allocator;
+    const barrel_sources = [_][]const u8{
+        "import * as ns from './provider.ts'; export { ns };\n",
+        "export * as ns from './provider.ts';\n",
+    };
+
+    for (barrel_sources) |barrel_source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(
+            tmp.dir,
+            "entry.ts",
+            "import { ns as value } from './barrel.ts';\n" ++
+                "const decoy0 = 0, decoy1 = 1, decoy2 = 2;\n" ++
+                "console.log(value.answer);\n",
+        );
+        try writeFile(tmp.dir, "barrel.ts", barrel_source);
+        try writeFile(tmp.dir, "provider.ts", "export const answer = 1;\n");
+
+        var r = try buildLinkAndRename(allocator, &tmp, "entry.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+
+        const entry_index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingEntry;
+        const entry = @constCast(r.graph.getModule(entry_index) orelse return error.MissingEntry);
+        const semantic = if (entry.semantic) |*value| value else return error.MissingEntrySemantic;
+        if (semantic.scope_maps.len == 0) return error.MissingEntryScopeMap;
+        const binding_index = blk: {
+            for (entry.import_bindings, 0..) |ib, index| {
+                if (std.mem.eql(u8, ib.local_name, "value")) break :blk index;
+            }
+            return error.MissingNamespaceImportBinding;
+        };
+        const binding_symbol = entry.import_bindings[binding_index].local_symbol.semanticIndex() orelse
+            return error.MissingNamespaceImportSymbol;
+        const provider_index = findModuleIdx(r.graph, "provider.ts") orelse return error.MissingProvider;
+        const decoy_symbol = semantic.scope_maps[0].get("decoy0") orelse return error.MissingNamespaceDecoy;
+        const mutable_scope_maps = @constCast(semantic.scope_maps);
+        const binding = &entry.import_bindings[binding_index];
+
+        // A valid-looking SID from another module must fail closed, even when its
+        // numeric symbol index happens to overlap with a local binding.
+        binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(provider_index, binding_symbol);
+        try mutable_scope_maps[0].put(allocator, "value", decoy_symbol);
+        var foreign_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer foreign_metadata.deinit();
+        try std.testing.expect(foreign_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(foreign_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+
+        // A valid same-module alias is not a semantic local SID. Since it still
+        // carries explicit identity, it must fail closed instead of using text.
+        binding.local_symbol = .{ .alias = .{ .module = entry_index, .symbol = @fromBackingInt(@intCast(0)) } };
+        var alias_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer alias_metadata.deinit();
+        try std.testing.expect(alias_metadata.ns_member_rewrites.get(binding_symbol) == null);
+        try std.testing.expect(alias_metadata.ns_member_rewrites.get(@intCast(decoy_symbol)) == null);
+
+        // Invalid SymbolRef is reserved for low-level callers that have no
+        // captured identity, so the legacy name-to-scope fallback remains live.
+        binding.local_symbol = .invalid;
+        try mutable_scope_maps[0].put(allocator, "value", binding_symbol);
+        var fallback_metadata = try buildMetadataForModule(&r, entry_index.toU32(), true);
+        defer fallback_metadata.deinit();
+        try std.testing.expect(fallback_metadata.ns_member_rewrites.get(binding_symbol) != null);
+    }
+}
+
 // ============================================================
 // semantic analyzer: property key symbol_id 미할당
 // ============================================================

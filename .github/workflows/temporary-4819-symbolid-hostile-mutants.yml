@@ -1,0 +1,31 @@
+
+name: SymbolId hostile mutation verification
+
+on:
+  push:
+    branches: [verify/4819-symbolid-hostile-mutants-20261023]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: symbolid-mutations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-check:
+    name: Kill ten mutants for each SymbolId path
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-build-deps
+
+      - uses: ./.github/actions/setup-zig
+        with:
+          version: 0.17.0
+          cache-key: symbolid-mutations
+
+      - name: Build baseline and kill twenty compileable mutants
+        run: node scripts/verify-symbolid-mutations.mjs
