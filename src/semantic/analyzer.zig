@@ -515,11 +515,12 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[parent.toIndex()].is_strict
         else
             false;
+        const intrinsically_strict = kind == .module or kind == .class_body;
         const new_id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
         try self.scopes.append(self.allocator, .{
             .parent = parent,
             .kind = kind,
-            .is_strict = is_strict or parent_strict,
+            .is_strict = is_strict or parent_strict or intrinsically_strict,
         });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
         try self.scope_maps.append(self.allocator, .empty);

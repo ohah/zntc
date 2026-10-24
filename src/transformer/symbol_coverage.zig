@@ -240,6 +240,7 @@ pub const ExactReport = struct {
     scope_owner_mismatch: usize = 0,
     scope_owner_parent_mismatch: usize = 0,
     duplicate_scope_owner: usize = 0,
+    scope_strictness_mismatch: usize = 0,
     namespace_iife_params: usize = 0,
     namespace_iife_param_mismatch: usize = 0,
     enum_iife_params: usize = 0,
@@ -258,6 +259,7 @@ pub const ExactReport = struct {
     first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
     first_scope_owner_parent_mismatch: ?ScopeOwnerFinding = null,
     first_duplicate_scope_owner: ?ScopeOwnerFinding = null,
+    first_scope_strictness_mismatch: ?ScopeStrictnessFinding = null,
     first_scope_map_mismatch: ?ScopeMapFinding = null,
     first_ambiguous_ast_parent: ?AstParentFinding = null,
     first_invalid_ast_root: ?u32 = null,
@@ -288,6 +290,7 @@ pub const ExactReport = struct {
             std.mem.eql(u8, name, "first_scope_owner_mismatch") or
             std.mem.eql(u8, name, "first_scope_owner_parent_mismatch") or
             std.mem.eql(u8, name, "first_duplicate_scope_owner") or
+            std.mem.eql(u8, name, "first_scope_strictness_mismatch") or
             std.mem.eql(u8, name, "first_scope_map_mismatch") or
             std.mem.eql(u8, name, "first_ambiguous_ast_parent") or
             std.mem.eql(u8, name, "first_invalid_ast_root") or
@@ -395,6 +398,12 @@ pub const ScopeOwnerFinding = struct {
     expected_parent_scope_id: ?u32 = null,
     actual_parent_scope_id: ?u32 = null,
     first_owner_node_index: ?u32 = null,
+};
+
+pub const ScopeStrictnessFinding = struct {
+    scope_id: u32,
+    parent_scope_id: ?u32 = null,
+    issue: []const u8,
 };
 
 pub const ScopeMapFinding = struct {
@@ -573,6 +582,20 @@ fn recordDuplicateScopeOwner(
         .issue = "duplicate-reachable-scope-owner",
         .scope_id = scope_id,
         .first_owner_node_index = first_owner_node_index,
+    };
+}
+
+fn recordScopeStrictnessMismatch(
+    report: *ExactReport,
+    scope_id: u32,
+    parent_scope_id: ?u32,
+    issue: []const u8,
+) void {
+    report.scope_strictness_mismatch += 1;
+    if (report.first_scope_strictness_mismatch == null) report.first_scope_strictness_mismatch = .{
+        .scope_id = scope_id,
+        .parent_scope_id = parent_scope_id,
+        .issue = issue,
     };
 }
 
@@ -3197,6 +3220,23 @@ fn checkExactImpl(
     const cjs_wrapper = exactCjsWrapperBindings(ast, root, symbols, scopes, scope_maps, scope_owner_map);
     if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
     for (scopes, 0..) |scope, scope_i| {
+        const strictness_issue: ?[]const u8 = if (scope.kind == .class_body and !scope.is_strict)
+            "class-body-must-be-strict"
+        else if (scope.kind == .module and !scope.is_strict)
+            "module-must-be-strict"
+        else if (!scope.parent.isNone() and exactValidScope(scopes, scope.parent) and
+            scopes[scope.parent.toIndex()].is_strict and !scope.is_strict)
+            "strict-parent-inheritance"
+        else
+            null;
+        if (strictness_issue) |issue| {
+            recordScopeStrictnessMismatch(
+                &report,
+                @intCast(scope_i),
+                if (scope.parent.isNone() or !exactValidScope(scopes, scope.parent)) null else @backingInt(scope.parent),
+                issue,
+            );
+        }
         if (scope_i == 0) {
             const is_cjs_wrapper_parent = if (cjs_wrapper) |wrapper|
                 scope.parent == @as(ScopeId, @fromBackingInt(@intCast(wrapper.scope_id)))
@@ -4472,7 +4512,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
         },
     ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} generated_scope_owners_checked={d} external={d} declaration_anchors_checked={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} generated_scope_owners_checked={d} external={d} declaration_anchors_checked={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} scope_strictness_mismatch={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
         .{
             name,
             file_path,
@@ -4498,6 +4538,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.scope_owner_mismatch,
             report.scope_owner_parent_mismatch,
             report.duplicate_scope_owner,
+            report.scope_strictness_mismatch,
             secondary_counts,
             @intFromBool(report.isClean()),
             report.legacy_debt_fingerprint,
@@ -4544,6 +4585,18 @@ fn optionalIndexText(buffer: []u8, value: ?u32) []const u8 {
 }
 
 fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
+    if (report.first_scope_strictness_mismatch) |finding| {
+        var parent_buffer: [16]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: scope_strictness_mismatch scope={d} parent={s} issue={s}\n",
+            .{
+                file_path,
+                finding.scope_id,
+                optionalIndexText(&parent_buffer, finding.parent_scope_id),
+                finding.issue,
+            },
+        );
+    }
     if (report.first_ambiguous_ast_parent) |finding| {
         var first_parent_buffer: [16]u8 = undefined;
         std.debug.print(
@@ -5434,6 +5487,7 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
         .{ .first_scope_owner_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
         .{ .first_scope_owner_parent_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
         .{ .first_duplicate_scope_owner = .{ .node_index = 2, .tag = .block_statement, .issue = "test", .first_owner_node_index = 1 } },
+        .{ .first_scope_strictness_mismatch = .{ .scope_id = 2, .parent_scope_id = 1, .issue = "test" } },
         .{ .first_scope_map_mismatch = .{ .issue = "test" } },
         .{ .first_ambiguous_ast_parent = .{ .node_index = 1, .first_parent = 2, .additional_parent = 3 } },
         .{ .first_invalid_ast_root = 9 },

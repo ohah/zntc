@@ -94,6 +94,44 @@ fn checkExactFixture(
     );
 }
 
+fn checkScopeStrictnessFixture(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: AstNodeIndex,
+    scopes: []const Scope,
+) !coverage.ExactReport {
+    const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), scopes.len);
+    defer allocator.free(scope_maps);
+    @memset(scope_maps, .empty);
+
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @backingInt(root), 0);
+
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const parser_node_count: u32 = @intCast(ast.nodes.items.len + scopes.len + 1);
+    return coverage.checkExact(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        &.{},
+        &.{},
+        scopes,
+        scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+}
+
 test "source scope audit rejects a live ScopeId with no reachable AST owner" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
@@ -1757,6 +1795,94 @@ test "source scope-owner audit finds a wrong owner kind with a valid parent" {
     try std.testing.expect(!report.isClean());
 }
 
+test "exact scope audit enforces strictness inheritance and intrinsic strict scopes" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const root = try ast.addListNode(.program, .EMPTY, try ast.addNodeList(&.{}));
+
+    const global_scope: ScopeId = @fromBackingInt(0);
+    const strict_function_scope: ScopeId = @fromBackingInt(1);
+    const class_scope: ScopeId = @fromBackingInt(3);
+    const valid_scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        // A generated function may intentionally become strict inside a
+        // sloppy source scope; strictness is sticky downward, not equalized.
+        .{ .parent = global_scope, .kind = .function, .is_strict = true },
+        .{ .parent = strict_function_scope, .kind = .block, .is_strict = true },
+        .{ .parent = global_scope, .kind = .class_body, .is_strict = true },
+        .{ .parent = class_scope, .kind = .block, .is_strict = true },
+    };
+    const valid = try checkScopeStrictnessFixture(allocator, &ast, root, &valid_scopes);
+    try std.testing.expectEqual(@as(usize, 0), valid.scope_strictness_mismatch);
+
+    var sloppy_class_scopes = valid_scopes;
+    sloppy_class_scopes[3].is_strict = false;
+    const sloppy_class = try checkScopeStrictnessFixture(allocator, &ast, root, &sloppy_class_scopes);
+    try std.testing.expectEqual(@as(usize, 1), sloppy_class.scope_strictness_mismatch);
+    try std.testing.expectEqualStrings(
+        "class-body-must-be-strict",
+        sloppy_class.first_scope_strictness_mismatch.?.issue,
+    );
+    try std.testing.expect(!sloppy_class.isClean());
+
+    var sloppy_child_scopes = valid_scopes;
+    sloppy_child_scopes[2].is_strict = false;
+    const sloppy_child = try checkScopeStrictnessFixture(allocator, &ast, root, &sloppy_child_scopes);
+    try std.testing.expectEqual(@as(usize, 1), sloppy_child.scope_strictness_mismatch);
+    try std.testing.expectEqualStrings(
+        "strict-parent-inheritance",
+        sloppy_child.first_scope_strictness_mismatch.?.issue,
+    );
+
+    const sloppy_module_scopes = [_]Scope{.{ .parent = .none, .kind = .module, .is_strict = false }};
+    const sloppy_module = try checkScopeStrictnessFixture(allocator, &ast, root, &sloppy_module_scopes);
+    try std.testing.expectEqual(@as(usize, 1), sloppy_module.scope_strictness_mismatch);
+    try std.testing.expectEqualStrings(
+        "module-must-be-strict",
+        sloppy_module.first_scope_strictness_mismatch.?.issue,
+    );
+}
+
+test "semantic scope creation keeps modules and class bodies intrinsically strict" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export class Box { method() { return 1; } }");
+    scanner.is_module = true;
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    // Deliberately leave is_strict_mode false: module strictness comes from
+    // the scope kind, even when a caller only passes the module flag.
+    try analyzer.analyze();
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.module, analyzer.scopes.items[0].kind);
+    try std.testing.expect(analyzer.scopes.items[0].is_strict);
+
+    var class_bodies: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_declaration and node.tag != .class_expression) continue;
+        const scope_id = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(analyzer.scopes.items[scope_id].is_strict);
+        class_bodies += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), class_bodies);
+    try std.testing.expectEqual(@as(?u32, 0), analyzer.scope_owner_map.get(@backingInt(root)));
+
+    var editor_ast = Ast.init(allocator, "");
+    defer editor_ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &editor_ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const sloppy_parent = try editor.addScope(.none, .none, .global, false);
+    const generated_class = try editor.addScope(sloppy_parent, .none, .class_body, false);
+    const generated_module = try editor.addScope(sloppy_parent, .none, .module, false);
+    try std.testing.expect(editor.scopes.items[generated_class.toIndex()].is_strict);
+    try std.testing.expect(editor.scopes.items[generated_module.toIndex()].is_strict);
+}
+
 test "exact scope audit allows only source-owned scope bridges to generated owners" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1794,10 +1920,10 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
-        .{ .parent = emitted_parent_scope, .kind = .class_body, .is_strict = false },
+        .{ .parent = emitted_parent_scope, .kind = .class_body, .is_strict = true },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
         .{ .parent = emitted_parent_scope, .kind = .block, .is_strict = false },
-        .{ .parent = retained_source_class_scope, .kind = .block, .is_strict = false },
+        .{ .parent = retained_source_class_scope, .kind = .block, .is_strict = true },
     };
     var generated_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer generated_names.deinit(allocator);
