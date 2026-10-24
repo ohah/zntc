@@ -602,7 +602,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 
     // emitDecoratorMetadata is currently modeled for TypeScript legacy
     // decorators. Other parser modes/options stay on the established analyzer.
-    if (options.emit_decorator_metadata and
+    if (options.emit_decorator_metadata and parser.ast.has_decorator and
         (parser.is_flow or parser.source_mode != .ts or !options.experimental_decorators)) return false;
 
     // Flow's type-only syntax does not change the exact graph edits made by
@@ -2641,6 +2641,78 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     try std.testing.expectEqual(@as(usize, 0), incomplete_flow_parser.errors.items.len);
     incomplete_flow_parser.is_flow = true;
     try std.testing.expect(!canMangleWithTransformSemantic(legacy, &incomplete_flow_parser));
+}
+
+test "#4819 decorator metadata without decorators keeps the transform semantic graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const cases = [_]struct {
+        extension: []const u8,
+        source: []const u8,
+        experimental_decorators: bool,
+    }{
+        .{ .extension = ".js", .source = "const value = 1;", .experimental_decorators = true },
+        .{ .extension = ".js", .source = "function read(value) { return value; }", .experimental_decorators = true },
+        .{ .extension = ".mjs", .source = "export function read() { return 1; }", .experimental_decorators = true },
+        .{ .extension = ".ts", .source = "const value: number = 1;", .experimental_decorators = false },
+        .{ .extension = ".ts", .source = "function read(value: number): number { return value; }", .experimental_decorators = false },
+        .{ .extension = ".ts", .source = "export class Box { value: number = 1; }", .experimental_decorators = false },
+        .{ .extension = ".ts", .source = "import type { Shape } from './shape'; let value: Shape;", .experimental_decorators = false },
+        .{ .extension = ".js", .source = "// @flow\nconst value: number = 1;", .experimental_decorators = true },
+        .{ .extension = ".js", .source = "// @flow\nfunction read(value: number): number { return value; }", .experimental_decorators = true },
+        .{ .extension = ".js", .source = "// @flow\ntype Shape = { value: number }; const shape: Shape = { value: 1 };", .experimental_decorators = true },
+    };
+
+    for (cases) |case| {
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(case.extension);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expect(!parser.ast.has_decorator);
+        try std.testing.expect(canMangleWithTransformSemantic(.{
+            .minify_identifiers = true,
+            .experimental_decorators = case.experimental_decorators,
+            .emit_decorator_metadata = true,
+        }, &parser));
+
+        const file_path = try std.fmt.allocPrint(allocator, "input{s}", .{case.extension});
+        var result = try transpile(std.testing.allocator, case.source, file_path, .{
+            .minify_identifiers = true,
+            .experimental_decorators = case.experimental_decorators,
+            .emit_decorator_metadata = true,
+        });
+        defer result.deinit(std.testing.allocator);
+        var output_scanner = try Scanner.init(allocator, result.code);
+        var output_parser = Parser.init(allocator, &output_scanner);
+        output_parser.configureFromExtension(".js");
+        _ = try output_parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    }
+
+    var ts_scanner = try Scanner.init(allocator, "function decorate(value: Function) {} @decorate class Box {}");
+    var ts_parser = Parser.init(allocator, &ts_scanner);
+    ts_parser.configureFromExtension(".ts");
+    _ = try ts_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), ts_parser.errors.items.len);
+    try std.testing.expect(ts_parser.ast.has_decorator);
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .emit_decorator_metadata = true,
+    }, &ts_parser));
+
+    var ts_flow_scanner = try Scanner.init(allocator, "function decorate(target) {} @decorate class Box {}");
+    var ts_flow_parser = Parser.init(allocator, &ts_flow_scanner);
+    ts_flow_parser.configureFromExtension(".ts");
+    _ = try ts_flow_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), ts_flow_parser.errors.items.len);
+    ts_flow_parser.is_flow = true;
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &ts_flow_parser));
 }
 
 test "#4819 Flow Stage 3 and legacy decorators reuse the transform semantic graph" {
