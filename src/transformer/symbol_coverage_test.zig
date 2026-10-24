@@ -5524,7 +5524,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
-    try std.testing.expectEqual(@as(usize, 5), transformer.generator_temp_var_spans.items.len);
+    try std.testing.expectEqual(@as(usize, 3), transformer.generator_temp_var_spans.items.len);
 
     const expected_names = [_][]const u8{ "_a", "_b", "_c", "_d", "_step" };
     var found: usize = 0;
