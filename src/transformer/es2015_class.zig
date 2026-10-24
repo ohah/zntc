@@ -629,6 +629,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // IIFE body
             const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const iife_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
+            try @import("class_strict_context.zig").prependDirective(self, iife_body);
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @backingInt(NodeIndex.none);
@@ -1006,6 +1007,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 } else {
                     try self.bindReservedFunctionOwner(ctor_scope, func_expr);
                 }
+                try @import("class_strict_context.zig").prependDirective(self, self.ast.readExtraNode(self.ast.getNode(func_expr).data.extra, ast_mod.FunctionExtra.body));
                 if (!wrap_self_alias) return func_expr;
                 const constructor_scope = self.outputOwnedScope(func_expr) orelse
                     std.debug.panic("simple class constructor has no output scope", .{});
@@ -1130,6 +1132,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // IIFE body
             const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const iife_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
+            try @import("class_strict_context.zig").prependDirective(self, iife_body);
 
             // function(_super) { ... } 또는 function() { ... }
             const none = @backingInt(NodeIndex.none);

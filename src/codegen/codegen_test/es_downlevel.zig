@@ -205,7 +205,7 @@ test "ES2019: optional catch no transform on es2019" {
 test "ES2022: static block to IIFE" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { console.log(\"init\"); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}(()=>{console.log(\"init\");})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}(()=>{\"use strict\";console.log(\"init\");})();", r.output);
 }
 
 // #4468: static block 은 이제 **AST 로** 출력된다 (예전엔 writeNodeSpan 으로 소스
@@ -226,13 +226,13 @@ test "ES2022: static block no transform on esnext" {
 test "ES2022: multiple static blocks" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { a(); } method() {} static { b(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){}}(()=>{a();})();(()=>{b();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){}}(()=>{\"use strict\";a();})();(()=>{\"use strict\";b();})();", r.output);
 }
 
 test "ES2022: static block with methods preserved" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method() { return 1; } static { init(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{init();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{\"use strict\";init();})();", r.output);
 }
 
 // --- ES2017: async/await → generator ---
@@ -1578,21 +1578,21 @@ test "ES2022: static block this → class name" {
     // → class Foo {} (() => { Foo.x = 1; })();
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(()=>{_classThis0.x=1;})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(()=>{\"use strict\";_classThis0.x=1;})();", r.output);
 }
 
 test "ES2022: static block this in nested function not replaced" {
     // 일반 함수 안의 this는 치환하면 안 됨 (자체 this 바인딩)
     var r = try e2eTarget(std.testing.allocator, "class Bar { static { function f() { return this; } } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Bar{}(()=>{function f(){return this;}})();", r.output);
+    try std.testing.expectEqualStrings("class Bar{}(()=>{\"use strict\";function f(){return this;}})();", r.output);
 }
 
 test "ES2022: static block this in arrow replaced" {
     // arrow function은 this 상속 → 치환 대상
     var r = try e2eTarget(std.testing.allocator, "class Baz { static { const f = () => this.x; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(()=>{const f=()=>_classThis0.x;})();", r.output);
+    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(()=>{\"use strict\";const f=()=>_classThis0.x;})();", r.output);
 }
 
 test "ES2022: static block anonymous class - this uses generated class self" {
@@ -1616,7 +1616,7 @@ test "ES2022: static block this - no transform on esnext" {
 test "ES2022: multiple static blocks with this" {
     var r = try e2eTarget(std.testing.allocator, "class A { static { this.x = 1; } static { this.y = 2; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(()=>{_classThis0.x=1;})();(()=>{_classThis0.y=2;})();", r.output);
+    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(()=>{\"use strict\";_classThis0.x=1;})();(()=>{\"use strict\";_classThis0.y=2;})();", r.output);
 }
 
 // --- ES2015: template literal ---
@@ -3061,7 +3061,8 @@ test "ES2017: static private field arrow this becomes class reference" {
     // The lowered field keeps its NamedEvaluation name "#x" (#5519).
     const capture = try helpers.staticClassCaptureName(r.output, "A", "const");
     var buffer: [160]u8 = undefined;
-    const named_value = try std.fmt.bufPrint(&buffer, "(()=>{s},\"#x\")}}", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:(function(){\"use strict\";return ") != null);
+    const named_value = try std.fmt.bufPrint(&buffer, "(()=>{s},\"#x\");", .{capture});
     try std.testing.expect(std.mem.indexOf(u8, r.output, named_value) != null);
 }
 
@@ -3832,7 +3833,7 @@ test "useDefineForClassFields=false: instance to constructor" {
 test "useDefineForClassFields=false: static field outside class" {
     var r = try e2eFull(std.testing.allocator, "class Foo{static z=2;}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.z=2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.z=(function(){\"use strict\";return 2;})()") != null);
     // static z=2 는 class body에 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "static") == null);
 }
@@ -3840,11 +3841,11 @@ test "useDefineForClassFields=false: static field outside class" {
 test "useDefineForClassFields=false: multiple static assignments ordered" {
     var r = try e2eFull(std.testing.allocator, "class Foo{static a=1;static b=2;}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.a=1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.b=2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.a=(function(){\"use strict\";return 1;})()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.b=(function(){\"use strict\";return 2;})()") != null);
     // a가 b보다 먼저
-    const a_pos = std.mem.indexOf(u8, r.output, "Foo.a=1").?;
-    const b_pos = std.mem.indexOf(u8, r.output, "Foo.b=2").?;
+    const a_pos = std.mem.indexOf(u8, r.output, "Foo.a=(function(){\"use strict\";return 1;})()").?;
+    const b_pos = std.mem.indexOf(u8, r.output, "Foo.b=(function(){\"use strict\";return 2;})()").?;
     try std.testing.expect(a_pos < b_pos);
 }
 

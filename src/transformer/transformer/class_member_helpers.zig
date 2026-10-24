@@ -83,7 +83,7 @@ fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Spa
     defer es_helpers.leaveStaticInitContext(self, static_ctx);
     const class_scope = self.current_scope;
     const output_scope = if (self.semantic_edit_enabled) self.outputScopeParent(class_scope) else class_scope;
-    const init = try self.visitNode(init_idx);
+    const init = try @import("../class_strict_context.zig").visitInitializer(self, init_idx, class_scope, output_scope);
     if (self.semantic_edit_enabled)
         try self.reparentMovedStaticInitializerScopes(init, class_scope, output_scope);
     return init;

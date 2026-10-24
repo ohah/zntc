@@ -166,11 +166,11 @@ pub fn takeDeclaration(self: anytype, class_binding: NodeIndex, span: Span) !?No
 /// A moved initializer loses the class-field evaluation environment. In
 /// particular, direct eval can read lexical `this` without any AST this node.
 /// Numeric literal arithmetic does not observe that environment.
-fn unsafeEvalCall(self: anytype, node: ast_mod.Node, ordinary_function: bool) bool {
+pub fn isDirectEvalCall(self: anytype, node: ast_mod.Node) bool {
     if (node.tag != .call_expression) return false;
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
-    if (e > extras.len or extras.len - e < 4) return true;
+    if (e > extras.len or extras.len - e < 4) return false;
     if ((extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
     var callee = self.ast.readExtraNode(e, 0);
     while (!callee.isNone()) {
@@ -188,7 +188,14 @@ fn unsafeEvalCall(self: anytype, node: ast_mod.Node, ordinary_function: bool) bo
         // perform direct eval. Symbol ownership cannot prove its call indirect.
         break;
     }
-    if (callee.isNone() or extras[e + 2] == 0) return false;
+    return !callee.isNone();
+}
+
+fn unsafeEvalCall(self: anytype, node: ast_mod.Node, ordinary_function: bool) bool {
+    if (!isDirectEvalCall(self, node)) return false;
+    const e = node.data.extra;
+    const extras = self.ast.extra_data.items;
+    if (extras[e + 2] == 0) return false;
     const argument = self.ast.getNode(self.ast.readExtraNode(extras[e + 1], 0));
     if (argument.tag != .string_literal) return true;
     _ = ordinary_function;
@@ -219,6 +226,40 @@ fn unsafeEvalCall(self: anytype, node: ast_mod.Node, ordinary_function: bool) bo
         if (std.mem.eql(u8, text, class_name)) return true;
     }
     return false;
+}
+
+/// An extracted ordinary private function owns this/arguments. Its strict
+/// factory preserves those bindings, while opaque eval can still mutate the
+/// source immutable class-self alias or inspect an erased private environment.
+pub fn unsafePrivateFactoryEval(self: anytype, node: ast_mod.Node, source_scope: ScopeId, class_self_id: u32, parameter_initializer: bool) bool {
+    if (!isDirectEvalCall(self, node)) return false;
+    const e = node.data.extra;
+    if (self.ast.extra_data.items[e + 2] == 0) return false;
+    const argument = self.ast.getNode(self.ast.readExtraNode(self.ast.extra_data.items[e + 1], 0));
+    if (argument.tag != .string_literal) return true;
+    const decoded = @import("../string_escape.zig").decodeJsStringLiteral(self.allocator, self.ast.getText(argument.span)) catch return true;
+    defer self.allocator.free(decoded);
+    const text = std.mem.trim(u8, decoded, " \t\r\n");
+    if (std.mem.eql(u8, text, "this") or std.mem.eql(u8, text, "arguments")) return false;
+    if (unsafeEvalCall(self, node, true)) return true;
+    if (text.len == 0 or !(std.ascii.isAlphabetic(text[0]) or text[0] == '_' or text[0] == '$')) return false;
+    // A bare name is safe only from the original lexical graph, not from the
+    // new factory's spelling lookup. Reject lexical TDZ and unknown globals:
+    // the factory parameter could otherwise introduce a previously absent name.
+    var scope = source_scope;
+    while (!scope.isNone() and scope.toIndex() < self.scopes.len) : (scope = self.scopes[scope.toIndex()].parent) {
+        if (self.scope_maps[scope.toIndex()].get(text)) |raw_id| {
+            if (raw_id == class_self_id) return false;
+            if (raw_id >= self.symbols.len) return true;
+            return switch (self.symbols[raw_id].kind) {
+                .variable_var => false,
+                .parameter => parameter_initializer,
+                .function_decl => !self.scopes[scope.toIndex()].kind.isVarScope(),
+                else => true,
+            };
+        }
+    }
+    return true;
 }
 
 pub fn noteDynamicEval(self: anytype, node: ast_mod.Node) void {
