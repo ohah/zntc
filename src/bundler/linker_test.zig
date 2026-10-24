@@ -3635,6 +3635,61 @@ fn buildMetadataForModule(
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null, r.linker.format, true);
 }
 
+test "metadata self renames preserve exact scope-map SymbolIds across ten hostile inputs" {
+    const sources = [_][]const u8{
+        "const outer = 7; const neighbor = 9; function read(outer) { return outer; } console.log(outer, neighbor, read(2), externalGlobal);",
+        "const first = 1; let outer = 7; const neighbor = 9; function read() { let outer = 2; return outer; } console.log(outer, neighbor, read(), externalGlobal);",
+        "const neighbor = 9; const outer = 7; { const outer = 2; console.log(outer); } console.log(outer, neighbor, externalGlobal);",
+        "const neighbor = 9; function outer() { return 7; } function read(outer) { return outer; } console.log(outer(), neighbor, read(2), externalGlobal);",
+        "const first = 1; class outer {} const neighbor = 9; function read(outer) { return outer; } console.log(outer, neighbor, read(2), externalGlobal);",
+        "const first = 1; const second = 2; var outer = 7; var neighbor = 9; function read() { var outer = 2; return outer; } console.log(outer, neighbor, read(), externalGlobal);",
+        "const neighbor = 9; export const outer = 7; function read(outer) { return outer; } console.log(outer, neighbor, read(2), externalGlobal);",
+        "const first = 1; const outer = 7; const neighbor = 9; const read = () => { const outer = 2; return outer; }; console.log(outer, neighbor, read(), externalGlobal);",
+        "const neighbor = 9; let outer = 7; function read() { try { throw 2; } catch (outer) { return outer; } } console.log(outer, neighbor, read(), externalGlobal);",
+        "const first = 1; const second = 2; const outer = 7; const neighbor = 9; class Reader { read(outer) { return outer; } } console.log(outer, neighbor, Reader, externalGlobal);",
+    };
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", source);
+        var result = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+
+        const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingMetadataIdentityEntry;
+        const module = result.graph.getModule(entry_index) orelse return error.MissingMetadataIdentityEntry;
+        const sem = module.semantic orelse return error.MissingMetadataIdentitySemantic;
+        const outer = sem.scope_maps[0].get("outer") orelse return error.MissingMetadataIdentitySymbol;
+        const neighbor = sem.scope_maps[0].get("neighbor") orelse return error.MissingMetadataIdentitySymbol;
+        try std.testing.expect(outer != neighbor);
+        try std.testing.expect(sem.scope_maps[0].get("externalGlobal") == null);
+
+        // Select names only for exact IDs. A same-spelling inner binding gets a
+        // different decoy name; the unrelated neighbor keeps source spelling.
+        result.linker.rename_table.clear();
+        try result.linker.rename_table.put(std.testing.allocator, bundler_symbol.SymbolID.make(entry_index, outer), "selected_outer");
+        var nested_count: usize = 0;
+        for (sem.scope_maps[1..]) |scope_map| {
+            const nested = scope_map.get("outer") orelse continue;
+            if (nested == outer) continue;
+            try result.linker.rename_table.put(std.testing.allocator, bundler_symbol.SymbolID.make(entry_index, nested), "nested_decoy");
+            nested_count += 1;
+        }
+        try std.testing.expect(nested_count > 0);
+
+        var metadata = try buildMetadataForModule(&result, entry_index.toU32(), true);
+        defer metadata.deinit();
+        try std.testing.expectEqualStrings("selected_outer", metadata.renames.get(@intCast(outer)) orelse return error.MissingExactMetadataRename);
+        try std.testing.expect(metadata.renames.get(@intCast(neighbor)) == null);
+
+        var raw_metadata = try result.linker.buildMetadata(entry_index.toU32(), true);
+        defer raw_metadata.deinit();
+        try std.testing.expectEqualStrings("selected_outer", raw_metadata.renames.get(@intCast(outer)) orelse return error.MissingExactRawMetadataRename);
+        try std.testing.expect(raw_metadata.renames.get(@intCast(neighbor)) == null);
+    }
+}
+
 test "preamble: CJS module import — named import generates require_xxx" {
     // ESM에서 CJS 모듈의 named import를 가져올 때
     // preamble에 "var x = require_c().x;" 형태가 생성되는지 검증

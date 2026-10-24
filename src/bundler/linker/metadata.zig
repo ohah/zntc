@@ -1479,8 +1479,9 @@ pub fn buildMetadataForAst(
         var sit = module_scope.iterator();
         while (sit.next()) |scope_entry| {
             const sym_name = scope_entry.key_ptr.*;
-            if (self.getCanonicalName(module_index, sym_name)) |renamed| {
-                const sym_idx: u32 = @intCast(scope_entry.value_ptr.*);
+            const sym_idx: u32 = @intCast(scope_entry.value_ptr.*);
+            const symbol_id = bundler_symbol.SymbolID.make(m.index, sym_idx);
+            if (self.rename_table.get(symbol_id)) |renamed| {
                 if (!export_getter_overrides.contains(sym_name) and !renames.contains(sym_idx)) {
                     try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, renamed);
                 }
@@ -2513,9 +2514,9 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         const module_scope = sem.scope_maps[0];
         var sit = module_scope.iterator();
         while (sit.next()) |scope_entry| {
-            const sym_name = scope_entry.key_ptr.*;
-            if (self.getCanonicalName(module_index, sym_name)) |renamed| {
-                const sym_idx = scope_entry.value_ptr.*;
+            const sym_idx = scope_entry.value_ptr.*;
+            const symbol_id = bundler_symbol.SymbolID.make(m.index, sym_idx);
+            if (self.rename_table.get(symbol_id)) |renamed| {
                 try renames.put(self.allocator, @intCast(sym_idx), renamed);
             }
         }
