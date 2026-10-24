@@ -95,6 +95,8 @@ const HelperModule = struct {
     body: BodyVariants,
     /// Base exports imported before the initial parse, using their literal template names.
     dependencies: []const []const u8 = &.{},
+    /// The template chooses dependency locals explicitly, independently of its exports.
+    dependency_names: enum { base, variant } = .base,
 };
 
 const MODULES = [_]HelperModule{
@@ -252,6 +254,8 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "to-commonjs",
+        .dependencies = &.{ "__defProp", "__copyProps", "__hasOwn" },
+        .dependency_names = .variant,
         .helpers = &.{"__toCommonJS"},
         .body = .{
             .plain = rt.TOCOMMONJS_RUNTIME,
@@ -274,6 +278,8 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "export",
+        .dependencies = &.{"__defProp"},
+        .dependency_names = .variant,
         .helpers = &.{"__export"},
         .body = .{
             .plain = rt.EXPORT_RUNTIME,
@@ -286,7 +292,7 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "commonjs",
-        .helpers = &.{ "__commonJS", "__require" },
+        .helpers = &.{"__commonJS"},
         .body = .{
             .plain = rt.CJS_RUNTIME,
             .min = rt.CJS_RUNTIME_MIN,
@@ -532,10 +538,16 @@ fn buildSource(allocator: std.mem.Allocator, m: *const HelperModule, opts: Sourc
     errdefer source.deinit(allocator);
     for (m.dependencies) |base| {
         const short = moduleShortFor(base) orelse unreachable; // validated at comptime below
-        // The templates use the base spelling even in their minified variants.
-        // Import the shared provider: __await's instanceof identity must not be cloned.
+        // Select the local spelling from the constructor's explicit template contract.
+        // The imported name stays the provider's stable named export. Both identities
+        // are created by the initial parser; no later spelling-based repair is needed.
+        const local = names.helperName(base, m.dependency_names == .variant and opts.minify);
         try source.appendSlice(allocator, "import { ");
         try source.appendSlice(allocator, base);
+        if (!std.mem.eql(u8, local, base)) {
+            try source.appendSlice(allocator, " as ");
+            try source.appendSlice(allocator, local);
+        }
         try source.appendSlice(allocator, " } from \"\\x00zntc:runtime/");
         try source.appendSlice(allocator, short);
         try source.appendSlice(allocator, "\";\n");
@@ -800,6 +812,7 @@ test "helper dependencies have exact import identities at initial analysis" {
                 const expected_id = (try idForBase(allocator, input.dependency)).?;
                 try std.testing.expectEqualStrings(expected_id, imports[0].specifier);
                 var analyzer = Analyzer.init(allocator, &parser.ast);
+                analyzer.is_module = true;
                 try analyzer.analyze();
                 try std.testing.expect(!analyzer.unresolved_references.contains(input.dependency));
                 var found: usize = 0;
@@ -818,5 +831,171 @@ test "helper dependencies have exact import identities at initial analysis" {
                 try std.testing.expectEqual(@as(usize, 1), found);
             }
         }
+    }
+}
+
+test "all helper sources bind registered dependency references at initial analysis" {
+    const Scanner = @import("lexer/scanner.zig").Scanner;
+    const Parser = @import("parser/parser.zig").Parser;
+    const Analyzer = @import("semantic/analyzer.zig").SemanticAnalyzer;
+    const variants = [_]SourceOptions{
+        .{},                               .{ .minify = true },                               .{ .es5 = true }, .{ .es5 = true, .minify = true },
+        .{ .configurable_exports = true }, .{ .configurable_exports = true, .minify = true },
+    };
+    var has_missing = false;
+    for (MODULES) |module| {
+        for (variants) |options| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            const source = try buildSource(allocator, &module, options);
+            var scanner = try Scanner.init(allocator, source);
+            var parser = Parser.init(allocator, &scanner);
+            parser.is_module = true;
+            scanner.is_module = true;
+            _ = try parser.parse();
+            try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+            var analyzer = Analyzer.init(allocator, &parser.ast);
+            analyzer.is_module = true;
+            try analyzer.analyze();
+            const import_scanner = @import("bundler/import_scanner.zig");
+            const binding_scanner = @import("bundler/binding_scanner.zig");
+            const imports = try import_scanner.extractImports(allocator, &parser.ast);
+            const exports = try binding_scanner.extractExportBindings(allocator, &parser.ast, imports, &.{});
+            try std.testing.expectEqual(module.helpers.len, exports.len);
+            for (exports) |binding| {
+                const node = binding.local_symbol_node orelse return error.TestUnexpectedResult;
+                const id = analyzer.symbol_ids.items[@backingInt(node)] orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqual(@as(u32, 0), @backingInt(analyzer.symbols.items[id].scope_id));
+            }
+            var unresolved = analyzer.unresolved_references.keyIterator();
+            while (unresolved.next()) |name| {
+                if (isRegisteredHelperBaseName(name.*) or blk: {
+                    for (MODULES) |provider| for (provider.helpers) |base| {
+                        if (std.mem.eql(u8, name.*, names.helperName(base, true))) break :blk true;
+                    };
+                    break :blk false;
+                }) {
+                    std.debug.print("helper source {s} minify={any} es5={any} configurable={any} has unresolved dependency {s}\n", .{ module.short, options.minify, options.es5, options.configurable_exports, name.* });
+                    has_missing = true;
+                }
+            }
+        }
+    }
+    try std.testing.expect(!has_missing);
+}
+
+test "interop helper dependency aliases preserve exact initial import and provider export identities" {
+    const Scanner = @import("lexer/scanner.zig").Scanner;
+    const Parser = @import("parser/parser.zig").Parser;
+    const Analyzer = @import("semantic/analyzer.zig").SemanticAnalyzer;
+    const import_scanner = @import("bundler/import_scanner.zig");
+    const binding_scanner = @import("bundler/binding_scanner.zig");
+    const variants = [_]SourceOptions{
+        .{},                               .{ .minify = true },                               .{ .es5 = true }, .{ .es5 = true, .minify = true },
+        .{ .configurable_exports = true }, .{ .configurable_exports = true, .minify = true },
+    };
+    for ([_][]const u8{ "to-commonjs", "export" }) |short| {
+        for (variants) |options| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            const module = findModule(short).?;
+            const source = try buildSource(allocator, module, options);
+            var scanner = try Scanner.init(allocator, source);
+            var parser = Parser.init(allocator, &scanner);
+            parser.is_module = true;
+            scanner.is_module = true;
+            _ = try parser.parse();
+            try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+            var analyzer = Analyzer.init(allocator, &parser.ast);
+            analyzer.is_module = true;
+            try analyzer.analyze();
+            const imports = try import_scanner.extractImports(allocator, &parser.ast);
+            const bindings = try binding_scanner.extractImportBindings(allocator, &parser.ast, imports, null);
+            try std.testing.expectEqual(module.dependencies.len, bindings.len);
+
+            // The provider is analyzed separately: local aliases must point to its
+            // stable named export, whose exact source node already carries a SID.
+            const provider_source = try buildSource(allocator, findModule("to-esm").?, options);
+            var provider_scanner = try Scanner.init(allocator, provider_source);
+            var provider_parser = Parser.init(allocator, &provider_scanner);
+            provider_parser.is_module = true;
+            provider_scanner.is_module = true;
+            _ = try provider_parser.parse();
+            var provider_analyzer = Analyzer.init(allocator, &provider_parser.ast);
+            provider_analyzer.is_module = true;
+            try provider_analyzer.analyze();
+            const provider_imports = try import_scanner.extractImports(allocator, &provider_parser.ast);
+            const exports = try binding_scanner.extractExportBindings(allocator, &provider_parser.ast, provider_imports, &.{});
+            for (bindings, module.dependencies) |binding, base| {
+                const local = names.helperName(base, options.minify);
+                try std.testing.expectEqualStrings(base, binding.imported_name);
+                try std.testing.expectEqualStrings(local, binding.local_name);
+                try std.testing.expect(!binding.is_helper);
+                try std.testing.expectEqualStrings(ID_PREFIX ++ "to-esm", imports[binding.import_record_index].specifier);
+                const node = binding.local_symbol_node orelse return error.TestUnexpectedResult;
+                const id = analyzer.symbol_ids.items[@backingInt(node)] orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqual(.import_binding, analyzer.symbols.items[id].kind);
+                var reads: usize = 0;
+                for (analyzer.references.items) |reference| {
+                    if (!reference.flags.read or @backingInt(reference.symbol_id) != id) continue;
+                    reads += 1;
+                    try std.testing.expectEqualStrings(local, parser.ast.identifierNameText(parser.ast.getNode(reference.node_index)));
+                }
+                try std.testing.expect(reads > 0);
+                var matched_export = false;
+                for (exports) |export_binding| {
+                    if (!std.mem.eql(u8, export_binding.exported_name, base)) continue;
+                    const export_node = export_binding.local_symbol_node orelse return error.TestUnexpectedResult;
+                    const export_id = provider_analyzer.symbol_ids.items[@backingInt(export_node)] orelse return error.TestUnexpectedResult;
+                    try std.testing.expectEqualStrings(local, provider_parser.ast.getSourceText(provider_analyzer.symbols.items[export_id].name));
+                    matched_export = true;
+                }
+                try std.testing.expect(matched_export);
+            }
+        }
+    }
+}
+
+test "commonjs exposes only its factory while private function names keep exact inner identities" {
+    const Scanner = @import("lexer/scanner.zig").Scanner;
+    const Parser = @import("parser/parser.zig").Parser;
+    const Analyzer = @import("semantic/analyzer.zig").SemanticAnalyzer;
+    const ast = @import("parser/ast.zig");
+    try std.testing.expect(moduleShortFor("__require") == null);
+    try std.testing.expect(!isRegisteredHelperBaseName("__require"));
+    const variants = [_]SourceOptions{ .{}, .{ .minify = true }, .{ .es5 = true }, .{ .es5 = true, .minify = true }, .{ .configurable_exports = true }, .{ .configurable_exports = true, .minify = true } };
+    for (variants) |options| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const module = findModule("commonjs").?;
+        try std.testing.expectEqual(@as(usize, 1), module.helpers.len);
+        try std.testing.expectEqualStrings("__commonJS", module.helpers[0]);
+        const source = try buildSource(allocator, module, options);
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        scanner.is_module = true;
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expect(!analyzer.unresolved_references.contains("__require"));
+        try std.testing.expect(!analyzer.unresolved_references.contains(names.helperName("__require", true)));
+        var private_names: usize = 0;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .function_expression) continue;
+            const name = parser.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+            if (name.isNone()) continue;
+            const id = analyzer.symbol_ids.items[@backingInt(name)] orelse return error.TestUnexpectedResult;
+            const owner = analyzer.symbols.items[id].scope_id;
+            try std.testing.expect(!owner.isNone() and @backingInt(owner) > 0);
+            try std.testing.expectEqualStrings("__require", parser.ast.identifierNameText(parser.ast.getNode(name)));
+            private_names += 1;
+        }
+        try std.testing.expectEqual(@as(usize, if (options.minify) 0 else 1), private_names);
     }
 }
