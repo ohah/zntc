@@ -6492,6 +6492,64 @@ fn sourceReferenceScope(
     return null;
 }
 
+/// Read native top-level await from the current AST and retained scope graph.
+/// A function boundary makes an await local to that function; block and catch
+/// scopes continue toward the module/global root. Missing owner evidence fails
+/// closed so callers can use full semantic analysis.
+fn hasTopLevelAwaitInRetainedGraph(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    scopes: []const SemanticScope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+) ?bool {
+    if (scopes.len == 0 or ast.nodes.items.len == 0) return null;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return null;
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    if (!collectRetainedPreflightParents(allocator, ast, root, &parents)) return null;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return null;
+    defer allocator.free(reachable);
+
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const tag = ast.nodes.items[raw].tag;
+        // The semantic analyzer records both native `await` and top-level
+        // `for await` in its module-local bit. Keep the scan in sync with that
+        // contract; a for-await loop does not need an await_expression node.
+        if (tag != .await_expression and tag != .for_await_of_statement) continue;
+        var current_node: u32 = @intCast(raw);
+        var scope_id: ?u32 = null;
+        var parent_hops: usize = 0;
+        while (parent_hops <= ast.nodes.items.len) : (parent_hops += 1) {
+            if (scope_owner_map.get(current_node)) |owner| {
+                scope_id = owner;
+                break;
+            }
+            current_node = parents.get(current_node) orelse return null;
+        }
+        var current_scope = scope_id orelse return null;
+        var hops: usize = 0;
+        while (hops < scopes.len) : (hops += 1) {
+            if (current_scope >= scopes.len) return null;
+            const scope = scopes[current_scope];
+            switch (scope.kind) {
+                .function => break,
+                .global, .module => return true,
+                .block, .switch_block, .catch_clause, .class_body => {
+                    if (scope.parent.isNone()) return null;
+                    current_scope = @backingInt(scope.parent);
+                },
+            }
+        }
+    }
+    return false;
+}
+
 fn canRetainGraphForSimpleConsoleDrops(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -6620,11 +6678,9 @@ fn canKeepPrepassSemanticGraph(
     // The TLA wrapper/deferral options only affect this program-level lowering
     // when the module actually contains top-level await.
     if (has_top_level_await and options.unsupported.top_level_await) return false;
-    // Dropping a labeled statement or a whole console call can remove the
-    // module's only top-level await. This retained-graph slice does not
-    // recompute that module-level bit, so keep those inputs on analyzer refresh.
-    if ((has_dropped_labeled_statement or retained_simple_console_drops) and
-        module.self_uses_top_level_await) return false;
+    // Label deletion does not have a TLA metadata reconciliation step. Console
+    // drops update the module-local bit from the retained AST after editing.
+    if (has_dropped_labeled_statement and module.self_uses_top_level_await) return false;
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     const allow_nonverbatim_javascript_imports = canRetainPlainJavaScriptImportsForConsoleDrop(
         self,
@@ -8371,6 +8427,69 @@ test "simple drop-console graph is retained by the full prepass gate" {
     ));
 }
 
+const RetainedTlaTestCorruption = enum {
+    none,
+    missing_owner_map,
+    out_of_range_scope_owner,
+    missing_scopes,
+};
+
+fn hasTopLevelAwaitForTest(source: []const u8, corruption: RetainedTlaTestCorruption) !?bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    if (corruption != .missing_owner_map) {
+        scope_owner_map = try analyzer.scope_owner_map.clone(allocator);
+    }
+    if (corruption == .out_of_range_scope_owner) {
+        for (parser.ast.nodes.items, 0..) |node, index| {
+            if (node.tag != .await_expression and node.tag != .for_await_of_statement) continue;
+            try scope_owner_map.put(allocator, @intCast(index), @intCast(analyzer.scopes.items.len));
+            break;
+        }
+    }
+    return hasTopLevelAwaitInRetainedGraph(
+        allocator,
+        &parser.ast,
+        if (corruption == .missing_scopes) &.{} else analyzer.scopes.items,
+        &scope_owner_map,
+    );
+}
+
+test "retained graph TLA scan excludes function awaits and keeps module awaits" {
+    const cases = .{
+        .{ .source = "await Promise.resolve(1);", .expected = true },
+        .{ .source = "{ await Promise.resolve(1); }", .expected = true },
+        .{ .source = "for await (const value of values) { void value; }", .expected = true },
+        .{ .source = "async function read() { await Promise.resolve(1); }", .expected = false },
+        .{ .source = "async function read() { { await Promise.resolve(1); } }", .expected = false },
+        .{ .source = "async function read() { for await (const value of values) { void value; } }", .expected = false },
+    };
+    inline for (cases) |case| {
+        try std.testing.expectEqual(case.expected, (try hasTopLevelAwaitForTest(case.source, .none)).?);
+    }
+}
+
+test "retained graph TLA scan rejects incomplete scope evidence" {
+    try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .missing_owner_map)) == null);
+    try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .out_of_range_scope_owner)) == null);
+    try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .missing_scopes)) == null);
+}
+
 const DefinePreflightMutation = enum {
     none,
     truncated_symbol_id_map,
@@ -9245,6 +9364,27 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .runtime_helper_import_output_bindings = owned_runtime_helper_import_output_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
+
+    if (can_keep_semantic_graph and retained_simple_console_drops and
+        module.self_uses_top_level_await)
+    {
+        if (module.semantic) |semantic| {
+            if (hasTopLevelAwaitInRetainedGraph(
+                arena_alloc,
+                transformer.ast,
+                semantic.scopes,
+                &semantic.scope_owner_map,
+            )) |has_tla| {
+                // Finalize resets the transitive bit from this module-local bit
+                // before propagating TLA through the updated import graph.
+                module.self_uses_top_level_await = has_tla;
+            } else {
+                can_keep_semantic_graph = false;
+            }
+        } else {
+            can_keep_semantic_graph = false;
+        }
+    }
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX,
     // Stage 3 decorators, bounded named-class cases, and audited

@@ -2484,9 +2484,42 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'ok',
       },
       {
-        name: 'removed top-level await forces fallback',
+        name: 'dropping the only top-level await retains the graph',
         source: "console.log(await Promise.resolve(42)); process.stdout.write('ok');",
+        graph: 'retained',
+        stdout: 'ok',
+        format: 'esm',
+      },
+      {
+        name: 'remaining top-level await keeps module metadata after console drop',
+        source:
+          "console.log(await Promise.resolve(42)); await Promise.resolve(); process.stdout.write('ok');",
+        graph: 'retained',
+        stdout: 'ok',
+        format: 'esm',
+      },
+      {
+        name: 'remaining top-level for-await keeps module metadata after console drop',
+        source:
+          "console.log(await Promise.resolve(42)); for await (const value of [Promise.resolve('ok')]) { process.stdout.write(value); }",
+        graph: 'retained',
+        stdout: 'ok',
+        format: 'esm',
+      },
+      {
+        name: 'imported top-level await remains on analyzer fallback',
+        source:
+          "import { value } from './values.js'; console.log(await Promise.resolve(value)); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
         graph: 'reanalyzed',
+        stdout: '42',
+        format: 'esm',
+      },
+      {
+        name: 'nested function await does not keep module metadata after console drop',
+        source:
+          "console.log(await Promise.resolve(42)); export async function read() { await Promise.resolve(); return 'ok'; } process.stdout.write('ok');",
+        graph: 'retained',
         stdout: 'ok',
         format: 'esm',
       },
