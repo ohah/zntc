@@ -212,7 +212,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
   {
     name: 'namespace-plus-class',
     source: 'namespace Box { export class Inner {} } console.log(new Box.Inner());',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'decorator-only',
@@ -2116,6 +2116,57 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   }, 120_000);
 
+  test('lenient namespace/class combinations retain exact graph and runtime output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-namespace-class-'));
+    const input = join(dir, 'namespace-class.unknown');
+    const source = [
+      "function _Box() { return 'outer'; }",
+      'class Box { static base: number = 2; }',
+      'namespace Box {',
+      '  export class Item { value: number = 42; read(): number { return this.value; } }',
+      '  export const item = new Item();',
+      '  export const read = () => item.read();',
+      '}',
+      'namespace Outer {',
+      '  export class Inner { value: number = 40; }',
+      '  export const item = new Inner();',
+      '  export function read() { return item.value + 1; }',
+      '}',
+      'console.log(Box.base, Box.item.value, Box.read(), Outer.read(), Outer.item instanceof Outer.Inner, _Box());',
+    ].join('\n');
+    try {
+      writeFileSync(input, source);
+      for (const target of TARGETS) {
+        const result = runCoverage(input, target, dir, true);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), `${target.name}: ${result.stderr}`).toEqual(
+          [],
+        );
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        const identity = result.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(
+          exactIdentityObservationProblems(identity ?? ''),
+          `${target.name}: ${identity ?? 'missing exact report'}`,
+        ).toEqual([]);
+        const actual = runNode([join(dir, 'out.js')]);
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('2 42 42 41 true outer\n');
+        expect(actual.stderr).toBe('');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('lenient type-only TypeScript retains exact graph while runtime forms reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-type-graph-'));
     const input = join(dir, 'case.unknown');
@@ -2169,7 +2220,6 @@ describe('symbol identity coverage gate (#4819)', () => {
         'const enum Color { Red = 1 } console.log(Color.Red);',
         'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
-        'namespace Mixed { export class Box { value: number = 1; } } console.log(new Mixed.Box().value);',
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
         const reanalyzedInput = join(dir, `runtime-${index}.unknown`);

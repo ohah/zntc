@@ -154,8 +154,6 @@ fn transpileFastPathDisabledByEnv() bool {
 fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMemory}!AstFacts {
     var facts: AstFacts = .{};
     facts.has_type_only_bindings = ast.type_only_binding_names.count() > 0;
-    var has_class_syntax = false;
-    var has_runtime_namespace = false;
 
     for (ast.nodes.items) |node| {
         if (std.mem.startsWith(u8, @tagName(node.tag), "ts_")) {
@@ -170,7 +168,6 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             // Class lowering preserves source and generated binding identities in the edited graph.
             .class_declaration, .class_expression => {
                 facts.has_runtime_sensitive_syntax = true;
-                has_class_syntax = true;
             },
 
             // Private field/method lowering records source and generated identities
@@ -214,8 +211,6 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 if (node.data.binary.flags != 0) {
                     facts.has_lenient_unhandled_runtime_syntax = true;
-                } else {
-                    has_runtime_namespace = true;
                 }
             },
 
@@ -284,12 +279,6 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
 
             else => {},
         }
-    }
-
-    // Namespace lowering with class syntax still needs its post-transform analyzer.
-    // Keep any AST containing both forms on the conservative path.
-    if (has_class_syntax and has_runtime_namespace) {
-        facts.has_lenient_unhandled_runtime_syntax = true;
     }
 
     return facts;
@@ -2403,7 +2392,7 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
     try std.testing.expect(parser.source_mode == .js_lenient);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
-    const erased_type_sources = [_][]const u8{
+    const retained_sources = [_][]const u8{
         "const value: number = 1;",
         "type Value = string; const value: Value = 'x';",
         "interface Value { name: string } const value: Value = { name: 'x' };",
@@ -2411,8 +2400,9 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "const value = 1 satisfies number;",
         "function read<T>(value: T): T { return value; }",
         "class Value { amount: number = 1; }",
+        "namespace Mixed { export class Box { amount: number = 1; } } console.log(new Mixed.Box().amount);",
     };
-    for (erased_type_sources) |source| {
+    for (retained_sources) |source| {
         var typed_scanner = try Scanner.init(allocator, source);
         var typed_parser = Parser.init(allocator, &typed_scanner);
         typed_parser.configureFromExtension(".unknown");
@@ -2428,7 +2418,6 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "const enum Value { A } console.log(Value.A);",
         "declare namespace Ambient { export const value: number; }",
         "declare module 'ambient' { export const value: number; }",
-        "namespace Mixed { export class Box { amount: number = 1; } } console.log(new Mixed.Box().amount);",
         "import type { Value } from './types'; const value: Value = {} as Value;",
         "function seal(value: any): any { return value; } @seal class Counter { accessor amount: number = 1; }",
         "function seal(value: any): any { return value; } @seal class Box { amount: number = 1; }",
@@ -2515,7 +2504,6 @@ test "#4819 extensionless TypeScript classes retain supported class graphs" {
 
     const unsupported_sources = [_][]const u8{
         "function seal(value: any): any { return value; } @seal class Box { value: number = 1; }",
-        "namespace Mixed { export class Box { value: number = 1; } }",
         "declare class External { value: number; }",
     };
     for (unsupported_sources) |unsupported_source| {
