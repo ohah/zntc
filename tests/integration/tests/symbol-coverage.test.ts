@@ -1954,9 +1954,12 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reanalyzedSources = [
         'declare const externalValue: number; console.log(externalValue);',
-        'enum Color { Red } console.log(Color.Red);',
+        'declare enum Ambient { Value = 1 } console.log(typeof Ambient);',
+        'const enum Color { Red = 1 } console.log(Color.Red);',
         'namespace Values { export const value = 1; } console.log(Values.value);',
         'class Box { value: number = 1; } console.log(new Box().value);',
+        'enum Color { Red } class Box { value: number = 1; } console.log(Color.Red, new Box().value);',
+        'enum Color { Red } namespace Values { export const value = 1; } console.log(Color.Red, Values.value);',
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
         const reanalyzedInput = join(dir, `runtime-${index}.unknown`);
@@ -1971,6 +1974,62 @@ describe('symbol identity coverage gate (#4819)', () => {
           transformIdentityAuditProblems(result.stderr),
           `${reanalyzedSource}\n${result.stderr}`,
         ).toEqual([]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient TypeScript enums retain exact graph across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-enum-graph-'));
+    const input = join(dir, 'enum.unknown');
+    const source = [
+      'const base = 40;',
+      'enum Color { Red = base, Green = Red + 1 }',
+      'enum Mode { Read = "r", Write = "w" }',
+      'function read(Color: number) { return Color + 1; }',
+      'console.log(Color.Green, Color[Color.Green], read(41), Mode.Read, Mode.Write);',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      for (const target of [TARGETS[0], TARGETS[4]]) {
+        const reference = join(dir, `reference-${target.name}.js`);
+        const output = join(dir, 'out.js');
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: target.name === 'es5' ? ts.ScriptTarget.ES5 : ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe('41 Green 42 r w\n');
+
+        const result = runCoverage(input, target, dir, true);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(baseline.stdout);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
