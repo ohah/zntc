@@ -593,8 +593,8 @@ pub fn buildMetadataForAst(
     // CJS import preamble writer (#1621: minify 시 __toESM → $tE 등 축약)
     var preamble = PreambleWriter.init(self.allocator);
     preamble.minify = self.minify_whitespace;
-    preamble.to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm);
-    preamble.copy_props_name = self.currentEsmInteropRuntimeNames().get(.copy_props);
+    preamble.to_esm_name = (try self.currentEsmInteropRuntimeNames()).get(.to_esm);
+    preamble.copy_props_name = (try self.currentEsmInteropRuntimeNames()).get(.copy_props);
 
     // __esm 모듈의 init_xxx() 호출 중복 방지 (같은 모듈을 여러 binding이 참조할 때)
     var esm_init_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -972,6 +972,16 @@ pub fn buildMetadataForAst(
                 if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
                 const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(canonical_mod));
+                if (!self.isInteropImportLive(&m, ib)) {
+                    // The source's evaluation remains observable even though
+                    // its namespace/default value is unused.
+                    if (!cjs_static_init_set.contains(@intCast(canonical_mod))) {
+                        try cjs_static_init_set.put(self.allocator, @intCast(canonical_mod), {});
+                        try preamble.write(req_var);
+                        try preamble.write("();\n");
+                    }
+                    continue;
+                }
                 const interop_mode = cjsInteropMode(self, &m);
                 // ESM-wrapped + helper binding: top-level 에 이미 var 선언됨 (esm_wrap) → 할당만
                 if (is_helper_binding and m.wrap_kind == .esm) {
@@ -1709,7 +1719,7 @@ pub fn buildMetadataForAst(
         .require_rewrites = require_rewrites,
         .default_export_name = default_export_name,
         .default_export_is_synthetic = default_export_is_synthetic,
-        .to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm),
+        .to_esm_name = (try self.currentEsmInteropRuntimeNames()).get(.to_esm),
         .ns_member_rewrites = ns_rewrites,
         .ns_inline_objects = ns_inlines,
         .const_values = const_values,
@@ -2211,7 +2221,7 @@ pub fn buildDevMetadataForAst(
     var dev_preamble = PreambleWriter.init(self.allocator);
     defer dev_preamble.deinit();
     dev_preamble.minify = self.minify_whitespace;
-    dev_preamble.to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm);
+    dev_preamble.to_esm_name = (try self.currentEsmInteropRuntimeNames()).get(.to_esm);
 
     // bindings를 import_record_index별로 분류
     const RecordInfo = struct {

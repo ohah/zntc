@@ -1645,6 +1645,24 @@ pub const Bundler = struct {
         // ZNTC_DEBUG=module_stats → 모듈 분류 히스토그램 (docs/DEBUG.md §1).
         if (@import("../debug_log.zig").enabled(.module_stats)) dumpModuleStats(graph);
 
+        // Candidate preparation does not create an entry root or execute any
+        // helper. The live consumer pass activates it after tree-shaking.
+        if (self.options.scope_hoist and !self.options.code_splitting and !self.options.preserve_modules and !self.options.dev_mode) {
+            var may_need_interop = false;
+            var modules = graph.modulesIterator();
+            while (modules.next()) |module| {
+                if (module.wrap_kind.isWrapped()) {
+                    may_need_interop = true;
+                    break;
+                }
+            }
+            if (may_need_interop) try @import("runtime_interop_ast.zig").installCandidate(graph, io, .{
+                .minify = self.options.minify_whitespace,
+                .es5 = self.options.unsupported.arrow,
+                .configurable_exports = self.options.configurable_exports,
+            });
+        }
+
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
@@ -1783,6 +1801,7 @@ pub const Bundler = struct {
             // plug. post-shake finalize 보다 먼저 켜 두어야 collectUnifiedInput 가드가
             // 활성화된다.
             if (linker) |*l| l.tree_shaker_active = true;
+            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s);
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
             // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
@@ -1822,6 +1841,9 @@ pub const Bundler = struct {
             }
             break :blk s;
         } else null;
+        if (!will_tree_shake) {
+            if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
+        }
         // tree_shaker pointer 를 linker 로 전달 — namespace force_inline 결정 (3 caller
         // in metadata.zig) 이 `isExportUsed` 로 transitively used 검사. unused
         // namespace re-export 의 X_ns inline literal 생성 skip.

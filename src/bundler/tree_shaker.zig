@@ -910,6 +910,26 @@ pub const TreeShaker = struct {
         return !entry.found_existing;
     }
 
+    pub fn isImportRecordLive(self: *TreeShaker, module_index: u32, record_index: u32) !bool {
+        return import_records.isImportRecordLive(self, module_index, record_index);
+    }
+
+    /// Check an import's authoritative local SID, without a spelling roundtrip.
+    pub fn isImportSymbolLive(self: *const TreeShaker, module_index: u32, local: bundler_symbol.SymbolRef) bool {
+        if (module_index >= self.reachable_stmts.len) return true;
+        const reachable = self.reachable_stmts[module_index] orelse return true;
+        const infos = if (module_index < self.module_stmt_infos.len) (self.module_stmt_infos[module_index] orelse return true) else return true;
+        const module = self.getModule(module_index) orelse return true;
+        if (local.moduleIndex() != module.index) return true;
+        const id = local.semanticIndex() orelse return true;
+        const semantic = module.semantic orelse return true;
+        if (id >= semantic.symbols.items.len) return true;
+        for (infos.referencingStmts(id)) |statement| {
+            if (reachable.isSet(statement) and !import_records.isImportDeclarationStmt(module, infos, statement)) return true;
+        }
+        return false;
+    }
+
     /// import binding의 심볼이 해당 모듈에서 reachable statement에서 참조되는지 확인.
     /// emitter가 export_bindings 필터링에 사용.
     pub fn isImportLiveInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {

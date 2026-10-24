@@ -20,6 +20,7 @@ pub const resolver = @import("resolver.zig");
 pub const package_json = @import("package_json.zig");
 pub const resolve_cache = @import("resolve_cache.zig");
 pub const module = @import("module.zig");
+pub const runtime_interop_ast = @import("runtime_interop_ast.zig");
 pub const graph = @import("graph.zig");
 pub const graph_plugins = @import("graph/plugins.zig");
 pub const emitter = @import("emitter.zig");
@@ -131,6 +132,7 @@ test {
 
     // test files
     _ = @import("bundler_test.zig");
+    _ = @import("runtime_interop_ast.zig");
     _ = @import("semantic_codec_test.zig");
     _ = @import("module_codec_test.zig");
     _ = @import("disk_cache_test.zig");

@@ -600,6 +600,7 @@ pub fn emitWithTreeShaking(
 
     for (0..graph.moduleCount()) |i| {
         const m = graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+        if (graph.interop_ast_provider) |provider| if (provider.module_index == m.index) continue;
         const is_asset = m.loader.isAsset() and m.source.len > 0;
         const is_js = (m.module_type.isJavaScriptLike() or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
         if (is_js) {

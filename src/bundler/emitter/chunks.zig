@@ -869,7 +869,7 @@ fn emitChunksImpl(
                 "__esm";
             if (chunk_is_user_entry) {
                 const helper_names = if (linker) |l|
-                    l.currentEsmInteropRuntimeNames()
+                    try l.currentEsmInteropRuntimeNames()
                 else
                     rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
                 try rt.appendHmrRuntimeWithInternalNames(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names, hmr_runtime_names);
