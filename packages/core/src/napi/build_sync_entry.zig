@@ -83,6 +83,8 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
     var bundler = Bundler.init(native_alloc, bundle_opts);
     defer bundler.deinit();
     var result = bundler.bundle(common.io()) catch |err| {
+        if (err == error.StaticInitializerDynamicScope)
+            return throwError(env, "ZNTC1505: static initializer cannot be moved out of its class dynamic lexical environment");
         return throwError(env, @errorName(err));
     };
     defer result.deinit(native_alloc);

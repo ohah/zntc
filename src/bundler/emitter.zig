@@ -2103,8 +2103,19 @@ pub fn emitModule(
     const root = try transformer.transform();
     // Public callers normally diagnose this during graph prepass. Keep the
     // direct/legacy emitter path fail-closed when it transforms an AST itself.
-    if (transformer.used_unsupported_static_initializer_dynamic_scope)
+    if (transformer.used_unsupported_static_initializer_dynamic_scope) {
+        // A prepass error must survive as a structured bundle diagnostic.
+        // Skip only this already-failed module; an unrelated diagnostic or a
+        // warning cannot authorize silently omitting its code.
+        if (linker) |l| {
+            for (l.graph.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == .static_initializer_dynamic_scope and
+                    diagnostic.severity == .@"error" and
+                    std.mem.eql(u8, diagnostic.file_path, module.path)) return null;
+            }
+        }
         return error.StaticInitializerDynamicScope;
+    }
     if (options.transform_options_base.ignore_annotations) {
         purity.clearPureCallFlags(transformer.ast);
     } else {
