@@ -823,7 +823,12 @@ pub const SemanticAnalyzer = struct {
         // 모든 재선언/호이스팅 충돌 검사를 건너뛴다.
         // ECMAScript B.3.2/B.3.3: "If replacing the FunctionDeclaration with a VariableStatement
         // would produce an Early Error, the extension is not applied" — 에러가 아니라 무시.
-        const is_annex_b_fn = self.in_annex_b_context and kind.isFunctionLike();
+        const is_function_expression_name = if (!self.current_visit_node.isNone() and node_idx != null) blk: {
+            const owner = self.ast.getNode(self.current_visit_node);
+            break :blk owner.tag == .function_expression and
+                @backingInt(self.ast.readExtraNode(owner.data.extra, ast_mod.FunctionExtra.name)) == node_idx.?;
+        } else false;
+        const is_annex_b_fn = !is_function_expression_name and self.in_annex_b_context and kind.isFunctionLike();
         if (is_annex_b_fn) {
             if (self.findSymbolInScope(target_scope, name_text)) |existing| {
                 if (existing.kind.isBlockScoped() or existing.kind.isFunctionLike()) {
@@ -893,7 +898,7 @@ pub const SemanticAnalyzer = struct {
         // Strict code keeps the block function its own lexical binding (#4767):
         // aliasing it to the var-scope X made the block's later visit see X
         // as an earlier declaration of the same name.
-        if (!is_annex_b_fn and !self.isCurrentStrict() and kind.isFunctionLike() and !target_scope.isNone() and
+        if (!is_function_expression_name and !is_annex_b_fn and !self.isCurrentStrict() and kind.isFunctionLike() and !target_scope.isNone() and
             !self.scopes.items[target_scope.toIndex()].kind.isVarScope())
         {
             const var_scope_for_alias = self.findVarScope();

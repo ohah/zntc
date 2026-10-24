@@ -74,7 +74,25 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!void {
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            const declaration_start = self.scratch.items.len;
             try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, pattern, read_identity, span, .@"var");
+            // These bindings no longer occur in the formal parameter list.
+            // Preserve each source identity while moving its storage to the
+            // function body that owns the emitted var declaration.
+            if (self.semantic_edit_enabled) {
+                for (self.scratch.items[declaration_start..]) |declarator| {
+                    const node = self.ast.getNode(declarator);
+                    if (node.tag != .variable_declarator) continue;
+                    const binding = self.ast.readExtraNode(node.data.extra, 0);
+                    var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, binding, .{});
+                    defer bindings.deinit();
+                    while (try bindings.next()) |leaf| {
+                        const id = self.getSymbolIdAt(leaf) orelse continue;
+                        if (self.semantic_editor.?.symbols.items[id].kind != .parameter) continue;
+                        try self.relocateOutputSymbolAs(@intCast(id), self.current_scope, leaf);
+                    }
+                }
+            }
         }
 
         /// 파라미터 패턴 안에 object rest (`{a, ...r}`, ES2018) 가 있는지 검사 (#4251).

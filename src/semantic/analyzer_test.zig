@@ -3266,3 +3266,38 @@ test "#4819 Flow match bindings resolve in guards and arm bodies" {
     }
     try std.testing.expectEqual(@as(usize, 2), item_reads);
 }
+
+test "#4819 named function expression self binding never aliases sloppy outer var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var Box=function Box(value){return Box;};");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const ast = @import("../parser/ast.zig");
+    var outer: ?u32 = null;
+    var inner: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.identifierNameText(node), "Box")) {
+            if (outer == null) outer = analyzer.symbol_ids.items[raw] else inner = analyzer.symbol_ids.items[raw];
+        }
+    }
+    try std.testing.expect(outer != null and inner != null and outer.? != inner.?);
+    try std.testing.expectEqual(SymbolKind.variable_var, analyzer.symbols.items[outer.?].kind);
+    try std.testing.expectEqual(SymbolKind.function_decl, analyzer.symbols.items[inner.?].kind);
+    const name_scope = analyzer.symbols.items[inner.?].scope_id;
+    try std.testing.expectEqual(SemanticScopeKind.block, analyzer.scopes.items[name_scope.toIndex()].kind);
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.identifierNameText(node), "Box"))
+            try std.testing.expectEqual(inner, analyzer.symbol_ids.items[raw]);
+        if (node.tag == .function_expression) {
+            const scope = analyzer.scope_owner_map.get(@intCast(raw)).?;
+            try std.testing.expectEqual(name_scope, analyzer.scopes.items[scope].parent);
+            const binding = parser.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+            try std.testing.expectEqual(inner, analyzer.symbol_ids.items[@backingInt(binding)]);
+        }
+    }
+}

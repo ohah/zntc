@@ -164,6 +164,8 @@ pub fn Constructors(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(lowered_params, span);
+            if (self.semantic_edit_enabled)
+                try self.remapCopiedScopeOwner(self.readNodeIdx(me, MethodExtra.params), new_params_node);
             const func_extra = try self.ast.addExtras(&.{
                 @backingInt(name),
                 @backingInt(new_params_node),
