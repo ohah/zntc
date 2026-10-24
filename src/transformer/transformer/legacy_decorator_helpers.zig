@@ -29,6 +29,66 @@ fn makeClassNameReference(self: anytype, name_span: Span, source: NodeIndex, fla
     return self.makeIdentifierRefWithSymbol(name_span, source);
 }
 
+/// A decorator expression is emitted beside the class, not inside its inner
+/// name environment. Transfer that exact self edge to the known outer binding
+/// before assembling the call; same-spelled nested bindings keep their IDs.
+fn moveDecoratorExpression(self: *Transformer, expression: NodeIndex, outer_binding: NodeIndex) Error!void {
+    if (!self.semantic_edit_enabled or expression.isNone() or outer_binding.isNone()) return;
+    const inner = self.current_class_self_symbol_id orelse return;
+    const outer = self.getSymbolIdAt(outer_binding) orelse return;
+    if (inner == outer) return;
+    // The initial graph records the declaration's lexical evaluation site.
+    // ES5 lowering can already have moved the inner storage into its IIFE.
+    if (inner >= self.symbols.len or outer >= self.symbols.len) return;
+    const source_scope = self.symbols[inner].scope_id;
+    const target_scope = self.symbols[outer].scope_id;
+    var pending: std.ArrayList(NodeIndex) = .empty;
+    defer pending.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try pending.append(self.allocator, expression);
+    while (pending.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const entry = try seen.getOrPut(self.allocator, @backingInt(idx));
+        if (entry.found_existing) continue;
+        const editor = &self.semantic_editor.?;
+        if (self.outputOwnedScope(idx)) |owned| {
+            var frontier = owned;
+            var hops: usize = 0;
+            while (frontier != source_scope and frontier != target_scope and !frontier.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
+                const parent = editor.scopes.items[frontier.toIndex()].parent;
+                if (parent == source_scope) {
+                    try self.reparentGeneratedScope(frontier, target_scope);
+                    break;
+                }
+                frontier = parent;
+            }
+        }
+        const reference = editor.referenceForNode(idx) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => std.debug.panic("decorator expression lost its source Reference: {s}", .{@errorName(err)}),
+        };
+        if (reference) |ref| {
+            if (!ref.flags.declare) {
+                if (@backingInt(ref.symbol_id) == inner) {
+                    try self.rebindOutputReference(idx, outer);
+                    try self.trackExactOutputReference(idx, outer);
+                }
+                if (ref.scope_id == source_scope) {
+                    if (self.tracked_runtime_helper_ref_index.contains(@backingInt(idx))) {
+                        try self.relocateRuntimeHelperRef(idx, target_scope);
+                    } else editor.moveReference(idx, target_scope, ref.stmt_idx, ref.scope_stmt_idx) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("decorator expression cannot move its source Reference: {s}", .{@errorName(err)}),
+                    };
+                }
+            }
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(idx));
+        while (children.next()) |child| try pending.append(self.allocator, child);
+    }
+}
+
 /// experimentalDecorators: class/member decorator를 __decorateClass 호출로 변환.
 pub fn transformExperimentalDecorators(
     self: *Transformer,
@@ -218,6 +278,7 @@ pub fn buildDecorateClassMemberCall(
     // arg1: [dec1, dec2, ..., __metadata("design:type", Function), ...]
     var deco_items: std.ArrayList(NodeIndex) = .empty;
     defer deco_items.deinit(self.allocator);
+    for (md.decorators) |expression| try moveDecoratorExpression(self, expression, class_name_old_idx);
     try deco_items.appendSlice(self.allocator, md.decorators);
     // emitDecoratorMetadata: __metadata 호출 추가
     try self.appendMemberMetadata(&deco_items, md.params, md.member);
@@ -303,6 +364,7 @@ pub fn buildDecorateClassCall(
 
     // constructor parameter decorators 먼저 (TypeScript 순서: __param → class decorator)
     for (ctor_param_decos) |param_deco| {
+        try moveDecoratorExpression(self, param_deco, class_name_old_idx);
         try self.scratch.append(self.allocator, param_deco);
     }
 
@@ -311,7 +373,9 @@ pub fn buildDecorateClassCall(
         var deco_i: u32 = 0;
         while (deco_i < old_deco_len) : (deco_i += 1) {
             const raw_idx = self.ast.extra_data.items[old_deco_start + deco_i];
-            try self.scratch.append(self.allocator, try self.visitDecoratorExpression(raw_idx));
+            const expression = try self.visitDecoratorExpression(raw_idx);
+            try moveDecoratorExpression(self, expression, class_name_old_idx);
+            try self.scratch.append(self.allocator, expression);
         }
     }
 
@@ -352,4 +416,80 @@ pub fn buildDecorateClassCall(
         .span = zero_span,
         .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
     });
+}
+
+test "legacy decorator self reference transfers to outer identity before finalization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, "class Box { method(@(Box.decorate((function named(Box){return Box;}),()=>Box)) value) {} }");
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var class: NodeIndex = .none;
+    var expression: NodeIndex = .none;
+    var named: NodeIndex = .none;
+    var arrow: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| switch (node.tag) {
+        .class_declaration => class = @fromBackingInt(@intCast(raw)),
+        .decorator => expression = node.data.unary.operand,
+        .function_expression => named = @fromBackingInt(@intCast(raw)),
+        .arrow_function_expression => arrow = @fromBackingInt(@intCast(raw)),
+        else => {},
+    };
+    const binding = parser.ast.readExtraNode(parser.ast.getNode(class).data.extra, ast_mod.ClassExtra.name);
+    const outer = analyzer.symbol_ids.items[@backingInt(binding)].?;
+    const inner = analyzer.class_self_symbol_map.get(@backingInt(class)).?;
+    const source_scope = analyzer.symbols.items[inner].scope_id;
+    const target_scope = analyzer.symbols.items[outer].scope_id;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .experimental_decorators = true });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_class_self_symbol_id = inner;
+    transformer.current_scope = target_scope;
+    transformer.semantic_editor = try @import("../../semantic/editor.zig").SemanticEditor.init(
+        allocator,
+        transformer.ast,
+        transformer.symbols,
+        transformer.scopes,
+        transformer.scope_maps,
+        transformer.scope_owner_map,
+        transformer.references,
+        transformer.symbol_ids.items,
+        transformer.helper_scope_map,
+    );
+    try moveDecoratorExpression(&transformer, expression, binding);
+    const editor = &transformer.semantic_editor.?;
+    var transferred: usize = 0;
+    var shadow_controls: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare) continue;
+        const current = (try editor.referenceForNode(reference.node_index)).?;
+        if (@backingInt(reference.symbol_id) == inner) {
+            try std.testing.expectEqual(outer, @backingInt(current.symbol_id));
+            try std.testing.expectEqual(reference.flags, current.flags);
+            try std.testing.expectEqual(outer, transformer.getSymbolIdAt(reference.node_index).?);
+            if (reference.scope_id == source_scope) try std.testing.expectEqual(target_scope, current.scope_id) else try std.testing.expectEqual(reference.scope_id, current.scope_id);
+            transferred += 1;
+        } else {
+            try std.testing.expectEqual(reference.symbol_id, current.symbol_id);
+            shadow_controls += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), transferred);
+    try std.testing.expectEqual(@as(usize, 1), shadow_controls);
+    const named_scope = transformer.outputOwnedScope(named).?;
+    const arrow_scope = transformer.outputOwnedScope(arrow).?;
+    try std.testing.expectEqual(target_scope, editor.scopes.items[arrow_scope.toIndex()].parent);
+    const name_environment = editor.scopes.items[named_scope.toIndex()].parent;
+    try std.testing.expectEqual(target_scope, editor.scopes.items[name_environment.toIndex()].parent);
 }
