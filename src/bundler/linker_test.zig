@@ -1905,6 +1905,10 @@ test "linker: HMR preamble names are graph-owned and recover exact identities" {
     defer r.destroyGraph();
     defer r.cache.deinit();
     r.linker.dev_mode = true;
+    // A prior semantic-less call may have cached borrowed default names.
+    // Real graph ownership must still select collision-free names.
+    r.linker.hmr_runtime_internal_names = .{};
+    try std.testing.expect(!r.linker.hmr_runtime_internal_names_owned);
     try r.linker.computeRenames();
 
     const module_index = findModuleIdx(r.graph, "entry.js") orelse return error.TestUnexpectedResult;
