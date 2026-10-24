@@ -4,6 +4,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const ModuleIndex = types.ModuleIndex;
 const module_mod = @import("../module.zig");
+const binding_scanner = @import("../binding_scanner.zig");
 const plugin_mod = @import("../plugin.zig");
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Parser = @import("../../parser/parser.zig").Parser;
@@ -60,13 +61,13 @@ pub fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module,
             ib.source_type_only = false;
             continue;
         }
-        const sym_idx: usize = if (ib.local_symbol_node) |binding_node| blk: {
-            const node_index: usize = @intCast(@backingInt(binding_node));
-            if (node_index >= sem.symbol_ids.len) continue;
-            const symbol_id = sem.symbol_ids[node_index] orelse continue;
-            break :blk @intCast(symbol_id);
-        } else sem.scope_maps[0].get(ib.local_name) orelse continue;
-        if (sym_idx >= sem.symbols.items.len) continue;
+        const local_symbol = binding_scanner.resolveImportLocalSymbol(ib.*, .{
+            .module_index = module.index,
+            .ast = ast,
+            .symbol_ids = sem.symbol_ids,
+            .symbols = sem.symbols.items,
+        });
+        const sym_idx = local_symbol.semanticIndex() orelse continue;
         ib.source_type_only = !value_used.isSet(sym_idx);
     }
     // An import whose every binding is a type alone is dropped whole: its

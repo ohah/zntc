@@ -12486,15 +12486,12 @@ fn refreshStableBindingRefsFromSemanticGraph(
         if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
     for (module.import_bindings) |*ib| {
         ib.local_symbol = bundler_symbol.SymbolRef.invalid;
-        // #3068: helper binding 은 user 가 같은 이름 점유 시에도 격리된 helper_scope_map
-        // 에서 lookup — 일반 module_scope.get 면 user sym 을 잘못 가리킨다 (linker
-        // populateImportSymbols 와 동일 정책).
-        const sym_lookup: ?usize = if (ib.is_helper)
-            sem.helper_scope_map.get(ib.local_name)
-        else if (scope0) |module_scope| module_scope.get(ib.local_name) else null;
-        if (sym_lookup) |sym_idx| {
-            ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, sym_idx);
-        }
+        ib.local_symbol = binding_scanner_mod.resolveImportLocalSymbol(ib.*, .{
+            .module_index = module.index,
+            .ast = if (module.ast) |*ast| ast else null,
+            .symbol_ids = sem.symbol_ids,
+            .symbols = sem.symbols.items,
+        });
     }
 
     if (module.alias_table) |*table| table.deinit();

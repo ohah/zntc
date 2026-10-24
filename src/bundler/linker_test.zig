@@ -4904,3 +4904,144 @@ test "reuse #4545 [2]: ensureNsBaseRank OOM → built latch 안 됨 (재시도 �
     try std.testing.expect(r.linker.ns_base_rank_built);
     try std.testing.expect(r.linker.ns_base_rank.count() >= 1);
 }
+
+const import_local_identity_inputs = [_][]const u8{
+    "import { x as local } from './dep';",
+    "import local from './dep';",
+    "import * as local from './dep';",
+    "import { default as local } from './dep';",
+    "import { x as \\u006cocal } from './dep';",
+    "import { 'x' as local } from './dep';",
+    "import { x as local, y as other } from './dep'; console.log(other);",
+    "import other, { x as local } from './dep'; console.log(other);",
+    "import { x as local } from './dep'; function nested(local) { return local; } console.log(nested(3));",
+    "import { x as local } from './dep'; const nested = () => { const local = 3; return local; }; console.log(nested());",
+};
+
+fn runImportLocalIdentityInputs(comptime refresh_graph: bool) !void {
+    for (import_local_identity_inputs) |import_source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\nconst decoy = 99; console.log(local, decoy, externalGlobal);", .{import_source});
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, "entry.mjs", source);
+        try writeFile(tmp.dir, "dep.ts", "export const x = 7; export const y = 9; export default 11;");
+        var result = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingImportIdentityEntry;
+        const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingImportIdentityEntry;
+        const sem = if (module.semantic) |*value| value else return error.MissingImportIdentitySemantic;
+        const scope = @constCast(&sem.scope_maps[0]);
+        const expected = scope.get("local") orelse return error.MissingImportIdentityLocal;
+        const decoy = scope.get("decoy") orelse return error.MissingImportIdentityDecoy;
+        try std.testing.expect(expected != decoy);
+        for (module.import_bindings) |*binding| {
+            if (!std.mem.eql(u8, binding.local_name, "local")) continue;
+            const node = binding.local_symbol_node orelse return error.MissingImportIdentityAnchor;
+            try std.testing.expectEqual(@as(u32, @intCast(expected)), sem.symbol_ids[@backingInt(node)].?);
+            binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, decoy);
+        }
+        scope.getPtr("local").?.* = decoy;
+        if (refresh_graph) {
+            try @import("graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(result.graph, module, module.parse_arena.?.allocator());
+        } else {
+            result.linker.populateImportSymbols();
+        }
+        var found = false;
+        for (module.import_bindings) |binding| {
+            if (!std.mem.eql(u8, binding.local_name, "local")) continue;
+            try std.testing.expectEqual(@as(u32, @intCast(expected)), binding.local_symbol.semanticIndex() orelse return error.MissingExactImportLocalIdentity);
+            try std.testing.expectEqual(entry_index, binding.local_symbol.moduleIndex());
+            found = true;
+        }
+        try std.testing.expect(found);
+
+        // A broken authoritative anchor must clear a previously valid result,
+        // even though a same-spelling scope entry still points at the decoy.
+        var binding_index: ?usize = null;
+        for (module.import_bindings, 0..) |binding, index| {
+            if (std.mem.eql(u8, binding.local_name, "local")) binding_index = index;
+        }
+        const local_index = binding_index orelse return error.MissingImportIdentityBinding;
+        const binding_node = module.import_bindings[local_index].local_symbol_node orelse return error.MissingImportIdentityAnchor;
+        const raw = @backingInt(binding_node);
+        const ids = @constCast(sem.symbol_ids);
+        for ([_]?u32{ null, @intCast(sem.symbols.items.len), @intCast(decoy) }) |malformed_id| {
+            ids[raw] = malformed_id;
+            module.import_bindings[local_index].local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, expected);
+            if (refresh_graph) {
+                try @import("graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(result.graph, module, module.parse_arena.?.allocator());
+            } else {
+                result.linker.populateImportSymbols();
+            }
+            try std.testing.expect(!module.import_bindings[local_index].local_symbol.isValid());
+        }
+        ids[raw] = @intCast(expected);
+        if (!refresh_graph) {
+            module.import_bindings[local_index].local_symbol_node = null;
+            module.import_bindings[local_index].local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, expected);
+            result.linker.populateImportSymbols();
+            try std.testing.expect(!module.import_bindings[local_index].local_symbol.isValid());
+            module.import_bindings[local_index].local_symbol_node = binding_node;
+            const saved_semantic = module.semantic;
+            module.semantic = null;
+            module.import_bindings[local_index].local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, expected);
+            result.linker.populateImportSymbols();
+            try std.testing.expect(!module.import_bindings[local_index].local_symbol.isValid());
+            module.semantic = saved_semantic;
+        }
+    }
+}
+
+test "populateImportSymbols uses exact local anchors across ten poisoned scope maps" {
+    try runImportLocalIdentityInputs(false);
+}
+
+test "graph import refresh uses exact local anchors across ten poisoned scope maps" {
+    try runImportLocalIdentityInputs(true);
+}
+
+test "generated runtime helper imports keep exact anchors under poisoned helper names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "const __generator = 17; function* values() { yield 3; } console.log(values().next().value, __generator);");
+    var result = try buildAndLinkWithTransformOptions(std.testing.allocator, &tmp, "entry.mjs", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+        .emit_runtime_helper_imports = true,
+    }, false);
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingHelperAnchorEntry;
+    const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingHelperAnchorEntry;
+    const sem = if (module.semantic) |*value| value else return error.MissingHelperAnchorSemantic;
+    const decoy = sem.scope_maps[0].get("__generator") orelse return error.MissingHelperAnchorDecoy;
+    var helper_count: usize = 0;
+    for (module.import_bindings) |*binding| {
+        if (!binding.is_helper) continue;
+        const anchor = binding.local_symbol_node orelse return error.MissingGeneratedHelperAnchor;
+        const expected = sem.symbol_ids[@backingInt(anchor)] orelse return error.MissingGeneratedHelperSymbol;
+        try std.testing.expect(expected != decoy);
+        try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, sem.symbols.items[expected].kind);
+        const mapped = sem.helper_scope_map.getPtr(binding.local_name) orelse return error.MissingHelperAnchorScope;
+        mapped.* = decoy;
+        binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, decoy);
+        helper_count += 1;
+    }
+    try std.testing.expect(helper_count > 0);
+    result.linker.populateImportSymbols();
+    for (module.import_bindings) |binding| {
+        if (!binding.is_helper) continue;
+        const expected = sem.symbol_ids[@backingInt(binding.local_symbol_node.?)].?;
+        try std.testing.expectEqual(expected, binding.local_symbol.semanticIndex().?);
+    }
+    try @import("graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(result.graph, module, module.parse_arena.?.allocator());
+    for (module.import_bindings) |binding| {
+        if (!binding.is_helper) continue;
+        const expected = sem.symbol_ids[@backingInt(binding.local_symbol_node.?)].?;
+        try std.testing.expectEqual(expected, binding.local_symbol.semanticIndex().?);
+    }
+}
