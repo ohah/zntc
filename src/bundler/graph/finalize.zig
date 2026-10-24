@@ -213,7 +213,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
     self.wrapper_symbols_registered = true;
     var runtime_owners = self.modules.iterator(0);
     while (runtime_owners.next()) |owner| {
-        if (owner.semantic) |*sem| try validateRuntimeIdentitySnapshot(sem);
+        if (owner.semantic != null) try validateRuntimeIdentitySnapshot(@constCast(owner));
     }
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
@@ -519,8 +519,43 @@ fn validRuntimeIdentity(
 
 /// Protocol labels validate a known role; they never select a SymbolId. An
 /// invalid cached role must fail instead of allocating a replacement identity.
-fn validateRuntimeIdentitySnapshot(sem: *const ModuleSemanticData) !void {
-    const snapshot = sem.runtime_identities orelse return;
+fn validateRuntimeIdentitySnapshot(owner: *Module) !void {
+    const sem = &owner.semantic.?;
+    var bootstrap: module_mod.RuntimeIdentitySnapshot = .{};
+    var needs_cjs = false;
+    var needs_esm = false;
+    var needs_binary = false;
+    // This scan only detects missing provenance. It never selects an ID.
+    // Existing same-kind decoys cannot replace a missing canonical role.
+    for (sem.symbols.items) |symbol| {
+        switch (symbol.synthetic_kind orelse continue) {
+            .cjs_runtime_factory, .cjs_runtime_internal_local => needs_cjs = true,
+            .esm_runtime_internal_local => needs_esm = true,
+            .bundler_runtime_helper => {
+                if (std.mem.eql(u8, symbol.synthetic_name, "__esm")) needs_esm = true;
+                if (std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) needs_binary = true;
+            },
+            else => {},
+        }
+    }
+    if (sem.runtime_identities == null) {
+        // The remaining reanalysis bridge carries exact Module-owned handles
+        // into its new graph. Bootstrap only those roles that actually exist;
+        // obsolete convenience fields from the old graph are not provenance.
+        if (needs_cjs) {
+            bootstrap.cjs_factory = owner.cjs_runtime_factory_symbol;
+            bootstrap.cjs_internal = owner.cjs_runtime_internal_symbols;
+        }
+        if (needs_esm) {
+            bootstrap.esm_factory = owner.esm_runtime_factory_symbol;
+            bootstrap.esm_internal = owner.esm_runtime_internal_symbols;
+        }
+        if (needs_binary) bootstrap.to_binary = owner.to_binary_runtime_symbol;
+    }
+    const snapshot = sem.runtime_identities orelse &bootstrap;
+    if ((needs_cjs and (snapshot.cjs_factory == null or snapshot.cjs_internal == null)) or
+        (needs_esm and (snapshot.esm_factory == null or snapshot.esm_internal == null)) or
+        (needs_binary and snapshot.to_binary == null)) return error.MissingRuntimeHelperSymbol;
     if ((snapshot.cjs_factory == null) != (snapshot.cjs_internal == null) or
         (snapshot.esm_factory == null) != (snapshot.esm_internal == null)) return error.MissingRuntimeHelperSymbol;
     if (snapshot.cjs_factory) |id| {
@@ -545,6 +580,10 @@ fn validateRuntimeIdentitySnapshot(sem: *const ModuleSemanticData) !void {
             const kind: semantic_symbol.SymbolKind = if (comptime std.mem.eql(u8, field, "catch_parameter")) .catch_binding else if (comptime std.mem.eql(u8, field, "init_function")) .function_decl else if (comptime std.mem.eql(u8, field, "factory_local")) .variable_var else .parameter;
             if (!validRuntimeIdentity(sem, @field(ids, field), .esm_runtime_internal_local, kind, @field(names, field))) return error.MissingRuntimeHelperSymbol;
         }
+    }
+    if (sem.runtime_identities == null and (needs_cjs or needs_esm or needs_binary)) {
+        const arena = if (owner.parse_arena) |value| value.allocator() else return error.MissingSemantic;
+        (try sem.ensureRuntimeIdentities(arena)).* = bootstrap;
     }
 }
 

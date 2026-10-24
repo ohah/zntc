@@ -942,6 +942,17 @@ test "runtime identity snapshots survive codec and module-field reset across ten
             try std.testing.expectEqualDeep(expected.cjs_internal, module.cjs_runtime_internal_symbols);
             try std.testing.expectEqual(expected.esm_factory, module.esm_runtime_factory_symbol);
             try std.testing.expectEqualDeep(expected.esm_internal, module.esm_runtime_internal_symbols);
+            // A cache that loses the entire canonical record must not heal
+            // its orphan runtime rows by allocating a different identity.
+            module.to_binary_runtime_symbol = null;
+            module.cjs_runtime_factory_symbol = null;
+            module.cjs_runtime_internal_symbols = null;
+            module.esm_runtime_factory_symbol = null;
+            module.esm_runtime_internal_symbols = null;
+            module.semantic.?.runtime_identities = null;
+            try std.testing.expectError(error.MissingRuntimeHelperSymbol, graph_finalize.registerWrapperSymbols(result.graph));
+            module.semantic.?.runtime_identities = restored;
+            try graph_finalize.registerWrapperSymbols(result.graph);
         }
         try std.testing.expect(owners > 0);
         try std.testing.expectEqual(@as(usize, 1), binary_owners);
