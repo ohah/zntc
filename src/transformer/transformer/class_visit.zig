@@ -420,6 +420,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
                 try self.pending_nodes.append(self.allocator, class_result);
+                if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, node.span)) |capture|
+                    try self.pending_nodes.append(self.allocator, capture);
                 // VSHADOW: V8 fix 의 super-prop alias 를 class 뒤에 emit (D init 후 평가되도록).
                 if (super_proto_alias_decl) |alias_decl| try self.pending_nodes.append(self.allocator, alias_decl);
                 for (static_elements.items) |element| try self.pending_nodes.append(self.allocator, switch (element) {
@@ -468,6 +470,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 try self.pending_nodes.append(self.allocator, stmt);
             }
             try self.pending_nodes.append(self.allocator, class_result);
+            if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, node.span)) |capture|
+                try self.pending_nodes.append(self.allocator, capture);
             // VSHADOW: super-prop alias 를 class 뒤에 emit.
             if (super_proto_alias_decl) |alias_decl| try self.pending_nodes.append(self.allocator, alias_decl);
             // V1 정밀 fix: static descriptor 를 class 뒤에 emit (static block 없이 private
@@ -709,6 +713,8 @@ pub fn wrapClassExprInIIFE(
     try self.scratch.appendSlice(self.allocator, pre_stmts_a);
     try self.scratch.appendSlice(self.allocator, pre_stmts_b);
     try self.scratch.append(self.allocator, class_decl);
+    if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, span)) |capture|
+        try self.scratch.append(self.allocator, capture);
     // An anonymous class now bound to a generated name restores its inferred
     // name before any static element runs (#5519).
     if (@import("../parameter_environment.zig").takeAnonymousClassName(self, source_idx)) |name| {

@@ -1819,7 +1819,7 @@ test "Codegen #3098: minify_syntax 시 const → let" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const") == null);
 }
 
-test "Codegen #4819: minify_syntax keeps generated immutable class aliases const" {
+test "Codegen #4819: cloned immutable aliases survive syntax and cycle demotion" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1835,7 +1835,11 @@ test "Codegen #4819: minify_syntax keeps generated immutable class aliases const
         }
     }
 
-    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{ .minify_whitespace = true, .minify_syntax = true });
+    var cloned = try @import("../../parser/ast.zig").Ast.cloneForTransformer(transformer.ast, allocator);
+    try std.testing.expectEqualSlices(u32, transformer.ast.preserve_const_declaration_indices.items, cloned.preserve_const_declaration_indices.items);
+    try std.testing.expect(cloned.preserve_const_declaration_indices.items.ptr != transformer.ast.preserve_const_declaration_indices.items.ptr);
+    transformer.ast.preserve_const_declaration_indices.clearRetainingCapacity();
+    var cg = Codegen.initWithOptions(allocator, &cloned, .{ .minify_whitespace = true, .minify_syntax = true, .force_var_for_cycle = true });
     const result = try cg.generate(root);
     const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings("const x=1;", trimmed);

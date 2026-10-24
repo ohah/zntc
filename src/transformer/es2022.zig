@@ -298,7 +298,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const class_scope = self.current_scope;
             const output_scope = if (self.semantic_edit_enabled) self.outputScopeParent(class_scope) else class_scope;
 
-            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             const class_ref = try self.makeCurrentClassRefAtScope(class_name_span, output_scope);
@@ -1081,7 +1081,7 @@ pub fn ES2022(comptime Transformer: type) type {
         pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node, class_name_span: ?Span) Transformer.Error!NodeIndex {
             // static block body 는 IIFE 로 빠져 클래스 밖에서 평가된다 — this·super 를 클래스 기준으로
             // (VSB fix: spec 상 static block 의 super 는 class.[[Prototype]]).
-            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             // static block의 body를 방문

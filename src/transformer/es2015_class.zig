@@ -593,6 +593,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE
             // 밖으로 내보내면 super lowering 이 참조하는 _super scope가 사라지므로 IIFE 내부에서
             // __extends 이후, return 이전에 실행한다.
+            const static_capture_position = self.scratch.items.len;
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
@@ -613,6 +614,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            if (try @import("static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, span)) |capture|
+                try self.scratch.insert(self.allocator, static_capture_position, capture);
             try flushComputedKeyTempProducerReferences(self, &cm, iife_scope);
 
             // return ClassName;
@@ -1093,6 +1096,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
 
+            const static_capture_position = self.scratch.items.len;
             for (cm.static_elements.items) |element| {
                 switch (element) {
                     .field => |field| {
@@ -1111,6 +1115,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
+            if (try @import("static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, span)) |capture|
+                try self.scratch.insert(self.allocator, static_capture_position, capture);
             try flushComputedKeyTempProducerReferences(self, &cm, iife_scope);
 
             // return ClassName;

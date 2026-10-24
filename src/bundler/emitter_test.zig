@@ -3805,3 +3805,22 @@ test "PR-3b-i: emitChunks restrict_to_chunk — 단일 청크 emit + lazy seed f
     try std.testing.expectEqual(@as(usize, 1), only_entry.len);
     try std.testing.expectEqualStrings(full[0].contents, only_entry[0].contents);
 }
+
+test "emitter: direct static initializer lowering rejects lost dynamic class environment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js", "class Box { static read=()=>eval('this'); } console.log(Box.read());");
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.js");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    // Parse with the native target, then request lowering only at emission.
+    // This explicitly exercises the path without a transformed-AST cache.
+    var modules = result.graph.modules.iterator(0);
+    while (modules.next()) |module| try std.testing.expect(module.transform_cache == null);
+    const native = try emit(std.testing.io, std.testing.allocator, &result.graph, &.{}, null);
+    defer native.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, native.output, "static read") != null);
+    try std.testing.expectError(error.StaticInitializerDynamicScope, emit(std.testing.io, std.testing.allocator, &result.graph, &.{
+        .transform_options_base = .{ .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es2015) },
+    }, null));
+}

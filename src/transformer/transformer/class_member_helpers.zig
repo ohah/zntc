@@ -79,7 +79,7 @@ fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, r
 
 /// 클래스 밖 문장으로 옮길 static 필드 초기값을 방문한다 (#4801) — 문맥은 `enterStaticInitContext`.
 fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Span) Error!NodeIndex {
-    const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+    const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
     defer es_helpers.leaveStaticInitContext(self, static_ctx);
     const class_scope = self.current_scope;
     const output_scope = if (self.semantic_edit_enabled) self.outputScopeParent(class_scope) else class_scope;

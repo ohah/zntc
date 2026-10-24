@@ -452,6 +452,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
         fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             if (self.current_super_static_receiver) |receiver_span| {
+                if (try @import("../static_class_capture.zig").makeThisReference(self)) |capture| return capture;
                 return self.makeCurrentClassRef(receiver_span);
             }
             // derived constructor body 안에서는 super() lowering 이 인스턴스를 _this 에 저장하므로

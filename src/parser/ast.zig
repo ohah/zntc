@@ -1298,7 +1298,7 @@ pub const Ast = struct {
             .string_intern_bytes_saved = source_ast.string_intern_bytes_saved,
             .string_intern_bytes_overhead = source_ast.string_intern_bytes_overhead,
         };
-        // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.
+        // A failed clone must release every buffer already allocated.
         errdefer cloned.deinit();
         // transformer 가 추가하는 노드 / extra_data 의 양을 8 corpus 직접 계측
         // (typescript.js / _tsc.js / svelte / mobx / vue / date-fns / pako /
@@ -1313,6 +1313,10 @@ pub const Ast = struct {
         try cloned.extra_data.ensureTotalCapacity(allocator, source_ast.extra_data.items.len * 21 / 10);
         cloned.extra_data.appendSliceAssumeCapacity(source_ast.extra_data.items);
         try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);
+        // A transformed AST may be cloned for later emission. Generated
+        // immutable bindings must retain their declaration identity through
+        // that copy, including later syntax/cycle demotion passes.
+        try cloned.preserve_const_declaration_indices.appendSlice(allocator, source_ast.preserve_const_declaration_indices.items);
         // intern map 은 stored Span 만 복사 (owned key dupe 불필요). 새 ctx 는 cloned 의
         // string_table 을 가리키므로, 같은 offset 에서 같은 byte content 디코드 → hash 동일.
         cloned.string_interns = try source_ast.string_interns.cloneContext(

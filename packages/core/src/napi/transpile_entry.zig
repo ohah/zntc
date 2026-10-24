@@ -77,6 +77,7 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
             error.ParseError => "ParseError",
             error.SemanticError => "SemanticError",
             error.TransformError => "TransformError",
+            error.StaticInitializerDynamicScope => "ZNTC1505: static initializer cannot be moved out of its class dynamic lexical environment",
             error.CodegenError => "CodegenError",
             error.OutOfMemory => "OutOfMemory",
         };

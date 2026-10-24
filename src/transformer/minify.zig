@@ -1383,6 +1383,7 @@ pub fn downgradeToVar(ast: *Ast) void {
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
         if (raw >= ast.nodes.items.len) continue;
         if (skip_for_binding.isSet(raw)) continue;
+        if (std.mem.indexOfScalar(u32, ast.preserve_const_declaration_indices.items, raw) != null) continue;
         const stmt = ast.nodes.items[raw];
         if (stmt.tag != .variable_declaration) continue;
 
