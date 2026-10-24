@@ -116,6 +116,16 @@ console.log(value, new Reader().read());`,
     },
     expected: '10 10',
   },
+  {
+    name: 'minified numeric expression folds after cross-module materialization',
+    files: {
+      'values.ts': 'export const value = 11;',
+      'entry.ts': `import { value } from './values';
+export function read(input: number) { return value + input; }
+console.log(value + 2, read(3));`,
+    },
+    expected: '13 14',
+  },
 ];
 
 async function buildPreserveModules(files: Record<string, string>) {
@@ -133,7 +143,9 @@ async function buildPreserveModules(files: Record<string, string>) {
   ]);
   if (build.exitCode !== 0) {
     await cleanup();
-    throw new Error(`preserve-modules build failed:\n${build.stderr}`);
+    throw new Error(
+      `preserve-modules build failed (exit ${build.exitCode}):\nstdout:\n${build.stdout}\nstderr:\n${build.stderr}`,
+    );
   }
   writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
   return { entry: join(outDir, 'entry.js'), cleanup };
