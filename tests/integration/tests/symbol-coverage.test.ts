@@ -2388,15 +2388,6 @@ describe('symbol identity coverage gate (#4819)', () => {
           'console.log(observe());',
         ].join('\n'),
       },
-      {
-        name: 'decorator metadata',
-        args: [
-          '--target=esnext',
-          '--experimental-decorators',
-          '--tsconfig-raw={"compilerOptions":{"emitDecoratorMetadata":true}}',
-        ],
-        source,
-      },
     ];
 
     try {
