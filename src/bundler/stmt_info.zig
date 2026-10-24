@@ -1997,6 +1997,18 @@ pub fn build(
     const reachable_stmt = try mapReachableNodesToStmts(allocator, ast, stmt_raw_indices);
     defer allocator.free(reachable_stmt);
 
+    // Named import locals are identifier references in the parser AST, while
+    // default/namespace imports own their binding directly. Record that role
+    // from the exact specifier edge instead of inferring it from source spans.
+    var import_local_nodes = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    defer import_local_nodes.deinit();
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_specifier) continue;
+        const local = node.data.binary.right;
+        if (!local.isNone() and @backingInt(local) < ast.nodes.items.len)
+            import_local_nodes.set(@backingInt(local));
+    }
+
     for (ast.nodes.items, 0..) |n, node_i| {
         const stmt_i = if (reachable_stmt[node_i] != no_stmt)
             reachable_stmt[node_i]
@@ -2009,13 +2021,14 @@ pub fn build(
         const sym = &symbols[sym_idx];
         const sym_idx_u32: u32 = @intCast(sym_idx);
 
-        // A binding identifier is a declaration even when it reuses an earlier
-        // var-scope SymbolId. `declaration_span` names only the first declaration,
-        // so span containment alone loses later `var`/function redeclarations.
-        if (isProgramTopLevelScope(scopes, sym.scope_id) and
-            (n.tag == .binding_identifier or
-                (n.span.start >= sym.declaration_span.start and n.span.end <= sym.declaration_span.end)))
-        {
+        // Declaration identity comes from the AST binding role. A generated
+        // symbol's declaration_span can cover a source class, including reads
+        // in its methods; those reads must keep the class -> storage edge.
+        // Binding roles also preserve all redeclarations of a shared var SID.
+        const is_binding = n.tag == .binding_identifier or
+            n.tag == .import_default_specifier or n.tag == .import_namespace_specifier or
+            import_local_nodes.isSet(node_i);
+        if (isProgramTopLevelScope(scopes, sym.scope_id) and is_binding) {
             if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_idx_u32) == null) {
                 try declared_bufs[stmt_i].append(allocator, sym_idx_u32);
             }
