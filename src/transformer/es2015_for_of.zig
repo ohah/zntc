@@ -49,6 +49,7 @@ const std = @import("std");
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
+const es2015_scan = @import("es2015_generator/scan.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
     return struct {
@@ -63,6 +64,31 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// 미지정(.none)이면 일반 for-of 경로.
         pub fn lowerForOfStatementLabeled(self: *Transformer, source_idx: NodeIndex, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
             return self.visitNode(try rewriteForOf(self, source_idx, node, label_name_idx, false));
+        }
+
+        // Pattern defaults are not expression children of the generator's
+        // general scanner. Walk the binding head while preserving function
+        // boundaries; computed member keys still run in the outer generator.
+        fn bindingHeadSuspends(self: *Transformer, root: NodeIndex) bool {
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            pending.append(self.allocator, root) catch return true;
+            while (pending.pop()) |idx| {
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .yield_expression, .await_expression => return true,
+                    .function_declaration, .function_expression, .function, .arrow_function_expression => continue,
+                    .method_definition, .property_definition, .accessor_property => {
+                        pending.append(self.allocator, self.readNodeIdx(node.data.extra, 0)) catch return true;
+                    },
+                    else => {
+                        var children = ast_walk.children(self.ast, node);
+                        while (children.next()) |child| pending.append(self.allocator, child) catch return true;
+                    },
+                }
+            }
+            return false;
         }
 
         /// for-of 를 **방문 없이** 반복자 for 루프로 풀어 쓴다 — 일반 경로와 상태 기계가 같은
@@ -93,6 +119,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
+            // A suspension-free labeled loop stays inside one state callback.
+            // Its iterator and step declarations remain in that native loop;
+            // wrapper clones would introduce a second binding for the same ID.
+            const native_state_loop = self.semantic_edit_enabled and register_sm_temps and
+                !es2015_scan.hasYieldOrReturn(self, body) and
+                !bindingHeadSuspends(self, left) and
+                !es2015_scan.containsYield(self, right);
             const norm = try es_helpers.makeTempVarSpan(self); // _a
             const norm_counter = self.temp_var_counter - 1;
             const did_err = try es_helpers.makeTempVarSpan(self); // _b
@@ -195,12 +228,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticTemp(self, symbol, loop_scope);
                 break :blk symbol;
             } else try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
-            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+            if (register_sm_temps and !native_state_loop) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
                 self,
                 iter,
                 iter_symbol,
                 generated_temp_scope,
             );
+            if (native_state_loop) {
+                const producer_id = self.temp_producer_id_by_counter.get(iter_counter) orelse
+                    std.debug.panic("native generator iterator lost its allocator producer", .{});
+                es_helpers.consumeTempVarProducer(self, producer_id, iter);
+            }
             const step_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, step);
             const step_symbol = if (register_sm_temps)
                 try self.declareSyntheticTempInScope(step_binding, span, generated_temp_scope)
@@ -218,7 +256,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 const symbol = step_symbol orelse std.debug.panic("late-named for-of step has no exact SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(step), .for_of_step_binding, "_step");
             }
-            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+            if (register_sm_temps and !native_state_loop) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
                 self,
                 step,
                 step_symbol,
@@ -590,4 +628,95 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
 test "ES2015 for-of module compiles" {
     _ = ES2015ForOf;
+}
+
+fn checkNativeStateLoopRegistration(source: []const u8, native: bool) !void {
+    const Transformer = @import("transformer.zig").Transformer;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var loop: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .for_of_statement) continue;
+        if (loop.isNone() or node.span.end - node.span.start > parser.ast.getNode(loop).span.end - parser.ast.getNode(loop).span.start)
+            loop = @fromBackingInt(@intCast(raw));
+    }
+    try std.testing.expect(!loop.isNone());
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(loop)).?);
+    transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
+    _ = try ES2015ForOf(Transformer).rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
+    const expected_registered: usize = if (native) 3 else 5;
+    try std.testing.expectEqual(expected_registered, transformer.generator_temp_producer_identities.items.len);
+    try std.testing.expectEqual(expected_registered, transformer.generator_temp_var_spans.items.len);
+    try std.testing.expectEqual(@as(u32, if (native) 3 else 4), transformer.temp_span_by_counter.count());
+    try std.testing.expectEqual(transformer.temp_span_by_counter.count(), transformer.temp_producer_id_by_counter.count());
+
+    var unregistered_roles: usize = 0;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const sid = transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) orelse return error.MissingForOfProducerIdentity;
+        const editor = &transformer.semantic_editor.?;
+        if (editor.symbols.items[sid].kind != .variable_var) continue;
+        var registered = false;
+        for (transformer.generator_temp_producer_identities.items) |identity| {
+            if (identity.symbol_id == sid) {
+                registered = true;
+                try std.testing.expectEqual(transformer.generator_state_machine_scope, identity.owner_scope);
+            }
+        }
+        if (registered) continue;
+        unregistered_roles += 1;
+        var refs: usize = 0;
+        for (editor.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) == sid and !reference.flags.declare) refs += 1;
+        }
+        try std.testing.expect(refs > 0);
+        var allocator_ids = transformer.temp_symbol_ids_by_counter.iterator();
+        while (allocator_ids.next()) |entry| try std.testing.expect(entry.value_ptr.* != sid);
+    }
+    try std.testing.expectEqual(@as(usize, if (native) 2 else 0), unregistered_roles);
+}
+
+test "#4819 native state-loop iterator declarations do not clone into wrapper hoists" {
+    const bodies = [_][]const u8{
+        "use(value);",
+        "{ if (value) continue; use(value); }",
+        "{ if (value) break; }",
+        "{ try { use(value); } finally { finish(); } }",
+        "{ for (const inner of other) use(value, inner); }",
+        "{ const read = () => value; use(read); }",
+        "{ function* nested() { yield value; } use(nested); }",
+        "{ function nested() { return value; } use(nested); }",
+        "{ switch (value) { case 1: break; default: use(value); } }",
+        "{ let copy = value; while (copy--) use(copy); }",
+    };
+    for (bodies) |body| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "function* run() {{ outer: for (const value of source) {s} yield 1; }}", .{body});
+        defer std.testing.allocator.free(source);
+        try checkNativeStateLoopRegistration(source, true);
+    }
+    // Suspension and return paths still need storage across callback invocations.
+    try checkNativeStateLoopRegistration("function* run() { for (const value of source) { yield value; } }", false);
+    try checkNativeStateLoopRegistration("function* run() { for (const value of (yield source)) use(value); }", false);
+    try checkNativeStateLoopRegistration("function* run() { for (const value of source) return value; }", false);
+    try checkNativeStateLoopRegistration("function* run() { for (const [value = (yield fallback)] of source) use(value); }", false);
 }
