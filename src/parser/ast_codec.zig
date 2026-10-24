@@ -52,8 +52,8 @@ comptime {
     // #4598 `tla_lowered`: **직렬화 불필요**. 이 플래그는 "이 Ast 를 이미 TLA lowering 했다"
     // 는 **한 빌드 안의 멱등성** 표식이다. 디스크 캐시에서 복원되는 Ast 는 lowering 이 끝난
     // 산물이 아니라 parse 결과이므로 false 로 복원되는 것이 맞다.
-    // `preserve_const_declaration_indices`: **직렬화 불필요**. 합성 class-self alias 가 만든
-    // minifier 예외 목록이며 parse-cache Ast 에는 비어 있어야 한다.
+    // `preserve_lexical_declaration_indices`: **직렬화 불필요**. 합성 class-self alias/private storage 가 만든
+    // lexical binding 보존 목록이며 parse-cache Ast 에는 비어 있어야 한다.
     // #5595 `is_typescript`: **직렬화**(메타 플래그). transformer 의 import elision 범위를 정한다.
     // #5665 `has_object_getter`: **직렬화**(메타 플래그). tree shaking 의 속성 읽기 순수성 판정.
     if (@typeInfo(Ast).@"struct".field_names.len != 28)

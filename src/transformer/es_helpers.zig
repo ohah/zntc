@@ -198,6 +198,21 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
 
+/// Move only native descriptor storage before the class. Its value is assigned
+/// at the original initialization point, preserving early private-read TypeError
+/// and all initializer side effects without sharing storage across iterations.
+pub fn splitPrivateDescriptorStorage(self: anytype, descriptor: NodeIndex, name: []const u8, binding: NodeIndex, symbol_id: ?u32, pre: *std.ArrayList(NodeIndex), span: Span) !NodeIndex {
+    if (self.options.unsupported.class) return descriptor;
+    const declaration = self.ast.getNode(descriptor);
+    const extra = declaration.data.extra;
+    const list_start = self.ast.extra_data.items[extra + 1];
+    const declarator = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[list_start])));
+    const value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra + 2]));
+    const parts = try buildCapturedFunctionAssignment(self, name, value, span, binding, symbol_id);
+    try pre.append(self.allocator, parts.declaration);
+    return parts.assignment;
+}
+
 /// Reserve one exact WeakSet/descriptor binding for each private method name.
 /// Getter and setter mappings intentionally share the same binding identity.
 pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scope: ScopeId, span: Span) !void {
@@ -223,7 +238,7 @@ pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scop
         }
 
         const binding = try makeExactSyntheticBinding(self, mapping.weakset_name);
-        const symbol_id = try self.declareSyntheticInScope(binding, span, .variable_var, scope) orelse
+        const symbol_id = try self.declareSyntheticInScope(binding, span, privateStorageSymbolKind(self), scope) orelse
             std.debug.panic("private method helper has no direct SymbolId", .{});
         mapping.weakset_binding_node = binding;
         mapping.weakset_symbol_id = @backingInt(symbol_id);
@@ -255,7 +270,7 @@ pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, fie
             mapping.func_factory_scope = function_scope;
             if (mapping.class_name == null) {
                 const outer_binding = try makeExactSyntheticBinding(self, mapping.func_name);
-                const outer_symbol_id = try self.declareSyntheticInScope(outer_binding, span, .variable_var, scope) orelse
+                const outer_symbol_id = try self.declareSyntheticInScope(outer_binding, span, privateStorageSymbolKind(self), scope) orelse
                     std.debug.panic("captured private method function has no outer SymbolId", .{});
                 mapping.func_outer_binding_node = outer_binding;
                 mapping.func_outer_symbol_id = @backingInt(outer_symbol_id);
@@ -321,6 +336,15 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
     return null;
+}
+
+/// A static private brand belongs to its producer's exact class binding.
+/// Moved initializers use that class's immutable snapshot; ordinary native
+/// class bodies retain the existing class-self reference path.
+pub fn makePrivateClassValueRef(self: anytype, class_name: []const u8, class_binding: NodeIndex) !NodeIndex {
+    if (try @import("static_class_capture.zig").makeClassBindingReference(self, class_binding)) |capture|
+        return capture;
+    return self.makeUserRefNamed(freshClassNameText(self, class_name, class_binding), class_binding);
 }
 
 /// Build a reference to the exact WeakSet/descriptor identity carried by a
@@ -454,7 +478,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         .@"const",
         span,
     );
-    try self.ast.preserve_const_declaration_indices.append(self.allocator, @backingInt(class_alias_decl));
+    try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(class_alias_decl));
 
     try self.reparentGeneratedScope(if (parameter_scope.isNone()) function_scope else parameter_scope, factory_scope);
     for (references.items) |reference| try self.rebindOutputReference(reference, @backingInt(class_alias_symbol));
@@ -1384,6 +1408,19 @@ pub fn makeExactSyntheticBindingFromSpan(self: anytype, name_span: Span) !NodeIn
     return markSynthetic(self, try makeBindingIdentifier(self, name_span));
 }
 
+/// Native classes may execute repeatedly in a block; private storage belongs
+/// to each class evaluation. ES5 already owns it in its generated class IIFE.
+pub fn privateStorageSymbolKind(self: anytype) symbol_mod.SymbolKind {
+    return if (self.options.unsupported.class) .variable_var else .variable_let;
+}
+
+pub fn makePrivateStorageDeclaration(self: anytype, declarator: NodeIndex, span: Span) !NodeIndex {
+    const declaration = try makeVarDeclaration(self, &.{declarator}, if (self.options.unsupported.class) .@"var" else .let, span);
+    if (!self.options.unsupported.class)
+        try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(declaration));
+    return declaration;
+}
+
 pub const CapturedFunctionAssignment = struct { declaration: NodeIndex, assignment: NodeIndex };
 
 /// Declare a captured extracted function before its class and assign the
@@ -1395,7 +1432,7 @@ pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: N
         try makeExactSyntheticBindingFromSpan(self, try self.ast.addString(name))
     else
         binding_node;
-    const declaration = try makeVarDeclaration(self, &.{try makeDeclarator(self, binding, .none, span)}, .@"var", span);
+    const declaration = try makePrivateStorageDeclaration(self, try makeDeclarator(self, binding, .none, span), span);
     const target_span = try self.ast.addString(name);
     const target = try self.ast.addNode(.{
         .tag = .assignment_target_identifier,
@@ -3448,9 +3485,9 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
         .span = span,
         .data = .{ .extra = new_extra },
     });
-    if (binding_node.isNone()) return self.buildVarDecl(var_name, new_expr, span);
-    const declarator = try makeDeclarator(self, binding_node, new_expr, span);
-    return makeVarDeclaration(self, &.{declarator}, .@"var", span);
+    const binding = if (binding_node.isNone()) try makeExactSyntheticBinding(self, var_name) else binding_node;
+    const declarator = try makeDeclarator(self, binding, new_expr, span);
+    return makePrivateStorageDeclaration(self, declarator, span);
 }
 
 /// static 초기값·static 블록·static private 초기값을 **클래스 밖으로 옮겨** 방문할 때의 문맥.

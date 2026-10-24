@@ -28,7 +28,7 @@ test "private method: es2021 → WeakSet + standalone function (class preserved)
     , .es2021);
     defer r.deinit();
     // WeakSet 선언
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _bar=new WeakSet") != null);
     // standalone function
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _bar_fn()") != null);
     // class 유지
@@ -100,8 +100,8 @@ test "private method: multiple methods" {
     , .es2021);
     defer r.deinit();
     // 두 WeakSet
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _baz=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _bar=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _baz=new WeakSet") != null);
     // 두 standalone function
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _bar_fn()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _baz_fn(x)") != null);
@@ -154,7 +154,7 @@ test "private method: class expression wrapped in IIFE (es2021)" {
     // IIFE 래핑
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const W=(()=>{") != null);
     // 헬퍼가 IIFE 내부에 있음
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _m=new WeakSet") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     // class_declaration으로 재작성
     try std.testing.expect(std.mem.indexOf(u8, r.output, "class A") != null);
@@ -174,7 +174,7 @@ test "private method: anonymous class expression gets temp name (es2021)" {
     // IIFE 래핑
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>{") != null);
     // 임시 이름(_a 등)으로 class_declaration 생성 + return
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _m=new WeakSet") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     // 쉼표 stitching 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
@@ -188,7 +188,7 @@ test "private method: class expression as call argument wrapped in IIFE (es2021)
     defer r.deinit();
     // IIFE 래핑: foo((()=>{...})())
     try std.testing.expect(std.mem.indexOf(u8, r.output, "foo((()=>{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _m=new WeakSet") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     // 쉼표 stitching 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
@@ -211,8 +211,8 @@ test "private method: array of class expressions — each IIFE independent (es20
     }
     try std.testing.expect(iife_count >= 2);
     // 각각의 WeakSet/standalone function
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _n=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _n=new WeakSet") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn()") != null);
     // 쉼표 stitching 없음
@@ -232,7 +232,7 @@ test "private method: nested class expression inside outer class body (es2021)" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "class A") != null);
     // inner IIFE 존재
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _n=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _n=new WeakSet") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn()") != null);
     // IIFE 종료 + 쉼표 stitching 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "})()") != null);
@@ -277,7 +277,8 @@ test "private static method: class declaration call lowers (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={kind:0,value:_m_fn,writable:false}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _m;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_m={kind:0,value:_m_fn,writable:false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(_a,Foo,_m).call(_a)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m(") == null);
@@ -293,10 +294,14 @@ test "private static descriptors own their data or accessor shape (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _field={kind:0,writable:true,value:1}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _method={kind:0,value:_method_fn,writable:false}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _readOnly={kind:1,get:_readOnly_get,set:void 0}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _writeOnly={kind:1,get:void 0,set:_writeOnly_set}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _method;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _writeOnly;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _readOnly;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _field;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_field={kind:0,writable:true,value:1}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_method={kind:0,value:_method_fn,writable:false}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_readOnly={kind:1,get:_readOnly_get,set:void 0}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_writeOnly={kind:1,get:void 0,set:_writeOnly_set}") != null);
 }
 
 test "private static method: detached read preserves function identity (es2021)" {
@@ -1065,10 +1070,10 @@ test "#1275: private method + field 혼합 (RN PerformanceObserver 케이스)" {
     // constructor는 정확히 1개
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
     // private field가 WeakMap으로 다운레벨됨 (method와 공존해도 skip되지 않음)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _nativeHandle=new WeakMap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _callback=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _nativeHandle=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _callback=new WeakMap") != null);
     // private method도 변환됨
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _createObserver=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _createObserver=new WeakSet") != null);
     // ctor 안에 field init + method init + 원본 body가 모두 포함
     // field init은 expression_statement 형태라 내부 값 반환 불필요 → _x.set 그대로 유지.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_nativeHandle.set(this,null)") != null);
@@ -1098,8 +1103,9 @@ test "#1278-2: static #field → descriptor + StaticPrivateFieldSpecGet/Set" {
         \\}
     , .es2021);
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _map;") != null);
     // descriptor 객체 선언 (class 밖)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _map={kind:0,writable:true,value:new Map()}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_map={kind:0,writable:true,value:new Map()}") != null);
     // static private field property_definition은 body에서 제거
     try std.testing.expect(std.mem.indexOf(u8, r.output, "static #map") == null);
     // helper 경유 접근 (class name은 'Foo')
@@ -1117,8 +1123,9 @@ test "#1278-2: static #field + instance #field 혼합 (brand check + WeakMap 공
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _inst=new WeakMap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stc={kind:0,writable:true,value:2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _stc;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _inst=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_stc={kind:0,writable:true,value:2}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_inst.get(this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Mixed,Mixed,_stc)") != null);
 }
@@ -1138,7 +1145,7 @@ test "#1278-3: private member + static block 공존 시 static block 다운레�
     // class body에는 static {} 구문 남아있지 않아야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "static {") == null);
     // private field는 여전히 WeakMap으로 변환
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _x=new WeakMap") != null);
 }
 
 test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 변환" {
@@ -1354,8 +1361,9 @@ test "#3680-F1: static private field init 안의 super → static form lowering 
         \\}
     , .es2021);
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _x;") != null);
     // descriptor 형태 — value 위치
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x={kind:0,writable:true,value:") != null);
     // raw super 가 남지 않음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "value:super.factor") == null);
     // static super 는 Base.factor (instance form Base.prototype.factor 가 아님)
@@ -1478,8 +1486,9 @@ test "#3680-V1: static private field init 의 super.method() receiver 가 class 
         \\}
     , .es2021);
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _x;") != null);
     // descriptor 가 emit 됨
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x={kind:0,writable:true,value:") != null);
     // receiver 가 raw this 가 아니라 class 식별자 D
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
     const capture = try helpers.staticClassCaptureName(r.output, "D", "const");
@@ -1680,9 +1689,10 @@ test "#3680-VEXPR: named class_expression static private init super TDZ 회피 (
         \\};
     , .es2021);
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _x;") != null);
     // class D 의 위치가 var _x descriptor 보다 앞에 emit 돼야 TDZ 회피.
     const class_idx = std.mem.indexOf(u8, r.output, "class D") orelse unreachable;
-    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") orelse unreachable;
+    const desc_idx = std.mem.indexOf(u8, r.output, "_x={kind:0,writable:true,value:") orelse unreachable;
     try std.testing.expect(class_idx < desc_idx);
 }
 
@@ -1696,8 +1706,9 @@ test "#3680-VASSIGN: assign-semantics static private init super TDZ 회피 (es20
         \\}
     , .{ .unsupported = helpers.compat.fromESTarget(.es2021), .experimental_decorators = true }, .{ .minify_whitespace = true, .assert_no_raw_private_syntax = true }, ".ts");
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let _x;") != null);
     const class_idx = std.mem.indexOf(u8, r.output, "class D") orelse 0;
-    const desc_idx = std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") orelse 0;
+    const desc_idx = std.mem.indexOf(u8, r.output, "_x={kind:0,writable:true,value:") orelse 0;
     try std.testing.expect(class_idx != 0 and desc_idx != 0);
     try std.testing.expect(class_idx < desc_idx);
 }

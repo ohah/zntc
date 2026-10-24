@@ -2403,7 +2403,7 @@ pub fn emitModule(
     if (options.minify_syntax) {
         @import("../transformer/minify.zig").convertConstToLetPreserving(
             transformer.ast,
-            transformer.ast.preserve_const_declaration_indices.items,
+            transformer.ast.preserve_lexical_declaration_indices.items,
         );
     }
 

@@ -1055,10 +1055,10 @@ pub const Ast = struct {
     /// 노드 배열 (24바이트 × N)
     nodes: std.ArrayList(Node),
 
-    /// Generated const declarations whose write behavior must survive the
-    /// optional const-to-let syntax minifier. These indices travel with the AST
-    /// into the bundler emitter.
-    preserve_const_declaration_indices: std.ArrayListUnmanaged(u32) = .empty,
+    /// Generated lexical declarations whose binding lifetime or immutability
+    /// must survive syntax minification and cycle storage demotion. Their
+    /// original let/const kind travels with the AST into the emitter.
+    preserve_lexical_declaration_indices: std.ArrayListUnmanaged(u32) = .empty,
 
     /// 추가 데이터 (NodeIndex 배열, 가변 길이 리스트 등)
     extra_data: std.ArrayList(u32),
@@ -1227,7 +1227,7 @@ pub const Ast = struct {
         self.dumpStringInternStatsIfEnabled();
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
-        self.preserve_const_declaration_indices.deinit(self.allocator);
+        self.preserve_lexical_declaration_indices.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
         self.type_only_binding_names.deinit(self.allocator);
         self.deinitStringInterns();
@@ -1316,7 +1316,7 @@ pub const Ast = struct {
         // A transformed AST may be cloned for later emission. Generated
         // immutable bindings must retain their declaration identity through
         // that copy, including later syntax/cycle demotion passes.
-        try cloned.preserve_const_declaration_indices.appendSlice(allocator, source_ast.preserve_const_declaration_indices.items);
+        try cloned.preserve_lexical_declaration_indices.appendSlice(allocator, source_ast.preserve_lexical_declaration_indices.items);
         // intern map 은 stored Span 만 복사 (owned key dupe 불필요). 새 ctx 는 cloned 의
         // string_table 을 가리키므로, 같은 offset 에서 같은 byte content 디코드 → hash 동일.
         cloned.string_interns = try source_ast.string_interns.cloneContext(
