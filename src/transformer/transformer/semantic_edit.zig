@@ -1371,16 +1371,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 }
             }
         }
-        const output_name = outputReferenceName(self.ast, reference.node);
-        const is_virtual_enum_member = editor.symbols.items[reference.raw_id].synthetic_kind == .enum_iife_member;
-        const lexical_id = if (output_name) |name|
-            if (self.runtime_helper_ref_index.contains(@backingInt(reference.node)) or is_virtual_enum_member)
-                null
-            else
-                nearestOutputSymbolBySpelling(editor, name, reference.scope)
-        else
-            null;
-        if (lexical_id) |id| resolved_id = id;
+        // Output spellings may be selected later by an ID-keyed override.
+        // Use the producer ID or its binding-group handle, never a different
+        // identity selected from the reference's spelling.
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
         if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[resolved_id].scope_id, reference.scope)) {
             // The emitted AST can move a declaration behind a function
@@ -1388,7 +1381,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             // unsupported TLA export). That use now resolves as a global
             // reference. Remove the stale source edge and never attach an
             // invisible local SymbolId.
-            if (output_name) |name| {
+            if (outputReferenceName(self.ast, reference.node)) |name| {
                 if (nearestOutputSymbolBySpelling(editor, name, reference.scope) == null)
                     try detachInvisibleOutputReferenceAsExternal(self, editor, reference.node, maybe_reference != null);
             }
