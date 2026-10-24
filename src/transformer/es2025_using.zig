@@ -61,6 +61,12 @@ const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
+pub const UsingRewriteResult = struct {
+    statements: NodeList,
+    /// Exact constructor-owned region that a state collector must consume.
+    disposal_try: NodeIndex = .none,
+};
+
 pub fn ES2025Using(comptime Transformer: type) type {
     return struct {
         const Self = @This();
@@ -192,6 +198,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// 이 함수는 **방문하지 않고** 구조만 바꾼다 — 일반 목록은 결과를 그대로 방문하고,
         /// generator 상태 기계는 결과의 try 를 기존 try 수집으로 접는다.
         pub fn rewriteUsingStatements(self: *Transformer, start: u32, len: u32, kind: ListKind) Transformer.Error!NodeList {
+            return (try rewriteUsingStatementsWithOwner(self, start, len, kind)).statements;
+        }
+
+        pub fn rewriteUsingStatementsWithOwner(self: *Transformer, start: u32, len: u32, kind: ListKind) Transformer.Error!UsingRewriteResult {
             var has_await_using = false;
             {
                 var i: u32 = 0;
@@ -352,7 +362,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 const none = @backingInt(NodeIndex.none);
                 try head.append(self.allocator, try self.addExtraNode(.export_named_declaration, zero_span, &.{ none, specs.start, specs.len, none, 0, 0 }));
             }
-            return self.ast.addNodeList(head.items);
+            return .{ .statements = try self.ast.addNodeList(head.items), .disposal_try = try_stmt };
         }
 
         /// `for ([await] using x of it) body` → `for (const _using of it) { [await] using x = _using; body }`.
