@@ -5658,6 +5658,9 @@ pub const Linker = struct {
                 }
 
                 // source-side: import_record 따라 source 모듈의 export 심볼 복사
+                // Cached bindings may lose their source/export or become namespace
+                // imports. Only a match in this graph can supply a current ref.
+                ib.symbol = bundler_symbol.SymbolRef.invalid;
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;

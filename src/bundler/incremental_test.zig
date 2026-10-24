@@ -4194,3 +4194,66 @@ test "#4665: package.json type 변경은 소스 불변이어도 interop 을 바�
         try std.testing.expect(std.mem.indexOf(u8, r.output, "__toESM(require_dep(), 1)") != null);
     }
 }
+
+test "foreign import identity provider export removal warm matches cold" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const value = 7;");
+    try writeFile(tmp.dir, "entry.ts", "import { value } from './dep'; console.log(value);");
+    const entry = try absPath(&tmp, "entry.ts");
+    defer alloc.free(entry);
+    const dep = try absPath(&tmp, "dep.ts");
+    defer alloc.free(dep);
+    var rc = Bundler.initResolveCacheFromOptions(alloc, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer rc.deinit();
+    var graph = ModuleGraph_t.init(alloc, &rc);
+    defer graph.deinit();
+    var store = module_store.PersistentModuleStore.init(alloc);
+    defer store.deinit();
+    const initial_options: @import("bundler.zig").BundleOptions = .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .shim_missing_exports = true,
+    };
+    {
+        var first = Bundler.initWithGraph(alloc, initial_options, &rc, &graph);
+        defer first.deinit();
+        var result = try first.bundle(std.testing.io);
+        defer result.deinit(alloc);
+        try std.testing.expect(!result.hasErrors());
+        const importer = graph.getModule(graph.path_to_module.get(entry) orelse return error.MissingWarmImportEntry) orelse return error.MissingWarmImportEntry;
+        try std.testing.expectEqual(@as(usize, 1), importer.import_bindings.len);
+        try std.testing.expect(importer.import_bindings[0].symbol.isValid());
+    }
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "dep.ts", "export const replacement = 9;");
+    var changed: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed.deinit(alloc);
+    try changed.put(alloc, dep, {});
+    var warm_options = initial_options;
+    warm_options.module_store = &store;
+    warm_options.changed_files = &changed;
+    warm_options.preserve_topology = true;
+    var warm = Bundler.initWithGraph(alloc, warm_options, &rc, &graph);
+    defer warm.deinit();
+    var warm_result = try warm.bundle(std.testing.io);
+    defer warm_result.deinit(alloc);
+    try std.testing.expect(!warm_result.hasErrors());
+    try std.testing.expect(graph.topology_preserved_hits > 0);
+
+    var cold_rc = Bundler.initResolveCacheFromOptions(alloc, .{ .entry_points = &.{entry}, .dev_mode = true });
+    defer cold_rc.deinit();
+    var cold_graph = ModuleGraph_t.init(alloc, &cold_rc);
+    defer cold_graph.deinit();
+    var cold = Bundler.initWithGraph(alloc, initial_options, &cold_rc, &cold_graph);
+    defer cold.deinit();
+    var cold_result = try cold.bundle(std.testing.io);
+    defer cold_result.deinit(alloc);
+    try std.testing.expect(!cold_result.hasErrors());
+    try std.testing.expectEqualStrings(cold_result.output, warm_result.output);
+    const warm_importer = graph.getModule(graph.path_to_module.get(entry) orelse return error.MissingWarmImportEntry) orelse return error.MissingWarmImportEntry;
+    const cold_importer = cold_graph.getModule(cold_graph.path_to_module.get(entry) orelse return error.MissingColdImportEntry) orelse return error.MissingColdImportEntry;
+    try std.testing.expect(!cold_importer.import_bindings[0].symbol.isValid());
+    try std.testing.expect(!warm_importer.import_bindings[0].symbol.isValid());
+}
