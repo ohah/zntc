@@ -1342,7 +1342,7 @@ pub fn buildMetadataForAst(
                     const rename_value = if (synth_member) |member|
                         try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ target_name, member })
                     else if (lazy_esm_import)
-                        try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, target_name)
+                        try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, effective_target)
                     else
                         effective_target;
                     if (synth_member != null or lazy_esm_import) {

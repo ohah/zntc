@@ -1013,6 +1013,36 @@ pub const Module = struct {
         return if (name.len > 0) name else null;
     }
 
+    /// Graph-owned identity for a generated lexical ESM initialization call.
+    pub fn esmInitSymbol(self: *const Module) !SymbolID {
+        if (self.wrap_kind != .esm) return error.InvalidEsmInitOwner;
+        const id = self.init_symbol orelse return error.MissingWrapperSymbol;
+        const sem = self.semantic orelse return error.MissingWrapperSymbol;
+        const raw = @backingInt(id);
+        if (raw >= sem.symbols.items.len or sem.symbols.items[raw].synthetic_kind != .esm_init)
+            return error.InvalidEsmInitOwner;
+        return .{ .module = self.index, .inner = id };
+    }
+
+    pub fn esmNamespaceSymbol(self: *const Module) !SymbolID {
+        if (self.wrap_kind != .esm) return error.InvalidEsmInitOwner;
+        const id = self.exports_symbol orelse return error.MissingWrapperSymbol;
+        const sem = self.semantic orelse return error.MissingWrapperSymbol;
+        const raw = @backingInt(id);
+        if (raw >= sem.symbols.items.len or sem.symbols.items[raw].synthetic_kind != .cjs_exports)
+            return error.InvalidEsmInitOwner;
+        return .{ .module = self.index, .inner = id };
+    }
+
+    pub fn esmWrapperName(self: *const Module, identity: SymbolID, rt: ?*const RenameTable) ![]const u8 {
+        if (identity.module != self.index) return error.InvalidEsmInitOwner;
+        if ((try self.esmInitSymbol()).eql(identity))
+            return self.getInitName(rt) orelse error.MissingWrapperSymbol;
+        if ((try self.esmNamespaceSymbol()).eql(identity))
+            return self.getExportsName(rt) orelse error.MissingWrapperSymbol;
+        return error.InvalidEsmInitOwner;
+    }
+
     pub fn getInitName(self: *const Module, rt: ?*const RenameTable) ?[]const u8 {
         return self.syntheticName(self.init_symbol, rt);
     }
