@@ -460,6 +460,11 @@ test "#4819 strict initializer factory constructor name scope exists before reco
     }
     const source_scope = transformer.outputOwnedScope(owner).?;
     const outer_scope = analyzer.scopes.items[source_scope.toIndex()].parent;
+    var source_value_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) source_value_id = raw;
+    }
+    try std.testing.expect(source_value_id != null);
     transformer.current_scope = source_scope;
     const function = try @import("es2015_class.zig").ES2015Class(Transformer).lowerClassExpression(&transformer, owner, parser.ast.getNode(owner));
     try std.testing.expectEqual(ast.Node.Tag.function_expression, transformer.ast.getNode(function).tag);
@@ -471,6 +476,20 @@ test "#4819 strict initializer factory constructor name scope exists before reco
     try std.testing.expectEqual(outer_scope, editor.scopes.items[name_scope.toIndex()].parent);
     try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[name_scope.toIndex()].get(transformer.ast.identifierNameText(transformer.ast.getNode(binding))));
     const function_scope = transformer.outputOwnedScope(function).?;
+    const parameters = transformer.ast.readExtraNode(transformer.ast.getNode(function).data.extra, ast.FunctionExtra.params);
+    const parameter_scope = transformer.outputOwnedScope(parameters).?;
+    try std.testing.expectEqual(parameter_scope, editor.scopes.items[function_scope.toIndex()].parent);
+    var moved_parameter_bindings: usize = 0;
+    const live = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, function);
+    for (live) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.identifierNameText(node), "value")) continue;
+        const value_id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))).?;
+        try std.testing.expectEqual(source_value_id.?, value_id);
+        try std.testing.expectEqual(function_scope, editor.symbols.items[value_id].scope_id);
+        moved_parameter_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), moved_parameter_bindings);
     var enclosing = function_scope;
     var steps: usize = 0;
     while (enclosing != name_scope and !enclosing.isNone() and steps < editor.scopes.items.len) : (steps += 1) {

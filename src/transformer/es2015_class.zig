@@ -953,6 +953,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 else
                     try self.declareSyntheticInScope(func_name, span, .function_decl, name_scope) orelse
                         std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
+                // Inferred class clones can already own this exact ID as a
+                // class binding. It now realizes a function expression's own
+                // name environment, without creating a new source class self.
+                const symbol = &self.semantic_editor.?.symbols.items[@backingInt(id)];
+                symbol.kind = .function_decl;
+                symbol.decl_flags.block_scoped = false;
+                symbol.decl_flags.is_class = false;
+                symbol.decl_flags.function_scoped = true;
+                symbol.decl_flags.is_function = true;
                 self.current_class_self_symbol_id = @backingInt(id);
                 if (generated_class_output_name) |output_name| {
                     if (output_name.late)
