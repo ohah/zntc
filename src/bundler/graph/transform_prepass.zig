@@ -12781,15 +12781,17 @@ test "minified const graph rejects stale or invalid sidecar identities" {
     }
 }
 
-/// Keep the numeric post-pass graph when its syntax fold changes no surviving
-/// semantic edge beyond the exact materialized reads. The minifier can also
-/// remove declarations or scopes; the exact graph gate rejects those shapes
-/// and leaves them on the normal analyzer path.
+/// Keep the graph after cross-module const materialization when syntax minify
+/// changes no surviving semantic edge beyond the exact materialized reads.
+/// The minifier can also remove declarations or scopes; the exact graph gate
+/// rejects those shapes and leaves them on the normal analyzer path. The full
+/// prepass also refreshes import/export metadata from the edited AST.
 pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     self: anytype,
     module: *Module,
     arena_alloc: std.mem.Allocator,
     materialized_nodes: []const ast_mod.NodeIndex,
+    refresh_module_metadata: bool,
 ) !bool {
     var resync_scope = profile.begin(.graph_resync);
     defer resync_scope.end();
@@ -12867,7 +12869,11 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
 
     semantic.applyEdit(try editor.finish());
     if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
-    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
+    if (refresh_module_metadata) {
+        try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
+    } else {
+        try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
+    }
 
     var stmt_info_scope = profile.begin(.graph_resync_stmt_info);
     defer stmt_info_scope.end();
