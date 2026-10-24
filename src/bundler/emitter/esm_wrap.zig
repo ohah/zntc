@@ -516,10 +516,15 @@ pub fn emitEsmWrappedModule(
     var wrapped: std.ArrayList(u8) = .empty;
     defer wrapped.deinit(allocator);
 
-    // 1. exports namespace 객체
-    try wrapped.appendSlice(allocator, "var ");
-    try wrapped.appendSlice(allocator, exports_name);
-    try wrapped.appendSlice(allocator, " = {};\n");
+    // 1. The same namespace binding may already be initialized before CJS requires.
+    // Never replace that object: a cyclic consumer can already hold its identity.
+    if (options.preinitialized_esm_namespace) |identity| {
+        if (!(try module.esmNamespaceSymbol()).eql(identity)) return error.InvalidEsmInitOwner;
+    } else {
+        try wrapped.appendSlice(allocator, "var ");
+        try wrapped.appendSlice(allocator, exports_name);
+        try wrapped.appendSlice(allocator, " = {};\n");
+    }
 
     // 2. 호이스팅된 var 선언 (중복 제거: import binding과 export default가 같은 심볼을 가리킬 수 있음)
     if (hoisted_var_names.items.len > 0) {

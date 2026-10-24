@@ -2774,6 +2774,10 @@ pub const Linker = struct {
         }
 
         for (module.import_records) |record| {
+            if (Module.esmRecordWrapperUse(record.kind) == .init_and_namespace and !record.resolved.isNone()) {
+                const target = self.graph.getModule(record.resolved) orelse continue;
+                if (target.wrap_kind == .esm) return true;
+            }
             if (record.kind == .dynamic_import and !record.resolved.isNone()) {
                 const target = self.graph.getModule(record.resolved) orelse continue;
                 if (target.wrap_kind == .cjs) return true;
@@ -4186,6 +4190,13 @@ pub const Linker = struct {
                             }
                         };
                     }
+                    if (self.usesCjsLiveWrapperNamespaces()) if (self.getResolvedBinding(@intCast(mi), ib.local_span)) |binding| {
+                        const owner_index = @backingInt(binding.canonical.module_index);
+                        if (self.isCrossChunkConsumer(@intCast(mi), owner_index)) if (self.getModule(owner_index)) |owner| {
+                            if (owner.wrap_kind == .esm)
+                                try appendSem(self.allocator, &ir_buf, self.graph, (try owner.esmNamespaceSymbol()).toRef());
+                        };
+                    };
                     if (ib.kind == .namespace) {
                         // import * as ns: codegen 이 ns.<prop> 를 target export 의
                         // canonical 직접 참조로 rewrite (ns_member_rewrites). 그
@@ -4236,6 +4247,22 @@ pub const Linker = struct {
                         },
                     };
                     try appendSem(self.allocator, &ir_buf, self.graph, sr);
+                }
+                for (m.import_records) |record| {
+                    const use = Module.esmRecordWrapperUse(record.kind);
+                    if (use == .none or record.resolved.isNone()) continue;
+                    const owner = self.getModule(@backingInt(record.resolved)) orelse continue;
+                    if (owner.wrap_kind != .esm or (self.tree_shaker_active and !owner.is_included)) continue;
+                    try appendSem(self.allocator, &ir_buf, self.graph, (try owner.esmInitSymbol()).toRef());
+                    if (use == .init_and_namespace)
+                        try appendSem(self.allocator, &ir_buf, self.graph, (try owner.esmNamespaceSymbol()).toRef());
+                }
+                for (m.export_bindings) |binding| {
+                    const source = m.esmReExportWrapperSource(binding) orelse continue;
+                    const owner = self.getModule(@backingInt(source)) orelse continue;
+                    if (owner.wrap_kind != .esm or (self.tree_shaker_active and !owner.is_included)) continue;
+                    try appendSem(self.allocator, &ir_buf, self.graph, (try owner.esmInitSymbol()).toRef());
+                    try appendSem(self.allocator, &ir_buf, self.graph, (try owner.esmNamespaceSymbol()).toRef());
                 }
                 const ir_owned = try ir_buf.toOwnedSlice(self.allocator);
                 try import_ref_slices.append(self.allocator, ir_owned);
@@ -4449,6 +4476,10 @@ pub const Linker = struct {
     /// (#4120) consumer 모듈과 canonical 모듈이 *다른* 청크에 있는지. `module_to_chunk` 가
     /// 세팅된 splitting emit 경로에서만 의미 있고, 미세팅(단일번들/finalize)이면 false(=same-chunk).
     /// 둘 중 하나라도 청크 미배정(.none)이면 보수적으로 false(기존 same-chunk preamble 유지).
+    pub fn usesCjsLiveWrapperNamespaces(self: *const Linker) bool {
+        return self.format == .cjs and !self.graph.preserve_modules and !self.useDevModuleRegistry();
+    }
+
     pub fn isCrossChunkConsumer(self: *const Linker, consumer_mod: u32, canonical_mod: u32) bool {
         const m2c = self.module_to_chunk orelse return false;
         if (consumer_mod >= m2c.len or canonical_mod >= m2c.len) return false;
