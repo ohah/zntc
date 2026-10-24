@@ -194,10 +194,7 @@ const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
   ['4819-sourced-reexports/main.mjs', ['ZNTC0300']],
   ['4819-sourced-reexports/upstream.mjs', ['ZNTC0305']],
 ]);
-const LENIENT_UNKNOWN_REANALYZED_FIXTURES = [
-  '4819-namespace-class-export.ts',
-  '4819-namespace-generated-scopes.ts',
-] as const;
+const LENIENT_UNKNOWN_REANALYZED_FIXTURES = ['4819-namespace-generated-scopes.ts'] as const;
 const LENIENT_UNKNOWN_GATE_PROBES = [
   {
     name: 'class-only',
@@ -216,7 +213,14 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
   },
   {
     name: 'decorator-only',
-    source: 'function dec(value: any) {} @dec class Box {}',
+    source:
+      'function dec(value: any) { value.decorated = true; return value; } @dec class Box { value: number = 3; }',
+    graph: 'retained',
+  },
+  {
+    name: 'decorator-with-type-only-binding',
+    source:
+      'declare const externalValue: number; function dec(value: any) { return value; } @dec class Box { value: number = externalValue; }',
     graph: 'reanalyzed',
   },
   {
@@ -2083,7 +2087,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       expect(successful).toBe(288);
-      expect(retained).toBe(286);
+      expect(retained).toBe(287);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
       for (const probe of LENIENT_UNKNOWN_GATE_PROBES) {
@@ -2116,6 +2120,83 @@ describe('symbol identity coverage gate (#4819)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  test('lenient .unknown decorators retain exact graph and runtime output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-decorator-'));
+    const cases = [
+      {
+        name: 'helper-collisions',
+        legacy: false,
+        extraArgs: [],
+        source: [
+          'const _metadata = 17, _classThis = 19, _same_decorators = 23, _same_decorators2 = 29;',
+          'function decorate(value: any) { value.decorated = true; return value; }',
+          '@decorate class Box { value: number = 3; }',
+          'console.log(Box.decorated, new Box().value, _metadata, _classThis, _same_decorators, _same_decorators2);',
+        ].join('\n'),
+      },
+      {
+        name: 'legacy-helper-collisions',
+        legacy: true,
+        extraArgs: ['--experimental-decorators'],
+        source: [
+          'const _metadata = 19, _classThis = 23;',
+          'function decorate(value: any) { value.decorated = true; return value; }',
+          '@decorate class Box { value: number = 3; }',
+          'console.log(Box.decorated, new Box().value, _metadata, _classThis);',
+        ].join('\n'),
+      },
+      {
+        name: 'namespace-class-export',
+        legacy: false,
+        extraArgs: [],
+        source: readFileSync(join(FIXTURE_DIR, '4819-namespace-class-export.ts'), 'utf8'),
+      },
+    ] as const;
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.unknown`);
+        writeFileSync(input, item.source);
+        const oraclePath = join(dir, `${item.name}.typescript.js`);
+        writeFileSync(
+          oraclePath,
+          ts.transpileModule(item.source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: ts.ScriptTarget.ES5,
+              ...(item.legacy ? { experimentalDecorators: true } : {}),
+            },
+          }).outputText,
+        );
+        const oracle = runNode([oraclePath]);
+        expect(oracle.status, `${item.name}: ${oracle.stderr}`).toBe(0);
+
+        for (const target of TARGETS) {
+          const result = runCoverage(input, target, dir, true, [...item.extraArgs]);
+          expect(result.exitCode, `${item.name} ${target.name}: ${result.stderr}`).toBe(0);
+          expect(
+            transformIdentityAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            postMinifyAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, 'retained'),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${item.name} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${item.name} ${target.name}: differs from TypeScript output`).toBe(
+            oracle.stdout,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('lenient namespace/class combinations retain exact graph and runtime output', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-namespace-class-'));
