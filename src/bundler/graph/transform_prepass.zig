@@ -6633,6 +6633,7 @@ fn canKeepPrepassSemanticGraph(
         ast,
         semantic,
     );
+    const has_dropped_labeled_statement = hasDroppedLabeledStatement(ast, options.drop_labels);
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators and !retained_legacy_decorators)) return false;
     // Syntax minification is admitted provisionally. After it runs, the caller
@@ -6643,7 +6644,7 @@ fn canKeepPrepassSemanticGraph(
     // transformer records those helper identities in the edited graph.
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
-        hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_simple_define) or
+        (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or
         (options.experimental_decorators and !retained_legacy_decorators) or
@@ -6654,6 +6655,10 @@ fn canKeepPrepassSemanticGraph(
     // The TLA wrapper/deferral options only affect this program-level lowering
     // when the module actually contains top-level await.
     if (has_top_level_await and options.unsupported.top_level_await) return false;
+    // Dropping a labeled statement can remove the module's only top-level
+    // await. The graph-retained path does not recompute this module-level bit,
+    // so keep those inputs on the normal analyzer refresh path.
+    if (has_dropped_labeled_statement and module.self_uses_top_level_await) return false;
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
@@ -6661,7 +6666,7 @@ fn canKeepPrepassSemanticGraph(
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
     var found_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
-        retained_simple_console_drops or safe_styled_components or
+        retained_simple_console_drops or has_dropped_labeled_statement or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
@@ -8444,13 +8449,30 @@ fn auditPrepassExactIfEnabled(
     retained_graph: bool,
 ) void {
     if (!enabled) return;
+    var reanalyzed_unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer reanalyzed_unresolved_nodes.deinit(allocator);
+    const exact_unresolved_nodes = if (retained_graph) unresolved_nodes else blk: {
+        const semantic = if (module.semantic) |*value| value else return;
+        collectParserUnresolvedNodes(
+            allocator,
+            &(module.ast orelse return),
+            parser_node_count,
+            semantic.symbol_ids,
+            &semantic.unresolved_references,
+            &reanalyzed_unresolved_nodes,
+        ) catch |err| {
+            std.debug.print("zntc: symbol-identity-prepass-error {s}: {s}\n", .{ module.path, @errorName(err) });
+            return;
+        };
+        break :blk &reanalyzed_unresolved_nodes;
+    };
     printPrepassExact(
         allocator,
         module,
         root,
         parser_node_count,
         transformer,
-        unresolved_nodes,
+        exact_unresolved_nodes,
         pre_transform_scope_count,
         retained_graph,
     ) catch |err| {
@@ -8876,6 +8898,41 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scope_owner_map = module.semantic.?.scope_owner_map;
         transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
+    }
+    // Removing a labeled statement can shift every later statement index and
+    // can detach declarations or source scopes. Reindex the surviving graph,
+    // then retain it only when the same exact gate used after syntax minify
+    // proves all live bindings, references, owners, counts, and statement
+    // coordinates still agree. Any uncertain case uses the analyzer below.
+    if (can_keep_semantic_graph and hasDroppedLabeledStatement(ast_ptr, opts.drop_labels)) {
+        if (module.semantic) |*semantic| {
+            const updated_references = reindexMinifiedSemanticReferences(
+                arena_alloc,
+                transformer.ast,
+                root,
+                semantic.references,
+            ) catch null;
+            if (updated_references) |references| {
+                semantic.references = references;
+                transformer.references = references;
+                can_keep_semantic_graph = canRetainMinifiedSemanticGraph(
+                    arena_alloc,
+                    transformer.ast,
+                    root,
+                    semantic.symbols.items,
+                    semantic.scopes,
+                    semantic.references,
+                    transformer.symbol_ids.items,
+                    &semantic.unresolved_references,
+                    &semantic.scope_owner_map,
+                    null,
+                );
+            } else {
+                can_keep_semantic_graph = false;
+            }
+        } else {
+            can_keep_semantic_graph = false;
+        }
     }
     // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
     // emitter 가 `__esm` factory 안에서 그 문장만 `return <expr>;` 로 방출한다.

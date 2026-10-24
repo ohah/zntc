@@ -2108,6 +2108,146 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('matched dropped labels retain only an exact, reindexed semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-drop-label-exact-retained-graph-'));
+    const cases = [
+      {
+        name: 'top-level statement index shifts',
+        source: 'const base = 40; DEV: console.log(base + 1); console.log(base + 2);',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'function-body statement index shifts',
+        source:
+          'function read(value: number) { DEV: console.log(value); return value + 2; } console.log(read(40));',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'surviving block owner',
+        source: 'const base = 40; { DEV: console.log(base); console.log(base + 2); }',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'nested matching labels',
+        source: 'const base = 40; DEV: TEST: console.log(base); console.log(base + 2);',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'repeated label in separate functions',
+        source:
+          'const base = 40; DEV: console.log(base); function read() { DEV: console.log(base); return base; } console.log(read() + 2);',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'removed local reference decrements the surviving binding count',
+        source:
+          'function read(value: number) { const alias = value; DEV: console.log(alias); return value; } console.log(read(40));',
+        graph: 'retained',
+        stdout: '40\n',
+      },
+      {
+        name: 'removed unresolved external remains absent at runtime',
+        source: "DEV: console.log(missingGlobal); console.log('ok');",
+        graph: 'retained',
+        stdout: 'ok\n',
+      },
+      {
+        name: 'detached function scope falls back to reanalysis',
+        source:
+          'const base = 40; DEV: (function() { console.log(base); })(); console.log(base + 2);',
+        graph: 'reanalyzed',
+        stdout: '42\n',
+      },
+      {
+        name: 'detached block scope falls back to reanalysis',
+        source:
+          'const base = 40; DEV: { const hidden = base; console.log(hidden); } console.log(base + 2);',
+        graph: 'reanalyzed',
+        stdout: '42\n',
+      },
+      {
+        name: 'detached empty function scope falls back to reanalysis',
+        source: "DEV: (() => {})(); console.log('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok\n',
+      },
+      {
+        name: 'detached unused declaration falls back to reanalysis',
+        source: "DEV: var ghost = 1; console.log('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok\n',
+      },
+      {
+        name: 'surviving reference to a removed var declaration falls back',
+        source: 'DEV: var ghost = 1; console.log(typeof ghost);',
+        graph: 'reanalyzed',
+        stdout: 'undefined\n',
+      },
+      {
+        name: 'direct eval remains on the analyzer path',
+        source:
+          "function read() { return eval('40'); } DEV: console.log('gone'); console.log(read() + 2);",
+        graph: 'reanalyzed',
+        stdout: '42\n',
+      },
+      {
+        name: 'top-level await metadata is refreshed by reanalysis',
+        source: "DEV: await Promise.resolve(); console.log('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok\n',
+        format: 'esm',
+      },
+    ];
+    try {
+      for (const [index, item] of cases.entries()) {
+        const input = join(dir, `${index}.ts`);
+        const format = item.format ?? 'cjs';
+        const output = join(dir, `${index}.${format === 'esm' ? 'mjs' : 'cjs'}`);
+        writeFileSync(input, item.source);
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--platform=node',
+            `--format=${format}`,
+            '--drop-labels=DEV',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(bundled.status, `${item.name}: ${bundled.stderr}`).toBe(0);
+        const lines = (bundled.stderr ?? '').split(/\r?\n/);
+        const scopeAudit = lines.find((line) =>
+          line.startsWith('zntc: symbol-source-scope-owner '),
+        );
+        expect(scopeAudit, `${item.name}: ${bundled.stderr}`).toBeDefined();
+        expect(scopeOwnerAuditProblems(scopeAudit ?? ''), item.name).toEqual([]);
+        const report = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(report, `${item.name}: ${bundled.stderr}`).toBeDefined();
+        expect(exactSchemaProblems(report ?? ''), item.name).toEqual([]);
+        const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${item.name}: ${bundled.stderr}`).toContain(`semantic_graph=${item.graph}`);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(item.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('drop-console skips the pre-pass without a console call and reanalyzes when one is removed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-no-console-drop-retained-graph-'));
     const input = join(dir, 'entry.ts');
