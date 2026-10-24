@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { createFixture, runZntc } from './helpers';
+import { openSync, closeSync, readFileSync } from 'node:fs';
+import { createFixture, runZntc, ZNTC_BIN } from './helpers';
 
 const cases = [
   {
@@ -176,7 +177,20 @@ describe('static initializer dynamic environment diagnostics (#4819)', () => {
           const output = join(created.dir, 'default-output.cjs');
           // No --format: exercise the standalone file/fast path, rather than
           // the explicit-format bundler pipeline covered above.
-          const built = await runZntc([input, `--target=${target}`, ...minify, '-o', output]);
+          // A regular redirected fd reproduces the old competing-writer
+          // prefix overwrite; a PIPE/FIFO can mask that regression.
+          const stderrPath = join(created.dir, 'stderr.log');
+          const stderrFd = openSync(stderrPath, 'w');
+          let status: number | null;
+          try {
+            status = spawnSync(ZNTC_BIN, [input, `--target=${target}`, ...minify, '-o', output], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', stderrFd],
+            }).status;
+          } finally {
+            closeSync(stderrFd);
+          }
+          const built = { exitCode: status, stderr: readFileSync(stderrPath, 'utf8') };
           if (fixture.rejects(target)) {
             expect(built.exitCode).not.toBe(0);
             expect(built.stderr).toContain('ZNTC1505');
