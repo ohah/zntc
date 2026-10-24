@@ -45,6 +45,20 @@
 - **Code-splitting 포맷**: ESM/CJS/IIFE는 지원되고 UMD/AMD는 아직 거부된다. #6186은 ESM에서 SID→final local→cross-chunk emitted import/export를 연결했고, #6189는 CJS/IIFE 두 포맷에서 provider local→consumer import/body 연결을 emitted output으로 확인한다. [`splitting_mangle.zig`](../src/bundler/bundler_test/splitting_mangle.zig#L385)의 추가 gate는 10개 서로 다른 입력 그래프를 두 포맷으로 빌드해 같은 연결을 대조한다.
 - **Code-splitting reserved CJS re-export**: `resolveOwnerLocal`이 안전한 local identifier를 못 찾으면 export key로 fallback한다. 이는 #4819 identity mismatch로 분류하지 않았고, 지원/출력 제한 여부는 별도 bundler 이슈로 다뤄야 한다.
 
+## 2026-10-25 metadata self-rename의 exact ID 소비
+
+`buildMetadataForAst`의 module self-rename 루프는 scope-map iterator가 이미 가진
+`SymbolId`로 `RenameTable`을 직접 조회한다. 이름을 `getCanonicalName`에 넘겨
+같은 ID를 다시 찾는 왕복은 제거했다. 원본 AST 테스트용 `buildMetadata`에도
+같은 처리를 적용했다. dev metadata builder의 변경은 아니다.
+
+서로 다른 입력 10개에서 top-level ID, 동명 nested decoy, 무관한 이웃 binding과
+미해결 global 경계를 검사한다. 두 소비자 각각의 잘못된 조회 ID·저장 ID·출력
+spelling을 주입한 컴파일 가능한 변이 10개가 검출됐다. 정상 scope-map에서는
+기존 코드와 동작이 같았으므로 이 변경을 제품 mismatch 수정이나 원복 변이
+검출로 주장하지 않는다. 캐시 간 이름 복원, runtime helper ID 복구와 변환 후
+재분석은 별도 잔여다.
+
 ## 결론
 
 현재 source survey는 위 10개 consumer family를 연결했다. 기준 main `26e005cf1`에서 조사한 범위의 확인된 실제 mismatch는 0건이다. #6186/#6187/#6189의 emitted-output 연결과 JSX 보정, #6192의 private-name 보정 및 #6202의 숫자 상수 post-pass graph 보존이 main에 반영됐다. 새 10입력 gate는 CJS/IIFE 각 출력에서 provider 선언·export local·consumer import local·실제 본문 참조를 함께 검사한다. 이 문서는 출력 소비자 감사 결과만 기록한다. #5954의 최종 종료 여부는 전체 producer/fallback crosswalk와 별도 same-graph 작업 #6193의 경계를 대조한 뒤 결정한다.
