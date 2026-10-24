@@ -1956,10 +1956,11 @@ describe('symbol identity coverage gate (#4819)', () => {
         'declare const externalValue: number; console.log(externalValue);',
         'declare enum Ambient { Value = 1 } console.log(typeof Ambient);',
         'const enum Color { Red = 1 } console.log(Color.Red);',
-        'namespace Values { export const value = 1; } console.log(Values.value);',
+        'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
+        "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
         'class Box { value: number = 1; } console.log(new Box().value);',
         'enum Color { Red } class Box { value: number = 1; } console.log(Color.Red, new Box().value);',
-        'enum Color { Red } namespace Values { export const value = 1; } console.log(Color.Red, Values.value);',
+        'namespace Mixed { export class Box { value: number = 1; } } console.log(new Mixed.Box().value);',
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
         const reanalyzedInput = join(dir, `runtime-${index}.unknown`);
@@ -2008,6 +2009,68 @@ describe('symbol identity coverage gate (#4819)', () => {
         const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
         expect(baseline.status, baseline.stderr).toBe(0);
         expect(baseline.stdout).toBe('41 Green 42 r w\n');
+
+        const result = runCoverage(input, target, dir, true);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(baseline.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient TypeScript namespaces retain exact graph across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-namespace-graph-'));
+    const input = join(dir, 'namespace.unknown');
+    const source = [
+      'const seed = 40;',
+      'enum Shade { Low = 1, High = 2 }',
+      'namespace Counter {',
+      '  export const value = seed;',
+      '  export enum Kind { Low = 1, High = Low + 1 }',
+      '  export function increment(step: number) { return value + step; }',
+      '}',
+      'namespace Counter.Nested { export const answer = Counter.increment(Counter.Kind.High); }',
+      'namespace Palette { export const primary = Shade.High; }',
+      'function read(Counter: number) { return Counter + 1; }',
+      'console.log(Counter.value, Counter.increment(2), Counter.Nested.answer, Palette.primary, read(41));',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      for (const target of [TARGETS[0], TARGETS[4]]) {
+        const reference = join(dir, `reference-${target.name}.js`);
+        const output = join(dir, 'out.js');
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: target.name === 'es5' ? ts.ScriptTarget.ES5 : ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe('40 42 42 2 42\n');
 
         const result = runCoverage(input, target, dir, true);
         expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);

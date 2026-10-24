@@ -202,12 +202,13 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 }
             },
 
-            // Namespace IIFE parameters and exported binding edges are tracked
-            // by SymbolId and emitted from that graph by codegen.
+            // Ordinary namespace IIFE parameters and exported binding edges are
+            // tracked by SymbolId. Ambient and string-module declarations are
+            // erased and therefore remain on the analyzer fallback path.
             .ts_module_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
+                if (node.data.binary.flags != 0) facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // Import-equals is rewritten to a const declaration by the
@@ -2408,9 +2409,10 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "declare const value: number;",
         "declare enum Ambient { A } console.log(typeof Ambient);",
         "const enum Value { A } console.log(Value.A);",
-        "namespace Value { export const member = 1; }",
+        "declare namespace Ambient { export const value: number; }",
+        "declare module 'ambient' { export const value: number; }",
         "enum Color { Red } class Box { amount: number = 1; } console.log(Color.Red, new Box().amount);",
-        "enum Color { Red } namespace Values { export const member = 1; } console.log(Color.Red, Values.member);",
+        "namespace Mixed { export class Box { amount: number = 1; } } console.log(new Mixed.Box().amount);",
         "import type { Value } from './types'; const value: Value = {} as Value;",
         "class Value { amount: number = 1; }",
     };
@@ -2454,6 +2456,26 @@ test "#4819 extensionless JavaScript enum retains its exact transform graph" {
     for (parser.ast.nodes.items) |node| {
         if (node.tag != .ts_enum_declaration) continue;
         parser.ast.extra_data.items[node.data.extra + 3] = 4;
+        break;
+    }
+    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
+}
+
+test "#4819 extensionless JavaScript namespace retains its exact transform graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const seed = 40; namespace Counter { export const value = seed; export enum Kind { Low = 1, High = Low + 1 } export function increment(step: number) { return value + step; } } namespace Counter.Nested { export const answer = Counter.increment(Counter.Kind.High); }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
+
+    for (parser.ast.nodes.items) |*node| {
+        if (node.tag != .ts_module_declaration) continue;
+        node.data.binary.flags = 2;
         break;
     }
     try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
