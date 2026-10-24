@@ -602,10 +602,13 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 
     const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     // emitDecoratorMetadata has a complete exact graph for TypeScript and
-    // JavaScript legacy decorators. Lenient/unknown files qualify only when
-    // AST facts prove there is no TypeScript syntax; Flow and other modes stay
-    // on the established analyzer until their metadata semantics are covered.
-    const metadata_mode_supported = options.experimental_decorators and !parser.is_flow and switch (parser.source_mode) {
+    // JavaScript legacy decorators. Flow type nodes serialize to generated
+    // runtime metadata references (Object for Flow-only type shapes), whose
+    // lexical identities the transform graph records. Flow is supported only
+    // in JavaScript parser modes; mixed TS/Flow input stays on the analyzer.
+    const metadata_mode_supported = options.experimental_decorators and if (parser.is_flow)
+        (parser.source_mode != .ts and !facts.has_typescript_syntax)
+    else switch (parser.source_mode) {
         .ts, .js_strict => true,
         .js_lenient => !facts.has_typescript_syntax,
     };
@@ -2625,6 +2628,26 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     try std.testing.expect(unknown_flow_parser.is_flow);
     try std.testing.expect(unknown_flow_parser.source_mode == .js_lenient);
     try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_flow_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &unknown_flow_parser));
+
+    var mixed_flow_scanner = try Scanner.init(
+        allocator,
+        "type Alias = number; function decorate(target) { return target; } @decorate class Box {}",
+    );
+    var mixed_flow_parser = Parser.init(allocator, &mixed_flow_scanner);
+    mixed_flow_parser.configureFromExtension(".ts");
+    _ = try mixed_flow_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), mixed_flow_parser.errors.items.len);
+    mixed_flow_parser.is_flow = true;
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &mixed_flow_parser));
 
     var complex_flow_scanner = try Scanner.init(
         allocator,
@@ -2647,9 +2670,13 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     try std.testing.expect(!canMangleWithTransformSemantic(.{
         .experimental_decorators = true,
     }, &flow_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &flow_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
         .emit_decorator_metadata = true,
     }, &flow_parser));
 
