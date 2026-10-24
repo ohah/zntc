@@ -2122,6 +2122,7 @@ pub fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
                 return throwError(env, "OutOfMemory");
             },
             .tsfn = undefined,
+            .has_ast_function_hooks = getObjectBool(env, dispatcher_fn, "hasAstFunctionHooks", false),
         };
 
         var resource_name_str: c.napi_value = undefined;

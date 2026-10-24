@@ -41,6 +41,7 @@ const styled_components_scan = @import("../../transformer/transformer/styled_com
 const emotion_scan = @import("../../transformer/transformer/emotion.zig");
 const refresh_mod = @import("../../transformer/transformer/refresh.zig");
 const worklet_plugin = @import("../../transformer/plugins/worklet_plugin.zig");
+const plugin_mod = @import("../plugin.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -120,6 +121,11 @@ pub fn shouldRun(
         if (!module.module_type.isJavaScriptLike()) return false;
         if (plugin_transform_applied) return true;
 
+        // AST plugins run while transforming the module. Their generated
+        // bindings and references must enter the graph before linker tree
+        // shaking, even when no built-in syntax transform is otherwise needed.
+        if (hasAstTransformPlugin(self.plugins, &module.ast.?)) return true;
+
         // Check cheap single-byte flags before the heavier option predicate.
         if (self.minify_identifiers) return true;
         // react_refresh / styled-components / emotion 은 emitter·`run` 과 마찬가지로 user
@@ -166,6 +172,34 @@ pub fn shouldRun(
         defer options_scope.end();
         return self.transform_options_base.requiresGraphPrePass(ast);
     }
+}
+
+fn hasAstTransformPlugin(plugins: []const plugin_mod.Plugin, ast: *const ast_mod.Ast) bool {
+    var has_function = false;
+    var has_object = false;
+    var has_call = false;
+    var has_class = false;
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .function, .function_declaration, .function_expression, .arrow_function_expression, .method_definition => has_function = true,
+            .object_expression => has_object = true,
+            .call_expression => has_call = true,
+            .class_declaration, .class_expression => has_class = true,
+            else => {},
+        }
+    }
+
+    for (plugins) |plugin| {
+        if ((plugin.onFunction != null and has_function) or
+            (plugin.autoWorkletCallees.len > 0 and has_call)) return true;
+        if (plugin.visitor) |visitor| {
+            if (visitor.on_program != null or
+                (visitor.on_object_expression != null and has_object) or
+                (visitor.on_call_expression != null and has_call) or
+                ((visitor.on_class_declaration != null or visitor.on_class_expression != null) and has_class)) return true;
+        }
+    }
+    return false;
 }
 
 /// Scan imports once when one or both CSS plugins are configured. Their exact

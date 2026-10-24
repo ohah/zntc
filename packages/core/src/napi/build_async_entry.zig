@@ -13,6 +13,7 @@ const native_alloc = common.nativeAlloc();
 
 const throwError = common.throwError;
 const getNamedProperty = common.getNamedProperty;
+const getObjectBool = common.getObjectBool;
 
 const LogFilterOptions = options_mod.LogFilterOptions;
 const parseLogFilterOptions = options_mod.parseLogFilterOptions;
@@ -161,6 +162,7 @@ pub fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
                 return throwError(env, "OutOfMemory");
             },
             .tsfn = undefined,
+            .has_ast_function_hooks = getObjectBool(env, dispatcher_fn, "hasAstFunctionHooks", false),
         };
 
         // threadsafe function 생성

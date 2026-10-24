@@ -489,6 +489,7 @@ const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
 const PrePassPredicateTestOptions = struct {
+    ast_plugin: enum { none, ordinary, on_function, visitor_program, visitor_object, visitor_call, visitor_class, auto_worklet } = .none,
     transform_options: TransformOptions = .{},
     plugin_transform_applied: bool = false,
     react_refresh: bool = false,
@@ -528,6 +529,20 @@ fn shouldRunPrePassForTest(
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
     graph.transform_options_base = opts.transform_options;
+    const ast_test_plugins: []const plugin_mod.Plugin = switch (opts.ast_plugin) {
+        .none => &[_]plugin_mod.Plugin{},
+        .ordinary => &[_]plugin_mod.Plugin{.{ .name = "ordinary", .transform = noopPrePassTestTransform }},
+        .on_function => &[_]plugin_mod.Plugin{.{ .name = "on-function", .onFunction = noopPrePassTestFunction }},
+        .visitor_program => &[_]plugin_mod.Plugin{.{ .name = "visitor", .visitor = .{ .on_program = noopPrePassTestVisitor } }},
+        .visitor_object => &[_]plugin_mod.Plugin{.{ .name = "visitor", .visitor = .{ .on_object_expression = noopPrePassTestVisitor } }},
+        .visitor_call => &[_]plugin_mod.Plugin{.{ .name = "visitor", .visitor = .{ .on_call_expression = noopPrePassTestVisitor } }},
+        .visitor_class => &[_]plugin_mod.Plugin{.{ .name = "visitor", .visitor = .{ .on_class_expression = noopPrePassTestVisitor } }},
+        .auto_worklet => &[_]plugin_mod.Plugin{.{
+            .name = "auto-worklet",
+            .autoWorkletCallees = &.{.{ .name = "useWorklet" }},
+        }},
+    };
+    graph.plugins = ast_test_plugins;
     graph.react_refresh = opts.react_refresh;
     graph.styled_components = opts.styled_components;
     graph.styled_components_top_level_import_paths = opts.styled_components_top_level_import_paths;
@@ -539,6 +554,30 @@ fn shouldRunPrePassForTest(
 
     module.ast = parser.ast;
     return graph.shouldRunTransformerPrePass(&module, opts.plugin_transform_applied);
+}
+
+fn noopPrePassTestTransform(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: []const u8,
+    _: std.mem.Allocator,
+    _: *plugin_mod.HookContext,
+) plugin_mod.PluginError!?[]const u8 {
+    return null;
+}
+
+fn noopPrePassTestFunction(
+    _: ?*anyopaque,
+    _: *plugin_mod.AstTransformCtx,
+    _: plugin_mod.FunctionInfo,
+) plugin_mod.PluginError!void {}
+
+fn noopPrePassTestVisitor(
+    _: ?*anyopaque,
+    _: *plugin_mod.AstTransformCtx,
+    _: @import("../parser/ast.zig").NodeIndex,
+) plugin_mod.PluginError!?@import("../parser/ast.zig").NodeIndex {
+    return null;
 }
 
 fn expectPrePassDecision(
@@ -622,6 +661,20 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "console.log('x'); debugger;", "drop.ts", .{ .transform_options = .{ .drop_console = true, .drop_debugger = true } });
     try expectPrePassDecision(false, "export const value = 1;", "drop-console-unused.ts", .{ .transform_options = .{ .drop_console = true } });
     try expectPrePassDecision(true, "export const value = 1;", "plugin.ts", .{ .plugin_transform_applied = true });
+    try expectPrePassDecision(false, "export const value = 1;", "unused-plugin.js", .{ .ast_plugin = .ordinary });
+    try expectPrePassDecision(false, "export const value = 1;", "ast-function-plugin-no-function.js", .{ .ast_plugin = .on_function });
+    try expectPrePassDecision(true, "function outer() { let shared = 100; function nestedMarker() {} }", "ast-function-plugin.js", .{ .ast_plugin = .on_function });
+    try expectPrePassDecision(true, "const marker = () => 1;", "ast-arrow-plugin.js", .{ .ast_plugin = .on_function });
+    try expectPrePassDecision(true, "const value = { marker() {} };", "ast-method-plugin.js", .{ .ast_plugin = .on_function });
+    try expectPrePassDecision(true, "export const value = 1;", "ast-program-visitor-plugin.js", .{ .ast_plugin = .visitor_program });
+    try expectPrePassDecision(false, "export const value = 1;", "ast-object-visitor-no-object.js", .{ .ast_plugin = .visitor_object });
+    try expectPrePassDecision(true, "const value = {};", "ast-object-visitor.js", .{ .ast_plugin = .visitor_object });
+    try expectPrePassDecision(false, "export const value = 1;", "ast-call-visitor-plugin-no-call.js", .{ .ast_plugin = .visitor_call });
+    try expectPrePassDecision(true, "useWorklet();", "ast-call-visitor-plugin.js", .{ .ast_plugin = .visitor_call });
+    try expectPrePassDecision(false, "export const value = 1;", "ast-class-visitor-no-class.js", .{ .ast_plugin = .visitor_class });
+    try expectPrePassDecision(true, "const value = class {};", "ast-class-visitor.js", .{ .ast_plugin = .visitor_class });
+    try expectPrePassDecision(false, "export const value = 1;", "ast-auto-worklet-plugin-no-call.js", .{ .ast_plugin = .auto_worklet });
+    try expectPrePassDecision(true, "useWorklet(() => {});", "ast-auto-worklet-plugin.js", .{ .ast_plugin = .auto_worklet });
     try expectPrePassDecision(true, "export function App() { return null; }", "refresh.tsx", .{ .react_refresh = true });
     try expectPrePassDecision(false, "export function App() { return null; }", "refresh.cjs", .{ .react_refresh = true });
     try expectPrePassDecision(true, "export function App() { return null; }", "refresh.mjs", .{ .react_refresh = true });

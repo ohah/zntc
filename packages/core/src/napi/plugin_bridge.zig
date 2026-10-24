@@ -32,6 +32,7 @@ const PluginError = plugin_mod.PluginError;
 pub const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
+    has_ast_function_hooks: bool = false,
 
     const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction, resolveContext, buildStart, buildEnd, closeBundle };
 
@@ -942,7 +943,7 @@ fn NapiPluginAdapter(comptime Self: type) type {
                 .transform = pluginTransform,
                 .renderChunk = pluginRenderChunk,
                 .generateBundle = pluginGenerateBundle,
-                .onFunction = pluginAstFunction,
+                .onFunction = if (self.has_ast_function_hooks) pluginAstFunction else null,
                 .resolveContext = pluginResolveContext,
                 .buildStart = pluginBuildStart,
                 .buildEnd = pluginBuildEnd,
@@ -960,6 +961,7 @@ pub const NapiSyncPlugin = struct {
     name: []const u8,
     env: c.napi_env,
     callback_ref: c.napi_ref,
+    has_ast_function_hooks: bool = false,
 
     fn makeFailure(
         plugin_name: []const u8,
@@ -1440,7 +1442,7 @@ fn serializeFunctionInfo(
         const body = api.transformer.ast.getNode(func.body_idx);
         if ((body.tag == .block_statement or body.tag == .function_body) and body.data.list.len > 0) {
             const first_raw = api.transformer.ast.extra_data.items[body.data.list.start];
-            const first_idx: Ast.NodeIndex = @enumFromInt(first_raw);
+            const first_idx: Ast.NodeIndex = @fromBackingInt(@intCast(first_raw));
             if (!first_idx.isNone()) {
                 const first = api.transformer.ast.getNode(first_idx);
                 // directive 태그 또는 expression_statement > string_literal
@@ -1488,7 +1490,7 @@ fn serializeFunctionInfo(
         while (pi < func.params.len) : (pi += 1) {
             if (pi > 0) try buf.append(alloc, ',');
             const param_raw = api.transformer.ast.extra_data.items[func.params.start + pi];
-            const param_idx: zntc_lib.parser.ast.NodeIndex = @enumFromInt(param_raw);
+            const param_idx: zntc_lib.parser.ast.NodeIndex = @fromBackingInt(@intCast(param_raw));
             if (!param_idx.isNone()) {
                 const param_node = api.transformer.ast.getNode(param_idx);
                 const param_text = api.transformer.ast.getText(param_node.span);

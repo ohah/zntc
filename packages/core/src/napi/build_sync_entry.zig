@@ -67,6 +67,7 @@ pub fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
             },
             .env = env,
             .callback_ref = undefined,
+            .has_ast_function_hooks = getObjectBool(env, dispatcher_fn, "hasAstFunctionHooks", false),
         };
         if (c.napi_create_reference(env, dispatcher_fn, 1, &sp.callback_ref) != c.napi_ok) {
             native_alloc.free(sp.name);
@@ -218,6 +219,7 @@ pub fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c
             },
             .env = env,
             .callback_ref = undefined,
+            .has_ast_function_hooks = getObjectBool(env, dispatcher_fn, "hasAstFunctionHooks", false),
         };
         if (c.napi_create_reference(env, dispatcher_fn, 1, &sp.callback_ref) != c.napi_ok) {
             native_alloc.free(sp.name);
