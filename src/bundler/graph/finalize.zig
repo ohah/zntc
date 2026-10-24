@@ -596,6 +596,12 @@ fn validateRuntimeIdentitySnapshot(owner: *Module) !void {
     } else if (owner.esm_interop_runtime_internal_symbols != null or module_mod.hasEsmInteropInternalRows(sem.symbols.items)) {
         return error.EsmInteropRuntimeInternalSymbolsMissing;
     }
+    if (snapshot.hmr_internal) |ids| {
+        if (!module_mod.validHmrRuntimeIds(ids, sem.symbols.items)) return error.HmrRuntimeInternalSymbolsInvalid;
+        owner.hmr_runtime_internal_symbols = ids;
+    } else if (owner.hmr_runtime_internal_symbols != null or module_mod.hasHmrRuntimeRows(sem.symbols.items)) {
+        return error.HmrRuntimeInternalSymbolsMissing;
+    }
     if (sem.runtime_identities == null and (needs_cjs or needs_esm or needs_binary)) {
         const arena = if (owner.parse_arena) |value| value.allocator() else return error.MissingSemantic;
         (try sem.ensureRuntimeIdentities(arena)).* = bootstrap;

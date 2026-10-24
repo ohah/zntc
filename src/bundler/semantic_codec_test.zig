@@ -668,8 +668,8 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
     const restored = try codec.deserialize(buf.items, arena.allocator());
     try testing.expectEqualDeep(snapshot, restored.runtime_identities.?.*);
     // Snapshot tail: present, CJS factory, CJS present + four IDs,
-    // ESM factory, ESM present + five IDs, binary, two absent interop groups (17 u32 words).
-    const tail = buf.items.len - 17 * 4;
+    // ESM factory, ESM present + five IDs, binary, two absent interop groups and absent HMR group (18 u32 words).
+    const tail = buf.items.len - 18 * 4;
     const corruptions = [_]struct { word: usize, value: u32 }{
         .{ .word = 0, .value = 2 }, // invalid snapshot presence
         .{ .word = 1, .value = 12 }, // out-of-range factory
@@ -682,7 +682,8 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
         .{ .word = 13, .value = 0 }, // cross-family duplicate
         .{ .word = 14, .value = 12 }, // out-of-range binary role
         .{ .word = 15, .value = 2 }, // invalid interop helper presence
-        .{ .word = 16, .value = 2 }, // invalid interop internal presence
+        .{ .word = 16, .value = 2 },
+        .{ .word = 17, .value = 2 }, // invalid HMR group presence
     };
     for (corruptions) |corruption| {
         const bytes = try arena.allocator().dupe(u8, buf.items);
@@ -777,4 +778,52 @@ test "interop codec preserves helper-only groups and rejects v17 provenance loss
     defer invalid.deinit(alloc);
     const internal_sem = ModuleSemanticData{ .symbols = symbols, .scopes = &.{}, .scope_maps = &.{}, .exported_names = .empty, .symbol_ids = &.{}, .unresolved_references = .empty, .runtime_identities = &roles };
     try testing.expectError(error.Truncated, codec.serialize(&internal_sem, &invalid, alloc));
+}
+
+test "HMR codec preserves independent canonical roles and rejects corrupt role handles" {
+    const module = @import("module.zig");
+    const semantic_symbol = @import("../semantic/symbol.zig");
+    const wyhash = @import("../util/wyhash.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var symbols: std.ArrayList(Symbol) = .empty;
+    var ids: module.HmrRuntimeInternalSymbolIds = undefined;
+    inline for (@typeInfo(module.HmrRuntimeInternalSymbolIds).@"struct".field_names, module.HMR_RUNTIME_INTERNAL_ROWS) |field, row| {
+        @field(ids, field) = try semantic_symbol.extendSymbol(alloc, &symbols, row.kind, .hmr_runtime_internal_local, row.identity, .EMPTY);
+    }
+    // Dev snapshots contain CJS and HMR together; check all role slots.
+    for (0..5) |_| try symbols.append(alloc, std.mem.zeroInit(Symbol, .{ .synthetic_name = @as([]const u8, "") }));
+    var roles: module.RuntimeIdentitySnapshot = .{
+        .hmr_internal = ids,
+        .cjs_factory = @fromBackingInt(14),
+        .cjs_internal = .{ .callback_parameter = @fromBackingInt(15), .module_parameter = @fromBackingInt(16), .catch_parameter = @fromBackingInt(17), .require_function = @fromBackingInt(18) },
+    };
+    const sem: ModuleSemanticData = .{ .symbols = symbols, .scopes = &.{}, .scope_maps = &.{}, .exported_names = .empty, .symbol_ids = &.{}, .unresolved_references = .empty, .runtime_identities = &roles };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, alloc);
+    const decoded = try codec.deserialize(bytes.items, alloc);
+    try testing.expectEqualDeep(ids, decoded.runtime_identities.?.hmr_internal.?);
+    try testing.expect(module.validHmrRuntimeIds(decoded.runtime_identities.?.hmr_internal.?, decoded.symbols.items));
+    // HMR is the last group: its presence and all fourteen IDs are checksummed.
+    const tail = bytes.items.len - 15 * 4;
+    const invalid = [_]struct { word: usize, value: u32 }{
+        .{ .word = 0, .value = 2 },
+        .{ .word = 1, .value = 19 },
+        .{ .word = 2, .value = 0 },
+        .{ .word = 2, .value = 14 },
+        .{ .word = 14, .value = 0xffffffff },
+    };
+    for (invalid) |bad| {
+        const copy = try alloc.dupe(u8, bytes.items);
+        std.mem.writeInt(u32, copy[tail + bad.word * 4 ..][0..4], bad.value, .little);
+        std.mem.writeInt(u64, copy[8..16], wyhash.hashU64(copy[16..]), .little);
+        try testing.expectError(error.Truncated, codec.deserialize(copy, alloc));
+    }
+    roles.hmr_internal.?.global = ids.modules;
+    var out: std.ArrayList(u8) = .empty;
+    try testing.expectError(error.Truncated, codec.serialize(&sem, &out, alloc));
+    const legacy = try alloc.dupe(u8, bytes.items);
+    std.mem.writeInt(u32, legacy[4..8], 18, .little);
+    try testing.expectError(error.UnsupportedVersion, codec.deserialize(legacy, alloc));
 }

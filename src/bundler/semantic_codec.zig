@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v17: Output runtime identities persist with their owning semantic graph.
-pub const FORMAT_VERSION: u32 = 18;
+// v19: HMR runtime roles persist with their owning semantic graph.
+pub const FORMAT_VERSION: u32 = 19;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -42,12 +42,15 @@ const ESM_RUNTIME_FIELDS = [_][]const u8{ "factory_parameter", "result_parameter
 const INTEROP_HELPER_FIELDS = [_][]const u8{ "create", "get_proto_of", "def_prop", "get_own_prop_names", "get_own_prop_desc", "has_own", "copy_props", "to_esm", "export_helper", "to_common_js" };
 const INTEROP_INTERNAL_FIELDS = [_][]const u8{ "copy_props_to", "copy_props_from", "copy_props_desc", "copy_props_keys", "copy_props_index", "copy_props_key", "copy_props_closure_key", "to_esm_module", "to_esm_node_mode", "to_esm_target", "export_target", "export_all", "export_name", "to_common_js_module" };
 
+const HMR_RUNTIME_FIELDS = [_][]const u8{ "global", "modules", "hot_callbacks", "hot_data", "schedule", "reload", "resolve_refresh", "refresh_boundary", "refresh_timer", "enqueue_update", "make_hot", "original_commonjs", "original_esm", "apply_update" };
+
 comptime {
-    if (@typeInfo(module.RuntimeIdentitySnapshot).@"struct".field_names.len != 7 or
+    if (@typeInfo(module.RuntimeIdentitySnapshot).@"struct".field_names.len != 8 or
         @typeInfo(module.CjsRuntimeInternalSymbolIds).@"struct".field_names.len != CJS_RUNTIME_FIELDS.len or
         @typeInfo(module.EsmRuntimeInternalSymbolIds).@"struct".field_names.len != ESM_RUNTIME_FIELDS.len or
         @typeInfo(module.EsmInteropRuntimeHelperSymbolIds).@"struct".field_names.len != INTEROP_HELPER_FIELDS.len or
-        @typeInfo(module.EsmInteropRuntimeInternalSymbolIds).@"struct".field_names.len != INTEROP_INTERNAL_FIELDS.len)
+        @typeInfo(module.EsmInteropRuntimeInternalSymbolIds).@"struct".field_names.len != INTEROP_INTERNAL_FIELDS.len or
+        @typeInfo(module.HmrRuntimeInternalSymbolIds).@"struct".field_names.len != HMR_RUNTIME_FIELDS.len)
         @compileError("Runtime identity snapshot changed; update the semantic codec layout and version.");
 }
 
@@ -121,6 +124,20 @@ fn validRuntimeIdentityLayout(snapshot: module.RuntimeIdentitySnapshot, symbols_
         if (snapshot.interop_internal) |x| x.export_all else null,
         if (snapshot.interop_internal) |x| x.export_name else null,
         if (snapshot.interop_internal) |x| x.to_common_js_module else null,
+        if (snapshot.hmr_internal) |x| x.global else null,
+        if (snapshot.hmr_internal) |x| x.modules else null,
+        if (snapshot.hmr_internal) |x| x.hot_callbacks else null,
+        if (snapshot.hmr_internal) |x| x.hot_data else null,
+        if (snapshot.hmr_internal) |x| x.schedule else null,
+        if (snapshot.hmr_internal) |x| x.reload else null,
+        if (snapshot.hmr_internal) |x| x.resolve_refresh else null,
+        if (snapshot.hmr_internal) |x| x.refresh_boundary else null,
+        if (snapshot.hmr_internal) |x| x.refresh_timer else null,
+        if (snapshot.hmr_internal) |x| x.enqueue_update else null,
+        if (snapshot.hmr_internal) |x| x.make_hot else null,
+        if (snapshot.hmr_internal) |x| x.original_commonjs else null,
+        if (snapshot.hmr_internal) |x| x.original_esm else null,
+        if (snapshot.hmr_internal) |x| x.apply_update else null,
     };
     for (ids, 0..) |id, i| {
         if (id == null) continue;
@@ -391,6 +408,7 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
         try putRuntimeId(&payload, alloc, ids.to_binary);
         try putRuntimeGroup(&INTEROP_HELPER_FIELDS, &payload, alloc, ids.interop_helpers);
         try putRuntimeGroup(&INTEROP_INTERNAL_FIELDS, &payload, alloc, ids.interop_internal);
+        try putRuntimeGroup(&HMR_RUNTIME_FIELDS, &payload, alloc, ids.hmr_internal);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -616,6 +634,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             .to_binary = try readRuntimeId(&r, symbols_len),
             .interop_helpers = try readRuntimeGroup(module.EsmInteropRuntimeHelperSymbolIds, &INTEROP_HELPER_FIELDS, &r, symbols_len),
             .interop_internal = try readRuntimeGroup(module.EsmInteropRuntimeInternalSymbolIds, &INTEROP_INTERNAL_FIELDS, &r, symbols_len),
+            .hmr_internal = try readRuntimeGroup(module.HmrRuntimeInternalSymbolIds, &HMR_RUNTIME_FIELDS, &r, symbols_len),
         };
         if (!validRuntimeIdentityLayout(snapshot, symbols_len)) return error.Truncated;
         runtime_identities = try arena.create(module.RuntimeIdentitySnapshot);

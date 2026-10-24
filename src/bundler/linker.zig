@@ -198,29 +198,7 @@ pub const ExternalParamNames = struct {
     parameter_name: []const u8,
 };
 
-const HmrRuntimeInternalRow = struct {
-    field_name: []const u8,
-    identity: []const u8,
-    emitted_name: []const u8,
-    kind: semantic_symbol.SymbolKind,
-};
-
-const HMR_RUNTIME_INTERNAL_ROWS = [_]HmrRuntimeInternalRow{
-    .{ .field_name = "global", .identity = "hmr.global", .emitted_name = "__zntc_g", .kind = .variable_var },
-    .{ .field_name = "modules", .identity = "hmr.modules", .emitted_name = "__zntc_modules", .kind = .variable_var },
-    .{ .field_name = "hot_callbacks", .identity = "hmr.hot_callbacks", .emitted_name = "__zntc_hot_cbs", .kind = .variable_var },
-    .{ .field_name = "hot_data", .identity = "hmr.hot_data", .emitted_name = "__zntc_hot_data", .kind = .variable_var },
-    .{ .field_name = "schedule", .identity = "hmr.schedule", .emitted_name = "__zntc_schedule", .kind = .function_decl },
-    .{ .field_name = "reload", .identity = "hmr.reload", .emitted_name = "__zntc_reload", .kind = .variable_var },
-    .{ .field_name = "resolve_refresh", .identity = "hmr.resolve_refresh", .emitted_name = "__zntc_resolveRefresh", .kind = .function_decl },
-    .{ .field_name = "refresh_boundary", .identity = "hmr.refresh_boundary", .emitted_name = "__zntc_isReactRefreshBoundary", .kind = .function_decl },
-    .{ .field_name = "refresh_timer", .identity = "hmr.refresh_timer", .emitted_name = "__zntc_refreshTimer", .kind = .variable_var },
-    .{ .field_name = "enqueue_update", .identity = "hmr.enqueue_update", .emitted_name = "__zntc_enqueueUpdate", .kind = .function_decl },
-    .{ .field_name = "make_hot", .identity = "hmr.make_hot", .emitted_name = "__zntc_make_hot", .kind = .function_decl },
-    .{ .field_name = "original_commonjs", .identity = "hmr.original_commonjs", .emitted_name = "__zntc_orig_commonJS", .kind = .variable_var },
-    .{ .field_name = "original_esm", .identity = "hmr.original_esm", .emitted_name = "__zntc_orig_esm", .kind = .variable_var },
-    .{ .field_name = "apply_update", .identity = "hmr.apply_update", .emitted_name = "__zntc_apply_update", .kind = .function_decl },
-};
+const HMR_RUNTIME_INTERNAL_ROWS = @import("module.zig").HMR_RUNTIME_INTERNAL_ROWS;
 
 pub const Linker = struct {
     allocator: std.mem.Allocator,
@@ -2453,16 +2431,14 @@ pub const Linker = struct {
             const sem = module.semantic orelse continue;
             has_semantic_module = true;
             if (module.parse_arena != null and parse_backed_anchor == null) parse_backed_anchor = module.index;
-            var has_rows = module.hmr_runtime_internal_symbols != null;
-            if (!has_rows) {
-                for (sem.symbols.items) |symbol| {
-                    if (symbol.synthetic_kind == .hmr_runtime_internal_local) {
-                        has_rows = true;
-                        break;
-                    }
-                }
+            const canonical = if (sem.runtime_identities) |roles| roles.hmr_internal else null;
+            if (canonical == null) {
+                if (module.hmr_runtime_internal_symbols != null or @import("module.zig").hasHmrRuntimeRows(sem.symbols.items))
+                    return error.HmrRuntimeInternalSymbolsMissing;
+                continue;
             }
-            if (!has_rows) continue;
+            if (!@import("module.zig").validHmrRuntimeIds(canonical.?, sem.symbols.items))
+                return error.HmrRuntimeInternalSymbolsInvalid;
             if (semantic_owner) |existing| {
                 if (existing != module.index) return error.HmrRuntimeInternalOwnerAmbiguous;
             } else {
@@ -2479,51 +2455,27 @@ pub const Linker = struct {
         var owner = self.moduleAtMut(@backingInt(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.HmrRuntimeInternalSymbolsMissing;
         const arena = if (owner.parse_arena) |value| value.allocator() else return error.HmrRuntimeInternalOwnerMissing;
-        var recovered: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
-
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind != .hmr_runtime_internal_local) {
-                if (std.mem.startsWith(u8, symbol.synthetic_name, "hmr.")) return error.HmrRuntimeInternalSymbolsInvalid;
-                continue;
-            }
-            var matched = false;
-            inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
-                if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
-                    if (matched or symbol.kind != row.kind or recovered[row_index] != null)
-                        return error.HmrRuntimeInternalSymbolsInvalid;
-                    recovered[row_index] = @fromBackingInt(@intCast(index));
-                    matched = true;
-                }
-            }
-            if (!matched) return error.HmrRuntimeInternalSymbolsInvalid;
-        }
-
-        var found_count: usize = 0;
-        for (recovered) |id| {
-            if (id != null) found_count += 1;
-        }
-        if (found_count == 0) {
+        const roles = try sem.ensureRuntimeIdentities(arena);
+        const ids = if (roles.hmr_internal) |existing| existing else blk: {
+            // A live Linker cannot lose its producer record and silently
+            // allocate a replacement group. A graphless default has no owner.
+            if (self.hmr_runtime_internal_names_owned or self.hmr_runtime_internal_owner != null)
+                return error.HmrRuntimeInternalSymbolsMissing;
             const start_len = sem.symbols.items.len;
             errdefer sem.symbols.items.len = start_len;
-            inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
-                recovered[row_index] = try semantic_symbol.extendSymbol(
-                    arena,
-                    &sem.symbols,
-                    row.kind,
-                    .hmr_runtime_internal_local,
-                    row.identity,
-                    Span.EMPTY,
-                );
+            var created: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
+            inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, index| {
+                created[index] = try semantic_symbol.extendSymbol(arena, &sem.symbols, row.kind, .hmr_runtime_internal_local, row.identity, Span.EMPTY);
             }
-        } else if (found_count != HMR_RUNTIME_INTERNAL_ROWS.len) {
-            return error.HmrRuntimeInternalSymbolsMissing;
-        }
-
-        const ids = recoveredHmrRuntimeInternalIds(recovered);
+            const complete = hmrRuntimeIdsFromCreatedSlots(created);
+            roles.hmr_internal = complete;
+            break :blk complete;
+        };
+        if (!@import("module.zig").validHmrRuntimeIds(ids, sem.symbols.items)) return error.HmrRuntimeInternalSymbolsInvalid;
         owner.hmr_runtime_internal_symbols = ids;
         self.hmr_runtime_internal_owner = owner_index;
 
-        if (self.hmr_runtime_internal_names != null) {
+        if (self.hmr_runtime_internal_names_owned) {
             try self.restoreHmrRuntimeInternalNames();
             return;
         }
@@ -2545,7 +2497,9 @@ pub const Linker = struct {
     fn restoreHmrRuntimeInternalNames(self: *Linker) !void {
         const owner_index = self.hmr_runtime_internal_owner orelse return error.HmrRuntimeInternalOwnerMissing;
         const owner = self.getModule(@backingInt(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
-        const ids = owner.hmr_runtime_internal_symbols orelse return error.HmrRuntimeInternalSymbolsMissing;
+        const sem = owner.semantic orelse return error.HmrRuntimeInternalSymbolsMissing;
+        const ids = (sem.runtime_identities orelse return error.HmrRuntimeInternalSymbolsMissing).hmr_internal orelse return error.HmrRuntimeInternalSymbolsMissing;
+        if (!@import("module.zig").validHmrRuntimeIds(ids, sem.symbols.items)) return error.HmrRuntimeInternalSymbolsInvalid;
         const names = self.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
         inline for (HMR_RUNTIME_INTERNAL_ROWS) |row| {
             const inner = @field(ids, row.field_name);
@@ -2569,7 +2523,7 @@ pub const Linker = struct {
         }
     }
 
-    fn recoveredHmrRuntimeInternalIds(ids: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId) @import("module.zig").HmrRuntimeInternalSymbolIds {
+    fn hmrRuntimeIdsFromCreatedSlots(ids: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId) @import("module.zig").HmrRuntimeInternalSymbolIds {
         return .{
             .global = ids[0] orelse unreachable,
             .modules = ids[1] orelse unreachable,

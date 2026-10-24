@@ -1936,7 +1936,7 @@ test "linker: HMR preamble names are graph-owned and recover exact identities" {
         try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(item.id))) orelse return error.TestUnexpectedResult);
     }
 
-    // Typed rows recover the convenience ID cache and restore names after a
+    // The canonical typed record restores the convenience ID cache and restore names after a
     // chunk pass drops entries from the transient rename table.
     module.hmr_runtime_internal_symbols = null;
     try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
@@ -1959,7 +1959,7 @@ test "linker: HMR preamble names are graph-owned and recover exact identities" {
     const original_name = sem.symbols.items[changed_index].synthetic_name;
     sem.symbols.items[changed_index].synthetic_kind = null;
     sem.symbols.items[changed_index].synthetic_name = "";
-    try std.testing.expectError(error.HmrRuntimeInternalSymbolsMissing, r.linker.prepareHmrRuntimeInternalNames());
+    try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
     sem.symbols.items[changed_index].synthetic_kind = original_synthetic;
     sem.symbols.items[changed_index].synthetic_name = original_name;
 
@@ -5597,4 +5597,91 @@ test "interop cached linker cannot recreate lost complete provenance as a cold c
     defer partial.deinit();
     try partial.prepareEsmInteropRuntimeNames();
     try std.testing.expect(owner.semantic.?.runtime_identities.?.interop_internal != null);
+}
+
+test "HMR canonical roles survive codec reset decoys and fresh graph owners across ten inputs" {
+    const sources = [_][]const u8{
+        "const value = 1; console.log(value);",
+        "var __zntc_g = 2; console.log(__zntc_g);",
+        "let __zntc_modules = 3; console.log(__zntc_modules);",
+        "function __zntc_schedule() { return 4; } console.log(__zntc_schedule());",
+        "class __zntc_reload {} console.log(__zntc_reload.name);",
+        "const {x: __zntc_hot_data} = {x: 6}; console.log(__zntc_hot_data);",
+        "const __zntc_apply_update = () => 7; console.log(__zntc_apply_update());",
+        "function outer() { const __zntc_hot_cbs = 8; return () => __zntc_hot_cbs; } console.log(outer()());",
+        "import './dep'; const __zntc_refreshTimer = 9; console.log(__zntc_refreshTimer);",
+        "export enum Value { x = 10 } console.log(Value.x);",
+    };
+    const module_types = @import("module.zig");
+    var prefix: std.ArrayList(u8) = .empty;
+    defer prefix.deinit(std.testing.allocator);
+    for (0..40) |i| try prefix.print(std.testing.allocator, "const remove_before_refresh_{d} = 0;\n", .{i});
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const full_source = try std.fmt.allocPrint(std.testing.allocator, "{s}{s}", .{ prefix.items, source });
+        defer std.testing.allocator.free(full_source);
+        try writeFile(tmp.dir, "entry.ts", full_source);
+        try writeFile(tmp.dir, "dep.ts", "export const dependency = 1;");
+        var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+        defer r.cache.deinit();
+        defer r.destroyGraph();
+        defer r.linker.deinit();
+        r.linker.dev_mode = true;
+        try r.linker.computeRenames();
+        const index = findModuleIdx(r.graph, "entry.ts") orelse return error.MissingHmrEntry;
+        const owner = r.graph.moduleAtMut(index) orelse return error.MissingHmrEntry;
+        const original = (owner.semantic.?.runtime_identities orelse return error.MissingHmrCanonicalRecord).hmr_internal orelse return error.MissingHmrCanonicalGroup;
+        try std.testing.expect(module_types.validHmrRuntimeIds(original, owner.semantic.?.symbols.items));
+        const arena = owner.parse_arena.?.allocator();
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(std.testing.allocator);
+        try @import("semantic_codec.zig").serialize(&owner.semantic.?, &bytes, std.testing.allocator);
+        owner.semantic = try @import("semantic_codec.zig").deserialize(bytes.items, arena);
+        const canonical = owner.semantic.?.runtime_identities.?;
+        try std.testing.expectEqualDeep(original, canonical.hmr_internal.?);
+        // Same-kind/spelling decoys are not identity keys.
+        const decoy = owner.semantic.?.symbols.items[@backingInt(original.global)];
+        try owner.semantic.?.symbols.append(arena, decoy);
+        const with_decoy_len = owner.semantic.?.symbols.items.len;
+        owner.hmr_runtime_internal_symbols = null;
+        r.linker.hmr_runtime_internal_owner = null;
+        try r.linker.prepareHmrRuntimeInternalNames();
+        try std.testing.expectEqualDeep(original, owner.hmr_runtime_internal_symbols.?);
+        try std.testing.expectEqual(with_decoy_len, owner.semantic.?.symbols.items.len);
+        try expectHmrRuntimeInternalNames(&r.linker, index, original);
+        canonical.hmr_internal.?.global = original.modules;
+        try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
+        canonical.hmr_internal = original;
+        owner.hmr_runtime_internal_symbols = null;
+        owner.semantic.?.runtime_identities = null;
+        try std.testing.expectError(error.HmrRuntimeInternalSymbolsMissing, r.linker.prepareHmrRuntimeInternalNames());
+        owner.semantic.?.runtime_identities = canonical;
+        canonical.hmr_internal = null;
+        try std.testing.expectError(error.HmrRuntimeInternalSymbolsMissing, r.linker.prepareHmrRuntimeInternalNames());
+        // History in the Linker also rejects losing both rows and record.
+        owner.semantic.?.symbols.items.len = @backingInt(original.global);
+        try std.testing.expectError(error.HmrRuntimeInternalSymbolsMissing, r.linker.prepareHmrRuntimeInternalNames());
+        try std.testing.expectEqual(@as(usize, @backingInt(original.global)), owner.semantic.?.symbols.items.len);
+        owner.semantic.?.symbols.items.len = with_decoy_len;
+        canonical.hmr_internal = original;
+        try r.linker.prepareHmrRuntimeInternalNames();
+        const previous_owner = owner.semantic.?.captureOwnerToken();
+        // Delete forty unused declarations so fresh analysis cannot
+        // accidentally return the same numeric role IDs.
+        const ast = &owner.ast.?;
+        const root = ast.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
+        const statements = &ast.nodes.items[@backingInt(root)].data.list;
+        try std.testing.expect(statements.len > 40);
+        statements.start += 40;
+        statements.len -= 40;
+        try r.graph.resyncModuleMetadataAfterAstMutation(owner, arena, &r.linker.rename_table);
+        const carried = (owner.semantic.?.runtime_identities orelse return error.MissingHmrCarriedRecord).hmr_internal orelse return error.MissingHmrCarriedGroup;
+        try std.testing.expect(carried.global != original.global);
+        try std.testing.expect(previous_owner != owner.semantic.?.owner_token);
+        try std.testing.expect(module_types.validHmrRuntimeIds(carried, owner.semantic.?.symbols.items));
+        owner.hmr_runtime_internal_symbols = null;
+        try r.linker.prepareHmrRuntimeInternalNames();
+        try std.testing.expectEqualDeep(carried, owner.hmr_runtime_internal_symbols.?);
+    }
 }

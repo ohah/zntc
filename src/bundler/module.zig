@@ -58,6 +58,7 @@ pub const RuntimeIdentitySnapshot = struct {
     to_binary: ?SemanticSymbolId = null,
     interop_helpers: ?EsmInteropRuntimeHelperSymbolIds = null,
     interop_internal: ?EsmInteropRuntimeInternalSymbolIds = null,
+    hmr_internal: ?HmrRuntimeInternalSymbolIds = null,
 };
 
 /// Symbol identities for graph-wide bindings in the raw ESM interop preamble.
@@ -184,6 +185,53 @@ pub const HmrRuntimeInternalSymbolIds = struct {
     original_esm: SemanticSymbolId,
     apply_update: SemanticSymbolId,
 };
+pub const HmrRuntimeInternalRow = struct {
+    field_name: []const u8,
+    identity: []const u8,
+    emitted_name: []const u8,
+    kind: semantic_symbol.SymbolKind,
+};
+
+pub const HMR_RUNTIME_INTERNAL_ROWS = [_]HmrRuntimeInternalRow{
+    .{ .field_name = "global", .identity = "hmr.global", .emitted_name = "__zntc_g", .kind = .variable_var },
+    .{ .field_name = "modules", .identity = "hmr.modules", .emitted_name = "__zntc_modules", .kind = .variable_var },
+    .{ .field_name = "hot_callbacks", .identity = "hmr.hot_callbacks", .emitted_name = "__zntc_hot_cbs", .kind = .variable_var },
+    .{ .field_name = "hot_data", .identity = "hmr.hot_data", .emitted_name = "__zntc_hot_data", .kind = .variable_var },
+    .{ .field_name = "schedule", .identity = "hmr.schedule", .emitted_name = "__zntc_schedule", .kind = .function_decl },
+    .{ .field_name = "reload", .identity = "hmr.reload", .emitted_name = "__zntc_reload", .kind = .variable_var },
+    .{ .field_name = "resolve_refresh", .identity = "hmr.resolve_refresh", .emitted_name = "__zntc_resolveRefresh", .kind = .function_decl },
+    .{ .field_name = "refresh_boundary", .identity = "hmr.refresh_boundary", .emitted_name = "__zntc_isReactRefreshBoundary", .kind = .function_decl },
+    .{ .field_name = "refresh_timer", .identity = "hmr.refresh_timer", .emitted_name = "__zntc_refreshTimer", .kind = .variable_var },
+    .{ .field_name = "enqueue_update", .identity = "hmr.enqueue_update", .emitted_name = "__zntc_enqueueUpdate", .kind = .function_decl },
+    .{ .field_name = "make_hot", .identity = "hmr.make_hot", .emitted_name = "__zntc_make_hot", .kind = .function_decl },
+    .{ .field_name = "original_commonjs", .identity = "hmr.original_commonjs", .emitted_name = "__zntc_orig_commonJS", .kind = .variable_var },
+    .{ .field_name = "original_esm", .identity = "hmr.original_esm", .emitted_name = "__zntc_orig_esm", .kind = .variable_var },
+    .{ .field_name = "apply_update", .identity = "hmr.apply_update", .emitted_name = "__zntc_apply_update", .kind = .function_decl },
+};
+
+pub fn hasHmrRuntimeRows(symbols: []const Symbol) bool {
+    for (symbols) |symbol| {
+        if (symbol.synthetic_kind == .hmr_runtime_internal_local or std.mem.startsWith(u8, symbol.synthetic_name, "hmr.")) return true;
+    }
+    return false;
+}
+
+pub fn validHmrRuntimeIds(ids: HmrRuntimeInternalSymbolIds, symbols: []const Symbol) bool {
+    comptime std.debug.assert(@typeInfo(HmrRuntimeInternalSymbolIds).@"struct".field_names.len == HMR_RUNTIME_INTERNAL_ROWS.len);
+    var seen: [HMR_RUNTIME_INTERNAL_ROWS.len]SemanticSymbolId = undefined;
+    inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, index| {
+        const id = @field(ids, row.field_name);
+        const raw = @backingInt(id);
+        if (id.isNone() or raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        if (symbol.synthetic_kind != .hmr_runtime_internal_local or symbol.kind != row.kind or
+            !std.mem.eql(u8, symbol.synthetic_name, row.identity)) return false;
+        for (seen[0..index]) |previous| if (previous == id) return false;
+        seen[index] = id;
+    }
+    return true;
+}
+
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
