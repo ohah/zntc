@@ -2297,7 +2297,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(actual.stdout).toBe(baseline.stdout);
 
       const reanalyzedSources = [
-        'declare enum Ambient { Value = 1 } console.log(typeof Ambient);',
+        'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);',
         'const enum Color { Red = 1 } console.log(Color.Red);',
         'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
@@ -2354,7 +2354,99 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'ambient-enum',
         source: 'declare enum AmbientEnum { Value = 1 } console.log(AmbientEnum.Value);',
         setup: 'globalThis.AmbientEnum = { Value: 12 };',
-        graph: 'reanalyzed',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-shadowing',
+        source: [
+          'declare enum Mode { Public = 1 }',
+          'function read(Mode: { Public: number }) { return Mode.Public; }',
+          'console.log(Mode.Public, read({ Public: 29 }));',
+        ].join('\n'),
+        setup: 'globalThis.Mode = { Public: 31 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-closure',
+        source: [
+          'declare enum Status { Active = 1 }',
+          'const read = () => Status.Active;',
+          'console.log(read());',
+        ].join('\n'),
+        setup: 'globalThis.Status = { Active: 32 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-multiple',
+        source: [
+          'declare enum Color { Red = 1 }',
+          'declare enum Shape { Circle = 1 }',
+          'console.log(Color.Red, Shape.Circle);',
+        ].join('\n'),
+        setup: 'globalThis.Color = { Red: 33 }; globalThis.Shape = { Circle: 34 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-getter-order',
+        source: 'declare enum Phase { Current = 1 } console.log(Phase.Current);',
+        setup: 'globalThis.Phase = { get Current() { console.log("getter"); return 35; } };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-computed-access',
+        source: "declare enum Color { Red = 1 } console.log(Color['Red']);",
+        setup: 'globalThis.Color = { Red: 36 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-object-shorthand',
+        source: [
+          'declare enum Color { Red = 1 }',
+          'const box = { Color };',
+          'console.log(box.Color.Red);',
+        ].join('\n'),
+        setup: 'globalThis.Color = { Red: 37 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-default-parameter',
+        source: [
+          'declare enum Role { Admin = 1 }',
+          'function current(value = Role.Admin) { return value; }',
+          'console.log(current());',
+        ].join('\n'),
+        setup: 'globalThis.Role = { Admin: 38 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-switch',
+        source: [
+          'declare enum State { Ready = 1, Waiting = 2 }',
+          'switch (State.Ready) { case State.Ready: console.log("ready"); break; default: console.log("other"); }',
+        ].join('\n'),
+        setup: 'globalThis.State = { Ready: 39, Waiting: 40 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-async-callback',
+        source: [
+          'declare enum Phase { Complete = 1 }',
+          'Promise.resolve().then(() => console.log(Phase.Complete));',
+        ].join('\n'),
+        setup: 'globalThis.Phase = { Complete: 41 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-enum-in-runtime-namespace',
+        source: [
+          'namespace Outer {',
+          '  export declare enum Numbers { A = 1 }',
+          '  export const value = 42;',
+          '}',
+          'console.log(Outer.value, typeof Outer.Numbers);',
+        ].join('\n'),
+        setup: '',
+        graph: 'retained',
       },
       {
         name: 'ambient-namespace',
