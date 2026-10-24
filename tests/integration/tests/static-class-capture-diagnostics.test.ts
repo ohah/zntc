@@ -162,4 +162,33 @@ describe('static initializer dynamic environment diagnostics (#4819)', () => {
       }
     }
   }
+  for (const fixture of cases.filter(
+    (item) => item.allModes || item.name === 'ordinary function local-only literal eval',
+  )) {
+    for (const target of ['es5', 'es2015', 'es2017', 'es2022']) {
+      for (const minify of [[], ['--minify-identifiers'], ['--minify']]) {
+        test(`default format: ${fixture.name}, ${target}, ${minify.join(' ') || 'plain'}`, async () => {
+          const created = await createFixture({ 'input.cjs': fixture.source });
+          cleanup = created.cleanup;
+          const input = join(created.dir, 'input.cjs');
+          const native = spawnSync('node', [input], { encoding: 'utf8' });
+          expect(native.status, native.stderr).toBe(0);
+          const output = join(created.dir, 'default-output.cjs');
+          // No --format: exercise the standalone file/fast path, rather than
+          // the explicit-format bundler pipeline covered above.
+          const built = await runZntc([input, `--target=${target}`, ...minify, '-o', output]);
+          if (fixture.rejects(target)) {
+            expect(built.exitCode).not.toBe(0);
+            expect(built.stderr).toContain('ZNTC1505');
+          } else {
+            expect(built.exitCode, built.stderr).toBe(0);
+            expect(built.stderr).not.toContain('ZNTC1505');
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(native.stdout);
+          }
+        });
+      }
+    }
+  }
 });
