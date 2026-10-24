@@ -1958,8 +1958,6 @@ describe('symbol identity coverage gate (#4819)', () => {
         'const enum Color { Red = 1 } console.log(Color.Red);',
         'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
-        'class Box { value: number = 1; } console.log(new Box().value);',
-        'enum Color { Red } class Box { value: number = 1; } console.log(Color.Red, new Box().value);',
         'namespace Mixed { export class Box { value: number = 1; } } console.log(new Mixed.Box().value);',
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
@@ -2071,6 +2069,76 @@ describe('symbol identity coverage gate (#4819)', () => {
         const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
         expect(baseline.status, baseline.stderr).toBe(0);
         expect(baseline.stdout).toBe('40 42 42 2 42\n');
+
+        const result = runCoverage(input, target, dir, true);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(baseline.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient TypeScript classes retain exact graph across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-class-graph-'));
+    const input = join(dir, 'classes.unknown');
+    const source = [
+      'const seed: number = 40;',
+      'enum Color { Red = 1 }',
+      'class Base {',
+      '  value: number;',
+      '  constructor(value: number) { this.value = value; }',
+      '  read(step: number): number { return this.value + step; }',
+      '}',
+      'function create(Super: any): any {',
+      '  const captured: number = seed + 2;',
+      '  return class Base extends Super {',
+      '    constructor(value: number) { super(value); this.captured = captured; }',
+      '    read(step: number): number {',
+      '      const captured: number = 1000;',
+      '      return super.read(step) + this.captured + captured;',
+      '    }',
+      '  };',
+      '}',
+      'const Child = create(Base);',
+      'console.log(Color.Red, new Child(1).read(1));',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      for (const target of [TARGETS[0], TARGETS[4]]) {
+        const reference = join(dir, `reference-${target.name}.js`);
+        const output = join(dir, 'out.js');
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: target.name === 'es5' ? ts.ScriptTarget.ES5 : ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe('1 1044\n');
 
         const result = runCoverage(input, target, dir, true);
         expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
