@@ -337,8 +337,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const body_list = try rewriteUsingForStateMachine(self, body.data.list);
-            const stmts_start = body_list.start;
-            const stmts_len = body_list.len;
+            const stmts_start = body_list.statements.start;
+            const stmts_len = body_list.statements.len;
 
             // Phase 1: 연산 수집 (yield/return/statement를 Operation으로 변환)
             var ops: std.ArrayList(Operation) = .empty;
@@ -357,7 +357,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var i_stmts: u32 = 0;
             while (i_stmts < stmts_len) : (i_stmts += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_stmts];
-                try collectOperations(self, @fromBackingInt(@intCast(raw_idx)), &ops, &next_label);
+                try collectRewrittenUsingStatement(self, @fromBackingInt(@intCast(raw_idx)), body_list.disposal_try, &ops, &next_label);
             }
 
             // 암시적 return (마지막에 return이 없으면 추가)
@@ -898,7 +898,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectDoWhileOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .try_statement => {
-                    try collectTryOperations(self, stmt_idx, stmt, ops, next_label);
+                    try collectTryOperations(self, stmt_idx, stmt, ops, next_label, .source);
                 },
                 .labeled_statement => {
                     // 라벨 붙은 for-of: 라벨을 풀이 결과 안쪽 for 에 붙여 수집한다 — 라벨이 풀이
@@ -1858,6 +1858,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             fixupSentinel(ops.items[ops_start..], dw_continue_sent, cond_label);
         }
 
+        const TryCollectionRole = enum { source, using_cleanup };
+
         /// try/catch/finally 안의 yield를 상태 머신으로 변환.
         /// try_statement: ternary { a=block, b=catch_clause, c=finally_block }
         /// catch_clause: binary { left=param, right=body }
@@ -1868,13 +1870,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         ///   goto end
         ///   catch: param = _state.sent(); catch body
         ///   finally: finally body + return [7] (endfinally)
-        fn collectTryOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+        fn collectTryOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32, role: TryCollectionRole) Transformer.Error!void {
             const try_body = stmt.data.ternary.a;
             const catch_clause = stmt.data.ternary.b;
             const finally_body = stmt.data.ternary.c;
 
             // try/catch/finally body 모두 statement → hasYieldOrReturn 으로 일관.
-            const requires_lowering = es2015_scan.hasYieldOrReturn(self, try_body) or
+            const requires_lowering = role == .using_cleanup or es2015_scan.hasYieldOrReturn(self, try_body) or
                 es2015_scan.hasYieldOrReturn(self, catch_clause) or
                 es2015_scan.hasYieldOrReturn(self, finally_body);
 
@@ -3022,11 +3024,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// block_statement이면 내부 문들을 순회, 아니면 단일 문으로 collectOperations.
         /// 상태 기계가 직접 수집하는 문장 목록에 `using` 이 있으면 try/finally 구조로 먼저
         /// 바꾼다 — 이 경로는 목록 방문(visitListNode)을 거치지 않아 dispose 가 빠졌다 (#4730).
-        fn rewriteUsingForStateMachine(self: *Transformer, list: ast_mod.NodeList) Transformer.Error!ast_mod.NodeList {
-            if (!self.options.unsupported.using) return list;
+        fn rewriteUsingForStateMachine(self: *Transformer, list: ast_mod.NodeList) Transformer.Error!@import("es2025_using.zig").UsingRewriteResult {
+            if (!self.options.unsupported.using) return .{ .statements = list };
             const Using = @import("es2025_using.zig").ES2025Using(Transformer);
-            if (!Using.hasUsingDeclaration(self, list.start, list.len)) return list;
-            return Using.rewriteUsingStatements(self, list.start, list.len, .body);
+            if (!Using.hasUsingDeclaration(self, list.start, list.len)) return .{ .statements = list };
+            return Using.rewriteUsingStatementsWithOwner(self, list.start, list.len, .body);
+        }
+
+        fn collectRewrittenUsingStatement(self: *Transformer, statement: NodeIndex, disposal_try: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            if (!disposal_try.isNone() and statement == disposal_try) {
+                const node = self.ast.getNode(statement);
+                if (node.tag != .try_statement) std.debug.panic("using cleanup owner is not its generated try", .{});
+                // The constructor moved the list into this exact disposal try.
+                // Its declarations already have wrapper storage, so collect
+                // them as assignments instead of cloning native declarations.
+                return collectTryOperations(self, statement, node, ops, next_label, .using_cleanup);
+            }
+            return collectOperations(self, statement, ops, next_label);
         }
 
         const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
@@ -3167,14 +3181,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 defer lexical.deinit(self.allocator);
                 try collectLexicalBindingsInList(self, body_node.data.list, &lexical);
                 const list = try rewriteUsingForStateMachine(self, body_node.data.list);
-                const stmts_start = list.start;
-                const stmts_len = list.len;
+                const stmts_start = list.statements.start;
+                const stmts_len = list.statements.len;
                 try registerStateMachineBindings(self, lexical.items);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {
                     const raw_idx = self.ast.extra_data.items[stmts_start + i_stmt];
-                    try collectOperations(self, @fromBackingInt(@intCast(raw_idx)), ops, next_label);
+                    try collectRewrittenUsingStatement(self, @fromBackingInt(@intCast(raw_idx)), list.disposal_try, ops, next_label);
                 }
             } else {
                 try collectOperations(self, body_idx, ops, next_label);
@@ -4745,4 +4759,116 @@ test "generator deferred loop return handoff requires one exact binding node" {
         .callback_local = true,
     });
     try std.testing.expect(!Generator.hasExactCallbackLocalGeneratorTempBinding(&mock, binding, name_span));
+}
+
+fn checkUsingCleanupStateStorage(source: []const u8, ordinary_try: bool) !void {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var function: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        if (function.isNone() or node.span.end - node.span.start > parser.ast.getNode(function).span.end - parser.ast.getNode(function).span.start)
+            function = @fromBackingInt(@intCast(raw));
+    }
+    try std.testing.expect(!function.isNone());
+    const scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(function)).?);
+    var state_ids: std.ArrayList(u32) = .empty;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .variable_declaration) continue;
+        const start = parser.ast.extra_data.items[node.data.extra + 1];
+        const len = parser.ast.extra_data.items[node.data.extra + 2];
+        for (parser.ast.extra_data.items[start..][0..len]) |raw| {
+            const declarator = parser.ast.getNode(@fromBackingInt(@intCast(raw)));
+            const binding = parser.ast.extra_data.items[declarator.data.extra];
+            if (parser.ast.nodes.items[binding].tag != .binding_identifier) continue;
+            const sid = analyzer.symbol_ids.items[binding] orelse return error.MissingSourceUsingIdentity;
+            var owner = analyzer.symbols.items[sid].scope_id;
+            while (!owner.isNone() and !analyzer.scopes.items[owner.toIndex()].kind.isVarScope())
+                owner = analyzer.scopes.items[owner.toIndex()].parent;
+            if (owner != scope) continue;
+            if (std.mem.indexOfScalar(u32, state_ids.items, sid) == null) try state_ids.append(alloc, sid);
+        }
+    }
+    if (!ordinary_try) try std.testing.expect(state_ids.items.len > 0);
+    var transformer = try Transformer.init(alloc, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = scope;
+    transformer.generator_state_output_scope = scope;
+    transformer.state_machine_depth = 1;
+    const body = transformer.readNodeIdx(parser.ast.getNode(function).data.extra, ast_mod.FunctionExtra.body);
+    const built = try ES2015Generator(Transformer).buildStateMachine(&transformer, body, parser.ast.getNode(body).span, scope);
+    const callback_nodes = try ast_walk.collectReachableNodeIndicesFrom(alloc, transformer.ast, built.body);
+    const wrapper_nodes = if (built.var_decl.isNone()) &.{} else try ast_walk.collectReachableNodeIndicesFrom(alloc, transformer.ast, built.var_decl);
+    var native_tries: usize = 0;
+    for (callback_nodes) |raw| if (transformer.ast.nodes.items[raw].tag == .try_statement) {
+        native_tries += 1;
+    };
+    try std.testing.expectEqual(@as(usize, if (ordinary_try) 1 else 0), native_tries);
+    for (state_ids.items) |sid| {
+        var wrapper_bindings: usize = 0;
+        var callback_bindings: usize = 0;
+        var assignments: usize = 0;
+        for (wrapper_nodes) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier and transformer.getSymbolIdAt(@fromBackingInt(raw)) == sid) wrapper_bindings += 1;
+        }
+        for (callback_nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag == .assignment_expression and transformer.getSymbolIdAt(node.data.binary.left) == sid) assignments += 1;
+            if (transformer.getSymbolIdAt(@fromBackingInt(raw)) == sid and node.tag == .binding_identifier) callback_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), wrapper_bindings);
+        try std.testing.expectEqual(@as(usize, 0), callback_bindings);
+        try std.testing.expect(assignments > 0);
+        var exact_handoff = false;
+        for (built.hoisted_temps.items) |temp| {
+            if (temp.symbol_id != sid) continue;
+            try std.testing.expectEqual(scope, temp.owner_scope);
+            try std.testing.expectEqual(@as(?u32, sid), transformer.getSymbolIdAt(temp.binding));
+            exact_handoff = true;
+        }
+        if (!exact_handoff) {
+            try std.testing.expectEqual(scope, transformer.semantic_editor.?.symbols.items[sid].scope_id);
+        }
+    }
+}
+
+test "#4819 generated using cleanup has one state storage identity before output repair" {
+    const sources = [_][]const u8{
+        "function* run() { { using first = make(); use(first); } yield 0; }",
+        "function* run() { { using first = make(), second = make(); use(first, second); } yield 0; }",
+        "function* run() { { using first = make(); using second = make(); use(first, second); } yield 0; }",
+        "function* run() { { using first = make(); { using second = make(); use(first, second); } } yield 0; }",
+        "function* run() { { using first = make(); keep(() => first); } yield 0; }",
+        "function* run() { { using first = make(); const copy = first; use(copy); } yield 0; }",
+        "async function run() { { using first = make(); var shared = first; } await null; use(shared); }",
+        "async function run() { { using first = await make(); use(first); } await null; }",
+        "async function run() { { using first = make(); await null; use(first); } }",
+        "function* run() { using first = make(); use(first); }",
+        "function* run() { { using first = make(); return first; } }",
+        "async function run() { { await using first = make(); use(first); } }",
+        "function* run() { { using first = make(); throw first; } }",
+    };
+    for (sources) |source| try checkUsingCleanupStateStorage(source, false);
+    try checkUsingCleanupStateStorage("function* run() { try { work(); } finally { done(); } yield 0; }", true);
 }
