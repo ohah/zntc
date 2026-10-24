@@ -506,3 +506,78 @@ test "#4819 strict initializer factory constructor name scope exists before reco
     }
     try std.testing.expect(reads > 0);
 }
+
+test "#4819 constructor default closure keeps parameter identity before reconciliation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let saved; const Box=class { constructor({value}={value:7},get=()=>value) { saved=get;var value=9;this.value=value; } };");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const ast = @import("../parser/ast.zig");
+    var owner: ast.NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) owner = @fromBackingInt(@intCast(raw));
+    }
+    const source_scope = transformer.outputOwnedScope(owner).?;
+    const outer_scope = analyzer.scopes.items[source_scope.toIndex()].parent;
+    _ = outer_scope;
+    var parameter_id: ?usize = null;
+    var body_var_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (!std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) continue;
+        if (symbol.kind == .parameter) parameter_id = raw;
+        if (symbol.kind == .variable_var) body_var_id = raw;
+    }
+    try std.testing.expect(parameter_id != null and body_var_id != null and parameter_id.? != body_var_id.?);
+    var default_read: ast.NodeIndex = .none;
+    var default_scope: @import("../semantic/scope.zig").ScopeId = .none;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.read and @backingInt(reference.symbol_id) == parameter_id.?) {
+            default_read = reference.node_index;
+            default_scope = reference.scope_id;
+        }
+    }
+    try std.testing.expect(!default_read.isNone());
+    // Match the driver's collision-name planning, without running any output
+    // reconciliation or final scope/reference walk.
+    try transformer.buildBlockRenameMap();
+    transformer.current_scope = source_scope;
+    const function = try @import("es2015_class.zig").ES2015Class(Transformer).lowerClassExpression(&transformer, owner, parser.ast.getNode(owner));
+    const function_scope = transformer.outputOwnedScope(function).?;
+    const editor = &transformer.semantic_editor.?;
+    try std.testing.expectEqual(function_scope, editor.symbols.items[parameter_id.?].scope_id);
+    try std.testing.expectEqual(function_scope, editor.symbols.items[body_var_id.?].scope_id);
+    const live = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, function);
+    var default_reads: usize = 0;
+    for (live) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) != @as(?u32, @intCast(parameter_id.?))) continue;
+        try std.testing.expectEqual(@as(?u32, @backingInt(default_read)), transformer.reference_origin_map.get(raw));
+        const read = (try editor.referenceForNode(@fromBackingInt(@intCast(raw)))).?;
+        try std.testing.expectEqual(parameter_id.?, @backingInt(read.symbol_id));
+        try std.testing.expectEqual(default_scope, read.scope_id);
+        try std.testing.expect(read.flags.read and !read.flags.write);
+        default_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), default_reads);
+    try std.testing.expectEqual(function_scope, editor.scopes.items[default_scope.toIndex()].parent);
+    var enclosing = default_scope;
+    var steps: usize = 0;
+    while (enclosing != function_scope and !enclosing.isNone() and steps < editor.scopes.items.len) : (steps += 1) {
+        enclosing = editor.scopes.items[enclosing.toIndex()].parent;
+    }
+    try std.testing.expectEqual(function_scope, enclosing);
+}

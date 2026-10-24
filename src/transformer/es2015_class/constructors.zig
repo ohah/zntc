@@ -121,6 +121,19 @@ pub fn Constructors(comptime Transformer: type) type {
             }
             defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
 
+            // Lowered default closures execute in the constructor body. Move
+            // their exact lexical roots now, alongside the parameter storage,
+            // rather than relying on the final output walk to repair parents.
+            if (self.semantic_edit_enabled) {
+                if (param_lowering) |lr| {
+                    const old_params = self.readNodeIdx(me, MethodExtra.params);
+                    if (self.outputOwnedScope(old_params)) |parameter_scope| {
+                        for (lr.body_stmts.items) |statement|
+                            try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                    }
+                }
+            }
+
             const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
             const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
             // Base-class fields run before constructor parameter defaults. The

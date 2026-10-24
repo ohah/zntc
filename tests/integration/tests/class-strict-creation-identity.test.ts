@@ -144,6 +144,16 @@ const cases = [
       'const Box=class{constructor({value}={value:7}){console.log((function(){return this===undefined;})(),value);}};new Box();',
   },
   {
+    name: 'constructor default closure preserves parameter value',
+    source:
+      'let saved;const Box=class{constructor({value}={value:7},get=()=>value){saved=get;this.value=value;}};const instance=new Box();console.log(saved(),instance.value);',
+  },
+  {
+    name: 'constructor default closure is distinct from body var',
+    source:
+      'let saved;const Box=class{constructor({value}={value:7},get=()=>value){saved=get;var value=9;this.value=value;}};const instance=new Box();console.log(saved(),instance.value);',
+  },
+  {
     name: 'external sloppy callee control',
     source:
       'function outside(){return arguments.callee===outside;}class Box{static read=outside;}console.log(Box.read());',
