@@ -365,14 +365,8 @@ fn refreshFoldedNumericExportFacts(self: *TreeShaker, m: *Module, ast: *Ast) !vo
         const symbol = &sem.symbols.items[id];
         if (!symbol.isExported() or (symbol.kind != .variable_const and symbol.kind != .variable_let) or symbol.write_count != 0) continue;
         const literal = ast.nodes.items[initializer];
-        // A parenthesized numeric subtree can survive the ordinary minifier.
-        // This existing folder accepts only literal arithmetic, so replacing
-        // it removes no semantic reference, declaration, or scope owner.
-        const span = if (literal.tag == .numeric_literal)
-            literal.span
-        else
-            @import("../../transformer/minify.zig").foldNumericLiteralExpression(ast, @fromBackingInt(initializer)) orelse continue;
-        const text = ast.getText(span);
+        if (literal.tag != .numeric_literal) continue;
+        const text = ast.getText(literal.span);
         if (text.len == 0) continue;
         if (symbol.const_kind == .number and std.mem.eql(u8, sem.numericConstText(id), text)) continue;
         const owned_text = try allocator.dupe(u8, text);
@@ -992,7 +986,7 @@ fn expectConstMaterializeGraphHandoff(
     defer shaker.deinit();
     if (mutation == .incomplete_tracking) materialized.tracked_nodes_complete = false;
 
-    minifyAndResyncModule(
+    try minifyAndResyncModule(
         &shaker,
         &module,
         module.semantic.?,
