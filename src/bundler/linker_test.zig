@@ -5045,3 +5045,85 @@ test "generated runtime helper imports keep exact anchors under poisoned helper 
         try std.testing.expectEqual(expected, binding.local_symbol.semanticIndex().?);
     }
 }
+
+test "foreign import identity clears previous source refs across ten invalidation transitions" {
+    const Transition = enum { bad_record, unresolved, missing_module, no_exports, namespace, missing_name, missing_export_target, export_invalid, unchanged, alternate };
+    const Case = struct { name: []const u8, transition: Transition, default_import: bool = false };
+    const cases = [_]Case{
+        .{ .name = "named import record removed", .transition = .bad_record },
+        .{ .name = "default import record removed", .transition = .bad_record, .default_import = true },
+        .{ .name = "named source unresolved", .transition = .unresolved },
+        .{ .name = "default source unresolved", .transition = .unresolved, .default_import = true },
+        .{ .name = "source module removed", .transition = .missing_module },
+        .{ .name = "named provider export removed", .transition = .no_exports },
+        .{ .name = "default provider export removed", .transition = .no_exports, .default_import = true },
+        .{ .name = "named import changed to namespace", .transition = .namespace },
+        .{ .name = "requested public export changed", .transition = .missing_name },
+        .{ .name = "new provider lacks public export", .transition = .missing_export_target },
+        .{ .name = "provider explicitly has no symbol", .transition = .export_invalid },
+        .{ .name = "unchanged provider retains exact ref", .transition = .unchanged },
+        .{ .name = "new provider replaces exact ref", .transition = .alternate },
+    };
+    var stale_refs: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = if (case.default_import)
+            "import local from './dep'; import './other'; import './empty'; console.log(local);"
+        else
+            "import { x as local } from './dep'; import './other'; import './empty'; console.log(local);";
+        try writeFile(tmp.dir, "entry.mjs", source);
+        try writeFile(tmp.dir, "dep.ts", "export const x = 1; export default 2;");
+        try writeFile(tmp.dir, "other.ts", "export const x = 3; export default 4;");
+        try writeFile(tmp.dir, "empty.ts", "export const y = 5;");
+        var result = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const entry_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingForeignImportEntry;
+        const module = result.graph.moduleAtMut(entry_index) orelse return error.MissingForeignImportEntry;
+        try std.testing.expectEqual(@as(usize, 1), module.import_bindings.len);
+        const binding = &module.import_bindings[0];
+        result.linker.populateImportSymbols();
+        try std.testing.expect(binding.symbol.isValid());
+        const previous_source = binding.symbol;
+        const record = &module.import_records[binding.import_record_index];
+        const provider = result.graph.moduleAtMut(record.resolved) orelse return error.MissingForeignImportProvider;
+        const other_index = findModuleIdx(result.graph, "other.ts") orelse return error.MissingForeignImportAlternate;
+        const other = result.graph.getModule(other_index) orelse return error.MissingForeignImportAlternate;
+        const alternate = (other.findExportBinding(binding.imported_name) orelse return error.MissingForeignImportAlternateExport).symbol;
+        const empty_index = findModuleIdx(result.graph, "empty.ts") orelse return error.MissingForeignImportEmptyProvider;
+        switch (case.transition) {
+            .bad_record => binding.import_record_index = @intCast(module.import_records.len),
+            .unresolved => record.resolved = .none,
+            .missing_module => record.resolved = ModuleIndex.fromUsize(result.graph.moduleCount() + 31),
+            .no_exports => provider.export_bindings = &.{},
+            .namespace => {
+                binding.kind = .namespace;
+                binding.imported_name = "*";
+            },
+            .missing_name => binding.imported_name = "missing",
+            .missing_export_target => record.resolved = empty_index,
+            .export_invalid => @constCast(provider.findExportBinding(binding.imported_name) orelse return error.MissingForeignImportExport).symbol = bundler_symbol.SymbolRef.invalid,
+            .unchanged => {},
+            .alternate => record.resolved = other_index,
+        }
+        // Incremental rebuilds create a fresh linker while import_bindings
+        // remain AST-resident. Its empty tables must not make the cached
+        // source ref authoritative when the new source no longer exports it.
+        result.linker.deinit();
+        result.linker = Linker.init(std.testing.allocator, result.graph, .esm);
+        result.linker.populateImportSymbols();
+        try std.testing.expect(binding.local_symbol.isValid());
+        try std.testing.expectEqual(entry_index, binding.local_symbol.moduleIndex());
+        switch (case.transition) {
+            .unchanged => try std.testing.expect(bundler_symbol.SymbolRef.eql(previous_source, binding.symbol)),
+            .alternate => try std.testing.expect(bundler_symbol.SymbolRef.eql(alternate, binding.symbol)),
+            else => if (binding.symbol.isValid()) {
+                stale_refs += 1;
+                std.debug.print("stale import source SymbolRef: {s}\n", .{case.name});
+            },
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), stale_refs);
+}
