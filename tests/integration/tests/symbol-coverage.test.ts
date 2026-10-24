@@ -194,7 +194,7 @@ const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
   ['4819-sourced-reexports/main.mjs', ['ZNTC0300']],
   ['4819-sourced-reexports/upstream.mjs', ['ZNTC0305']],
 ]);
-const LENIENT_UNKNOWN_REANALYZED_FIXTURES = ['4819-namespace-generated-scopes.ts'] as const;
+const LENIENT_UNKNOWN_REANALYZED_FIXTURES: readonly string[] = [];
 const LENIENT_UNKNOWN_GATE_PROBES = [
   {
     name: 'class-only',
@@ -221,12 +221,12 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'decorator-with-type-only-binding',
     source:
       'declare const externalValue: number; function dec(value: any) { return value; } @dec class Box { value: number = externalValue; }',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'ambient-binding',
     source: 'declare const ambientValue: number; console.log(typeof ambientValue);',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'ordinary-enum',
@@ -2087,7 +2087,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       expect(successful).toBe(288);
-      expect(retained).toBe(287);
+      expect(retained).toBe(288);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
       for (const probe of LENIENT_UNKNOWN_GATE_PROBES) {
@@ -2297,7 +2297,6 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(actual.stdout).toBe(baseline.stdout);
 
       const reanalyzedSources = [
-        'declare const externalValue: number; console.log(externalValue);',
         'declare enum Ambient { Value = 1 } console.log(typeof Ambient);',
         'const enum Color { Red = 1 } console.log(Color.Red);',
         'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
@@ -2316,6 +2315,146 @@ describe('symbol identity coverage gate (#4819)', () => {
           transformIdentityAuditProblems(result.stderr),
           `${reanalyzedSource}\n${result.stderr}`,
         ).toEqual([]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient .unknown erased declarations retain exact graph and runtime output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-erased-decl-'));
+    const cases = [
+      {
+        name: 'ambient-const',
+        source: 'declare const ambientValue: number; console.log(ambientValue);',
+        setup: 'globalThis.ambientValue = 7;',
+      },
+      {
+        name: 'ambient-let',
+        source: 'declare let ambientValue: number; console.log(ambientValue);',
+        setup: 'globalThis.ambientValue = 8;',
+      },
+      {
+        name: 'ambient-var',
+        source: 'declare var ambientValue: number; console.log(ambientValue);',
+        setup: 'globalThis.ambientValue = 9;',
+      },
+      {
+        name: 'ambient-function',
+        source: 'declare function ambientValue(): number; console.log(ambientValue());',
+        setup: 'globalThis.ambientValue = () => 10;',
+      },
+      {
+        name: 'ambient-class',
+        source:
+          'declare class AmbientClass { value: number; } console.log(new AmbientClass().value);',
+        setup: 'globalThis.AmbientClass = class { constructor() { this.value = 11; } };',
+      },
+      {
+        name: 'ambient-enum',
+        source: 'declare enum AmbientEnum { Value = 1 } console.log(AmbientEnum.Value);',
+        setup: 'globalThis.AmbientEnum = { Value: 12 };',
+        graph: 'reanalyzed',
+      },
+      {
+        name: 'ambient-namespace',
+        source:
+          'declare namespace AmbientNamespace { export const value: number; } console.log(AmbientNamespace.value);',
+        setup: 'globalThis.AmbientNamespace = { value: 13 };',
+        graph: 'reanalyzed',
+      },
+      {
+        name: 'ambient-destructuring',
+        source:
+          'declare const { first, nested: { second } }: { first: number; nested: { second: number } }; console.log(first + second);',
+        setup: 'globalThis.first = 14; globalThis.second = 15;',
+      },
+      {
+        name: 'ambient-shadowing',
+        source: [
+          'declare const slot: number;',
+          'function read(local: boolean) { if (local) { const slot = 41; return slot; } return slot; }',
+          'console.log(read(true), read(false));',
+        ].join('\n'),
+        setup: 'globalThis.slot = 7;',
+      },
+      {
+        name: 'ambient-decorator',
+        source: [
+          'declare const externalValue: number;',
+          'function decorate(value: any) { value.decorated = true; return value; }',
+          '@decorate class Box { amount: number = externalValue; }',
+          'console.log(Box.decorated, new Box().amount);',
+        ].join('\n'),
+        setup: 'globalThis.externalValue = 16;',
+      },
+      {
+        name: 'namespace-generated-scopes',
+        source: [
+          readFileSync(join(FIXTURE_DIR, '4819-namespace-generated-scopes.ts'), 'utf8'),
+          'const __awaiter = 19, _awaiter = 23;',
+          'Promise.all([classAfterAwait(), classExpressionsAfterAwait(), M.f1()]).then(() => console.log(typeof X.MyPromise, typeof M.f1, __awaiter, _awaiter));',
+        ].join('\n'),
+        setup: 'globalThis.p = Promise.resolve(class ExternalBase {});',
+      },
+    ] as const;
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.unknown`);
+        writeFileSync(input, item.source);
+        const oraclePath = join(dir, `${item.name}.typescript.js`);
+        writeFileSync(
+          oraclePath,
+          ts.transpileModule(item.source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target:
+                item.name === 'namespace-generated-scopes'
+                  ? ts.ScriptTarget.ESNext
+                  : ts.ScriptTarget.ES5,
+            },
+          }).outputText,
+        );
+        const oracleLauncher = join(dir, `${item.name}.oracle-launcher.cjs`);
+        writeFileSync(oracleLauncher, `${item.setup}\nrequire(${JSON.stringify(oraclePath)});\n`);
+        const oracle = runNode([oracleLauncher]);
+        expect(oracle.status, `${item.name} TypeScript oracle: ${oracle.stderr}`).toBe(0);
+
+        const actualLauncher = join(dir, `${item.name}.actual-launcher.cjs`);
+        for (const target of TARGETS) {
+          const result = runCoverage(input, target, dir, true, ['--format=cjs']);
+          expect(result.exitCode, `${item.name} ${target.name}: ${result.stderr}`).toBe(0);
+          expect(
+            transformIdentityAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            postMinifyAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, item.graph ?? 'retained'),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          const identity = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(
+            exactIdentityObservationProblems(identity ?? ''),
+            `${item.name} ${target.name}: ${identity ?? 'missing exact report'}`,
+          ).toEqual([]);
+
+          writeFileSync(
+            actualLauncher,
+            `${item.setup}\nrequire(${JSON.stringify(join(dir, 'out.js'))});\n`,
+          );
+          const actual = runNode([actualLauncher]);
+          expect(actual.status, `${item.name} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${item.name} ${target.name}: differs from TypeScript output`).toBe(
+            oracle.stdout,
+          );
+          expect(actual.stderr).toBe('');
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
