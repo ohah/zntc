@@ -772,11 +772,13 @@ pub const TransformOptions = struct {
     pub const arrow_dynamic_scope_msg =
         "a lexical-capturing arrow or its containing class/object literal inside a with statement is emitted unchanged because dynamic lookup can intercept generated capture bindings or erase lexical super context; the configured target may not support syntax retained inside it.";
 
-    /// Dynamic source passed to direct eval can observe an arbitrary generated
-    /// lexical-capture name, so retain the arrow instead of guessing a suffix.
+    /// Moving an initializer loses its class lexical environment and inherited
+    /// strictness; a bounded safe eval expression is the only admitted exception.
     pub const static_initializer_dynamic_scope_msg =
         "static initializer cannot be moved out of its class because direct eval or with can observe its class lexical environment; select a target and class-field options that retain the initializer natively.";
 
+    /// Dynamic source passed to direct eval can observe an arbitrary generated
+    /// lexical-capture name, so retain the arrow instead of guessing a suffix.
     pub const arrow_dynamic_eval_msg =
         "a lexical-capturing arrow is emitted unchanged because a non-literal direct eval argument can observe generated capture bindings; the configured target may not support arrow syntax retained inside it.";
 };

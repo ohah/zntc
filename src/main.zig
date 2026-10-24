@@ -872,7 +872,10 @@ pub fn main(init: std.process.Init) !void {
         defer bundler.deinit();
 
         const result = bundler.bundle(io) catch |err| {
-            try stderr.print("zntc: bundle failed: {}\n", .{err});
+            if (err == error.StaticInitializerDynamicScope)
+                try stderr.print("zntc: ZNTC1505: {s}\n", .{lib.transformer.TransformOptions.static_initializer_dynamic_scope_msg})
+            else
+                try stderr.print("zntc: bundle failed: {}\n", .{err});
             std.process.exit(1);
         };
         defer result.deinit(allocator);

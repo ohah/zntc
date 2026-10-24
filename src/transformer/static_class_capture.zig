@@ -170,35 +170,39 @@ fn unsafeEvalCall(self: anytype, node: ast_mod.Node, ordinary_function: bool) bo
         var buffer: [64]u8 = undefined;
         const name = @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesInto(raw, &buffer) orelse raw;
         if (!std.mem.eql(u8, name, "eval")) return false;
-        // A locally bound eval is an ordinary call, not the built-in direct eval.
-        if (self.getSymbolIdAt(callee) != null) return false;
+        // A lexical binding named eval can still contain the builtin and
+        // perform direct eval. Symbol ownership cannot prove its call indirect.
         break;
     }
     if (callee.isNone() or extras[e + 2] == 0) return false;
     const argument = self.ast.getNode(self.ast.readExtraNode(extras[e + 1], 0));
     if (argument.tag != .string_literal) return true;
-    if (ordinary_function) {
-        const decoded = @import("../string_escape.zig").decodeJsStringLiteral(self.allocator, self.ast.getText(argument.span)) catch return true;
-        defer self.allocator.free(decoded);
-        // An ordinary function owns this/arguments, but still closes over the
-        // immutable class-self binding and any private environment. Reject
-        // opaque/nested eval and escaped source until that environment can be
-        // reconstructed exactly; local-only literal eval keeps working.
-        if (std.mem.indexOfScalar(u8, decoded, '#') != null or
-            std.mem.indexOfScalar(u8, decoded, '\\') != null or
-            std.mem.indexOf(u8, decoded, "eval") != null) return true;
-        for (self.static_class_contexts.items) |frame| {
-            const raw_name = self.ast.getText(frame.class_name);
-            var name_buffer: [256]u8 = undefined;
-            const class_name = @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesInto(raw_name, &name_buffer) orelse raw_name;
-            if (std.mem.indexOf(u8, decoded, class_name) != null) return true;
-        }
-        return false;
+    _ = ordinary_function;
+    const decoded = @import("../string_escape.zig").decodeJsStringLiteral(self.allocator, self.ast.getText(argument.span)) catch return true;
+    defer self.allocator.free(decoded);
+    const text = std.mem.trim(u8, decoded, " \t\r\n");
+    // Only bounded expressions that cannot observe the class environment or
+    // inherited strictness are safe to move. Ordinary functions created in a
+    // field also inherit class strictness, even though they own this/arguments.
+    var arithmetic = true;
+    for (text, 0..) |c, index| {
+        if (std.mem.indexOfScalar(u8, "0123456789.+-*/%() \t\r\n", c) == null) arithmetic = false;
+        // Legacy leading-zero integer literals throw only in strict eval.
+        if (c == '0' and index + 1 < text.len and std.ascii.isDigit(text[index + 1]) and
+            (index == 0 or (!std.ascii.isDigit(text[index - 1]) and text[index - 1] != '.'))) return true;
     }
-    const text = self.ast.getText(argument.span);
-    if (text.len < 2) return true;
-    for (text[1 .. text.len - 1]) |c| {
-        if (std.mem.indexOfScalar(u8, "0123456789.+-*/%() \t\r\n", c) == null) return true;
+    if (arithmetic) return false;
+    if (text.len == 0 or !(std.ascii.isAlphabetic(text[0]) or text[0] == '_' or text[0] == '$')) return true;
+    for (text[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '$')) return true;
+    var scanner = @import("../lexer/scanner.zig").Scanner.init(self.allocator, text) catch return true;
+    defer scanner.deinit();
+    scanner.next() catch return true;
+    if (scanner.token.kind != .identifier or std.mem.eql(u8, text, "arguments") or std.mem.eql(u8, text, "eval")) return true;
+    for (self.static_class_contexts.items) |frame| {
+        const raw_name = self.ast.getText(frame.class_name);
+        var name_buffer: [256]u8 = undefined;
+        const class_name = @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesInto(raw_name, &name_buffer) orelse raw_name;
+        if (std.mem.eql(u8, text, class_name)) return true;
     }
     return false;
 }
@@ -212,7 +216,8 @@ pub fn noteDynamicEval(self: anytype, node: ast_mod.Node) void {
 }
 
 /// Check before an arrow guard can retain its unvisited source body. Ordinary
-/// functions and nested class members have their own this environment.
+/// functions still inherit the field's strictness; nested classes own their
+/// native class environment and are handled in their own initializer frames.
 pub fn noteArrowDynamicEval(self: anytype, root: NodeIndex) !void {
     if (self.static_block_class_name == null or self.this_depth != 0) return;
     const Entry = struct { node: NodeIndex, ordinary: bool };

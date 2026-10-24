@@ -195,3 +195,46 @@ test "#4819 static class capture attaches exact identity before output reconcili
     try std.testing.expect(std.mem.indexOfScalar(u32, transformer.ast.preserve_const_declaration_indices.items, @backingInt(declaration)) != null);
     try std.testing.expect((try capture_mod.takeDeclaration(&transformer, binding, parser.ast.getNode(owner).span)) == null);
 }
+
+test "#4819 moved static eval guards builtin identity and inherited strictness" {
+    const Case = struct { source: []const u8, rejects: bool };
+    const cases = [_]Case{
+        .{ .source = "function run(eval){class Box{static read=()=>eval('this');}return Box;}run(globalThis.eval);", .rejects = true },
+        .{ .source = "class Box{static read=()=>eval('010');}", .rejects = true },
+        .{ .source = "class Box{static read=function(){return eval('this');};}", .rejects = true },
+        .{ .source = "class Box{static read=function(){return eval('arguments');};}", .rejects = true },
+        .{ .source = "class Box{static read=function(){return eval('var local=7');};}", .rejects = true },
+        .{ .source = "class Box{static read=function(){return eval('Box');};}", .rejects = true },
+        .{ .source = "class Box{static read=()=>eval('1+2');}", .rejects = false },
+        .{ .source = "function run(eval){class Box{static read=()=>eval('1+2');}return Box;}run(globalThis.eval);", .rejects = false },
+        .{ .source = "function run(evaluate){class Box{static read=()=>evaluate('this');}return Box;}run(globalThis.eval);", .rejects = false },
+        .{ .source = "class Box{static read=function(){const local=7;return eval('local');};}", .rejects = false },
+    };
+    for (cases) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, fixture.source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".cjs");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        try std.testing.expectEqual(fixture.rejects, transformer.used_unsupported_static_initializer_dynamic_scope);
+    }
+}

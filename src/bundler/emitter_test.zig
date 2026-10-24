@@ -3824,3 +3824,34 @@ test "emitter: direct static initializer lowering rejects lost dynamic class env
         .transform_options_base = .{ .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es2015) },
     }, null));
 }
+
+test "emitter: static initializer omission requires matching typed module error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js", "class Box{static read=()=>eval('this');}console.log(Box.read());");
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.js");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    var linker = Linker.init(std.testing.allocator, &result.graph, .esm);
+    defer linker.deinit();
+    const module = result.graph.modules.at(0);
+    const options: EmitOptions = .{ .transform_options_base = .{
+        .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es2015),
+    } };
+    const Span = @import("../lexer/token.zig").Span;
+    // Same code at another path does not describe this module's failure.
+    result.graph.addDiag(.static_initializer_dynamic_scope, .@"error", "different.js", Span.EMPTY, .parse, "different module", null);
+    try std.testing.expectError(error.StaticInitializerDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    // Same path and code at warning level is also insufficient.
+    result.graph.addDiag(.static_initializer_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, "warning only", null);
+    try std.testing.expectError(error.StaticInitializerDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    // An unrelated typed error at this path must not swallow the actual error.
+    result.graph.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "other error", null);
+    try std.testing.expectError(error.StaticInitializerDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    result.graph.addDiag(.static_initializer_dynamic_scope, .@"error", module.path, Span.EMPTY, .parse, "already diagnosed", null);
+    const output = try emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null);
+    try std.testing.expect(output == null);
+    try std.testing.expectEqual(@as(usize, 4), result.graph.diagnostics.items.len);
+    try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.static_initializer_dynamic_scope, result.graph.diagnostics.items[3].code);
+    try std.testing.expectEqual(types.BundlerDiagnostic.Severity.@"error", result.graph.diagnostics.items[3].severity);
+}
