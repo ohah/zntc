@@ -860,7 +860,7 @@ pub const SemanticAnalyzer = struct {
                         // 함수 선언 문장은 쓰기 참조가 없으므로 선언 행을 남겨야 번들 tree shaker 가
                         // 그 문장을 이 심볼의 선언으로 보고 지우지 않는다(마지막 선언이 값).
                         // 노드 없는 1st pass 병합은 행을 남기지 않는다 — 방문 때 노드와 함께 남긴다.
-                        if (same_var_scope_function and node_idx != null)
+                        if (same_var_scope_function and kind.isFunctionLike() and node_idx != null)
                             self.recordDeclareRef(@intCast(existing_sym_idx), target_scope, node_idx);
                         return;
                     }
@@ -1547,7 +1547,7 @@ pub const SemanticAnalyzer = struct {
                 const sid = self.symbol_ids.items[ni] orelse return;
                 if (sid >= self.symbols.items.len) return;
                 const symbol = self.symbols.items[sid];
-                if (symbol.kind != .variable_var) return;
+                if (symbol.kind != .variable_var and !symbol.kind.isFunctionLike()) return;
                 if (symbol.name.start != node.span.start) {
                     self.recordDeclareRef(sid, symbol.scope_id, ni);
                     return;
@@ -4672,12 +4672,16 @@ pub const SemanticAnalyzer = struct {
                     // 실제 위치로 정정 + block 체인 충돌 재검사 (ECMA §sec-block-static-semantics-early-errors).
                     if (sym_kind == .variable_var) {
                         try self.recheckPredeclaredVar(binding_idx);
-                        self.recordVarRedeclarations(binding_idx);
                     }
                     // predeclared인 경우에도, destructuring 패턴 내부의 default value
                     // 표현식은 순회해야 한다 (registerBinding이 수행하던 visitNode 호출 대체).
                     try self.visitBindingPatternExpressions(binding_idx);
                 }
+                // Every var declarator needs its own declaration anchor for
+                // tree-shaker statement ownership, whether it reused a
+                // predeclared symbol or registerBinding merged it with an
+                // earlier var/function declaration.
+                if (sym_kind == .variable_var) self.recordVarRedeclarations(binding_idx);
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
 

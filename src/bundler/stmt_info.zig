@@ -2009,16 +2009,15 @@ pub fn build(
         const sym = &symbols[sym_idx];
         const sym_idx_u32: u32 = @intCast(sym_idx);
 
-        // declared: top-level scope에 선언된 심볼
+        // A binding identifier is a declaration even when it reuses an earlier
+        // var-scope SymbolId. `declaration_span` names only the first declaration,
+        // so span containment alone loses later `var`/function redeclarations.
         if (isProgramTopLevelScope(scopes, sym.scope_id) and
-            n.span.start >= sym.declaration_span.start and
-            n.span.end <= sym.declaration_span.end)
+            (n.tag == .binding_identifier or
+                (n.span.start >= sym.declaration_span.start and n.span.end <= sym.declaration_span.end)))
         {
             if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_idx_u32) == null) {
                 try declared_bufs[stmt_i].append(allocator, sym_idx_u32);
-                if (sym_idx < sym_to_stmt.len) {
-                    sym_to_stmt[sym_idx] = @intCast(stmt_i);
-                }
             }
         }
 
@@ -2041,13 +2040,25 @@ pub fn build(
         }
     }
 
-    for (stmts, 0..) |*stmt, stmt_i| {
-        if (declared_bufs[stmt_i].items.len > 0) {
-            stmt.declared_symbols = try declared_bufs[stmt_i].toOwnedSlice(allocator);
+    // Preserve all declaration statements for a shared var-scope binding. The
+    // latest declaration is the canonical lookup target; earlier declarations
+    // are writer edges so a live binding keeps their initializers and function
+    // declarations in source order, matching buildFromSemantic().
+    for (declared_bufs, 0..) |*bucket, stmt_i| {
+        const declared_slice = (try finalizeBucket(allocator, bucket, &[_]u32{})) orelse continue;
+        stmts[stmt_i].declared_symbols = declared_slice;
+        for (declared_slice) |sym_idx| {
+            if (sym_idx >= sym_to_stmt.len) continue;
+            if (sym_to_stmt[sym_idx]) |previous| {
+                if (previous != stmt_i) try writer_bufs[sym_idx].append(allocator, previous);
+            }
+            sym_to_stmt[sym_idx] = @intCast(stmt_i);
         }
-        if (referenced_bufs[stmt_i].items.len > 0) {
-            stmt.referenced_symbols = try referenced_bufs[stmt_i].toOwnedSlice(allocator);
-        }
+    }
+
+    for (referenced_bufs, 0..) |*bucket, stmt_i| {
+        const referenced_slice = (try finalizeBucket(allocator, bucket, stmts[stmt_i].declared_symbols)) orelse continue;
+        stmts[stmt_i].referenced_symbols = referenced_slice;
     }
 
     // member-augment 귀속: 게이트 통과한 `X.member = pureRHS` 를 X 의 writer

@@ -117,7 +117,7 @@ console.log(new Outer('parameter').read().join(':'));
     expect(result.runOutput).toBe('true:undefined:undefined');
   });
 
-  test('bundler reanalysis restores exact post-graph names for lexical capture bindings', async () => {
+  test('bundler retains exact lexical capture identities for post-graph names', async () => {
     const result = await bundleAndRun(
       {
         'index.ts': `
@@ -136,7 +136,7 @@ console.log(capture.call({ value: 42 }, 7, 8), _this, _arguments, _newTarget);
     );
     cleanup = result.cleanup;
 
-    expect(result.bundleStderr).toContain('semantic_graph=reanalyzed');
+    expect(result.bundleStderr).toContain('semantic_graph=retained');
     const identity = result.bundleStderr
       .split(/\r?\n/)
       .find(

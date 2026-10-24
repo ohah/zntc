@@ -1435,7 +1435,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(retainedRun.stderr).toBe('');
     expect(retainedRun.stdout).toBe('42');
 
-    const syntaxEdited = await bundle('syntax-eval.js', ['--minify-syntax'], 'reanalyzed');
+    const syntaxEdited = await bundle('syntax-eval.js', ['--minify-syntax'], 'retained');
     const syntaxRun = await runNode(syntaxEdited.output);
     expect(syntaxRun.stderr).toBe('');
     expect(syntaxRun.stdout).toBe('42');
