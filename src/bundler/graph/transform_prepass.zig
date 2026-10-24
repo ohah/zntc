@@ -6816,17 +6816,18 @@ fn canKeepPrepassSemanticGraph(
     // The Reanimated visitor edits only the module AST. Its generated factory
     // bindings/references and scopes, plus React Refresh registration handles
     // and component references, are attached to the semantic editor. Preserve
-    // that graph for their bounded combination. Arbitrary user plugins remain
+    // that graph for their bounded combination. User AST plugins remain
     // on the full reanalysis path because their graph effects are not declared
-    // to the transformer.
-    const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
+    // to the transformer. Resolve/load/source/output/lifecycle plugins do not
+    // edit this analyzed AST and need no such fallback.
+    const safe_builtin_worklet = self.worklet_transform and !hasAstTransformHooks(self.plugins) and
         !self.styled_components and !self.emotion and
         !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
         !hasNestedWorkletFunctionScope(ast, semantic) and
         isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
-    if ((self.worklet_transform and !safe_builtin_worklet) or self.plugins.len != 0 or
-        (plugins.len != 0 and !safe_builtin_worklet) or
-        (options.plugins.len != 0 and !safe_builtin_worklet)) return false;
+    if ((self.worklet_transform and !safe_builtin_worklet) or hasAstTransformHooks(self.plugins) or
+        (hasAstTransformHooks(plugins) and !safe_builtin_worklet) or
+        (hasAstTransformHooks(options.plugins) and !safe_builtin_worklet)) return false;
     // The styled-components CSS-prop visitor adds a real AST import and exact
     // helper SymbolId. The retained-graph path rescans import/export metadata
     // from that edited AST without replacing its semantic graph.
@@ -7709,23 +7710,132 @@ fn shouldRecordPrepassExplicitGlobals(
         lowered_simple_static_class_field_global;
 }
 
-fn isBuiltinWorkletPluginSet(plugins: anytype) bool {
-    return plugins.len == 1 and std.mem.eql(u8, plugins[0].name, "reanimated-worklet");
+fn hasAstTransformHooks(plugins: anytype) bool {
+    for (plugins) |plugin| if (plugin.hasAstTransformHooks()) return true;
+    return false;
 }
 
-test "worklet graph retention admits only the built-in plugin" {
+fn isBuiltinWorkletPlugin(plugin: plugin_mod.Plugin) bool {
+    const builtin = worklet_plugin.plugin();
+    if (!std.mem.eql(u8, plugin.name, builtin.name) or plugin.context != builtin.context or
+        plugin.onFunction != builtin.onFunction or
+        plugin.autoWorkletCallees.ptr != builtin.autoWorkletCallees.ptr or
+        plugin.autoWorkletCallees.len != builtin.autoWorkletCallees.len) return false;
+    const visitor = plugin.visitor orelse return false;
+    inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
+        if (@field(visitor, field) != @field(builtin.visitor.?, field)) return false;
+    }
+    return true;
+}
+
+fn isBuiltinWorkletPluginSet(plugins: anytype) bool {
+    var count: usize = 0;
+    for (plugins) |plugin| {
+        if (!plugin.hasAstTransformHooks()) continue;
+        if (!isBuiltinWorkletPlugin(plugin)) return false;
+        count += 1;
+    }
+    return count == 1;
+}
+
+test "plugin graph retention admits only actual builtin worklet capabilities" {
     const Plugin = @import("../plugin.zig").Plugin;
-    const built_in = [_]Plugin{.{ .name = "reanimated-worklet" }};
-    const custom = [_]Plugin{.{ .name = "user-ast-plugin" }};
+    const built_in = [_]Plugin{worklet_plugin.plugin()};
+    const custom = [_]Plugin{.{ .name = "user-ast-plugin", .onFunction = worklet_plugin.plugin().onFunction }};
     const mixed = [_]Plugin{
-        .{ .name = "reanimated-worklet" },
-        .{ .name = "user-ast-plugin" },
+        worklet_plugin.plugin(),
+        custom[0],
     };
 
     try std.testing.expect(isBuiltinWorkletPluginSet(&built_in));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&custom));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&mixed));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&.{}));
+    const non_ast = [_]Plugin{ .{ .name = "observer" }, worklet_plugin.plugin(), .{ .name = "empty-visitor", .visitor = .{} } };
+    try std.testing.expect(isBuiltinWorkletPluginSet(&non_ast));
+    const duplicate = [_]Plugin{ worklet_plugin.plugin(), worklet_plugin.plugin() };
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&duplicate));
+    var spoofed = worklet_plugin.plugin();
+    spoofed.autoWorkletCallees = &.{};
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&[_]Plugin{spoofed}));
+    spoofed = worklet_plugin.plugin();
+    spoofed.context = @ptrFromInt(1);
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&[_]Plugin{spoofed}));
+    spoofed = worklet_plugin.plugin();
+    spoofed.onFunction = null;
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&[_]Plugin{spoofed}));
+    inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
+        spoofed = worklet_plugin.plugin();
+        @field(spoofed.visitor.?, field) = null;
+        try std.testing.expect(!isBuiltinWorkletPluginSet(&[_]Plugin{spoofed}));
+    }
+    const spoofed_name_only = [_]Plugin{.{ .name = "reanimated-worklet" }};
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&spoofed_name_only));
+}
+
+test "plugin graph retention vetoes AST capabilities even without matching source tags" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const answer = 42;");
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = parser.ast.source;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    const Context = struct {
+        allocator: std.mem.Allocator,
+        flow: bool = false,
+        worklet_transform: bool = false,
+        plugins: []const plugin_mod.Plugin = &.{},
+        styled_components: bool = false,
+        emotion: bool = false,
+    };
+    var context: Context = .{ .allocator = allocator };
+    var options: TransformOptions = .{ .strip_types = true };
+    var allow_get = false;
+    var allow_set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
+    context.plugins = &.{ .{ .name = "observer" }, .{ .name = "empty-visitor", .visitor = .{} } };
+    options.plugins = context.plugins;
+    try std.testing.expect(canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
+    const builtin = worklet_plugin.plugin();
+    const capabilities = [_]plugin_mod.Plugin{
+        .{ .name = "onFunction", .onFunction = builtin.onFunction },
+        .{ .name = "autoWorklet", .autoWorkletCallees = builtin.autoWorkletCallees },
+    };
+    for (capabilities) |plugin| {
+        context.plugins = &.{plugin};
+        options.plugins = context.plugins;
+        try std.testing.expect(!canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
+    }
+    inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
+        var visitor: plugin_mod.Visitor = .{};
+        @field(visitor, field) = @field(builtin.visitor.?, field);
+        context.plugins = &.{.{ .name = field, .visitor = visitor }};
+        options.plugins = context.plugins;
+        try std.testing.expect(!canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &allow_get, &allow_set, null));
+    }
 }
 
 test "syntax minification retains only an exact semantic graph" {
@@ -9330,7 +9440,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasNestedWorkletFunctionScope(ast_ptr, semantic)
     else
         true;
-    const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
+    const safe_builtin_worklet = self.worklet_transform and !hasAstTransformHooks(self.plugins) and
         !self.styled_components and !self.emotion and
         !moduleUnsupported(self.transform_options_base.unsupported, module).hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
         !has_nested_worklet_function_scopes and
