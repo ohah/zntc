@@ -433,6 +433,35 @@ function exactIdentityObservationProblems(identity: string): string[] {
     : ['exact identity audit checked no binding or reference observations'];
 }
 
+function transpileGraphModeProblems(
+  stderr: string,
+  required: boolean,
+  expectedMode?: 'retained' | 'reanalyzed',
+): string[] {
+  const prefix = 'zntc: symbol-identity-transpile-mode ';
+  const reports = stderr.split(/\r?\n/).filter((line) => line.startsWith(prefix));
+  if (!required) {
+    return reports.length === 0
+      ? []
+      : [`transpile graph-mode reports=${reports.length}, expected 0`];
+  }
+  if (reports.length !== 1) {
+    return [`transpile graph-mode reports=${reports.length}, expected 1`];
+  }
+
+  const marker = ': semantic_graph=';
+  const markerIndex = reports[0].lastIndexOf(marker);
+  if (markerIndex <= prefix.length) return ['malformed transpile graph-mode report'];
+  const mode = reports[0].slice(markerIndex + marker.length);
+  if (mode !== 'retained' && mode !== 'reanalyzed') {
+    return [`malformed transpile graph mode ${mode}`];
+  }
+  if (expectedMode !== undefined && mode !== expectedMode) {
+    return [`transpile semantic_graph=${mode}, expected ${expectedMode}`];
+  }
+  return [];
+}
+
 function requiredProducerObservationProblems(
   reports: { exact: string; strict: string },
   requirements: readonly ProducerObservationRequirement[],
@@ -770,6 +799,7 @@ function transformIdentityAuditProblems(stderr: string): string[] {
 }
 
 const EXACT_MATRIX_REPORT_PREFIXES = [
+  'zntc: symbol-identity-transpile-mode ',
   'zntc: symbol-source-scope-owner ',
   'zntc: symbol-coverage ',
   'zntc: symbol-identity ',
@@ -982,6 +1012,7 @@ describe('symbol identity coverage gate (#4819)', () => {
   test('exact matrix reports are attributed to the fixture being audited', () => {
     const expectedFile = join(FIXTURE_DIR, 'expected-case.mjs');
     expect(EXACT_MATRIX_REPORT_PREFIXES).toEqual([
+      'zntc: symbol-identity-transpile-mode ',
       'zntc: symbol-source-scope-owner ',
       'zntc: symbol-coverage ',
       'zntc: symbol-identity ',
@@ -1871,6 +1902,106 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
     expect(strictSchemaProblems('zntc: synthetic-coverage fixture.mjs: no-report')).toContain(
       'missing strict report payload',
+    );
+  });
+
+  test('lenient type-only TypeScript retains exact graph while runtime forms reanalyze', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-type-graph-'));
+    const input = join(dir, 'case.unknown');
+    const output = join(dir, 'out.js');
+    const reference = join(dir, 'reference.js');
+    const source = [
+      'type Amount = number;',
+      'interface Result { amount: Amount }',
+      'function compute<T extends Amount>(value: T): Result {',
+      '  const output: Amount = value as Amount;',
+      '  { const output: Amount = 1 satisfies Amount; if (output > 0) console.log(value); }',
+      '  return { amount: output };',
+      '}',
+      'console.log(compute(41).amount);',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      writeFileSync(
+        reference,
+        ts.transpileModule(source, {
+          compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ESNext },
+        }).outputText,
+      );
+      const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+      expect(baseline.stdout).toBe('41\n41\n');
+
+      const retained = runCoverage(input, TARGETS[4], dir, true);
+      expect(retained.exitCode, retained.stderr).toBe(0);
+      expect(
+        transpileGraphModeProblems(retained.stderr, true, 'retained'),
+        retained.stderr,
+      ).toEqual([]);
+      expect(transformIdentityAuditProblems(retained.stderr), retained.stderr).toEqual([]);
+      expect(
+        exactIdentityObservationProblems(
+          retained.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+        ),
+      ).toEqual([]);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+
+      const reanalyzedSources = [
+        'declare const externalValue: number; console.log(externalValue);',
+        'enum Color { Red } console.log(Color.Red);',
+        'namespace Values { export const value = 1; } console.log(Values.value);',
+        'class Box { value: number = 1; } console.log(new Box().value);',
+      ];
+      for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
+        const reanalyzedInput = join(dir, `runtime-${index}.unknown`);
+        writeFileSync(reanalyzedInput, reanalyzedSource);
+        const result = runCoverage(reanalyzedInput, TARGETS[4], dir, true);
+        expect(result.exitCode, `${reanalyzedSource}\n${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'reanalyzed'),
+          `${reanalyzedSource}\n${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${reanalyzedSource}\n${result.stderr}`,
+        ).toEqual([]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('standalone transpile mode report is required and exact for identifier minification', () => {
+    const retained =
+      'zntc: symbol-identity-transpile-mode /tmp/case.unknown: semantic_graph=retained';
+    const reanalyzed = retained.replace('semantic_graph=retained', 'semantic_graph=reanalyzed');
+
+    expect(transpileGraphModeProblems(retained, true, 'retained')).toEqual([]);
+    expect(transpileGraphModeProblems(reanalyzed, true, 'reanalyzed')).toEqual([]);
+    expect(transpileGraphModeProblems('', true)).toContain(
+      'transpile graph-mode reports=0, expected 1',
+    );
+    expect(transpileGraphModeProblems(retained + '\n' + retained, true)).toContain(
+      'transpile graph-mode reports=2, expected 1',
+    );
+    expect(
+      transpileGraphModeProblems(
+        retained.replace('semantic_graph=retained', 'semantic_graph=unknown'),
+        true,
+      ),
+    ).toContain('malformed transpile graph mode unknown');
+    expect(transpileGraphModeProblems(reanalyzed, true, 'retained')).toContain(
+      'transpile semantic_graph=reanalyzed, expected retained',
+    );
+    expect(transpileGraphModeProblems('', false)).toEqual([]);
+    expect(transpileGraphModeProblems(retained, false)).toContain(
+      'transpile graph-mode reports=1, expected 0',
     );
   });
 
@@ -25629,6 +25760,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       let generatedScopeOwnersChecked = 0;
       let declarationAnchorsChecked = 0;
       let markedSynthetic = 0;
+      let transpileModeRuns = 0;
+      let retainedGraphRuns = 0;
+      let reanalyzedGraphRuns = 0;
       for (const file of fixtures) {
         for (const target of MINIFY_TARGETS) {
           for (const mode of MINIFY_MODES) {
@@ -25642,6 +25776,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: transform identity audit ${auditProblem}: ${stderr}`,
               );
+            }
+            const requiresTranspileMode = mode.includes('--minify-identifiers');
+            for (const modeProblem of transpileGraphModeProblems(stderr, requiresTranspileMode)) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${modeProblem}: ${stderr}`,
+              );
+            }
+            if (requiresTranspileMode) {
+              transpileModeRuns += 1;
+              const graphMode = stderr
+                .split(/\r?\n/)
+                .find((line) => line.startsWith('zntc: symbol-identity-transpile-mode '));
+              if (graphMode?.endsWith('semantic_graph=retained')) retainedGraphRuns += 1;
+              if (graphMode?.endsWith('semantic_graph=reanalyzed')) reanalyzedGraphRuns += 1;
             }
             for (const provenanceProblem of exactMatrixReportProvenanceProblems(stderr, file)) {
               problems.push(
@@ -25688,6 +25836,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       }
       expect(fixtures.length).toBeGreaterThan(0);
       expect(runs).toBe(fixtures.length * MINIFY_TARGETS.length * MINIFY_MODES.length);
+      expect(transpileModeRuns).toBe(fixtures.length * MINIFY_TARGETS.length * 2);
+      expect(retainedGraphRuns).toBeGreaterThan(0);
+      expect(retainedGraphRuns + reanalyzedGraphRuns).toBe(transpileModeRuns);
       expect(generatedBindings).toBeGreaterThan(0);
       expect(generatedReferences).toBeGreaterThan(0);
       expect(generatedScopeOwnersChecked).toBeGreaterThan(0);

@@ -82,9 +82,13 @@ const AstFacts = struct {
     has_import_declaration: bool = false,
     /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
     has_non_named_import: bool = false,
-    /// The legacy lenient source mode silently accepts TypeScript syntax. Such
-    /// input must keep the established analyzer until its source type is known.
+    /// The legacy lenient source mode silently accepts TypeScript syntax. Its
+    /// type-only subset can reuse the runtime graph; runtime-changing syntax is
+    /// gated separately below.
     has_typescript_syntax: bool = false,
+    /// Parser-removed `declare` and other type-only bindings remain outside the
+    /// runtime graph, so a lenient file with such names is not yet graph-neutral.
+    has_type_only_bindings: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
     /// Runtime transforms whose graph edits are not certified for Flow-mode input yet.
@@ -146,6 +150,7 @@ fn transpileFastPathDisabledByEnv() bool {
 
 fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMemory}!AstFacts {
     var facts: AstFacts = .{};
+    facts.has_type_only_bindings = ast.type_only_binding_names.count() > 0;
 
     for (ast.nodes.items) |node| {
         if (std.mem.startsWith(u8, @tagName(node.tag), "ts_")) {
@@ -624,7 +629,9 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         return !facts.has_unhandled_runtime_syntax and
             !(options.emit_decorator_metadata and facts.has_unsupported_qualified_metadata_type_reference);
     }
-    if (parser.source_mode == .js_lenient) return !facts.has_typescript_syntax;
+    if (parser.source_mode == .js_lenient) return !facts.has_import_declaration and
+        (!facts.has_typescript_syntax or
+            (!facts.has_runtime_sensitive_syntax and !facts.has_type_only_bindings));
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -1851,6 +1858,10 @@ fn transpileWithCallbackInternal(
             post.analyze() catch return error.SemanticError;
             mangle_analyzer = post;
         }
+        if (symbol_coverage_env.enabled()) {
+            const graph = if (mangle_uses_transform_semantic) "retained" else "reanalyzed";
+            std.debug.print("zntc: symbol-identity-transpile-mode {s}: semantic_graph={s}\n", .{ file_path, graph });
+        }
         const post = mangle_analyzer.?;
         if (post.symbols.items.len > 0 and post.scope_maps.items.len > 0) {
             // 변환 전 분석이 "이름 보존"으로 본 심볼(export·import·클래스 식 이름)을
@@ -2337,17 +2348,32 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
     try std.testing.expect(parser.source_mode == .js_lenient);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
-    const typed_sources = [_][]const u8{
+    const erased_type_sources = [_][]const u8{
         "const value: number = 1;",
         "type Value = string; const value: Value = 'x';",
         "interface Value { name: string } const value: Value = { name: 'x' };",
         "const value = 1 as number;",
         "const value = 1 satisfies number;",
-        "declare const value: number;",
-        "enum Value { A }",
         "function read<T>(value: T): T { return value; }",
     };
-    for (typed_sources) |source| {
+    for (erased_type_sources) |source| {
+        var typed_scanner = try Scanner.init(allocator, source);
+        var typed_parser = Parser.init(allocator, &typed_scanner);
+        typed_parser.configureFromExtension(".unknown");
+        _ = try typed_parser.parse();
+        try std.testing.expect(typed_parser.source_mode == .js_lenient);
+        try std.testing.expect(typed_parser.ast.type_only_binding_names.count() == 0);
+        try std.testing.expect(canMangleWithTransformSemantic(minify, &typed_parser));
+    }
+
+    const reanalyzed_sources = [_][]const u8{
+        "declare const value: number;",
+        "enum Value { A }",
+        "namespace Value { export const member = 1; }",
+        "import type { Value } from './types'; const value: Value = {} as Value;",
+        "class Value { amount: number = 1; }",
+    };
+    for (reanalyzed_sources) |source| {
         var typed_scanner = try Scanner.init(allocator, source);
         var typed_parser = Parser.init(allocator, &typed_scanner);
         typed_parser.configureFromExtension(".unknown");
@@ -2355,6 +2381,14 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         try std.testing.expect(typed_parser.source_mode == .js_lenient);
         try std.testing.expect(!canMangleWithTransformSemantic(minify, &typed_parser));
     }
+
+    var import_scanner = try Scanner.init(allocator, "import { value } from './values'; console.log(value);");
+    var import_parser = Parser.init(allocator, &import_scanner);
+    import_parser.configureFromExtension(".mjs");
+    import_parser.source_mode = .js_lenient;
+    _ = try import_parser.parse();
+    try std.testing.expect(import_parser.is_module);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &import_parser));
 }
 
 test "#4819 class lowering reuses transform semantic graph" {
