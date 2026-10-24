@@ -433,3 +433,57 @@ test "#4819 strict initializer factory owns references before semantic reconcili
     try std.testing.expectEqual(@as(u32, 2), list.len);
     try std.testing.expectEqual(ast.Node.Tag.directive, transformer.ast.getNode(@fromBackingInt(@intCast(transformer.ast.extra_data.items[list.start]))).tag);
 }
+
+test "#4819 strict initializer factory constructor name scope exists before reconciliation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const Box=class { constructor({value}={value:7}) { this.value=value; } };");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const ast = @import("../parser/ast.zig");
+    var owner: ast.NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_expression) owner = @fromBackingInt(@intCast(raw));
+    }
+    const source_scope = transformer.outputOwnedScope(owner).?;
+    const outer_scope = analyzer.scopes.items[source_scope.toIndex()].parent;
+    transformer.current_scope = source_scope;
+    const function = try @import("es2015_class.zig").ES2015Class(Transformer).lowerClassExpression(&transformer, owner, parser.ast.getNode(owner));
+    try std.testing.expectEqual(ast.Node.Tag.function_expression, transformer.ast.getNode(function).tag);
+    const binding = transformer.ast.readExtraNode(transformer.ast.getNode(function).data.extra, ast.FunctionExtra.name);
+    const id = transformer.getSymbolIdAt(binding).?;
+    const editor = &transformer.semantic_editor.?;
+    const name_scope = editor.symbols.items[id].scope_id;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, editor.scopes.items[name_scope.toIndex()].kind);
+    try std.testing.expectEqual(outer_scope, editor.scopes.items[name_scope.toIndex()].parent);
+    try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[name_scope.toIndex()].get(transformer.ast.identifierNameText(transformer.ast.getNode(binding))));
+    const function_scope = transformer.outputOwnedScope(function).?;
+    var enclosing = function_scope;
+    var steps: usize = 0;
+    while (enclosing != name_scope and !enclosing.isNone() and steps < editor.scopes.items.len) : (steps += 1) {
+        try std.testing.expect(enclosing != source_scope and enclosing != outer_scope);
+        enclosing = editor.scopes.items[enclosing.toIndex()].parent;
+    }
+    try std.testing.expectEqual(name_scope, enclosing);
+    var reads: usize = 0;
+    for (editor.references.items) |reference| {
+        if (@backingInt(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+        reads += 1;
+        try std.testing.expectEqual(function_scope, reference.scope_id);
+        try std.testing.expect(reference.flags.read and !reference.flags.write);
+    }
+    try std.testing.expect(reads > 0);
+}

@@ -2463,6 +2463,14 @@ pub fn reserveGeneratedFunctionScope(self: *Transformer, parent: ScopeId) Transf
     return editor.addScope(parent, .none, .function, true) catch |err| return editError(err);
 }
 
+/// A named function expression's immutable name environment has no AST
+/// owner of its own. Reserve it before constructor/helper references exist.
+pub fn reserveGeneratedNameScope(self: *Transformer, parent: ScopeId) Transformer.Error!ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const editor = try editorFor(self);
+    return editor.addScope(parent, .none, .block, true) catch |err| return editError(err);
+}
+
 pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);

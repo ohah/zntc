@@ -133,6 +133,21 @@ const cases = [
     source:
       'class Box{static Inner=class{static seen=this.name;};}console.log(Box.Inner.name,Box.Inner.seen);',
   },
+  {
+    name: 'named function parameter environment retains exact class self',
+    source:
+      'class Box{static value=7;static read=function named(local=Box){return [this,local.value];};}const read=Box.read;Box={value:99};console.log(read()[0]===undefined,read()[1]);',
+  },
+  {
+    name: 'constructor non-simple parameters retain strict context',
+    source:
+      'const Box=class{constructor({value}={value:7}){console.log((function(){return this===undefined;})(),value);}};new Box();',
+  },
+  {
+    name: 'external sloppy callee control',
+    source:
+      'function outside(){return arguments.callee===outside;}class Box{static read=outside;}console.log(Box.read());',
+  },
 ];
 
 describe('moved class code keeps strict creation and readonly identity (#4819)', () => {
@@ -147,16 +162,17 @@ describe('moved class code keeps strict creation and readonly identity (#4819)',
       for (const bundle of [false, true]) {
         for (const minify of [[], ['--minify-identifiers'], ['--minify']]) {
           test(`${fixture.name}: ${target}, ${bundle ? 'bundle' : 'standalone'}, ${minify.join(' ') || 'plain'}`, async () => {
-            const created = await createFixture({ 'input.mjs': fixture.source });
+            const created = await createFixture({ 'input.cjs': fixture.source });
             cleanup = created.cleanup;
-            const input = join(created.dir, 'input.mjs');
+            const input = join(created.dir, 'input.cjs');
             const native = spawnSync('node', [input], { encoding: 'utf8' });
             expect(native.status, native.stderr).toBe(0);
-            const output = join(created.dir, 'output.mjs');
+            const output = join(created.dir, 'output.cjs');
             const built = await runZntc(
               [
                 input,
                 `--target=${target}`,
+                '--format=cjs',
                 ...(bundle ? ['--bundle', '--platform=node'] : []),
                 ...minify,
                 '-o',
