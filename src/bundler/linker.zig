@@ -3297,15 +3297,9 @@ pub const Linker = struct {
     /// 모든 문자열은 스냅샷 arena 가 dupe 소유 — Linker.deinit 후에도 유효
     /// (canonical_strings borrow 금지, RFC #3933 dangling 회피).
     ///
-    /// **반환 null (F5 보수적 fail-safe)**: `symbolLocalName` 은 totality 가 정적으로
-    /// 보장되지 않는다(scope_maps[0] 역탐색 + synthetic fallback 둘 다 miss 하면 null).
-    /// rename_table 키 중 하나라도 local 이름을 못 얻으면 그 심볼의 rename 이 스냅샷에서
-    /// 조용히 누락된다 → reuse-hit rebuild 에서 그 rename 이 주입되지 않아 emit 이 원본
-    /// 이름을 써, 이미 로드된(renamed) 번들과 silent wrong-binding. 가드(G0~G6)는
-    /// 스냅샷 *자체* 의 불완전성은 못 잡는다. 그래서 불완전 스냅샷을 capture 하느니
-    /// **null 을 반환해 capture 를 폐기** — 그러면 caller 가 reuse 를 비활성화하고
-    /// 다음 rebuild 가 full computeRenames 를 돈다(정확성 > 성능). RN 8067 모듈 실측에선
-    /// null 발생이 0 이지만 코드가 totality 를 보장 못 하므로 정적 안전장치를 둔다.
+    /// Return null rather than capture a partial table when a cached ID is
+    /// invalid or a unique owner token cannot be assigned. The caller recomputes
+    /// instead of dropping renames or recovering their identities by spelling.
     pub fn buildRenameSnapshot(self: *Linker, gpa: std.mem.Allocator) !?PreservedRenames {
         var snap: PreservedRenames = .{
             .arena = std.heap.ArenaAllocator.init(gpa),
@@ -3317,27 +3311,20 @@ pub const Linker = struct {
         errdefer snap.arena.deinit();
         const a = snap.arena.allocator();
 
-        // 1. rename_table 엔트리 owned dupe. local_name 은 inject 시 by-name 재유도(G3)
-        //    의 lookup 키 — SymbolID.inner 로 심볼을 찾아 그 이름을 dupe 한다.
+        // Capture exact IDs and owned output names. Spelling is never an
+        // identity key; nested and AST-less bindings need the same contract.
         var entries: std.ArrayList(PreservedRenames.Entry) = .empty;
         try entries.ensureTotalCapacity(a, self.rename_table.count());
         var rit = self.rename_table.map.iterator();
         while (rit.next()) |e| {
             const id = e.key_ptr.*;
-            // 불완전 스냅샷 폐기: local 이름을 못 얻는 키가 하나라도 있으면 이 빌드의
-            // capture 를 통째로 무효화한다. 이미 alloc 한 arena 를 즉시 해제하고 null 반환
-            // → reuse 비활성, 다음 rebuild full 재계산 (위 doc 참고).
-            const local = self.symbolLocalName(id) orelse {
-                debug_log.print(.rename_reuse, "buildRenameSnapshot: symbolLocalName(module={d},inner={d}) null → 스냅샷 폐기(capture 실패), reuse 비활성\n", .{
-                    @backingInt(id.module),
-                    @backingInt(id.inner),
-                });
+            if (!self.hasCurrentSymbolId(id)) {
+                debug_log.print(.rename_reuse, "buildRenameSnapshot: invalid exact identity module={d} inner={d}; capture discarded\n", .{ @backingInt(id.module), @backingInt(id.inner) });
                 snap.arena.deinit();
                 return null;
-            };
+            }
             entries.appendAssumeCapacity(.{
                 .id = id,
-                .local_name = try a.dupe(u8, local),
                 .canonical = try a.dupe(u8, e.value_ptr.*),
             });
         }
@@ -3365,6 +3352,13 @@ pub const Linker = struct {
                 };
                 continue;
             };
+            const mutable = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse unreachable;
+            if (mutable.semantic) |*sem| {
+                if (sem.captureOwnerToken() == .unassigned) {
+                    snap.arena.deinit();
+                    return null;
+                }
+            }
             fps[i] = try self.moduleFingerprint(m.*);
         }
         snap.fingerprint = fps;
@@ -3375,16 +3369,15 @@ pub const Linker = struct {
     /// 재사용 안전성 가드 (G0~G4). 현재(fresh) 그래프가 스냅샷과 "rename deconflict
     /// 결과가 동일하게 나오는" 형태인지 판정한다. **하나라도 불확실하면 false → 호출자가
     /// full computeRenames** (기존 경로). fail-safe: 가드 버그의 최악은 perf 회귀이지
-    /// 정확성 사고가 아니다 (G3 제외 — by-name 재유도가 테스트로 커버).
+    /// 정확성 사고가 아니다.
     ///
-    /// per-index fingerprint 전체(path_hash/exec_index/toplevel_name_set_hash/
-    /// unresolved_refs_hash)를 비교한다. 변경 모듈만 골라 비교하는 대신 *모든* 모듈을
-    /// 비교 — 변경 안 된 모듈은 자명히 일치하고, 변경 모듈은 반드시 일치해야 하므로
-    /// 더 보수적이며 단순(graph_changed 사전계산 불필요).
+    /// All modules first undergo cheap token comparisons. Only changed modules
+    /// need the existing heavy name/namespace fingerprint calculation when the
+    /// preserved-topology carrier is present.
     /// - G0 모듈 추가/삭제: module_count 불일치 → false.
     /// - G1 index/exec_index: per-index path_hash + exec_index 비교.
     /// - G2 변경 모듈 이름집합: per-index toplevel_name_set_hash 비교.
-    /// - G3 inner idx: inject 의 by-name 재유도가 담당 (가드 아님).
+    /// - G3 exact SID: every physical semantic owner must match the snapshot.
     /// - G4 reserved_globals: per-index unresolved_refs_hash 비교.
     /// - G5 nested shadow 입력: per-index nested_name_set_hash 비교
     ///   (scope_maps[1..] 이름이 import canonical 을 shadow → 추가 rename 유발).
@@ -3395,10 +3388,11 @@ pub const Linker = struct {
         // G0: 모듈 수 동일.
         if (mc != snap.module_count) return false;
         if (snap.fingerprint.len != mc) return false;
+        if (!self.snapshotOwnersMatch(snap)) return false;
 
         // HMR 보존-hit(carrier changed_emit_paths non-null = 위상 보존)에서는 **변경 모듈만**
-        // full fingerprint 를 검사하고 unchanged 는 아예 순회하지 않는다(lGuard O(N)→O(changed),
-        // release link 의 ~32% 제거). unchanged 모듈은 #4174 renumber identity(위상 보존 시
+        // full fingerprint 를 검사한다. 위의 O(modules) owner 비교는 항상 수행한다.
+        // unchanged 모듈은 #4174 renumber identity(위상 보존 시
         // module_index 불변) + 물리 보존(path/exec_index/semantic 불변)으로 fingerprint 가 자명히
         // snapshot 과 일치하기 때문. carrier 는 emit source-hash skip(#4172) / injectPreservedRenames
         // 가 이미 정확성에 신뢰하는 동일 출처라, 가드가 carrier 를 신뢰하는 것은 새로운 trust 가
@@ -3437,28 +3431,27 @@ pub const Linker = struct {
             cur.import_locals_wrap_hash == old.import_locals_wrap_hash;
     }
 
-    /// SymbolID 에 해당하는 module-local 이름 (scope_maps[0] reverse lookup → synthetic_name
-    /// fallback). `findSymbolIdx` 의 역방향 — idx 로 이름을 찾는다.
-    ///
-    /// **totality 미보장 (F5)**: 모듈이 그래프 밖이거나, semantic 이 없거나, idx 가
-    /// scope_maps[0] 역탐색·synthetic fallback 둘 다 miss 하면 null. `buildRenameSnapshot`
-    /// 이 이 null 을 만나면 스냅샷을 폐기한다(불완전 capture 방지). pub: linker_test.zig 가
-    /// 이 null 케이스를 직접 구성해 capture 폐기를 검증한다.
-    pub fn symbolLocalName(self: *const Linker, id: bundler_symbol.SymbolID) ?[]const u8 {
-        const m = self.getModule(@backingInt(id.module)) orelse return null;
-        const sem = m.semantic orelse return null;
-        const idx = @backingInt(id.inner);
-        if (sem.scope_maps.len > 0) {
-            var it = sem.scope_maps[0].iterator();
-            while (it.next()) |e| {
-                if (e.value_ptr.* == idx) return e.key_ptr.*;
-            }
+    /// A snapshot can contain only exact, in-range semantic identities.
+    fn hasCurrentSymbolId(self: *const Linker, id: bundler_symbol.SymbolID) bool {
+        const module = self.getModule(@backingInt(id.module)) orelse return false;
+        const sem = module.semantic orelse return false;
+        return !id.inner.isNone() and @backingInt(id.inner) < sem.symbols.items.len;
+    }
+
+    /// Cheap owner checks intentionally cover every module, including unchanged
+    /// carrier entries. Arena address reuse can never make a new owner match.
+    fn snapshotOwnersMatch(self: *const Linker, snap: *const PreservedRenames) bool {
+        if (snap.module_count != self.graph.moduleCount() or snap.fingerprint.len != self.graph.moduleCount()) return false;
+        for (snap.fingerprint, 0..) |fp, i| {
+            const module = self.getModule(@intCast(i)) orelse return false;
+            if (module.semantic) |sem| {
+                if (sem.owner_token == .unassigned or fp.owner_token == null or fp.owner_token.? != sem.owner_token) return false;
+            } else if (fp.owner_token != null) return false;
         }
-        if (idx < sem.symbols.items.len) {
-            const sym = sem.symbols.items[idx];
-            if (sym.synthetic_kind != null and sym.synthetic_name.len > 0) return sym.synthetic_name;
+        for (snap.entries) |entry| {
+            if (!self.hasCurrentSymbolId(entry.id)) return false;
         }
-        return null;
+        return true;
     }
 
     /// 모듈의 fingerprint 계산. order-independent 해시(sum)로 이름집합/unresolved 비교 —
@@ -3466,6 +3459,7 @@ pub const Linker = struct {
     /// pub: linker_test.zig 가 per-field 게이트 동작을 직접 대조 (which-gate 검증).
     pub fn moduleFingerprint(self: *Linker, m: Module) !PreservedRenames.ModuleFingerprint {
         var fp: PreservedRenames.ModuleFingerprint = .{
+            .owner_token = if (m.semantic) |sem| sem.owner_token else null,
             .path_hash = std.hash.Wyhash.hash(0x5a, m.path),
             .exec_index = m.exec_index,
             .toplevel_name_set_hash = 0,
@@ -3540,15 +3534,12 @@ pub const Linker = struct {
     /// 보존 스냅샷을 현재(fresh) 그래프의 `rename_table`/`reserved_globals` 에 주입한다.
     /// `renameReuseGuard` 통과 후에만 호출 — 이름집합/모듈순서 불변이 보장된 상태.
     ///
-    /// **G3 (유일한 correctness-load-bearing)**: 변경 모듈은 재파싱돼 inner idx 가
-    /// 흔들릴 수 있으므로, 스냅샷 엔트리의 `id.inner` 를 신뢰하지 않고 *이름으로 재유도*
-    /// (`findSymbolIdx`, scope_maps[0] 대상) 해 fresh idx 로 재키잉한 뒤 주입한다. 이름은
-    /// G2 가 불변 보장하므로 모든 엔트리가 재유도 성공(total). 변경 안 된 모듈도 같은
-    /// 경로를 타 idx 가 그대로면 동일 결과 — 분기 없이 일관 처리.
-    ///
-    /// `assignSymbolCanonical` 싱크를 거쳐 rename_table/canonical_strings/canonical_names_used
-    /// 를 일관 갱신 (computeRenames 와 동일 sink).
+    /// Different semantic owners are rejected before any table is modified.
+    /// Same-owner IDs remain exact even if lookup maps contain another spelling.
     pub fn injectPreservedRenames(self: *Linker, snap: *const PreservedRenames) !void {
+        // Validate before mutating tables, so direct callers cannot partially
+        // inject a snapshot from a different owner or with an invalid SID.
+        if (!self.snapshotOwnersMatch(snap)) return error.InvalidPreservedRenameIdentity;
         // reserved_globals 복원 (collectReservedGlobals 를 skip 하므로 직접).
         self.reserved_globals.clearRetainingCapacity();
         for (snap.reserved_globals) |name| {
@@ -3560,14 +3551,10 @@ pub const Linker = struct {
         }
 
         for (snap.entries) |entry| {
-            const module_index = @backingInt(entry.id.module);
-            // by-name 재유도: 초기 idx 대신 fresh 그래프에서 이름으로 다시 찾는다.
-            const fresh_idx = self.findSymbolIdx(module_index, entry.local_name) orelse continue;
-            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), fresh_idx);
             // 스냅샷 문자열 borrow — 매 빌드 N dupe(alloc) 제거(lInj 절감, RFC_PERSISTENT_LINKER
             // Phase 1). `entry.canonical` 은 snap(=PreservedRenames, IncrementalBundler 수명)
             // 소유라 emit 까지 유효하고, linker.deinit 가 free 하지 않는다.
-            try self.assignSymbolCanonicalBorrowed(id, entry.canonical);
+            try self.assignSymbolCanonicalBorrowed(entry.id, entry.canonical);
         }
     }
 

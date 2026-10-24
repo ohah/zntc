@@ -4257,3 +4257,49 @@ test "foreign import identity provider export removal warm matches cold" {
     try std.testing.expect(!cold_importer.import_bindings[0].symbol.isValid());
     try std.testing.expect(!warm_importer.import_bindings[0].symbol.isValid());
 }
+
+test "reuse owner token HMR reparsing recomputes while untouched semantic owners survive" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { collision } from './dep'; const decoy = 2; console.log(collision, decoy);");
+    try writeFile(tmp.dir, "dep.ts", "export const collision = 1;");
+    const entry = try absPath(&tmp, "entry.ts");
+    defer alloc.free(entry);
+    const dep = try absPath(&tmp, "dep.ts");
+    defer alloc.free(dep);
+    var ib = IncrementalBundler.init(alloc, .{ .entry_points = &.{entry}, .dev_mode = true, .collect_module_codes = true });
+    ib.enable_persistence = true;
+    defer ib.deinit();
+    {
+        const initial = try ib.rebuild(std.testing.io);
+        switch (initial) {
+            .success => |s| BundleResult.ModuleDevCode.freeAll(s.changed_modules, alloc),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    const graph = &ib.persistent_graph.?;
+    const dep_index = graph.path_to_module.get(dep).?;
+    const entry_index = graph.path_to_module.get(entry).?;
+    const dep_token = ib.preserved_renames.?.fingerprint[@backingInt(dep_index)].owner_token.?;
+    const entry_token = ib.preserved_renames.?.fingerprint[@backingInt(entry_index)].owner_token.?;
+    try std.testing.expect(dep_token != .unassigned and entry_token != .unassigned);
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "dep.ts", "export const collision = 7;");
+    var changed: std.StringHashMapUnmanaged(void) = .empty;
+    defer changed.deinit(alloc);
+    try changed.put(alloc, dep, {});
+    const rebuilt = try ib.rebuildWithChanges(std.testing.io, &changed);
+    switch (rebuilt) {
+        .success => |s| {
+            defer BundleResult.ModuleDevCode.freeAll(s.changed_modules, alloc);
+            try std.testing.expect(!s.graph_changed);
+            try std.testing.expect(s.changed_modules.len > 0);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // A reuse hit keeps the old snapshot. A new token in the replacement
+    // snapshot proves the changed owner forced full rename computation.
+    try std.testing.expect(ib.preserved_renames.?.fingerprint[@backingInt(dep_index)].owner_token.? != dep_token);
+    try std.testing.expectEqual(entry_token, ib.preserved_renames.?.fingerprint[@backingInt(entry_index)].owner_token.?);
+}

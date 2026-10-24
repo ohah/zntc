@@ -708,3 +708,31 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
     snapshot.to_binary = @fromBackingInt(0xffffffff);
     try testing.expectError(error.Truncated, codec.serialize(&sem, &buf, alloc));
 }
+
+test "semantic owner token is memory only and decode cannot reuse its owner" {
+    const alloc = testing.allocator;
+    var sem = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    var before: std.ArrayList(u8) = .empty;
+    defer before.deinit(alloc);
+    try codec.serialize(&sem, &before, alloc);
+    const token = sem.captureOwnerToken();
+    try testing.expect(token != .unassigned);
+    try testing.expectEqual(token, sem.captureOwnerToken());
+    var stamped: std.ArrayList(u8) = .empty;
+    defer stamped.deinit(alloc);
+    try codec.serialize(&sem, &stamped, alloc);
+    try testing.expectEqualSlices(u8, before.items, stamped.items);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    var decoded = try codec.deserialize(stamped.items, arena.allocator());
+    try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, decoded.owner_token);
+    const decoded_token = decoded.captureOwnerToken();
+    try testing.expect(decoded_token != .unassigned and decoded_token != token);
+}

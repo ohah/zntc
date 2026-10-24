@@ -146,10 +146,11 @@ comptime {
         "stmt_idx:u32;scope_stmt_idx:u32;flags:semantic.symbol.ReferenceFlags;";
     if (!std.mem.eql(u8, fieldSig(Reference), reference_sig))
         @compileError("Reference 필드 시그니처가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Reference));
-    // serialize/deserialize 는 ModuleSemanticData 의 필드를 손으로 열거한다. 필드가 추가되면
+    // owner_token is memory-only and deliberately omitted; decode defaults to unassigned.
+    // serialize/deserialize 는 ModuleSemanticData 의 persisted 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 14) {
+    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 15) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -589,6 +590,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
     if (r.remaining() != 0) return error.Truncated;
 
     return .{
+        .owner_token = .unassigned, // Memory ownership cannot survive decode.
         .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len, .pointer_stability = .{} },
         .scopes = scopes,
         .scope_maps = scope_maps,
