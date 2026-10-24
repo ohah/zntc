@@ -2063,6 +2063,67 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('no-op decorator metadata retains the bundled TypeScript graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-empty-decorator-metadata-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      [
+        'const base: number = 40;',
+        'function add(value: number): number {',
+        '  const answer = value + 2;',
+        '  return answer;',
+        '}',
+        'console.log(add(base));',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    );
+    try {
+      const result = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          '--project',
+          dir,
+          '--experimental-decorators',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const lines = (result.stderr ?? '').split(/\r?\n/);
+      const reports = lines.filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, result.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0]), result.stderr).toEqual([]);
+      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(mode, result.stderr).toContain('semantic_graph=retained');
+      const scopeAudit = lines.find((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+      expect(scopeAudit, result.stderr).toBeDefined();
+      expect(scopeOwnerAuditProblems(scopeAudit!), result.stderr).toEqual([]);
+      const run = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('syntax minification retains edge-stable graphs and reanalyzes changed bindings', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-minify-retained-graph-'));
     const cases = [

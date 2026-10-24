@@ -6218,6 +6218,155 @@ test "legacy decorator graph retention gate includes Flow and excludes graph-cha
     ));
 }
 
+test "bundler retains graph for decorator options without decorator syntax" {
+    const cases = [_]struct {
+        source: []const u8,
+        experimental_decorators: bool,
+        emit_decorator_metadata: bool,
+    }{
+        .{ .source = "const value: number = 1;", .experimental_decorators = true, .emit_decorator_metadata = true },
+        .{ .source = "function read(value: number): number { return value; }", .experimental_decorators = false, .emit_decorator_metadata = true },
+        .{ .source = "type Value = string; const value: Value = 'x';", .experimental_decorators = true, .emit_decorator_metadata = false },
+        .{ .source = "interface Shape { name: string } const value: Shape = { name: 'x' };", .experimental_decorators = true, .emit_decorator_metadata = true },
+        .{ .source = "const value = 1 as number;", .experimental_decorators = false, .emit_decorator_metadata = true },
+        .{ .source = "const value = 1 satisfies number;", .experimental_decorators = true, .emit_decorator_metadata = false },
+        .{ .source = "function read<T extends object>(value: T): T { return value; }", .experimental_decorators = true, .emit_decorator_metadata = true },
+        .{ .source = "class Box { value: number = 1; read(): number { return this.value; } }", .experimental_decorators = false, .emit_decorator_metadata = true },
+        .{ .source = "const values: Array<number> = [1, 2];", .experimental_decorators = true, .emit_decorator_metadata = false },
+        .{ .source = "import type { Shape } from './shape'; const shape: Shape = { name: 'x' };", .experimental_decorators = false, .emit_decorator_metadata = false },
+    };
+    const Plugin = @import("../plugin.zig").Plugin;
+    const no_plugins: []const Plugin = &.{};
+
+    for (cases, 0..) |case, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expect(!parser.ast.has_decorator);
+
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        analyzer.is_ts = true;
+        try analyzer.analyze();
+
+        var module = Module.init(@fromBackingInt(@intCast(case_index)), "input.ts");
+        module.source = case.source;
+        module.module_type = .ts;
+        module.ast = parser.ast;
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        };
+
+        const context = .{
+            .allocator = allocator,
+            .flow = false,
+            .worklet_transform = false,
+            .plugins = no_plugins,
+            .styled_components = false,
+            .emotion = false,
+        };
+        var allow_super_get = false;
+        var allow_super_set = false;
+        const options: TransformOptions = .{
+            .strip_types = true,
+            .experimental_decorators = case.experimental_decorators,
+            .emit_decorator_metadata = case.emit_decorator_metadata,
+        };
+        try std.testing.expect(canKeepPrepassSemanticGraph(
+            &context,
+            &module,
+            options,
+            no_plugins,
+            &allow_super_get,
+            &allow_super_set,
+            null,
+        ));
+    }
+
+    var decorated_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer decorated_arena.deinit();
+    const allocator = decorated_arena.allocator();
+    const decorated_source = "function mark(value: Function) {} @mark class Example {}";
+    var scanner = try Scanner.init(allocator, decorated_source);
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expect(parser.ast.has_decorator);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    var decorated_module = Module.init(@fromBackingInt(@as(u32, 0)), "decorated.ts");
+    decorated_module.source = decorated_source;
+    decorated_module.module_type = .ts;
+    decorated_module.ast = parser.ast;
+    decorated_module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    const decorated_context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = no_plugins,
+        .styled_components = false,
+        .emotion = false,
+    };
+    var allow_super_get = false;
+    var allow_super_set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(
+        &decorated_context,
+        &decorated_module,
+        .{ .strip_types = true, .experimental_decorators = true, .emit_decorator_metadata = true },
+        no_plugins,
+        &allow_super_get,
+        &allow_super_set,
+        null,
+    ));
+    try std.testing.expect(!canKeepPrepassSemanticGraph(
+        &decorated_context,
+        &decorated_module,
+        .{
+            .strip_types = true,
+            .experimental_decorators = true,
+            .emit_decorator_metadata = true,
+            .minify_syntax = true,
+        },
+        no_plugins,
+        &allow_super_get,
+        &allow_super_set,
+        null,
+    ));
+}
+
 fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
     for (ast.nodes.items) |node| {
         if (node.tag == .property_definition) return true;
@@ -6726,13 +6875,15 @@ fn canKeepPrepassSemanticGraph(
     // that removes or relocates semantic nodes falls back to the analyzer.
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph.
+    // Decorator options are a no-op when the AST contains no decorators. Keep
+    // their analyzer fallback only for actual decorator lowering/metadata.
+    const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or
-        (options.experimental_decorators and !retained_legacy_decorators) or
-        (options.emit_decorator_metadata and !retained_legacy_decorators)) return false;
+        (ast.has_decorator and has_legacy_decorator_options and !retained_legacy_decorators)) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await
     // into a generated async IIFE, so keep that case on the full resync path.
