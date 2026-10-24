@@ -20,6 +20,7 @@ const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const ast_walk = @import("../../parser/ast_walk.zig");
+const reference_walk = @import("../../semantic/reference_walk.zig");
 const module_parser = @import("../../parser/module.zig");
 const token_mod = @import("../../lexer/token.zig");
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
@@ -27,8 +28,10 @@ const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SemanticReference = @import("../../semantic/symbol.zig").Reference;
 const SemanticSyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const SemanticScope = @import("../../semantic/scope.zig").Scope;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
@@ -6632,10 +6635,13 @@ fn canKeepPrepassSemanticGraph(
     );
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators and !retained_legacy_decorators)) return false;
+    // Syntax minification is admitted provisionally. After it runs, the caller
+    // retains this graph only if every reachable binding/reference still has
+    // its exact identity and the reference counts still match. A minify edit
+    // that removes or relocates semantic nodes falls back to the analyzer.
     // Whitespace minification changes emission and helper spellings, but the
-    // transformer records those helper identities in the edited graph. Unlike
-    // syntax minification, this option does not remove or replace AST nodes.
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or options.minify_syntax or
+    // transformer records those helper identities in the edited graph.
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
@@ -6799,6 +6805,502 @@ fn canKeepPrepassSemanticGraph(
     return safe_graph;
 }
 
+fn minifiedGraphScopeContains(
+    scopes: []const SemanticScope,
+    binding_scope: ScopeId,
+    reference_scope: ScopeId,
+) bool {
+    if (binding_scope.isNone() or @backingInt(binding_scope) >= scopes.len or
+        reference_scope.isNone() or @backingInt(reference_scope) >= scopes.len) return false;
+    var current = reference_scope;
+    var hops: usize = 0;
+    while (hops < scopes.len) : (hops += 1) {
+        if (current == binding_scope) return true;
+        current = scopes[@backingInt(current)].parent;
+        if (current.isNone() or @backingInt(current) >= scopes.len) return false;
+    }
+    return false;
+}
+
+const MinifiedStatementList = struct {
+    owner_node: u32,
+    children: []const u32,
+};
+
+/// Reference rows carry both top-level and per-scope statement indices. Syntax
+/// minification may keep every identifier edge while still compacting or
+/// reordering one of those statement lists, which would leave those indices
+/// stale. Snapshot every statement list before minification and retain the
+/// graph only when the exact list owners and child order are unchanged.
+fn snapshotMinifiedStatementLists(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+) ![]MinifiedStatementList {
+    var lists: std.ArrayListUnmanaged(MinifiedStatementList) = .empty;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .program and node.tag != .block_statement) continue;
+        const list = node.data.list;
+        const start: usize = list.start;
+        const end = start + list.len;
+        if (end < start or end > ast.extra_data.items.len) return error.InvalidStatementListLayout;
+        const children = try allocator.dupe(u32, ast.extra_data.items[start..end]);
+        try lists.append(allocator, .{ .owner_node = @intCast(raw), .children = children });
+    }
+    return lists.toOwnedSlice(allocator);
+}
+
+fn minifiedStatementListsEqual(left: []const MinifiedStatementList, right: []const MinifiedStatementList) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |a, b| {
+        if (a.owner_node != b.owner_node or !std.mem.eql(u32, a.children, b.children)) return false;
+    }
+    return true;
+}
+
+const MinifiedStatementContext = struct {
+    stmt_idx: u32 = SemanticReference.NO_STMT,
+    scope_stmt_idx: u32 = SemanticReference.NO_STMT,
+};
+
+const MinifiedStatementFrame = struct {
+    node: ast_mod.NodeIndex,
+    context: MinifiedStatementContext,
+};
+
+/// Recompute the statement coordinates consumed by tree shaking and the
+/// emitter's dead-store pass, while keeping every existing SymbolId and
+/// ScopeId. These coordinates are derived from current AST statement lists;
+/// inability to map a graph row exactly makes retention ineligible.
+fn collectMinifiedStatementContexts(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+) ![]?MinifiedStatementContext {
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return error.InvalidRoot;
+    const contexts = try allocator.alloc(?MinifiedStatementContext, ast.nodes.items.len);
+    @memset(contexts, null);
+    var stack: std.ArrayListUnmanaged(MinifiedStatementFrame) = .empty;
+    try stack.append(allocator, .{ .node = root, .context = .{} });
+
+    while (stack.pop()) |frame| {
+        if (frame.node.isNone()) continue;
+        const raw: usize = @backingInt(frame.node);
+        if (raw >= ast.nodes.items.len) return error.InvalidStatementNode;
+        if (contexts[raw]) |existing| {
+            if (!std.meta.eql(existing, frame.context)) return error.AmbiguousStatementContext;
+            continue;
+        }
+        contexts[raw] = frame.context;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .program or node.tag == .block_statement) {
+            const list = node.data.list;
+            const start: usize = list.start;
+            const len: usize = list.len;
+            if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start)
+                return error.InvalidStatementList;
+            for (ast.extra_data.items[start .. start + len], 0..) |child_raw, index| {
+                const child: ast_mod.NodeIndex = @fromBackingInt(child_raw);
+                var context = frame.context;
+                if (node.tag == .program) context.stmt_idx = @intCast(index);
+                context.scope_stmt_idx = @intCast(index);
+                try stack.append(allocator, .{ .node = child, .context = context });
+            }
+            continue;
+        }
+
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            try stack.append(allocator, .{ .node = child, .context = frame.context });
+        }
+    }
+    return contexts;
+}
+
+fn reindexMinifiedSemanticReferences(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    references: []const SemanticReference,
+) !?[]SemanticReference {
+    const contexts = collectMinifiedStatementContexts(allocator, ast, root) catch return null;
+    const updated = try allocator.dupe(SemanticReference, references);
+    for (updated) |*reference| {
+        const node_index = if (reference.flags.declare)
+            reference.declaration_node_index
+        else
+            reference.node_index;
+        if (node_index.isNone() or @backingInt(node_index) >= contexts.len) {
+            if (reference.stmt_idx == SemanticReference.NO_STMT or
+                reference.scope_stmt_idx == SemanticReference.NO_STMT) return null;
+            continue;
+        }
+        const context = contexts[@backingInt(node_index)] orelse return null;
+        if (context.stmt_idx == SemanticReference.NO_STMT or
+            context.scope_stmt_idx == SemanticReference.NO_STMT) return null;
+        reference.stmt_idx = context.stmt_idx;
+        reference.scope_stmt_idx = context.scope_stmt_idx;
+    }
+    return updated;
+}
+
+/// Syntax minification runs after Transformer.finishSemanticEdit. It can fold
+/// expressions and discard declarations, so the pre-minify graph is retained
+/// only when the final AST still presents the same exact semantic edges.
+/// Returning false is a normal conservative fallback, not a compilation error.
+const MinifiedGraphGateFailure = enum {
+    allocation,
+    invalid_reference_or_scope,
+    invalid_declaration,
+    detached_declaration,
+    duplicate_declaration,
+    missing_reference,
+    invalid_reference_node,
+    duplicate_reference,
+    reference_counts,
+    scope_owners,
+    invalid_statement_context,
+    missing_binding_identity,
+    missing_reference_identity,
+    unresolved_reference,
+};
+
+fn rejectMinifiedGraphGate(
+    failure: ?*MinifiedGraphGateFailure,
+    reason: MinifiedGraphGateFailure,
+) bool {
+    if (failure) |out| out.* = reason;
+    return false;
+}
+
+fn canRetainMinifiedSemanticGraph(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    symbols: []const SemanticSymbol,
+    scopes: []const SemanticScope,
+    references: []const SemanticReference,
+    symbol_ids: []const ?u32,
+    unresolved_references: *const std.StringHashMapUnmanaged(void),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    failure: ?*MinifiedGraphGateFailure,
+) bool {
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(reachable);
+    const statement_contexts = collectMinifiedStatementContexts(allocator, ast, root) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    const live_reference_nodes = reference_walk.collectIdentifierReferences(allocator, ast, root) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(live_reference_nodes);
+
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(allocator);
+    for (reachable) |raw| live.put(allocator, raw, {}) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    var live_references: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live_references.deinit(allocator);
+    for (live_reference_nodes) |node| {
+        live_references.put(allocator, @backingInt(node), {}) catch
+            return rejectMinifiedGraphGate(failure, .allocation);
+    }
+
+    const scopes_with_owner = allocator.alloc(bool, scopes.len) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(scopes_with_owner);
+    @memset(scopes_with_owner, false);
+    var owner_it = scope_owner_map.iterator();
+    while (owner_it.next()) |entry| {
+        const owner_node = entry.key_ptr.*;
+        const scope_id = entry.value_ptr.*;
+        if (!live.contains(owner_node) or owner_node >= ast.nodes.items.len or scope_id >= scopes.len)
+            return rejectMinifiedGraphGate(failure, .scope_owners);
+        scopes_with_owner[scope_id] = true;
+    }
+    for (scopes_with_owner) |has_owner| {
+        if (!has_owner) return rejectMinifiedGraphGate(failure, .scope_owners);
+    }
+
+    var reference_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer reference_by_node.deinit(allocator);
+    var declaration_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer declaration_by_node.deinit(allocator);
+    const reference_counts = allocator.alloc(u32, symbols.len) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(reference_counts);
+    const write_counts = allocator.alloc(u32, symbols.len) catch
+        return rejectMinifiedGraphGate(failure, .allocation);
+    defer allocator.free(write_counts);
+    @memset(reference_counts, 0);
+    @memset(write_counts, 0);
+
+    for (references) |reference| {
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (symbol_id >= symbols.len or reference.scope_id.isNone() or
+            @backingInt(reference.scope_id) >= scopes.len)
+            return rejectMinifiedGraphGate(failure, .invalid_reference_or_scope);
+
+        if (reference.flags.declare) {
+            if (!reference.node_index.isNone()) return rejectMinifiedGraphGate(failure, .invalid_declaration);
+            if (reference.declaration_node_index.isNone())
+                return rejectMinifiedGraphGate(failure, .invalid_declaration);
+            const raw = @backingInt(reference.declaration_node_index);
+            if (!live.contains(raw)) return rejectMinifiedGraphGate(failure, .detached_declaration);
+            if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .binding_identifier or
+                raw >= symbol_ids.len or symbol_ids[raw] != symbol_id or
+                symbols[symbol_id].scope_id != reference.scope_id)
+                return rejectMinifiedGraphGate(failure, .invalid_declaration);
+            const context = statement_contexts[raw] orelse
+                return rejectMinifiedGraphGate(failure, .invalid_statement_context);
+            if (reference.stmt_idx != context.stmt_idx or
+                reference.scope_stmt_idx != context.scope_stmt_idx)
+                return rejectMinifiedGraphGate(failure, .invalid_statement_context);
+            if (declaration_by_node.contains(raw)) return rejectMinifiedGraphGate(failure, .duplicate_declaration);
+            declaration_by_node.put(allocator, raw, symbol_id) catch
+                return rejectMinifiedGraphGate(failure, .allocation);
+            continue;
+        }
+
+        if (reference.node_index.isNone()) return rejectMinifiedGraphGate(failure, .missing_reference);
+        const raw = @backingInt(reference.node_index);
+        if (!live_references.contains(raw) or raw >= ast.nodes.items.len or raw >= symbol_ids.len or
+            (ast.nodes.items[raw].tag != .identifier_reference and
+                ast.nodes.items[raw].tag != .assignment_target_identifier) or
+            symbol_ids[raw] != symbol_id or
+            !minifiedGraphScopeContains(scopes, symbols[symbol_id].scope_id, reference.scope_id))
+            return rejectMinifiedGraphGate(failure, .invalid_reference_node);
+        const context = statement_contexts[raw] orelse
+            return rejectMinifiedGraphGate(failure, .invalid_statement_context);
+        if (reference.stmt_idx != context.stmt_idx or
+            reference.scope_stmt_idx != context.scope_stmt_idx)
+            return rejectMinifiedGraphGate(failure, .invalid_statement_context);
+        if (reference_by_node.contains(raw)) return rejectMinifiedGraphGate(failure, .duplicate_reference);
+        reference_by_node.put(allocator, raw, symbol_id) catch
+            return rejectMinifiedGraphGate(failure, .allocation);
+        reference_counts[symbol_id] +|= 1;
+        if (reference.flags.write) write_counts[symbol_id] +|= 1;
+    }
+
+    for (symbols, 0..) |symbol, raw| {
+        if (symbol.reference_count != reference_counts[raw] or symbol.write_count != write_counts[raw])
+            return rejectMinifiedGraphGate(failure, .reference_counts);
+    }
+
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) return rejectMinifiedGraphGate(failure, .invalid_reference_node);
+        const node = ast.nodes.items[raw];
+        if (node.tag != .binding_identifier) continue;
+        if (raw >= symbol_ids.len) return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+        const symbol_id = symbol_ids[raw] orelse
+            return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+        if (symbol_id >= symbols.len or declaration_by_node.get(raw) != symbol_id)
+            return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+    }
+
+    for (live_reference_nodes) |reference_node| {
+        const raw = @backingInt(reference_node);
+        if (raw >= ast.nodes.items.len or raw >= symbol_ids.len)
+            return rejectMinifiedGraphGate(failure, .missing_reference_identity);
+        const node = ast.nodes.items[raw];
+        if (symbol_ids[raw]) |symbol_id| {
+            if (symbol_id >= symbols.len or reference_by_node.get(raw) != symbol_id)
+                return rejectMinifiedGraphGate(failure, .missing_reference_identity);
+        } else {
+            const text = ast.getText(node.data.string_ref);
+            if (!unresolved_references.contains(text)) {
+                const decoded = Scanner.decodeIdentifierEscapesAlloc(allocator, text) catch
+                    return rejectMinifiedGraphGate(failure, .unresolved_reference);
+                if (!unresolved_references.contains(decoded))
+                    return rejectMinifiedGraphGate(failure, .unresolved_reference);
+            }
+        }
+    }
+    return true;
+}
+
+fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    const before_statement_lists = try snapshotMinifiedStatementLists(allocator, &parser.ast);
+    if (!canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        null,
+    )) return error.InvalidPreMinifyGraph;
+
+    const minify_mod = @import("../../transformer/minify.zig");
+    minify_mod.minify(&parser.ast, .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = &analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .allow_top_level_inline = true,
+    }, allocator, root);
+    const after_statement_lists = try snapshotMinifiedStatementLists(allocator, &parser.ast);
+    if (!minifiedStatementListsEqual(before_statement_lists, after_statement_lists)) return false;
+    const updated_references = (try reindexMinifiedSemanticReferences(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.references.items,
+    )) orelse return false;
+    return canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        updated_references,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        null,
+    );
+}
+
+const MinifiedGraphMutation = enum {
+    missing_binding_id,
+    invalid_binding_id,
+    missing_reference_id,
+    invalid_reference_id,
+    missing_reference_row,
+    duplicate_reference_row,
+    wrong_reference_symbol,
+    stale_reference_node,
+    missing_declaration,
+    wrong_declaration_symbol,
+    invalid_reference_scope,
+    missing_scope_owner,
+    invalid_scope_owner,
+    wrong_reference_count,
+    wrong_write_count,
+    missing_statement_index,
+    wrong_statement_index,
+    wrong_scope_statement_index,
+};
+
+fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const externalValue = external; function read(input) { const alias = input; let count = 0; count = input; return alias + count + externalValue; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    const symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    const symbols = try allocator.dupe(SemanticSymbol, analyzer.symbols.items);
+    var scope_owner_map = analyzer.scope_owner_map;
+    var references: std.ArrayList(SemanticReference) = .empty;
+    try references.appendSlice(allocator, analyzer.references.items);
+
+    var binding_node: ?u32 = null;
+    var bound_reference_node: ?u32 = null;
+    var literal_node: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and binding_node == null) binding_node = @intCast(raw);
+        if (node.tag == .identifier_reference and raw < symbol_ids.len and symbol_ids[raw] != null and
+            bound_reference_node == null) bound_reference_node = @intCast(raw);
+        if (node.tag == .numeric_literal and literal_node == null) literal_node = @intCast(raw);
+    }
+    const binding_raw = binding_node orelse return error.MissingHostileBinding;
+    const bound_raw = bound_reference_node orelse return error.MissingHostileReference;
+    const literal_raw = literal_node orelse return error.MissingHostileLiteral;
+    const bound_symbol = symbol_ids[bound_raw] orelse return error.MissingHostileSymbol;
+    const binding_symbol = symbol_ids[binding_raw] orelse return error.MissingHostileSymbol;
+
+    var binding_declaration_row: ?usize = null;
+    var bound_reference_row: ?usize = null;
+    var write_symbol: ?u32 = null;
+    for (references.items, 0..) |reference, index| {
+        if (reference.flags.declare and @backingInt(reference.declaration_node_index) == binding_raw)
+            binding_declaration_row = index;
+        if (!reference.flags.declare and @backingInt(reference.node_index) == bound_raw)
+            bound_reference_row = index;
+        if (!reference.flags.declare and reference.flags.write) write_symbol = @backingInt(reference.symbol_id);
+    }
+    const declaration_row = binding_declaration_row orelse return error.MissingHostileDeclaration;
+    const reference_row = bound_reference_row orelse return error.MissingHostileReferenceRow;
+    const other_symbol = if (bound_symbol == 0) @as(u32, 1) else @as(u32, 0);
+    const other_binding_symbol = if (binding_symbol == 0) @as(u32, 1) else @as(u32, 0);
+    if (other_symbol >= symbols.len) return error.MissingDistinctHostileSymbol;
+
+    switch (mutation) {
+        .missing_binding_id => symbol_ids[binding_raw] = null,
+        .invalid_binding_id => symbol_ids[binding_raw] = @intCast(symbols.len),
+        .missing_reference_id => symbol_ids[bound_raw] = null,
+        .invalid_reference_id => symbol_ids[bound_raw] = @intCast(symbols.len),
+        .missing_reference_row => _ = references.orderedRemove(reference_row),
+        .duplicate_reference_row => try references.append(allocator, references.items[reference_row]),
+        .wrong_reference_symbol => references.items[reference_row].symbol_id = @fromBackingInt(@intCast(other_symbol)),
+        .stale_reference_node => references.items[reference_row].node_index = @fromBackingInt(literal_raw),
+        .missing_declaration => _ = references.orderedRemove(declaration_row),
+        .wrong_declaration_symbol => references.items[declaration_row].symbol_id = @fromBackingInt(@intCast(other_binding_symbol)),
+        .invalid_reference_scope => references.items[reference_row].scope_id = .none,
+        .missing_scope_owner => {
+            var owners = scope_owner_map.iterator();
+            const owner = owners.next() orelse return error.MissingHostileScopeOwner;
+            _ = scope_owner_map.remove(owner.key_ptr.*);
+        },
+        .invalid_scope_owner => {
+            var owners = scope_owner_map.iterator();
+            const owner = owners.next() orelse return error.MissingHostileScopeOwner;
+            scope_owner_map.getPtr(owner.key_ptr.*).?.* = @intCast(analyzer.scopes.items.len);
+        },
+        .wrong_reference_count => symbols[bound_symbol].reference_count +|= 1,
+        .wrong_write_count => symbols[write_symbol orelse return error.MissingHostileWrite].write_count +|= 1,
+        .missing_statement_index => references.items[reference_row].stmt_idx = SemanticReference.NO_STMT,
+        .wrong_statement_index => references.items[reference_row].stmt_idx = if (references.items[reference_row].stmt_idx == 0) 1 else 0,
+        .wrong_scope_statement_index => references.items[reference_row].scope_stmt_idx +|= 1,
+    }
+
+    var failure: MinifiedGraphGateFailure = .allocation;
+    const retained = canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        symbols,
+        analyzer.scopes.items,
+        references.items,
+        symbol_ids,
+        &analyzer.unresolved_references,
+        &scope_owner_map,
+        &failure,
+    );
+    return !retained and failure != .allocation;
+}
+
 fn shouldRecordPrepassExplicitGlobals(
     can_keep_semantic_graph: bool,
     ast: *const ast_mod.Ast,
@@ -6835,6 +7337,130 @@ test "worklet graph retention admits only the built-in plugin" {
     try std.testing.expect(!isBuiltinWorkletPluginSet(&custom));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&mixed));
     try std.testing.expect(!isBuiltinWorkletPluginSet(&.{}));
+}
+
+test "syntax minification retains only an exact semantic graph" {
+    const Case = struct {
+        source: []const u8,
+        retain: bool,
+    };
+    const cases = [_]Case{
+        .{ .source = "function read(input) { return input + 1; }", .retain = true },
+        .{ .source = "function read(input) { return input + (2 * 3); }", .retain = true },
+        .{ .source = "function read(input) { if (true) { return input; } }", .retain = false },
+        .{ .source = "function read(input) { const one = 1; return one; }", .retain = false },
+        .{ .source = "function read(input) { const dead = 1; return 2; }", .retain = false },
+        .{ .source = "function read(input) { return true ? input : 0; }", .retain = false },
+        .{ .source = "function read(input) { return false ? 0 : input; }", .retain = false },
+        .{ .source = "function read(input) { return false && input; }", .retain = false },
+        .{ .source = "function read(input) { return true || input; }", .retain = false },
+        .{ .source = "function read(input) { if (false) { 1; } return input; }", .retain = false },
+        .{ .source = "const ONE = 1; function read() { return ONE; }", .retain = false },
+        .{ .source = "function read(input) { const value = input + 1; return value; }", .retain = true },
+        .{ .source = "function read(input) { const one = 1; const two = one; return two; }", .retain = false },
+        .{ .source = "function read(input) { if (false) use(input); return 0; }", .retain = false },
+    };
+
+    for (cases) |case| {
+        const retained = try syntaxMinifyGraphRetainableForTest(case.source);
+        try std.testing.expectEqual(case.retain, retained);
+    }
+}
+
+test "syntax minification repairs statement coordinates without changing identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const seed = 1; function read(input) { const alias = input; { const nested = alias; return seed + nested; } }");
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    for (analyzer.references.items) |reference| {
+        try std.testing.expectEqual(SemanticReference.NO_STMT, reference.stmt_idx);
+        try std.testing.expectEqual(SemanticReference.NO_STMT, reference.scope_stmt_idx);
+    }
+    var failure: MinifiedGraphGateFailure = .allocation;
+    try std.testing.expect(!canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        &failure,
+    ));
+    try std.testing.expectEqual(MinifiedGraphGateFailure.invalid_statement_context, failure);
+
+    const updated = (try reindexMinifiedSemanticReferences(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.references.items,
+    )) orelse return error.CouldNotReindexStatementContexts;
+    try std.testing.expectEqual(analyzer.references.items.len, updated.len);
+    var statement_oracle = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer statement_oracle.deinit();
+    statement_oracle.is_strict_mode = parser.is_strict_mode;
+    statement_oracle.is_module = parser.is_module;
+    statement_oracle.enable_stmt_info = true;
+    statement_oracle.enable_exact_declaration_anchors = true;
+    try statement_oracle.analyze();
+    for (analyzer.references.items, updated) |before, after| {
+        try std.testing.expectEqual(before.symbol_id, after.symbol_id);
+        try std.testing.expectEqual(before.scope_id, after.scope_id);
+        try std.testing.expectEqual(before.flags, after.flags);
+        try std.testing.expect(after.stmt_idx != SemanticReference.NO_STMT);
+        try std.testing.expect(after.scope_stmt_idx != SemanticReference.NO_STMT);
+
+        var expected: ?SemanticReference = null;
+        for (statement_oracle.references.items) |candidate| {
+            if (candidate.flags.declare != before.flags.declare or candidate.symbol_id != before.symbol_id)
+                continue;
+            const same_node = if (before.flags.declare)
+                candidate.declaration_node_index == before.declaration_node_index
+            else
+                candidate.node_index == before.node_index;
+            if (!same_node) continue;
+            expected = candidate;
+            break;
+        }
+        const expected_reference = expected orelse return error.MissingStatementOracleReference;
+        try std.testing.expectEqual(expected_reference.stmt_idx, after.stmt_idx);
+        try std.testing.expectEqual(expected_reference.scope_stmt_idx, after.scope_stmt_idx);
+    }
+    try std.testing.expect(canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        updated,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        null,
+    ));
+}
+
+test "syntax minify graph gate rejects eighteen hostile identity and statement corruptions" {
+    inline for (std.meta.tags(MinifiedGraphMutation)) |mutation| {
+        const rejected = try minifiedGraphMutationIsRejected(mutation);
+        if (!rejected) std.debug.print("minify graph mutation accepted: {s}\n", .{@tagName(mutation)});
+        try std.testing.expect(rejected);
+    }
 }
 
 test "primitive defines retain only an exact local reference graph" {
@@ -8282,6 +8908,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 복사 후 hydrate → prepass 에서 fold 된 dead branch 안 ref 감산이 emitter 의
     // dead-store pass 에 전파되어 cascade dead binding 도 elide 가능.
     var prepass_ref_deltas: []u32 = &.{};
+    const pre_minify_statement_lists: ?[]MinifiedStatementList = if (can_keep_semantic_graph and
+        self.transform_options_base.minify_syntax)
+        snapshotMinifiedStatementLists(arena_alloc, transformer.ast) catch null
+    else
+        null;
     if (self.transform_options_base.minify_syntax) {
         const minify_mod = @import("../../transformer/minify.zig");
         // This flag controls top-level constant/function inlining, not
@@ -8302,6 +8933,53 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             } else |_| {}
         }
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
+    }
+
+    // A successful transform graph is not automatically valid after syntax
+    // minification: folding can delete identifier edges or move an identifier
+    // to another AST slot. Retain the existing SymbolIds only when the final
+    // reachable AST, declarations, references, scopes, and counts still agree.
+    // Otherwise use the normal graph metadata resync and semantic analyzer.
+    if (can_keep_semantic_graph and self.transform_options_base.minify_syntax) {
+        if (pre_minify_statement_lists) |before| {
+            const after = snapshotMinifiedStatementLists(arena_alloc, transformer.ast) catch null;
+            if (after) |current| {
+                can_keep_semantic_graph = minifiedStatementListsEqual(before, current);
+            } else {
+                can_keep_semantic_graph = false;
+            }
+        } else {
+            can_keep_semantic_graph = false;
+        }
+        if (can_keep_semantic_graph) {
+            if (module.semantic) |*semantic| {
+                const updated_references = reindexMinifiedSemanticReferences(
+                    arena_alloc,
+                    transformer.ast,
+                    root,
+                    semantic.references,
+                ) catch null;
+                if (updated_references) |references| {
+                    semantic.references = references;
+                    can_keep_semantic_graph = canRetainMinifiedSemanticGraph(
+                        arena_alloc,
+                        transformer.ast,
+                        root,
+                        semantic.symbols.items,
+                        semantic.scopes,
+                        semantic.references,
+                        transformer.symbol_ids.items,
+                        &semantic.unresolved_references,
+                        &semantic.scope_owner_map,
+                        null,
+                    );
+                } else {
+                    can_keep_semantic_graph = false;
+                }
+            } else {
+                can_keep_semantic_graph = false;
+            }
+        }
     }
 
     // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
@@ -8441,6 +9119,40 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             }
             return;
         };
+        if (self.transform_options_base.minify_syntax) {
+            if (module.semantic) |semantic| {
+                // Syntax minification can change statement-use information
+                // even when every surviving identifier edge still has the
+                // same SymbolId. Rebuild the tree-shaker buckets from the
+                // retained graph instead of leaving them empty after the
+                // graph-metadata refresh.
+                module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
+                    arena_alloc,
+                    &module.ast.?,
+                    semantic.symbols.items,
+                    semantic.scopes,
+                    semantic.references,
+                    &semantic.unresolved_references,
+                    false,
+                    module.memberAugmentGate(self.transform_options_base.minify_syntax),
+                ) catch {
+                    if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
+                        auditPrepassExactIfEnabled(
+                            arena_alloc,
+                            module,
+                            root,
+                            parser_node_count,
+                            &transformer,
+                            &unresolved_nodes,
+                            pre_transform_scope_count,
+                            debug_symbol_coverage,
+                            false,
+                        );
+                    }
+                    return;
+                };
+            }
+        }
         auditPrepassExactIfEnabled(
             arena_alloc,
             module,

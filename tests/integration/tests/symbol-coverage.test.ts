@@ -1939,6 +1939,98 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('syntax minification retains edge-stable graphs and reanalyzes changed bindings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-minify-retained-graph-'));
+    const cases = [
+      {
+        name: 'fold-literal',
+        source: 'function read(value) { return value + (2 * 3); } console.log(read(40));',
+        semanticGraph: 'retained',
+        expected: '46\n',
+      },
+      {
+        name: 'inline-local',
+        source: 'function read() { const answer = 40 + 2; return answer; } console.log(read());',
+        semanticGraph: 'reanalyzed',
+        expected: '42\n',
+      },
+    ] as const;
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.js`);
+        const output = join(dir, `${item.name}.cjs`);
+        const runNodeFile = (file: string, label: string) => {
+          const capturedStdout = join(dir, `${item.name}.${label}.stdout`);
+          const capturedStderr = join(dir, `${item.name}.${label}.stderr`);
+          const result = spawnSync(
+            '/bin/sh',
+            [
+              '-c',
+              'node "$1" > "$2" 2> "$3"',
+              'zntc-node-capture',
+              file,
+              capturedStdout,
+              capturedStderr,
+            ],
+            { encoding: 'utf8' },
+          );
+          return {
+            ...result,
+            stdout: readFileSync(capturedStdout, 'utf8'),
+            stderr: readFileSync(capturedStderr, 'utf8'),
+          };
+        };
+        writeFileSync(input, item.source);
+        const native = runNodeFile(input, 'native');
+        expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, item.name).toBe(item.expected);
+
+        const cliStdout = join(dir, `${item.name}.cli.stdout`);
+        const cliStderr = join(dir, `${item.name}.cli.stderr`);
+        const bundled = spawnSync(
+          '/bin/sh',
+          [
+            '-c',
+            'binary="$1"; shift; out="$1"; shift; err="$1"; shift; "$binary" "$@" > "$out" 2> "$err"',
+            'zntc-cli-capture',
+            ZNTC_BIN,
+            cliStdout,
+            cliStderr,
+            '--bundle',
+            input,
+            '--platform=node',
+            '--format=cjs',
+            '--minify-syntax',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        bundled.stdout = readFileSync(cliStdout, 'utf8');
+        bundled.stderr = readFileSync(cliStderr, 'utf8');
+        expect(bundled.status, `${item.name}: ${bundled.stderr}`).toBe(0);
+        const lines = (bundled.stderr ?? '').split(/\r?\n/);
+        const report = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(report, `${item.name}: ${bundled.stderr}`).toBeDefined();
+        expect(exactSchemaProblems(report ?? ''), `${item.name}: ${report}`).toEqual([]);
+        const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${item.name}: ${bundled.stderr}`).toContain(
+          `semantic_graph=${item.semanticGraph}`,
+        );
+
+        const actual = runNodeFile(output, 'bundled');
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('unmatched dropped labels skip the pre-pass while matched labels reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-unmatched-drop-label-retained-graph-'));
     const input = join(dir, 'entry.ts');
