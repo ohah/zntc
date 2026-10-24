@@ -549,3 +549,46 @@ test "stmt_info: binding roles exclude nested parameters and member spellings" {
     try std.testing.expect(member_live.isSet(1));
     try std.testing.expect(member_live.isSet(2));
 }
+
+test "stmt_info: removed import specifier cannot declare its reused live local node" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "import {value} from 'pkg';console.log(value);");
+    scanner.is_module = true;
+    var parser = Parser.init(a, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const ast = &parser.ast;
+    const root_idx = ast.nodes.items.len - 1;
+    const root = ast.nodes.items[root_idx];
+    const statements = ast.extra_data.items[root.data.list.start .. root.data.list.start + root.data.list.len];
+    const call_statement = statements[1];
+    const value_sid: u32 = @intCast(analyzer.scope_maps.items[0].get("value").?);
+    var reused = false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_specifier) continue;
+        const local = node.data.binary.right;
+        try std.testing.expectEqual(@as(?u32, value_sid), analyzer.symbol_ids.items[@backingInt(local)]);
+        for (ast.nodes.items) |call| {
+            if (call.tag != .call_expression) continue;
+            const args_start = ast.extra_data.items[call.data.extra + 1];
+            try std.testing.expectEqual(@as(u32, 1), ast.extra_data.items[call.data.extra + 2]);
+            ast.extra_data.items[args_start] = @backingInt(local);
+            reused = true;
+        }
+    }
+    try std.testing.expect(reused);
+    const new_statements = try ast.addNodeList(&.{@fromBackingInt(@intCast(call_statement))});
+    ast.nodes.items[root_idx].data.list = new_statements;
+    var infos = (try build(alloc, ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.symbol_ids.items, &analyzer.unresolved_references, false, false)) orelse return error.NullResult;
+    defer infos.deinit();
+    try std.testing.expectEqual(@as(usize, 1), infos.stmts.len);
+    try std.testing.expectEqualSlices(u32, &.{}, infos.stmts[0].declared_symbols);
+    try std.testing.expectEqualSlices(u32, &.{value_sid}, infos.stmts[0].referenced_symbols);
+    try std.testing.expectEqual(@as(?u32, null), infos.declaredStmtBySymbol(value_sid));
+}

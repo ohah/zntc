@@ -2002,8 +2002,8 @@ pub fn build(
     // from the exact specifier edge instead of inferring it from source spans.
     var import_local_nodes = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer import_local_nodes.deinit();
-    for (ast.nodes.items) |node| {
-        if (node.tag != .import_specifier) continue;
+    for (ast.nodes.items, 0..) |node, node_i| {
+        if (node.tag != .import_specifier or reachable_stmt[node_i] == no_stmt) continue;
         const local = node.data.binary.right;
         if (!local.isNone() and @backingInt(local) < ast.nodes.items.len)
             import_local_nodes.set(@backingInt(local));
