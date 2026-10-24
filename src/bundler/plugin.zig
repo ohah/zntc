@@ -294,7 +294,7 @@ pub const Plugin = struct {
     /// `hook_ctx.source_maps` 를 채워 source map chain 전달 가능 (#1902).
     load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?LoadResult = null,
 
-    /// 코드 변환 (codegen 직후, CJS 래핑 전).
+    /// 소스 문자열 변환 (load/read 이후, scanner/parser 이전).
     /// non-null 반환 시 원본 코드를 반환값으로 교체.
     /// `hook_ctx.source_maps` 를 채워 source map chain 전달 가능 (#1902).
     transform: ?*const fn (ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator, hook_ctx: *HookContext) PluginError!?[]const u8 = null,
@@ -351,6 +351,36 @@ pub const Plugin = struct {
     /// transformer는 해당 tag 방문 시 자동 dispatch. worklet 같은 AST-level 플러그인 로직을
     /// core transformer 밖에 응집시키기 위함.
     visitor: ?Visitor = null,
+
+    /// Only these capabilities can edit an already analyzed module AST.
+    /// Resolve/load/string-transform hooks run before its analysis; output and
+    /// lifecycle hooks do not receive the transformer's AST editing API.
+    pub fn hasAstTransformHooks(self: Plugin) bool {
+        comptime {
+            const classified_fields = .{
+                "name",               "context",    "resolveId", "load",        "transform",      "renderChunk",
+                "generateBundle",     "buildStart", "buildEnd",  "closeBundle", "resolveContext", "onFunction",
+                "autoWorkletCallees", "visitor",
+            };
+            for (@typeInfo(Plugin).@"struct".field_names) |field| {
+                var classified = false;
+                for (classified_fields) |known| {
+                    if (std.mem.eql(u8, field, known)) {
+                        classified = true;
+                        break;
+                    }
+                }
+                if (!classified) @compileError("Classify new Plugin field for AST graph retention: " ++ field);
+            }
+        }
+        if (self.onFunction != null or self.autoWorkletCallees.len > 0) return true;
+        if (self.visitor) |visitor| {
+            inline for (@typeInfo(Visitor).@"struct".field_names) |field| {
+                if (@field(visitor, field) != null) return true;
+            }
+        }
+        return false;
+    }
 };
 
 /// AST 노드 방문 훅 묶음.

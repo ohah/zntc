@@ -12,6 +12,19 @@ const ResolveResult = @import("resolver.zig").ResolveResult;
 const OutputFile = @import("emitter.zig").OutputFile;
 const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
 const test_helpers = @import("test_helpers.zig");
+
+test "plugin graph retention classifies every AST mutation capability" {
+    const builtin = @import("../transformer/plugins/worklet_plugin.zig").plugin();
+    try std.testing.expect(!(Plugin{ .name = "observer" }).hasAstTransformHooks());
+    try std.testing.expect(!(Plugin{ .name = "empty-visitor", .visitor = .{} }).hasAstTransformHooks());
+    try std.testing.expect((Plugin{ .name = "function", .onFunction = builtin.onFunction }).hasAstTransformHooks());
+    try std.testing.expect((Plugin{ .name = "auto-worklet", .autoWorkletCallees = builtin.autoWorkletCallees }).hasAstTransformHooks());
+    inline for (@typeInfo(plugin_mod.Visitor).@"struct".field_names) |field| {
+        var visitor: plugin_mod.Visitor = .{};
+        @field(visitor, field) = @field(builtin.visitor.?, field);
+        try std.testing.expect((Plugin{ .name = field, .visitor = visitor }).hasAstTransformHooks());
+    }
+}
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 

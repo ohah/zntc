@@ -452,3 +452,12 @@ Fallback을 제거할 조건은 모든 지원되는 Worklet 호출자가 semanti
 Bounded source index는 AST binding constructor call expression **112곳, 70개 색인 함수, 35개 파일**이다. 한 call은 production caller가 없어 실제 도달 가능한 production expression은 111곳, 함수는 69개다. 기존 다섯 계열은 색인 110곳(도달 109곳)이며 `makeSyntheticBinding` 50/49, `makeExactSyntheticBinding` 26, `makeExactSyntheticBindingFromSpan` 20, `createSyntheticTempBinding` 10, `makeUsingBinding` 4다. `createSyntheticTempBindingWithIdentity`는 별도 도달 가능한 callsite 두 곳이다.
 
 [#6120 source audit](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md)은 112/112곳에서 owner, exact/deferred identity handoff, consumer, output mode와 fallback을 분류했다. Supported semantic graph 경로에서 누락된 exact `SymbolId` producer handoff는 **0**이다. 이는 final-name resolver/collision 통합이나 reference-only/plugin/linker-owned 경계, 전체 #4819 이관 완료 수가 아니다. `makeVarDeclFromSpan`의 호출 없음, graphless fallback, caller가 NodeIndex로 identity를 붙이는 generic `buildVarDecl`, detached Worklet payload graph는 표에서 각각 분리했다. #5952, #5954, #5956, #6003, #6004의 별도 범위는 계속 열린 상태다.
+
+
+## Non-AST plugin graph boundary (#6193)
+
+Plugin presence alone does not invalidate an analyzed module's exact graph. `load` and source-string `transform` precede parsing; `resolveId` and `resolveContext` determine module graph edges without receiving the transformer's AST editing context; `renderChunk`, `generateBundle`, and lifecycle hooks operate outside AST lowering. These hooks may coexist with graph-retaining syntax transforms. Runtime import, downlevel syntax, minify, direct-eval, and other independent safety gates still apply.
+
+`Plugin.hasAstTransformHooks()` conservatively identifies `onFunction`, nonempty `autoWorkletCallees`, and any non-null `Visitor` hook even when its source node tag is currently absent. Empty visitors are inert. New Plugin fields require explicit classification at compile time, and Visitor fields are examined exhaustively. Arbitrary AST plugins remain on semantic reanalysis until their graph effects have their own proof.
+
+One actual built-in Worklet AST plugin may coexist with any number of non-AST plugins when the existing Worklet syntax gates permit it. Recognition checks the built-in function/visitor pointers, context, and auto-worklet table identity; a matching name is insufficient. Duplicate built-in AST transforms are rejected. This removes the non-AST-plugin-only reanalysis boundary, not the remaining full A-plan migration.
