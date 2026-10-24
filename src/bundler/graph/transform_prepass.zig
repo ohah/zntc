@@ -12578,6 +12578,312 @@ pub fn resyncAfterConstMaterializationRetainingGraph(
     );
 }
 
+fn isNodeReachableInMinifiedGraph(raw: u32, reachable: *const std.DynamicBitSet) bool {
+    return raw < reachable.capacity() and reachable.isSet(raw);
+}
+
+fn minifiedConstGraphSidecarsRemainReachable(
+    module: *const Module,
+    semantic: anytype,
+    reachable: *const std.DynamicBitSet,
+) bool {
+    var class_self_owners = semantic.class_self_symbol_map.iterator();
+    while (class_self_owners.next()) |entry| {
+        if (!isNodeReachableInMinifiedGraph(entry.key_ptr.*, reachable) or
+            entry.value_ptr.* >= semantic.symbols.items.len) return false;
+    }
+
+    // Unlike class_self_symbol_map, these namespace sidecars are keyed by
+    // SymbolId, not NodeIndex. Their IDs must remain in the retained symbol table.
+    inline for (.{
+        &semantic.namespace_member_owners,
+        &semantic.namespace_declaration_owners,
+    }) |owners| {
+        var it = owners.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* >= semantic.symbols.items.len or
+                entry.value_ptr.* >= semantic.symbols.items.len) return false;
+        }
+    }
+
+    if (module.tla_iife_stmt) |raw| {
+        if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+    }
+    if (module.tla_promise_reference) |promise_ref| {
+        const raw = promise_ref.binding_node_index;
+        if (!isNodeReachableInMinifiedGraph(raw, reachable) or raw >= semantic.symbol_ids.len) return false;
+        const symbol_id = semantic.symbol_ids[raw] orelse return false;
+        if (symbol_id != @backingInt(promise_ref.symbol_id) or symbol_id >= semantic.symbols.items.len or
+            semantic.symbols.items[symbol_id].scope_id != promise_ref.scope_id) return false;
+    }
+
+    if (module.transform_cache) |cache| {
+        for (cache.helper_ref_nodes) |raw| {
+            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+        }
+        for (cache.explicit_global_ref_nodes) |raw| {
+            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+        }
+        for (cache.preserved_class_name_nodes) |raw| {
+            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+        }
+        for (cache.worklet_factory_local_bindings) |binding| {
+            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+        }
+        for (cache.post_graph_output_bindings) |binding| {
+            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+        }
+        for (cache.runtime_helper_import_output_bindings) |binding| {
+            if (!isNodeReachableInMinifiedGraph(binding.node_index, reachable)) return false;
+        }
+        var destructuring_temps = cache.destructuring_temp_bindings.keyIterator();
+        while (destructuring_temps.next()) |raw| {
+            if (!isNodeReachableInMinifiedGraph(raw.*, reachable)) return false;
+        }
+    }
+    return true;
+}
+
+const MinifiedConstSidecarMutation = enum {
+    all_live,
+    stale_class_self_owner,
+    invalid_namespace_member_symbol,
+    invalid_namespace_member_owner,
+    invalid_namespace_declaration_symbol,
+    invalid_namespace_declaration_owner,
+    stale_tla_iife_statement,
+    stale_tla_promise_binding,
+    wrong_tla_promise_symbol,
+    wrong_tla_promise_scope,
+    stale_helper_reference,
+    stale_explicit_global_reference,
+    stale_preserved_class_name,
+    stale_worklet_binding,
+    stale_post_graph_binding,
+    stale_runtime_helper_binding,
+    stale_destructuring_temp,
+};
+
+const MinifiedConstTestSemantic = struct {
+    symbols: struct { items: []SemanticSymbol },
+    symbol_ids: []const ?u32,
+    class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+};
+
+fn minifiedConstSidecarsAreValidForTest(mutation: MinifiedConstSidecarMutation) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "test.js");
+    var symbols = try allocator.alloc(SemanticSymbol, 32);
+    symbols[0] = .{
+        .name = .{ .start = 0, .end = 0 },
+        .scope_id = @fromBackingInt(@as(u32, 0)),
+        .kind = .variable_const,
+        .declaration_span = .{ .start = 0, .end = 0 },
+    };
+    var symbol_ids = try allocator.alloc(?u32, 16);
+    @memset(symbol_ids, null);
+    symbol_ids[5] = 0;
+    var semantic: MinifiedConstTestSemantic = .{
+        .symbols = .{ .items = symbols },
+        .symbol_ids = symbol_ids,
+    };
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, 16);
+    for (0..reachable.capacity()) |raw| reachable.set(raw);
+
+    var cache: @import("../module.zig").TransformCache = .{
+        .runtime_helpers = .{},
+        .symbol_ids = &.{},
+    };
+    switch (mutation) {
+        .all_live => {
+            try semantic.class_self_symbol_map.put(allocator, 1, 0);
+            // Symbol IDs may be larger than the AST's node-index capacity.
+            try semantic.namespace_member_owners.put(allocator, 20, 21);
+            try semantic.namespace_declaration_owners.put(allocator, 30, 31);
+            module.tla_iife_stmt = 4;
+            module.tla_promise_reference = .{
+                .binding_node_index = 5,
+                .symbol_id = @fromBackingInt(@as(u32, 0)),
+                .scope_id = @fromBackingInt(@as(u32, 0)),
+            };
+            cache.helper_ref_nodes = &.{6};
+            cache.explicit_global_ref_nodes = &.{7};
+            cache.preserved_class_name_nodes = &.{8};
+            cache.worklet_factory_local_bindings = &.{.{
+                .node_index = 9,
+                .output_name_hint = "worklet",
+            }};
+            cache.post_graph_output_bindings = &.{.{
+                .node_index = 10,
+                .output_name_hint = "generated",
+                .synthetic_kind = .runtime_helper_import,
+                .binding_kind = .variable_const,
+            }};
+            cache.runtime_helper_import_output_bindings = &.{.{
+                .node_index = 11,
+                .output_name_hint = "helper",
+            }};
+            try cache.destructuring_temp_bindings.put(allocator, 12, {});
+        },
+        .stale_class_self_owner => try semantic.class_self_symbol_map.put(allocator, 31, 0),
+        .invalid_namespace_member_symbol => try semantic.namespace_member_owners.put(allocator, 32, 0),
+        .invalid_namespace_member_owner => try semantic.namespace_member_owners.put(allocator, 0, 32),
+        .invalid_namespace_declaration_symbol => try semantic.namespace_declaration_owners.put(allocator, 32, 0),
+        .invalid_namespace_declaration_owner => try semantic.namespace_declaration_owners.put(allocator, 0, 32),
+        .stale_tla_iife_statement => module.tla_iife_stmt = 31,
+        .stale_tla_promise_binding => module.tla_promise_reference = .{
+            .binding_node_index = 31,
+            .symbol_id = @fromBackingInt(@as(u32, 0)),
+            .scope_id = @fromBackingInt(@as(u32, 0)),
+        },
+        .wrong_tla_promise_symbol => module.tla_promise_reference = .{
+            .binding_node_index = 5,
+            .symbol_id = @fromBackingInt(@as(u32, 1)),
+            .scope_id = @fromBackingInt(@as(u32, 0)),
+        },
+        .wrong_tla_promise_scope => module.tla_promise_reference = .{
+            .binding_node_index = 5,
+            .symbol_id = @fromBackingInt(@as(u32, 0)),
+            .scope_id = @fromBackingInt(@as(u32, 1)),
+        },
+        .stale_helper_reference => cache.helper_ref_nodes = &.{31},
+        .stale_explicit_global_reference => cache.explicit_global_ref_nodes = &.{31},
+        .stale_preserved_class_name => cache.preserved_class_name_nodes = &.{31},
+        .stale_worklet_binding => cache.worklet_factory_local_bindings = &.{.{
+            .node_index = 31,
+            .output_name_hint = "worklet",
+        }},
+        .stale_post_graph_binding => cache.post_graph_output_bindings = &.{.{
+            .node_index = 31,
+            .output_name_hint = "generated",
+            .synthetic_kind = .runtime_helper_import,
+            .binding_kind = .variable_const,
+        }},
+        .stale_runtime_helper_binding => cache.runtime_helper_import_output_bindings = &.{.{
+            .node_index = 31,
+            .output_name_hint = "helper",
+        }},
+        .stale_destructuring_temp => try cache.destructuring_temp_bindings.put(allocator, 31, {}),
+    }
+    module.transform_cache = cache;
+    return minifiedConstGraphSidecarsRemainReachable(&module, &semantic, &reachable);
+}
+
+test "minified const graph rejects stale or invalid sidecar identities" {
+    inline for (std.meta.tags(MinifiedConstSidecarMutation)) |mutation| {
+        const valid = try minifiedConstSidecarsAreValidForTest(mutation);
+        try std.testing.expectEqual(mutation == .all_live, valid);
+    }
+}
+
+/// Keep the numeric post-pass graph when its syntax fold changes no surviving
+/// semantic edge beyond the exact materialized reads. The minifier can also
+/// remove declarations or scopes; the exact graph gate rejects those shapes
+/// and leaves them on the normal analyzer path.
+pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    materialized_nodes: []const ast_mod.NodeIndex,
+) !bool {
+    var resync_scope = profile.begin(.graph_resync);
+    defer resync_scope.end();
+    var const_scope = profile.begin(.graph_resync_const);
+    defer const_scope.end();
+
+    const ast = &(module.ast orelse return error.MissingAst);
+    const semantic = if (module.semantic) |*sem| sem else return error.MissingSemantic;
+    if (materialized_nodes.len == 0 or ast.nodes.items.len == 0) return false;
+    const root = ast.transformed_root orelse @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
+    var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer scratch_arena.deinit();
+    const scratch_alloc = scratch_arena.allocator();
+
+    var reachable = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(scratch_alloc, ast, root) catch return false;
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        reachable.set(raw);
+    }
+    if (!minifiedConstGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
+
+    var tracked_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    for (materialized_nodes) |node_index| {
+        if (node_index.isNone()) return false;
+        const raw = @backingInt(node_index);
+        if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len or tracked_nodes.isSet(raw)) return false;
+        if (semantic.symbol_ids[raw] == null) return false;
+        tracked_nodes.set(raw);
+        // A surviving reference at the materialized NodeIndex means the edit
+        // was moved or rewritten in a way this exact handoff cannot identify.
+        if (reachable.isSet(raw) and
+            (ast.nodes.items[raw].tag == .identifier_reference or
+                ast.nodes.items[raw].tag == .assignment_target_identifier or
+                !isMaterializedPrimitiveLiteral(ast.nodes.items[raw].tag))) return false;
+    }
+
+    var matched_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    for (semantic.references) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= tracked_nodes.capacity()) return false;
+        if (!tracked_nodes.isSet(raw)) continue;
+        if (matched_nodes.isSet(raw) or !reference.flags.read or reference.flags.write or
+            reference.flags.type_context or reference.flags.value_as_type or
+            @backingInt(reference.symbol_id) != semantic.symbol_ids[raw].?) return false;
+        matched_nodes.set(raw);
+    }
+    for (materialized_nodes) |node_index| {
+        if (!matched_nodes.isSet(@backingInt(node_index))) return false;
+    }
+
+    var editor = try semantic.beginEdit(arena_alloc, ast);
+    editor.removeReferences(materialized_nodes) catch return false;
+    const updated_references = (try reindexMinifiedSemanticReferences(
+        scratch_alloc,
+        ast,
+        root,
+        editor.references.items,
+    )) orelse return false;
+    if (!canRetainMinifiedSemanticGraph(
+        scratch_alloc,
+        ast,
+        root,
+        editor.symbols.items,
+        editor.scopes.items,
+        updated_references,
+        editor.symbol_ids.items,
+        &semantic.unresolved_references,
+        &editor.scope_owner_map,
+        null,
+    )) return false;
+    editor.references.clearRetainingCapacity();
+    try editor.references.appendSlice(arena_alloc, updated_references);
+
+    semantic.applyEdit(try editor.finish());
+    if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
+    try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
+
+    var stmt_info_scope = profile.begin(.graph_resync_stmt_info);
+    defer stmt_info_scope.end();
+    module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+        arena_alloc,
+        ast,
+        semantic.symbols.items,
+        semantic.scopes,
+        semantic.references,
+        &semantic.unresolved_references,
+        false,
+        module.memberAugmentGate(self.transform_options_base.minify_syntax),
+    );
+    return true;
+}
+
 /// Retain the semantic graph after the narrow CJS Buffer fold. The caller gives
 /// the complete pre-mutation node set removed by the fold. Any declaration,
 /// scope owner, or graph-owned node in that set makes this transform ineligible

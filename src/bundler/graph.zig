@@ -77,6 +77,7 @@ pub const ModuleGraph = struct {
     pub const runTransformerPrePass = graph_transform_prepass.run;
     pub const resyncModuleMetadataAfterConstMaterialization = graph_transform_prepass.resyncAfterConstMaterialization;
     pub const resyncModuleMetadataAfterConstMaterializationRetainingGraph = graph_transform_prepass.resyncAfterConstMaterializationRetainingGraph;
+    pub const resyncModuleMetadataAfterConstMaterializationRetainingMinifiedGraph = graph_transform_prepass.resyncAfterConstMaterializationRetainingMinifiedGraph;
     pub const resyncModuleMetadataAfterNodeBufferCapabilityFoldRetainingGraph = graph_transform_prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph;
     pub const resyncModuleMetadataAfterAstMutation = graph_transform_prepass.resyncAfterAstMutation;
     pub const materializeFromCachedAst = graph_transform_prepass.materializeFromCachedAst;

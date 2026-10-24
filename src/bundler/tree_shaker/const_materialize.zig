@@ -322,6 +322,23 @@ fn markConstMaterializedRetainingGraph(
     return true;
 }
 
+fn markConstMaterializedRetainingMinifiedGraph(
+    self: *TreeShaker,
+    m: *Module,
+    materialized_nodes: []const NodeIndex,
+) bool {
+    std.debug.assert(m.parse_arena != null);
+    const retained = self.graph.resyncModuleMetadataAfterConstMaterializationRetainingMinifiedGraph(
+        m,
+        m.parse_arena.?.allocator(),
+        materialized_nodes,
+    ) catch false;
+    if (!retained) return false;
+    m.namespace_access_index = null;
+    self.ast_mutated_after_link = true;
+    return true;
+}
+
 fn minifyAndResyncModule(
     self: *TreeShaker,
     m: *Module,
@@ -353,8 +370,10 @@ fn minifyAndResyncModule(
         defer resync_scope.end();
 
         if (const_profile.policy.stableImportExportSyntax()) {
-            const retained = skip_minify and m.semantic != null and materialized.tracked_nodes_complete and
-                markConstMaterializedRetainingGraph(self, m, materialized_nodes);
+            const retained = if (m.semantic != null and materialized.tracked_nodes_complete) blk: {
+                if (skip_minify) break :blk markConstMaterializedRetainingGraph(self, m, materialized_nodes);
+                break :blk markConstMaterializedRetainingMinifiedGraph(self, m, materialized_nodes);
+            } else false;
             if (!retained) markConstMaterializedAndResync(self, m);
         } else {
             self.markAstMutatedAndResync(m);
@@ -665,12 +684,32 @@ pub fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !vo
     }
 }
 
-test "numeric post-pass retains graph when prepass ref deltas exist" {
+const MinifiedConstInputMutation = enum {
+    none,
+    stale_sidecar,
+    empty_targets,
+    none_target,
+    duplicate_target,
+    out_of_bounds_target,
+    missing_target_identity,
+    wrong_target_identity,
+    missing_read_row,
+    wrong_read_symbol,
+    not_read,
+    write_target,
+    type_context,
+    value_as_type,
+};
+
+fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstInputMutation) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
-    const source = "const value=7; if(false) console.log(value); console.log(value); function read(){return value;}";
+    const source = if (skip_minify)
+        "const value=7; if(false) console.log(value); console.log(value); function read(){return value;}"
+    else
+        "export const value=7; console.log(value + 2); export function read(input){return value + input;}";
 
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
@@ -687,6 +726,7 @@ test "numeric post-pass retains graph when prepass ref deltas exist" {
 
     var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
     analyzer.is_module = true;
+    analyzer.enable_exact_declaration_anchors = !skip_minify;
     try analyzer.analyze();
 
     var value_symbol: ?u32 = null;
@@ -728,6 +768,9 @@ test "numeric post-pass retains graph when prepass ref deltas exist" {
         .symbol_ids = module.semantic.?.symbol_ids,
         .ref_deltas = prepass_ref_deltas,
     };
+    if (mutation == .stale_sidecar) {
+        module.transform_cache.?.explicit_global_ref_nodes = &.{std.math.maxInt(u32)};
+    }
 
     var prepass_minify_ctx = minify_mod.MinifyCtx.fromSemantic(
         &module.semantic.?,
@@ -739,30 +782,76 @@ test "numeric post-pass retains graph when prepass ref deltas exist" {
         @intCast(module.ast.?.nodes.items.len - 1),
     );
     minify_mod.minify(&module.ast.?, prepass_minify_ctx, arena_alloc, root);
-    try std.testing.expect(prepass_ref_deltas[value_id] > 0);
+    if (skip_minify) try std.testing.expect(prepass_ref_deltas[value_id] > 0);
 
     const reachable_nodes = try ast_walk.collectReachableNodeIndices(allocator, &module.ast.?);
     defer allocator.free(reachable_nodes);
-    var materialized_node: ?NodeIndex = null;
+    var materialized_nodes: std.ArrayList(NodeIndex) = .empty;
     for (reachable_nodes) |raw| {
         if (raw >= module.semantic.?.symbol_ids.len) continue;
         if (module.ast.?.nodes.items[raw].tag != .identifier_reference) continue;
         if (module.semantic.?.symbol_ids[raw] != value_id) continue;
-        materialized_node = @fromBackingInt(@intCast(raw));
-        break;
+        const node_index: NodeIndex = @fromBackingInt(@intCast(raw));
+        try materialized_nodes.append(arena_alloc, node_index);
+        if (skip_minify) break;
     }
-    const node_index = materialized_node orelse return error.MissingReachableValueReference;
-    const literal_span = try module.ast.?.addString("7");
-    module.ast.?.nodes.items[@backingInt(node_index)] = .{
-        .tag = .numeric_literal,
-        .span = literal_span,
-        .data = .{ .none = 0 },
-    };
+    if (materialized_nodes.items.len == 0) return error.MissingReachableValueReference;
+    const valid_materialized_nodes = try arena_alloc.dupe(NodeIndex, materialized_nodes.items);
+    if (!skip_minify) {
+        const target_node = materialized_nodes.items[0];
+        const target_raw = @backingInt(target_node);
+        var target_reference_row: ?usize = null;
+        for (analyzer.references.items, 0..) |reference, index| {
+            if (!reference.flags.declare and reference.node_index == target_node) {
+                target_reference_row = index;
+                break;
+            }
+        }
+        const reference_row = target_reference_row orelse return error.MissingTargetReferenceRow;
+        const other_symbol = if (value_id == 0) @as(u32, 1) else @as(u32, 0);
+        if (other_symbol >= analyzer.symbols.items.len) return error.MissingDistinctTargetSymbol;
+        switch (mutation) {
+            .none, .stale_sidecar => {},
+            .empty_targets => materialized_nodes.clearRetainingCapacity(),
+            .none_target => materialized_nodes.items[0] = .none,
+            .duplicate_target => try materialized_nodes.append(arena_alloc, target_node),
+            .out_of_bounds_target => materialized_nodes.items[0] = @fromBackingInt(
+                @as(u32, @intCast(module.ast.?.nodes.items.len + 1)),
+            ),
+            .missing_target_identity => {
+                var unbound_literal: ?NodeIndex = null;
+                for (reachable_nodes) |raw| {
+                    if (raw >= module.semantic.?.symbol_ids.len or
+                        module.semantic.?.symbol_ids[raw] != null or
+                        module.ast.?.nodes.items[raw].tag != .numeric_literal) continue;
+                    unbound_literal = @fromBackingInt(@intCast(raw));
+                    break;
+                }
+                materialized_nodes.items[0] = unbound_literal orelse return error.MissingUnboundNumericLiteral;
+            },
+            .wrong_target_identity => analyzer.symbol_ids.items[target_raw] = other_symbol,
+            .missing_read_row => analyzer.references.items[reference_row].node_index = .none,
+            .wrong_read_symbol => analyzer.references.items[reference_row].symbol_id = @fromBackingInt(other_symbol),
+            .not_read => analyzer.references.items[reference_row].flags.read = false,
+            .write_target => analyzer.references.items[reference_row].flags.write = true,
+            .type_context => analyzer.references.items[reference_row].flags.type_context = true,
+            .value_as_type => analyzer.references.items[reference_row].flags.value_as_type = true,
+        }
+    }
+    for (valid_materialized_nodes) |materialized_index| {
+        const literal_span = try module.ast.?.addString("7");
+        module.ast.?.nodes.items[@backingInt(materialized_index)] = .{
+            .tag = .numeric_literal,
+            .span = literal_span,
+            .data = .{ .none = 0 },
+        };
+    }
 
     var resolve_cache = ResolveCache.init(allocator, .{});
     defer resolve_cache.deinit();
     var graph = ModuleGraph.init(allocator, &resolve_cache);
     defer graph.deinit();
+    graph.transform_options_base.minify_syntax = !skip_minify;
     var linker = Linker.init(allocator, &graph, .esm);
     defer linker.deinit();
     var shaker = try TreeShaker.init(allocator, &graph, &linker);
@@ -775,26 +864,78 @@ test "numeric post-pass retains graph when prepass ref deltas exist" {
         &module.ast.?,
         .{ .policy = .numeric_post_pass },
         .{ .changed = true, .tracked_nodes_complete = true },
-        &.{node_index},
-        true,
+        materialized_nodes.items,
+        skip_minify,
     );
 
     const semantic = &module.semantic.?;
+    if (mutation != .none) {
+        try std.testing.expectEqualStrings("", semantic.symbols.items[value_id].output_name_hint);
+        try std.testing.expect(module.prebuilt_stmt_info != null);
+        try std.testing.expect(shaker.ast_mutated_after_link);
+        return;
+    }
     try std.testing.expectEqualStrings("retained-graph-marker", semantic.symbols.items[value_id].output_name_hint);
     try std.testing.expectEqual(semantic.symbol_ids.ptr, module.transform_cache.?.symbol_ids.ptr);
-    try std.testing.expect(semantic.symbol_ids[@backingInt(node_index)] == null);
-    try std.testing.expectEqual(@as(u32, 2), semantic.symbols.items[value_id].reference_count);
-    try std.testing.expectEqual(@as(usize, 2), semantic.references.len);
-    for (semantic.references) |reference| {
-        try std.testing.expect(reference.node_index != node_index);
+    for (materialized_nodes.items) |materialized_index| {
+        try std.testing.expect(semantic.symbol_ids[@backingInt(materialized_index)] == null);
     }
+    const expected_remaining_refs: u32 = if (skip_minify) 2 else 0;
+    var remaining_value_reads: u32 = 0;
+    for (semantic.references) |reference| {
+        if (reference.flags.declare) continue;
+        if (@backingInt(reference.symbol_id) == value_id) remaining_value_reads += 1;
+        for (materialized_nodes.items) |materialized_index| {
+            try std.testing.expect(reference.node_index != materialized_index);
+        }
+    }
+    try std.testing.expectEqual(expected_remaining_refs, remaining_value_reads);
+    try std.testing.expectEqual(expected_remaining_refs, semantic.symbols.items[value_id].reference_count);
+    if (skip_minify) try std.testing.expectEqual(@as(usize, 2), semantic.references.len);
     try std.testing.expectEqual(semantic.symbol_ids.len, module.transform_cache.?.symbol_ids.len);
     try std.testing.expectEqual(semantic.symbols.items.len, module.transform_cache.?.ref_deltas.len);
-    try std.testing.expectEqual(@as(u32, 1), module.transform_cache.?.ref_deltas[value_id]);
-    try std.testing.expectEqual(
-        @as(u32, 1),
-        semantic.symbols.items[value_id].reference_count - module.transform_cache.?.ref_deltas[value_id],
-    );
+    if (skip_minify) {
+        try std.testing.expectEqual(@as(u32, 1), module.transform_cache.?.ref_deltas[value_id]);
+        try std.testing.expectEqual(
+            @as(u32, 1),
+            semantic.symbols.items[value_id].reference_count - module.transform_cache.?.ref_deltas[value_id],
+        );
+    } else {
+        try std.testing.expectEqual(@as(u32, 0), module.transform_cache.?.ref_deltas[value_id]);
+        var folded_nine = false;
+        const minified_reachable = ast_walk.collectReachableNodeIndices(allocator, &module.ast.?) catch
+            return error.CouldNotWalkMinifiedAst;
+        defer allocator.free(minified_reachable);
+        for (minified_reachable) |raw| {
+            const node = module.ast.?.nodes.items[raw];
+            if (node.tag == .numeric_literal and std.mem.eql(u8, module.ast.?.getSourceText(node.span), "9")) {
+                folded_nine = true;
+                break;
+            }
+        }
+        try std.testing.expect(folded_nine);
+    }
     try std.testing.expect(module.prebuilt_stmt_info != null);
     try std.testing.expect(shaker.ast_mutated_after_link);
+}
+
+test "numeric post-pass retains graph when prepass ref deltas exist" {
+    try expectNumericPostPassGraphHandoff(true, .none);
+}
+
+test "numeric post-pass retains exact graph through syntax folding" {
+    try expectNumericPostPassGraphHandoff(false, .none);
+}
+
+test "numeric post-pass falls back when minification strands a graph sidecar" {
+    try expectNumericPostPassGraphHandoff(false, .stale_sidecar);
+}
+
+test "numeric post-pass rejects malformed materialized read handoffs" {
+    inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
+        switch (mutation) {
+            .none, .stale_sidecar => {},
+            else => try expectNumericPostPassGraphHandoff(false, mutation),
+        }
+    }
 }
