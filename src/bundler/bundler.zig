@@ -1110,6 +1110,9 @@ pub const Bundler = struct {
         var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.getResolveCache().platform });
 
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
+        // Dependency scanning evaluates require.context arguments and dead branches
+        // before the transform applies defines (#4603).
+        worker_graph.defines = self.options.define;
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         // asset 관련 옵션이 worker graph 에 빠져 있으면 worker 번들만 ModuleGraph 의
