@@ -13257,10 +13257,11 @@ pub fn resyncAfterAstMutation(
 
 /// #4438 디스크 캐시 load 경로 전용 — parser 없이 복원된 `module.ast`(+semantic)만으로
 /// `materialize`(parser_metadata.zig)의 graph 레벨 출력을 재구성한다. `materialize` 는
-/// `parser.scan_*`(parse 중 수집)에 의존하지만, `resyncAfterAstMutation` 이 같은 데이터를
-/// AST 재순회로 재생성한다(import_records / import·export_bindings / exported_names /
-/// namespace_access_index / exports_kind / wrap_kind / cjs 플래그 / semantic·prebuilt_stmt_info /
-/// alias_table). load 는 AST(+semantic)만 복원하므로 이 헬퍼로 메타를 채운 뒤 transformer
+/// `parser.scan_*`(parse 중 수집)에 의존하지만, metadata rescan으로 같은 데이터를
+/// 재구성한다(import_records / import·export_bindings / exported_names /
+/// namespace_access_index / exports_kind / wrap_kind / cjs 플래그 / prebuilt_stmt_info /
+/// alias_table). 복원한 semantic graph의 SymbolId/ScopeId는 재분석하지 않고 보존한다.
+/// load 는 AST(+semantic)만 복원하므로 이 헬퍼로 메타를 채운 뒤 transformer
 /// pre-pass(`run`)를 재실행하면 cold parse 경로와 동일한 module 상태에 도달한다.
 ///
 /// `materialize` 에만 있고 `resync` 에 없는 갭을 보완:
@@ -13268,16 +13269,38 @@ pub fn resyncAfterAstMutation(
 ///    (resync 는 transformer 가 enum 을 이미 lower 한 post-transform AST 에서 돌기 때문에 이
 ///    inject 를 skip 하지만, load 는 pre-transform AST 를 복원하므로 materialize 처럼 재현해야 함.)
 ///
-/// 알려진 미보완 갭(PR② ON==OFF 코퍼스에서 검증/보완): import/export 문이 전혀 없고
-/// `import.meta` 만 있는 .js 모듈은 materialize 가 `parser.has_module_syntax` 로 `.esm` 분류하나
-/// resync 의 scan(import/export 노드 기반)은 `.none` 으로 떨어질 수 있다. 그런 단독 모듈은 극히
-/// 드물고 대부분 import/export 를 동반하므로 PR① 범위에서 제외한다.
-///
-/// 출력 영향 0: 호출자는 graph 통합 PR②(load hit 배선) — 현재 미연결(동등성 테스트 전용).
+/// `import.meta`, legal comment, Unicode line separator의 scanner 전용 사실은
+/// `parse_module.loadUnsafeSource`가 cache load를 차단해 cold parse에 맡긴다.
 /// `self` 는 graph(`self.defines` / `self.allocator` 사용), `arena_alloc` 는 모듈 parse_arena.
 pub fn materializeFromCachedAst(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) !void {
-    try resyncAfterAstMutation(self, module, arena_alloc, null);
     const ast = &(module.ast orelse return);
+    const semantic = if (module.semantic) |*sem| sem else return error.MissingCachedSemantic;
+    // The cache owns a matching parse AST and semantic snapshot. Reconstruct
+    // graph-facing metadata without assigning fresh SymbolIds or ScopeIds.
+    const has_tla = hasTopLevelAwaitInRetainedGraph(
+        arena_alloc,
+        ast,
+        semantic.scopes,
+        &semantic.scope_owner_map,
+    ) orelse return error.InvalidCachedScopeGraph;
+    module.uses_top_level_await = has_tla;
+    module.self_uses_top_level_await = has_tla;
+    if (self.ignore_annotations) {
+        purity.clearPureCallFlags(ast);
+    } else {
+        purity.markUserPureCalls(ast, self.pure);
+    }
+    try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
+    module.prebuilt_stmt_info = if (ast.nodes.items.len > 0) try stmt_info_mod.buildFromSemantic(
+        arena_alloc,
+        ast,
+        semantic.symbols.items,
+        semantic.scopes,
+        semantic.references,
+        &semantic.unresolved_references,
+        false,
+        module.memberAugmentGate(self.transform_options_base.minify_syntax),
+    ) else null;
     if (ast.has_flow_enum_declaration) {
         module.import_records = injectFlowEnumRuntimeImport(arena_alloc, module.import_records) catch module.import_records;
     }
