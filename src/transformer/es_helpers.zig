@@ -242,6 +242,7 @@ pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scop
             std.debug.panic("private method helper has no direct SymbolId", .{});
         mapping.weakset_binding_node = binding;
         mapping.weakset_symbol_id = @backingInt(symbol_id);
+        try self.private_helper_symbol_ids.put(self.allocator, @backingInt(symbol_id), {});
     }
 }
 
@@ -266,6 +267,7 @@ pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, fie
             std.debug.panic("private method function has no direct SymbolId", .{});
         mapping.func_binding_node = binding;
         mapping.func_symbol_id = @backingInt(symbol_id);
+        try self.private_helper_symbol_ids.put(self.allocator, @backingInt(symbol_id), {});
         if (captures_class_self) {
             mapping.func_factory_scope = function_scope;
             if (mapping.class_name == null) {
@@ -274,6 +276,7 @@ pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, fie
                     std.debug.panic("captured private method function has no outer SymbolId", .{});
                 mapping.func_outer_binding_node = outer_binding;
                 mapping.func_outer_symbol_id = @backingInt(outer_symbol_id);
+                try self.private_helper_symbol_ids.put(self.allocator, @backingInt(outer_symbol_id), {});
             }
         }
     }
@@ -341,10 +344,10 @@ pub fn makePrivateClassValueRef(self: anytype, class_name: []const u8, class_bin
 }
 
 /// Build a reference to the exact WeakSet/descriptor identity carried by a
-/// private method mapping. Scope is attached after the emitted class tree is
-/// assembled, using this node and SymbolId rather than the helper's spelling.
+/// private method mapping. Attach its exact current/planned use ScopeId now;
+/// class assembly only verifies the node and never fills a missing row.
 pub fn makePrivateMethodWeakSetRef(self: anytype, mapping: anytype) !NodeIndex {
-    return makeDeferredExactSyntheticRef(self, mapping.weakset_name, mapping.weakset_symbol_id);
+    return makePrivateExactSyntheticRef(self, mapping.weakset_name, mapping.weakset_symbol_id);
 }
 
 /// Reference an extracted private method function when it has a direct
@@ -352,9 +355,9 @@ pub fn makePrivateMethodWeakSetRef(self: anytype, mapping: anytype) !NodeIndex {
 /// closure variable; their factory return uses the inner function identity.
 pub fn makePrivateMethodFunctionRef(self: anytype, mapping: anytype) !NodeIndex {
     if (mapping.func_outer_symbol_id) |symbol_id|
-        return makeDeferredExactSyntheticRef(self, mapping.func_name, symbol_id);
+        return makePrivateExactSyntheticRef(self, mapping.func_name, symbol_id);
     if (mapping.func_symbol_id) |symbol_id|
-        return makeDeferredExactSyntheticRef(self, mapping.func_name, symbol_id);
+        return makePrivateExactSyntheticRef(self, mapping.func_name, symbol_id);
     if (self.semantic_edit_enabled)
         std.debug.panic("private method function reference has no producer-selected SymbolId", .{});
     return makeSyntheticRef(self, mapping.func_name);
@@ -505,7 +508,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     try self.reparentGeneratedScope(if (parameter_scope.isNone()) function_scope else parameter_scope, factory_scope);
     for (references.items) |reference| try self.rebindOutputReference(reference, @backingInt(class_alias_symbol));
 
-    const function_ref = try makeDeferredExactSyntheticRef(self, pm.func_name, pm.func_symbol_id);
+    const function_ref = try makePrivateExactSyntheticRefAtScope(self, pm.func_name, pm.func_symbol_id, factory_scope);
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
@@ -1403,15 +1406,63 @@ pub fn makeExactSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeIdentifierRef(self, name));
 }
 
-/// Create a reference to a generated binding whose SymbolId was selected by
-/// its producer. Its output ScopeId is finalized from the emitted AST ancestry
-/// once the containing class or wrapper has been assembled.
-pub fn makeDeferredExactSyntheticRef(self: anytype, name: []const u8, raw_symbol_id: ?u32) !NodeIndex {
+/// Attach a private producer's exact identity and planned use scope at the
+/// same time as its reference node. Later class assembly may claim the scope's
+/// AST owner, but must not create the reference or guess its owner by spelling.
+pub fn makePrivateExactSyntheticRefAtScope(self: anytype, name: []const u8, raw_symbol_id: ?u32, scope: ScopeId) !NodeIndex {
     if (!self.semantic_edit_enabled) return makeSyntheticRef(self, name);
     const symbol_id = raw_symbol_id orelse std.debug.panic("generated private helper reference has no SymbolId", .{});
+    try self.private_helper_symbol_ids.put(self.allocator, symbol_id, {});
+    if (scope.isNone()) std.debug.panic("generated private helper reference has no planned ScopeId", .{});
     const node = try makeExactSyntheticRef(self, name);
-    try self.recordPendingExactSymbolRef(node, symbol_id);
+    try self.addSyntheticRefInScope(node, @fromBackingInt(@intCast(symbol_id)), scope, .{ .read = true });
+    try self.trackExactOutputReference(node, symbol_id);
     return node;
+}
+
+/// An enclosing producer can place an already-built private fragment inside
+/// a new function/switch. Move existing typed rows at that boundary; this is
+/// not a Reference creator and never selects identities from identifier text.
+pub fn relocatePrivateReferences(self: anytype, root: NodeIndex, output_scope: ScopeId) !void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = &self.semantic_editor.?;
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = root, .scope = output_scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const raw = @backingInt(work.node);
+        const entry = try seen.getOrPut(self.allocator, raw);
+        if (entry.found_existing) continue;
+        const node = self.ast.getNode(work.node);
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+            if (self.getSymbolIdAt(work.node)) |id| {
+                if (self.private_helper_symbol_ids.contains(id)) {
+                    const reference = (editor.referenceForNode(work.node) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("private reference scope lookup failed: {s}", .{@errorName(err)}),
+                    }) orelse std.debug.panic("private reference was not created by its producer", .{});
+                    if (@backingInt(reference.symbol_id) != id)
+                        std.debug.panic("private reference changed its producer SymbolId", .{});
+                    if (reference.scope_id != scope)
+                        editor.moveReference(work.node, scope, reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => std.debug.panic("private reference scope handoff failed: {s}", .{@errorName(err)}),
+                        };
+                }
+            }
+        }
+        var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
+    }
+}
+
+pub fn makePrivateExactSyntheticRef(self: anytype, name: []const u8, raw_symbol_id: ?u32) !NodeIndex {
+    return makePrivateExactSyntheticRefAtScope(self, name, raw_symbol_id, self.current_scope);
 }
 
 /// Reference the exact already-resolved spelling carried by a generated
@@ -1462,7 +1513,13 @@ pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: N
         .span = target_span,
         .data = .{ .string_ref = target_span },
     });
-    if (raw_symbol_id) |symbol_id| try self.recordPendingExactSymbolRef(target, symbol_id);
+    if (self.semantic_edit_enabled) {
+        const symbol_id = raw_symbol_id.?;
+        try self.private_helper_symbol_ids.put(self.allocator, symbol_id, {});
+        const scope = self.semantic_editor.?.symbols.items[symbol_id].scope_id;
+        try self.addSyntheticRefInScope(target, @fromBackingInt(@intCast(symbol_id)), scope, .{ .write = true });
+        try self.trackExactOutputReference(target, symbol_id);
+    }
     const assignment = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
@@ -3863,7 +3920,13 @@ pub fn buildStandaloneFunc(
     }
 
     const param_capture_use_start = self.lexical_capture_uses.items.len;
-    const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
+    const old_params_node = self.readNodeIdx(method_node.data.extra, ast_mod.MethodExtra.params);
+    const new_params = blk: {
+        const saved_parameter_scope = self.current_scope;
+        defer self.current_scope = saved_parameter_scope;
+        if (self.outputOwnedScope(old_params_node)) |parameter_scope| self.current_scope = parameter_scope;
+        break :blk try self.visitParameterList(.{ .start = params_start, .len = params_len });
+    };
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
     const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
@@ -3888,6 +3951,7 @@ pub fn buildStandaloneFunc(
 
     const none = @backingInt(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(new_params, span);
+    try self.remapCopiedScopeOwner(old_params_node, new_params_node);
     const func_extra = try self.ast.addExtras(&.{
         @backingInt(name_node),
         @backingInt(new_params_node),
@@ -3914,7 +3978,7 @@ pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, raw_symbol_id:
         .span = span,
         .data = .{ .none = 0 },
     });
-    const ws_ref = try makeDeferredExactSyntheticRef(self, ws_name, raw_symbol_id);
+    const ws_ref = try makePrivateExactSyntheticRef(self, ws_name, raw_symbol_id);
     const call = try makeCallExpr(self, callee, &.{ this_node, ws_ref }, span);
     return makeExprStmt(self, call, span);
 }

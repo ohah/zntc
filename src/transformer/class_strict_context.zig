@@ -57,7 +57,7 @@ fn moveInitializerScopes(self: anytype, root: NodeIndex, source: ScopeId, previo
     }
 }
 
-fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, previous_output: ScopeId, target: ScopeId) !void {
+pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, previous_output: ScopeId, target: ScopeId) !void {
     if (!self.semantic_edit_enabled) return;
     const editor = &self.semantic_editor.?;
     var stack: std.ArrayList(NodeIndex) = .empty;

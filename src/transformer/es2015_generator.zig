@@ -366,7 +366,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // Phase 2: 연산을 switch case로 변환
-            const switch_node = try buildSwitchFromOps(self, ops.items, span);
+            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
             const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps, wrapper_scope);
@@ -2879,11 +2879,54 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
             }
 
-            const switch_node = try buildSwitchFromOps(self, ops.items, span);
+            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
             const var_decl_node = try buildHoistedVarDecl(self, &.{}, span, &state_temps, wrapper_scope);
             return .{ .body = switch_node, .var_decl = var_decl_node, .hoisted_temps = state_temps };
+        }
+
+        /// A generated switch changes the lexical placement of private class
+        /// artifacts. Transfer only their producer-selected IDs; ordinary vars
+        /// and deferred loop/state-machine protocols keep their own migration.
+        fn movePrivateCaseBindingsAndReferences(self: *Transformer, root: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            const editor = &self.semantic_editor.?;
+            const Work = struct { node: NodeIndex, scope: ScopeId };
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            var bindings: std.ArrayList(NodeIndex) = .empty;
+            defer bindings.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = target });
+            while (stack.pop()) |work| {
+                const node = work.node;
+                if (node.isNone()) continue;
+                const raw = @backingInt(node);
+                const entry = try seen.getOrPut(self.allocator, raw);
+                if (entry.found_existing) continue;
+                const ast_node = self.ast.getNode(node);
+                const scope = self.outputOwnedScope(node) orelse work.scope;
+                if (self.getSymbolIdAt(node)) |id| {
+                    if (self.private_helper_symbol_ids.contains(id)) {
+                        const symbol = editor.symbols.items[id];
+                        if (ast_node.tag == .binding_identifier and symbol.scope_id == source and
+                            symbol.kind != .variable_var and symbol.kind != .parameter)
+                            try bindings.append(self.allocator, node);
+                    }
+                }
+                var children = @import("../parser/ast_walk.zig").children(self.ast, ast_node);
+                while (children.next()) |child| {
+                    const declaration_name = ast_node.tag == .function_declaration and self.readNodeIdx(ast_node.data.extra, ast_mod.FunctionExtra.name) == child;
+                    try stack.append(self.allocator, .{ .node = child, .scope = if (declaration_name) work.scope else scope });
+                }
+            }
+            try es_helpers.relocatePrivateReferences(self, root, target);
+            for (bindings.items) |binding| {
+                const id = self.getSymbolIdAt(binding).?;
+                try self.relocateOutputSymbolAs(id, target, binding);
+            }
         }
 
         /// 연산 리스트를 switch case로 변환.
@@ -2907,7 +2950,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return false;
         }
 
-        fn buildSwitchFromOps(self: *Transformer, ops: []const Operation, span: Span) Transformer.Error!NodeIndex {
+        fn buildSwitchFromOps(self: *Transformer, ops: []const Operation, span: Span, wrapper_scope: ScopeId) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -3014,11 +3057,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 cases_list.start,
                 cases_list.len,
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = .switch_statement,
                 .span = span,
                 .data = .{ .extra = switch_extra },
             });
+            if (self.semantic_edit_enabled) {
+                const scope = try self.addGeneratedScope(wrapper_scope, result, .switch_block);
+                // Native lexical declarations and classes inside the cases
+                // belong to this switch environment, not its future callback
+                // parent. Claim it before callback assembly or finalization.
+                try self.reparentGeneratedBodyScopes(wrapper_scope, scope, result);
+                try movePrivateCaseBindingsAndReferences(self, result, wrapper_scope, scope);
+            }
+            return result;
         }
 
         /// block_statement이면 내부 문들을 순회, 아니면 단일 문으로 collectOperations.

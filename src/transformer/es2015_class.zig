@@ -446,7 +446,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (total_private > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
-            try visitDeferredStaticBlocks(self, &cm, name_span);
+            try visitDeferredStaticBlocks(self, &cm, name_span, iife_scope);
 
             const saved_private_methods = self.current_private_methods;
             if (cm.private_methods.items.len > 0) {
@@ -491,7 +491,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
                 try emitInstanceInits(self, &cm, span);
                 self.current_scope = saved_scope;
-                try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, &post_private_method_initializers, span, name_span);
+                try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, &post_private_method_initializers, span, name_span, ctor_scope);
                 self.current_scope = ctor_scope;
 
                 func_node = if (cm.constructor_idx) |ctor_idx|
@@ -885,7 +885,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         es_helpers.markStandaloneLateSyntheticSymbol(self, id, .anonymous_class_expression_binding);
                 }
             }
-            try visitDeferredStaticBlocks(self, &cm, name_span);
+            try visitDeferredStaticBlocks(self, &cm, name_span, iife_scope);
 
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
@@ -906,6 +906,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticSymbol(self, alias_id orelse std.debug.panic("late class-self alias has no SymbolId", .{}), .class_self_alias_binding);
             }
 
+            const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
+            const ctor_scope = if (!self.semantic_edit_enabled)
+                self.current_scope
+            else if (source_ctor) |ctor_idx|
+                self.outputOwnedScope(ctor_idx).?
+            else
+                try self.reserveGeneratedFunctionScope(source_class_scope);
+
             // private method 초기화 → constructor body에 삽입. A getter/setter pair
             // shares one brand WeakSet: brand an instance once (#5695).
             for (cm.private_methods.items, 0..) |pm, i| {
@@ -914,7 +922,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (std.mem.eql(u8, previous.weakset_name, pm.weakset_name)) break false;
                 } else true;
                 if (!first) continue;
-                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, pm.weakset_symbol_id, span);
+                const init_stmt = blk: {
+                    const saved_scope = self.current_scope;
+                    self.current_scope = ctor_scope;
+                    defer self.current_scope = saved_scope;
+                    break :blk try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, pm.weakset_symbol_id, span);
+                };
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
@@ -928,13 +941,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_extra and (name_idx.isNone() or !class_self_storage_bound))
                 try self.propagateSymbolId(name_node, func_name);
 
-            const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
-            const ctor_scope = if (!self.semantic_edit_enabled)
-                self.current_scope
-            else if (source_ctor) |ctor_idx|
-                self.outputOwnedScope(ctor_idx).?
-            else
-                try self.reserveGeneratedFunctionScope(source_class_scope);
             // A simple anonymous class becomes a named function expression.
             // Its name environment sits outside the parameter/function scopes;
             // reserve that exact owner before __classCallCheck creates a read.
@@ -1077,7 +1083,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span, pf.binding_node));
             }
-            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, &post_private_method_initializers, span, name_span);
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, &post_private_method_initializers, span, name_span, ctor_scope);
 
             try self.scratch.append(self.allocator, func_node);
             try self.scratch.appendSlice(self.allocator, post_private_method_initializers.items);

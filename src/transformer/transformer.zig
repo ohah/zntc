@@ -408,6 +408,9 @@ pub const Transformer = struct {
     /// Generated refs whose producer already selected an exact SymbolId are
     /// bound by node handle after the final output-scope walk; output spelling
     /// is never used to select their identity.
+    /// Producer-owned private storage/function IDs. State-machine placement
+    /// uses this typed set to move only this family's lexical bindings/uses.
+    private_helper_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty,
     exact_output_ref_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,

@@ -147,7 +147,7 @@ pub fn Members(comptime Transformer: type) type {
         ///
         /// visit 결과가 none 이면 (declare 같은 strip 대상) 해당 entry 는 새 list 에서 drop —
         /// 원본 동작 (`if (!new_stmt.isNone()) append`) 과 동치.
-        pub fn visitDeferredStaticBlocks(self: *Transformer, cm: *ClassifiedMembers, class_name_span: Span) Transformer.Error!void {
+        pub fn visitDeferredStaticBlocks(self: *Transformer, cm: *ClassifiedMembers, class_name_span: Span, output_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
             var has_raw = false;
             for (cm.static_elements.items) |elem| {
                 if (elem == .raw_stmt) {
@@ -173,7 +173,12 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.static_elements.items) |elem| {
                 switch (elem) {
                     .raw_stmt => |raw| {
-                        const visited = try self.visitNode(raw);
+                        const visited = blk: {
+                            const saved_scope = self.current_scope;
+                            self.current_scope = output_scope;
+                            defer self.current_scope = saved_scope;
+                            break :blk try self.visitNode(raw);
+                        };
                         for (self.pending_nodes.items[pending_top..]) |pending|
                             try new_elements.append(self.allocator, .{ .stmt = pending });
                         self.pending_nodes.shrinkRetainingCapacity(pending_top);
@@ -256,7 +261,10 @@ pub fn Members(comptime Transformer: type) type {
                     .private_field => |index| cm.private_fields.items[index].init,
                     .public_field => |field| field.init,
                 };
-                if (!init.isNone()) try stack.append(self.allocator, init);
+                if (!init.isNone()) {
+                    try @import("../class_strict_context.zig").moveSourceReferences(self, init, class_scope, class_scope, ctor_scope);
+                    try stack.append(self.allocator, init);
+                }
             }
             while (stack.pop()) |idx| {
                 if (idx.isNone()) continue;
@@ -304,6 +312,7 @@ pub fn Members(comptime Transformer: type) type {
                         std.debug.panic("private field helper has no direct SymbolId", .{});
                     pf.binding_node = binding;
                     pf.symbol_id = @backingInt(id);
+                    try self.private_helper_symbol_ids.put(self.allocator, @backingInt(id), {});
                 }
                 mappings[i] = .{
                     .original_name = pf.original_name,
@@ -324,6 +333,7 @@ pub fn Members(comptime Transformer: type) type {
                         std.debug.panic("static private field helper has no direct SymbolId", .{});
                     pf.binding_node = binding;
                     pf.symbol_id = @backingInt(id);
+                    try self.private_helper_symbol_ids.put(self.allocator, @backingInt(id), {});
                 }
                 mappings[cm.private_fields.items.len + i] = .{
                     .original_name = pf.original_name,
@@ -872,7 +882,7 @@ pub fn Members(comptime Transformer: type) type {
 
         /// _x.set(this, init) expression_statement 생성.
         fn buildPrivateFieldInit(self: *Transformer, name: []const u8, raw_symbol_id: ?u32, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, name, raw_symbol_id);
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, name, raw_symbol_id);
             const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{

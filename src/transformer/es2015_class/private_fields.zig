@@ -150,11 +150,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ receiver, class_ref, desc_ref }, span);
             }
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const callee = try es_helpers.makeStaticMember(self, wm_ref, try es_helpers.makePropertyName(self, "get"), span);
             return es_helpers.makeCallExpr(self, callee, &.{receiver}, span);
         }
@@ -164,12 +164,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ receiver, class_ref, desc_ref, value }, span);
             }
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             self.runtime_helpers.class_private_field_set = true;
             return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, receiver, value }, span);
         }
@@ -230,7 +230,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
         /// 같은 name 의 getter/setter 는 WeakSet 을 공유하므로 weakset_name 기준 첫 등장에만 선언.
         /// private_field_init 도 동일한 dedup 으로 instance_fields 에 append (#1523).
-        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), post_class_out: ?*std.ArrayList(NodeIndex), span: Span, class_name_span: Span) Transformer.Error!void {
+        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), post_class_out: ?*std.ArrayList(NodeIndex), span: Span, class_name_span: Span, instance_scope: ScopeId) Transformer.Error!void {
             _ = class_name_span;
             const function_values = try self.allocator.alloc(NodeIndex, pms.len);
             defer self.allocator.free(function_values);
@@ -271,7 +271,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         for (pms, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, pm.weakset_name)) continue;
                             const value = if (emit_standalone[part_index])
-                                try es_helpers.makePrivateMethodFunctionRef(self, part)
+                                try es_helpers.makePrivateExactSyntheticRefAtScope(self, part.func_name, part.func_symbol_id, if (self.semantic_edit_enabled) self.semantic_editor.?.symbols.items[part.func_symbol_id.?].scope_id else self.current_scope)
                             else
                                 function_values[part_index];
                             switch (part.kind) {
@@ -285,6 +285,9 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     } else {
                         try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span, pm.weakset_binding_node));
                         if (fields_out) |fo| {
+                            const saved_scope = self.current_scope;
+                            self.current_scope = instance_scope;
+                            defer self.current_scope = saved_scope;
                             try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, pm.weakset_symbol_id, span));
                         }
                     }
@@ -308,73 +311,53 @@ pub fn PrivateFields(comptime Transformer: type) type {
             }
         }
 
-        /// Private member lowering creates references before the enclosing
-        /// class tree is complete. Finalize those exact node/SymbolId pairs once
-        /// the emitted scope ancestry is available: the private helpers and
-        /// the computed field key temps declared beside them. Every producer of
-        /// a pending exact reference is class private lowering, and a nested
-        /// class finalizes its own first, so whatever is pending under `root`
-        /// belongs to this class.
+        /// Private rows are created with their planned scopes by the actual
+        /// producers. Class assembly verifies the live ancestry and never
+        /// manufactures a missing Reference or chooses a target by spelling.
         pub fn trackPrivateMethodSymbols(self: *Transformer, root: NodeIndex, pms: []const Transformer.PrivateMethodMapping, pfs: []const Transformer.PrivateFieldMapping, root_scope: ScopeId) Transformer.Error!void {
             if (!self.semantic_edit_enabled or (pms.len == 0 and pfs.len == 0)) return;
+            if (self.pending_exact_symbol_refs.items.len != 0)
+                std.debug.panic("private producer returned a deferred exact reference", .{});
+            const editor = &self.semantic_editor.?;
+            var ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer ids.deinit(self.allocator);
             for (pms) |pm| {
-                if (pm.weakset_symbol_id == null)
-                    std.debug.panic("private method mapping has no direct WeakSet SymbolId", .{});
-                if (pm.func_symbol_id == null)
-                    std.debug.panic("private method mapping has no direct function SymbolId", .{});
+                const weakset = pm.weakset_symbol_id orelse std.debug.panic("private method has no direct WeakSet SymbolId", .{});
+                const function = pm.func_symbol_id orelse std.debug.panic("private method has no direct function SymbolId", .{});
+                try ids.put(self.allocator, weakset, {});
+                try ids.put(self.allocator, function, {});
+                if (pm.func_outer_symbol_id) |outer| try ids.put(self.allocator, outer, {});
             }
-            for (pfs) |pf| {
-                if (pf.symbol_id == null) std.debug.panic("private field mapping has no direct SymbolId", .{});
-            }
-
-            var pending_exact_refs: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-            defer pending_exact_refs.deinit(self.allocator);
-            var finalized_exact_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            defer finalized_exact_refs.deinit(self.allocator);
-            for (self.pending_exact_symbol_refs.items) |pending| {
-                const gop = try pending_exact_refs.getOrPut(self.allocator, @backingInt(pending.node));
-                if (gop.found_existing)
-                    std.debug.panic("generated reference node is pending more than once", .{});
-                gop.value_ptr.* = pending.symbol_id;
-            }
-
+            for (pfs) |pf| try ids.put(self.allocator, pf.symbol_id orelse std.debug.panic("private field has no direct SymbolId", .{}), {});
             const Work = struct { node: NodeIndex, scope: ScopeId };
             var stack: std.ArrayList(Work) = .empty;
             defer stack.deinit(self.allocator);
-            try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
             var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer seen.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
             while (stack.pop()) |work| {
-                if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+                if (work.node.isNone()) continue;
                 const raw = @backingInt(work.node);
-                if (seen.contains(raw)) continue;
-                try seen.put(self.allocator, raw, {});
+                const entry = try seen.getOrPut(self.allocator, raw);
+                if (entry.found_existing) continue;
                 const node = self.ast.getNode(work.node);
                 const scope = self.outputOwnedScope(work.node) orelse work.scope;
-
-                if (pending_exact_refs.get(raw)) |raw_id| {
-                    const flags: ReferenceFlags = if (node.tag == .assignment_target_identifier)
-                        .{ .write = true }
-                    else if (node.tag == .identifier_reference)
-                        .{ .read = true }
-                    else
-                        std.debug.panic("pending private helper identity points at a non-reference", .{});
-                    try self.addSyntheticRefInScope(work.node, @fromBackingInt(@intCast(raw_id)), scope, flags);
-                    try finalized_exact_refs.put(self.allocator, raw, {});
+                if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                    if (self.getSymbolIdAt(work.node)) |id| {
+                        if (ids.contains(id)) {
+                            const reference = (editor.referenceForNode(work.node) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => std.debug.panic("private reference lookup failed: {s}", .{@errorName(err)}),
+                            }) orelse std.debug.panic("private reference was not created by its producer", .{});
+                            if (@backingInt(reference.symbol_id) != id or reference.scope_id != scope)
+                                std.debug.panic("private reference node={d} actual={d}@{d} expected={d}@{d}", .{ raw, @backingInt(reference.symbol_id), @backingInt(reference.scope_id), id, @backingInt(scope) });
+                            if (reference.flags.read != (node.tag == .identifier_reference) or reference.flags.write != (node.tag == .assignment_target_identifier))
+                                std.debug.panic("private reference disagrees with its producer access flags", .{});
+                        }
+                    }
                 }
-
-                var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
-                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
-            }
-
-            if (finalized_exact_refs.count() > 0) {
-                var kept: usize = 0;
-                for (self.pending_exact_symbol_refs.items) |pending| {
-                    if (finalized_exact_refs.contains(@backingInt(pending.node))) continue;
-                    self.pending_exact_symbol_refs.items[kept] = pending;
-                    kept += 1;
-                }
-                self.pending_exact_symbol_refs.items.len = kept;
+                var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
             }
         }
 
@@ -443,12 +426,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
                 const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
             }
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const new_obj = try self.visitNode(obj_idx);
             self.runtime_helpers.class_private_field_set = true;
             return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, new_obj, new_value }, span);
@@ -461,12 +444,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
                 return call;
             }
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const get_prop = try es_helpers.makePropertyName(self, "get");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, get_prop, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{obj_new}, span);
@@ -580,7 +563,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// _name.method(obj, extra_args...) 호출 생성.
         fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, field_mapping: ?Transformer.PrivateFieldMapping, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const wm_ref = if (field_mapping) |mapping|
-                try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id)
+                try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id)
             else
                 try es_helpers.makeSyntheticRef(self, wm_name);
             return buildWeakCollectionCall(self, wm_ref, method, obj_idx, extra_arg_indices, span);
@@ -619,7 +602,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makePrivateClassValueRef(self, mapping.class_name.?, mapping.class_name_node);
-            const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
         }
@@ -699,7 +682,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makePrivateClassValueRef(self, mapping.class_name.?, mapping.class_name_node);
-            const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const desc_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const new_value = try self.visitNode(value_idx);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
