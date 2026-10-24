@@ -674,7 +674,17 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         if (as_expression) {
             return wrapClassExprInIIFE(self, source_idx, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, prepared_wrapper_scope, pm_mappings.items, pf_mappings.items, node.span);
         }
-        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items);
+        // Private reads in moved public static fields are live in `post`,
+        // not in class_result. Finalize their exact descriptor identities from
+        // the same complete pre/class/post tree that is about to be emitted.
+        if (self.semantic_edit_enabled and (pm_mappings.items.len != 0 or pf_mappings.items.len != 0)) {
+            var private_statements: std.ArrayList(NodeIndex) = .empty;
+            defer private_statements.deinit(self.allocator);
+            try private_statements.appendSlice(self.allocator, priv_pre_stmts.items);
+            try private_statements.append(self.allocator, class_result);
+            try private_statements.appendSlice(self.allocator, post.items);
+            try trackPrivateHelperStatements(self, source_idx, private_statements.items, node.span, pm_mappings.items, pf_mappings.items);
+        }
         // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);

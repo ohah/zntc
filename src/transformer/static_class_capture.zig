@@ -96,6 +96,20 @@ pub fn makeThisReference(self: anytype) !?NodeIndex {
     return try makeReferenceWithFlags(self, self.static_class_contexts.items[self.static_class_contexts.items.len - 1], .{ .read = true });
 }
 
+/// Brand checks must read the class value selected by the mapping producer,
+/// even when a nested same-named class or an arrow parameter is active.
+pub fn makeClassBindingReference(self: anytype, binding: NodeIndex) !?NodeIndex {
+    if (binding.isNone()) return null;
+    var index = self.static_class_contexts.items.len;
+    while (index > 0) {
+        index -= 1;
+        const frame = self.static_class_contexts.items[index];
+        if (frame.class_binding == binding)
+            return try makeReferenceWithFlags(self, frame, .{ .read = true });
+    }
+    return null;
+}
+
 pub fn makeClassSelfReference(self: anytype, source: NodeIndex) !?NodeIndex {
     if (!self.semantic_edit_enabled) return null;
     const source_id = self.getSymbolIdAt(source) orelse return null;
@@ -145,7 +159,7 @@ pub fn takeDeclaration(self: anytype, class_binding: NodeIndex, span: Span) !?No
     const declarator = try es_helpers.makeDeclarator(self, capture.binding, value, span);
     const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, if (self.options.unsupported.class) .@"var" else .@"const", span);
     if (!self.options.unsupported.class)
-        try self.ast.preserve_const_declaration_indices.append(self.allocator, @backingInt(declaration));
+        try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(declaration));
     return declaration;
 }
 

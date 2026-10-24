@@ -1831,18 +1831,44 @@ test "Codegen #4819: cloned immutable aliases survive syntax and cycle demotion"
 
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .variable_declaration) {
-            try transformer.ast.preserve_const_declaration_indices.append(allocator, @intCast(raw));
+            try transformer.ast.preserve_lexical_declaration_indices.append(allocator, @intCast(raw));
         }
     }
 
     var cloned = try @import("../../parser/ast.zig").Ast.cloneForTransformer(transformer.ast, allocator);
-    try std.testing.expectEqualSlices(u32, transformer.ast.preserve_const_declaration_indices.items, cloned.preserve_const_declaration_indices.items);
-    try std.testing.expect(cloned.preserve_const_declaration_indices.items.ptr != transformer.ast.preserve_const_declaration_indices.items.ptr);
-    transformer.ast.preserve_const_declaration_indices.clearRetainingCapacity();
+    try std.testing.expectEqualSlices(u32, transformer.ast.preserve_lexical_declaration_indices.items, cloned.preserve_lexical_declaration_indices.items);
+    try std.testing.expect(cloned.preserve_lexical_declaration_indices.items.ptr != transformer.ast.preserve_lexical_declaration_indices.items.ptr);
+    transformer.ast.preserve_lexical_declaration_indices.clearRetainingCapacity();
     var cg = Codegen.initWithOptions(allocator, &cloned, .{ .minify_whitespace = true, .minify_syntax = true, .force_var_for_cycle = true });
     const result = try cg.generate(root);
     const trimmed = std.mem.trimEnd(u8, result, "\n");
     try std.testing.expectEqualStrings("const x=1;", trimmed);
+}
+
+test "Codegen #4819: cloned lexical private storage survive syntax and cycle demotion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let x = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    const root = try transformer.transform();
+
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .variable_declaration) {
+            try transformer.ast.preserve_lexical_declaration_indices.append(allocator, @intCast(raw));
+        }
+    }
+
+    var cloned = try @import("../../parser/ast.zig").Ast.cloneForTransformer(transformer.ast, allocator);
+    try std.testing.expectEqualSlices(u32, transformer.ast.preserve_lexical_declaration_indices.items, cloned.preserve_lexical_declaration_indices.items);
+    try std.testing.expect(cloned.preserve_lexical_declaration_indices.items.ptr != transformer.ast.preserve_lexical_declaration_indices.items.ptr);
+    transformer.ast.preserve_lexical_declaration_indices.clearRetainingCapacity();
+    var cg = Codegen.initWithOptions(allocator, &cloned, .{ .minify_whitespace = true, .minify_syntax = true, .force_var_for_cycle = true });
+    const result = try cg.generate(root);
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
+    try std.testing.expectEqualStrings("let x=1;", trimmed);
 }
 
 test "Codegen #3098: minify_syntax off → const 유지 (anti-regression)" {

@@ -496,7 +496,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     std.debug.panic("private field helper has no planned output scope", .{});
                 for (field_mappings.items) |*mapping| {
                     const binding = try es_helpers.makeExactSyntheticBinding(self, mapping.var_name);
-                    const id = try self.declareSyntheticInScope(binding, span, .variable_var, private_helper_scope) orelse
+                    const id = try self.declareSyntheticInScope(binding, span, es_helpers.privateStorageSymbolKind(self), private_helper_scope) orelse
                         std.debug.panic("private field helper has no direct SymbolId", .{});
                     mapping.binding_node = binding;
                     mapping.symbol_id = @backingInt(id);
@@ -546,7 +546,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (m.class_name) |cname| {
                     const cname_span = try self.ast.addString(es_helpers.freshClassNameText(self, cname, m.class_name_node));
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span, m.binding_node);
-                    try desc_target.append(self.allocator, desc);
+                    try desc_target.append(self.allocator, try es_helpers.splitPrivateDescriptorStorage(self, desc, m.var_name, m.binding_node, m.symbol_id, pre_stmts, span));
                     if (static_descriptor_orders) |orders| try orders.append(self.allocator, static_order);
                     self.runtime_helpers.class_static_private_field = true;
                 } else {
@@ -603,7 +603,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             }
                         }
                         const desc = try es_helpers.buildStaticPrivateMethodDescriptor(self, m.weakset_name, method_fn, getter_fn, setter_fn, span, m.weakset_binding_node);
-                        try desc_target.append(self.allocator, desc);
+                        try desc_target.append(self.allocator, try es_helpers.splitPrivateDescriptorStorage(self, desc, m.weakset_name, m.weakset_binding_node, m.weakset_symbol_id, pre_stmts, span));
                         if (static_descriptor_orders) |orders| try orders.append(self.allocator, .{ .at_definition = true });
                         self.runtime_helpers.class_static_private_field = true;
                     }
@@ -1009,7 +1009,7 @@ pub fn ES2022(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try self.makeUserRefNamed(es_helpers.freshClassNameText(self, class_name, mapping.class_name_node), mapping.class_name_node);
+                const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, mapping.class_name_node);
                 const desc_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }

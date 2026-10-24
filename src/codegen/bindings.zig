@@ -107,9 +107,9 @@ pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind, 
     // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
     // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
     // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).
-    if (kind == .@"const") {
-        for (self.ast.preserve_const_declaration_indices.items) |preserved| {
-            if (preserved == @backingInt(declaration_idx)) return "const ";
+    if (kind == .@"const" or kind == .let) {
+        for (self.ast.preserve_lexical_declaration_indices.items) |preserved| {
+            if (preserved == @backingInt(declaration_idx)) return if (kind == .let) "let " else "const ";
         }
     }
     const demote_to_var = self.options.force_var_for_cycle and
