@@ -12412,6 +12412,36 @@ fn carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(
     module.esm_interop_runtime_internal_symbols = new_internal;
 }
 
+/// Keep raw HMR role identity explicit across the remaining compatibility
+/// reanalysis bridge. This creates new graph-local IDs from validated slots;
+/// protocol spelling never selects an old or new identity.
+fn carryHmrRuntimeSymbolsAfterReanalysis(module: *Module, previous_semantic: ?ModuleSemanticData, allocator: std.mem.Allocator) !void {
+    const previous = previous_semantic orelse return;
+    const old_ids = if (previous.runtime_identities) |roles| roles.hmr_internal else null;
+    const module_types = @import("../module.zig");
+    if (old_ids == null) {
+        if (module.hmr_runtime_internal_symbols != null or module_types.hasHmrRuntimeRows(previous.symbols.items))
+            return error.HmrRuntimeInternalSymbolsMissing;
+        return;
+    }
+    if (!module_types.validHmrRuntimeIds(old_ids.?, previous.symbols.items)) return error.HmrRuntimeInternalSymbolsInvalid;
+    const current = if (module.semantic) |*value| value else return error.MissingSemantic;
+    const count = module_types.HMR_RUNTIME_INTERNAL_ROWS.len;
+    if (current.symbols.items.len > @as(usize, std.math.maxInt(u32)) - count) return error.RuntimeHelperSymbolTableOverflow;
+    const roles = try current.ensureRuntimeIdentities(allocator);
+    const start_len = current.symbols.items.len;
+    errdefer current.symbols.items.len = start_len;
+    var created: module_types.HmrRuntimeInternalSymbolIds = undefined;
+    inline for (module_types.HMR_RUNTIME_INTERNAL_ROWS) |row| {
+        const old = previous.symbols.items[@backingInt(@field(old_ids.?, row.field_name))];
+        const id = try semantic_symbol.extendSymbol(allocator, &current.symbols, row.kind, .hmr_runtime_internal_local, row.identity, Span.EMPTY);
+        current.symbols.items[@backingInt(id)] = old;
+        @field(created, row.field_name) = id;
+    }
+    roles.hmr_internal = created;
+    module.hmr_runtime_internal_symbols = created;
+}
+
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
 /// **뒤에** 해야 해서(#4804) 호출자가 `refreshStableBindingRefsFromSemanticGraph` 다음에 한다.
 fn refreshSemanticAndStmtInfoAfterAstMutation(
@@ -12570,6 +12600,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         try carryToBinaryRuntimeHelperSymbolAfterReanalysis(module, previous_semantic, arena_alloc);
         try carryEsmRuntimeHelperSymbolsAfterReanalysis(module, previous_semantic, arena_alloc);
         try carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(module, previous_semantic, arena_alloc);
+        try carryHmrRuntimeSymbolsAfterReanalysis(module, previous_semantic, arena_alloc);
         suppressRuntimeHelperInternalUnresolved(module);
         module.uses_top_level_await = analyzer.has_top_level_await;
         // base(self) 값 보존 — propagateTopLevelAwait 가 매 빌드 이 값으로 reset 후 전파.
