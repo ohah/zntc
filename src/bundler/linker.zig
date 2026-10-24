@@ -2326,30 +2326,7 @@ pub const Linker = struct {
             symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
-    const EsmInteropInternalRow = struct {
-        identity: []const u8,
-        kind: semantic_symbol.SymbolKind,
-    };
-
-    // These labels identify semantic bindings, not emitted spellings. Some
-    // helpers intentionally reuse names such as `mod` and `target`, so each
-    // lexical binding needs a distinct recovery key.
-    const ESM_INTEROP_INTERNAL_ROWS = [_]EsmInteropInternalRow{
-        .{ .identity = "copy_props.to", .kind = .parameter },
-        .{ .identity = "copy_props.from", .kind = .parameter },
-        .{ .identity = "copy_props.desc", .kind = .parameter },
-        .{ .identity = "copy_props.keys", .kind = .variable_var },
-        .{ .identity = "copy_props.index", .kind = .variable_var },
-        .{ .identity = "copy_props.key", .kind = .variable_var },
-        .{ .identity = "copy_props.closure_key", .kind = .parameter },
-        .{ .identity = "to_esm.module", .kind = .parameter },
-        .{ .identity = "to_esm.node_mode", .kind = .parameter },
-        .{ .identity = "to_esm.target", .kind = .parameter },
-        .{ .identity = "export.target", .kind = .parameter },
-        .{ .identity = "export.all", .kind = .parameter },
-        .{ .identity = "export.name", .kind = .variable_var },
-        .{ .identity = "to_common_js.module", .kind = .parameter },
-    };
+    const ESM_INTEROP_INTERNAL_ROWS = @import("module.zig").ESM_INTEROP_INTERNAL_ROWS;
 
     fn validEsmInteropRuntimeHelperSymbol(
         symbol_id: semantic_symbol.SymbolId,
@@ -2615,35 +2592,25 @@ pub const Linker = struct {
         var has_semantic_module = false;
         var anchor_index: ?ModuleIndex = null;
         var helper_owner_index: ?ModuleIndex = null;
-        var internal_owner_index = self.esm_interop_runtime_internal_owner;
         var modules = self.graph.modulesIterator();
         while (modules.next()) |m| {
-            if (m.semantic == null) continue;
+            const sem = m.semantic orelse continue;
             has_semantic_module = true;
             if (m.parse_arena != null and anchor_index == null) anchor_index = m.index;
-            if (m.esm_interop_runtime_helper_symbols != null) {
+            const roles = sem.runtime_identities;
+            const helpers = if (roles) |ids| ids.interop_helpers else null;
+            const internals = if (roles) |ids| ids.interop_internal else null;
+            if (helpers == null and (m.esm_interop_runtime_helper_symbols != null or
+                @import("module.zig").hasEsmInteropHelperRows(sem.symbols.items)))
+                return error.EsmInteropRuntimeIdentityMissing;
+            if (internals == null and (m.esm_interop_runtime_internal_symbols != null or
+                @import("module.zig").hasEsmInteropInternalRows(sem.symbols.items)))
+                return error.EsmInteropRuntimeInternalSymbolsMissing;
+            if (internals != null and helpers == null) return error.EsmInteropRuntimeIdentityMissing;
+            if (helpers != null) {
                 if (helper_owner_index) |existing| {
                     if (existing != m.index) return error.EsmInteropRuntimeHelperOwnerAmbiguous;
-                } else {
-                    helper_owner_index = m.index;
-                }
-            }
-            const sem = m.semantic orelse continue;
-            var module_has_internal_rows = m.esm_interop_runtime_internal_symbols != null;
-            if (!module_has_internal_rows) {
-                for (sem.symbols.items) |symbol| {
-                    if (symbol.synthetic_kind == .esm_interop_runtime_internal_local) {
-                        module_has_internal_rows = true;
-                        break;
-                    }
-                }
-            }
-            if (module_has_internal_rows) {
-                if (internal_owner_index) |existing| {
-                    if (existing != m.index) return error.EsmInteropRuntimeInternalOwnerAmbiguous;
-                } else {
-                    internal_owner_index = m.index;
-                }
+                } else helper_owner_index = m.index;
             }
         }
 
@@ -2651,15 +2618,19 @@ pub const Linker = struct {
             const helper_symbol_owner = helper_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeOwnerMissing;
             var helper_owner = self.moduleAtMut(@backingInt(helper_symbol_owner)) orelse return error.EsmInteropRuntimeOwnerMissing;
             const helper_sem = if (helper_owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
-            const helper_ids = if (helper_owner.esm_interop_runtime_helper_symbols) |ids| ids else blk: {
+            const arena = if (helper_owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
+            const roles = try helper_sem.ensureRuntimeIdentities(arena);
+            const helper_ids = if (roles.interop_helpers) |ids| ids else blk: {
                 for (self.esm_interop_runtime_symbol_ids) |cached| {
                     if (cached != null) return error.EsmInteropRuntimeIdentityMissing;
                 }
-                const arena = if (helper_owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
                 const created = try createEsmInteropRuntimeHelperSymbols(arena, helper_sem);
-                helper_owner.esm_interop_runtime_helper_symbols = created;
+                roles.interop_helpers = created;
                 break :blk created;
             };
+            if (!@import("module.zig").validEsmInteropHelperIds(helper_ids, helper_sem.symbols.items))
+                return error.EsmInteropRuntimeIdentityInvalid;
+            helper_owner.esm_interop_runtime_helper_symbols = helper_ids;
             inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
                 const inner = @field(helper_ids, @tagName(helper));
                 if (!validEsmInteropRuntimeHelperSymbol(inner, helper_sem.symbols.items, helper))
@@ -2667,7 +2638,7 @@ pub const Linker = struct {
                 self.esm_interop_runtime_symbol_ids[@backingInt(helper)] = bundler_symbol.SymbolID.make(helper_symbol_owner, @backingInt(inner));
             }
 
-            const owner_index = internal_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+            const owner_index = helper_symbol_owner;
             self.esm_interop_runtime_internal_owner = owner_index;
             try self.prepareEsmInteropRuntimeInternalSymbols(owner_index);
             if (self.esm_interop_runtime_names != null) {
@@ -2703,44 +2674,26 @@ pub const Linker = struct {
     fn prepareEsmInteropRuntimeInternalSymbols(self: *Linker, owner_index: ModuleIndex) !void {
         var owner = self.moduleAtMut(@backingInt(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeInternalSymbolsMissing;
-        var recovered: [ESM_INTEROP_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
-
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind != .esm_interop_runtime_internal_local) continue;
-            var matched = false;
-            inline for (ESM_INTEROP_INTERNAL_ROWS, 0..) |row, row_index| {
-                if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
-                    if (matched or symbol.kind != row.kind or recovered[row_index] != null) return error.EsmInteropRuntimeInternalSymbolsInvalid;
-                    recovered[row_index] = @fromBackingInt(@intCast(index));
-                    matched = true;
-                }
-            }
-            if (!matched) return error.EsmInteropRuntimeInternalSymbolsInvalid;
-        }
-
-        var found_count: usize = 0;
-        for (recovered) |id| {
-            if (id != null) found_count += 1;
-        }
-        if (found_count == 0) {
-            const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeInternalOwnerMissing;
+        const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeInternalOwnerMissing;
+        const roles = try sem.ensureRuntimeIdentities(arena);
+        if (roles.interop_helpers == null) return error.EsmInteropRuntimeIdentityMissing;
+        const ids = if (roles.interop_internal) |existing| existing else blk: {
+            if (self.esm_interop_runtime_names != null) return error.EsmInteropRuntimeInternalSymbolsMissing;
+            if (owner.esm_interop_runtime_internal_symbols != null or @import("module.zig").hasEsmInteropInternalRows(sem.symbols.items))
+                return error.EsmInteropRuntimeInternalSymbolsMissing;
             const start_len = sem.symbols.items.len;
             errdefer sem.symbols.items.len = start_len;
+            var created: [ESM_INTEROP_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
             inline for (ESM_INTEROP_INTERNAL_ROWS, 0..) |row, row_index| {
-                recovered[row_index] = try semantic_symbol.extendSymbol(
-                    arena,
-                    &sem.symbols,
-                    row.kind,
-                    .esm_interop_runtime_internal_local,
-                    row.identity,
-                    Span.EMPTY,
-                );
+                created[row_index] = try semantic_symbol.extendSymbol(arena, &sem.symbols, row.kind, .esm_interop_runtime_internal_local, row.identity, Span.EMPTY);
             }
-        } else if (found_count != ESM_INTEROP_INTERNAL_ROWS.len) {
-            return error.EsmInteropRuntimeInternalSymbolsMissing;
-        }
-
-        owner.esm_interop_runtime_internal_symbols = recoveredToEsmInteropInternalIds(recovered);
+            const complete = recoveredToEsmInteropInternalIds(created);
+            roles.interop_internal = complete;
+            break :blk complete;
+        };
+        if (!@import("module.zig").validEsmInteropInternalIds(ids, sem.symbols.items))
+            return error.EsmInteropRuntimeInternalSymbolsInvalid;
+        owner.esm_interop_runtime_internal_symbols = ids;
         try self.restoreEsmInteropRuntimeInternalNames();
     }
 

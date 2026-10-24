@@ -56,6 +56,8 @@ pub const RuntimeIdentitySnapshot = struct {
     esm_factory: ?SemanticSymbolId = null,
     esm_internal: ?EsmRuntimeInternalSymbolIds = null,
     to_binary: ?SemanticSymbolId = null,
+    interop_helpers: ?EsmInteropRuntimeHelperSymbolIds = null,
+    interop_internal: ?EsmInteropRuntimeInternalSymbolIds = null,
 };
 
 /// Symbol identities for graph-wide bindings in the raw ESM interop preamble.
@@ -89,6 +91,80 @@ pub const EsmInteropRuntimeInternalSymbolIds = struct {
     export_name: SemanticSymbolId,
     to_common_js_module: SemanticSymbolId,
 };
+
+pub const EsmInteropInternalRow = struct {
+    identity: []const u8,
+    kind: semantic_symbol.SymbolKind,
+};
+
+// These labels identify semantic bindings, not emitted spellings. Some
+// helpers intentionally reuse names such as `mod` and `target`, so each
+// lexical binding needs a distinct role validation label.
+pub const ESM_INTEROP_INTERNAL_ROWS = [_]EsmInteropInternalRow{
+    .{ .identity = "copy_props.to", .kind = .parameter },
+    .{ .identity = "copy_props.from", .kind = .parameter },
+    .{ .identity = "copy_props.desc", .kind = .parameter },
+    .{ .identity = "copy_props.keys", .kind = .variable_var },
+    .{ .identity = "copy_props.index", .kind = .variable_var },
+    .{ .identity = "copy_props.key", .kind = .variable_var },
+    .{ .identity = "copy_props.closure_key", .kind = .parameter },
+    .{ .identity = "to_esm.module", .kind = .parameter },
+    .{ .identity = "to_esm.node_mode", .kind = .parameter },
+    .{ .identity = "to_esm.target", .kind = .parameter },
+    .{ .identity = "export.target", .kind = .parameter },
+    .{ .identity = "export.all", .kind = .parameter },
+    .{ .identity = "export.name", .kind = .variable_var },
+    .{ .identity = "to_common_js.module", .kind = .parameter },
+};
+
+pub fn hasEsmInteropHelperRows(symbols: []const Symbol) bool {
+    const names = @import("../runtime_helper_names.zig");
+    for (symbols) |symbol| {
+        if (symbol.synthetic_kind != .bundler_runtime_helper) continue;
+        inline for (names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+            if (std.mem.eql(u8, symbol.synthetic_name, names.esmInteropRuntimeHelperBaseName(helper))) return true;
+        }
+    }
+    return false;
+}
+
+pub fn hasEsmInteropInternalRows(symbols: []const Symbol) bool {
+    for (symbols) |symbol| if (symbol.synthetic_kind == .esm_interop_runtime_internal_local) return true;
+    return false;
+}
+
+pub fn validEsmInteropHelperIds(ids: EsmInteropRuntimeHelperSymbolIds, symbols: []const Symbol) bool {
+    const names = @import("../runtime_helper_names.zig");
+    var seen: [names.ESM_INTEROP_RUNTIME_HELPERS.len]SemanticSymbolId = undefined;
+    inline for (names.ESM_INTEROP_RUNTIME_HELPERS, 0..) |helper, index| {
+        const id = @field(ids, @tagName(helper));
+        const raw = @backingInt(id);
+        if (id.isNone() or raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        if (symbol.synthetic_kind != .bundler_runtime_helper or symbol.kind != .variable_var or
+            !std.mem.eql(u8, symbol.synthetic_name, names.esmInteropRuntimeHelperBaseName(helper))) return false;
+        for (seen[0..index]) |previous| if (previous == id) return false;
+        seen[index] = id;
+    }
+    return true;
+}
+
+pub fn validEsmInteropInternalIds(ids: EsmInteropRuntimeInternalSymbolIds, symbols: []const Symbol) bool {
+    const fields = @typeInfo(EsmInteropRuntimeInternalSymbolIds).@"struct".field_names;
+    comptime std.debug.assert(fields.len == ESM_INTEROP_INTERNAL_ROWS.len);
+    var seen: [fields.len]SemanticSymbolId = undefined;
+    inline for (fields, ESM_INTEROP_INTERNAL_ROWS, 0..) |field, row, index| {
+        const id = @field(ids, field);
+        const raw = @backingInt(id);
+        if (id.isNone() or raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        if (symbol.synthetic_kind != .esm_interop_runtime_internal_local or symbol.kind != row.kind or
+            !std.mem.eql(u8, symbol.synthetic_name, row.identity)) return false;
+        for (seen[0..index]) |previous| if (previous == id) return false;
+        seen[index] = id;
+    }
+    return true;
+}
 
 /// Exact identities for top-level lexical bindings in the raw HMR runtime
 /// preamble. They share the bundle scope with generated HMR callsites.

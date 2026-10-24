@@ -668,8 +668,8 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
     const restored = try codec.deserialize(buf.items, arena.allocator());
     try testing.expectEqualDeep(snapshot, restored.runtime_identities.?.*);
     // Snapshot tail: present, CJS factory, CJS present + four IDs,
-    // ESM factory, ESM present + five IDs, binary (15 u32 words).
-    const tail = buf.items.len - 15 * 4;
+    // ESM factory, ESM present + five IDs, binary, two absent interop groups (17 u32 words).
+    const tail = buf.items.len - 17 * 4;
     const corruptions = [_]struct { word: usize, value: u32 }{
         .{ .word = 0, .value = 2 }, // invalid snapshot presence
         .{ .word = 1, .value = 12 }, // out-of-range factory
@@ -681,6 +681,8 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
         .{ .word = 8, .value = 2 }, // invalid ESM presence
         .{ .word = 13, .value = 0 }, // cross-family duplicate
         .{ .word = 14, .value = 12 }, // out-of-range binary role
+        .{ .word = 15, .value = 2 }, // invalid interop helper presence
+        .{ .word = 16, .value = 2 }, // invalid interop internal presence
     };
     for (corruptions) |corruption| {
         const bytes = try arena.allocator().dupe(u8, buf.items);
@@ -735,4 +737,44 @@ test "semantic owner token is memory only and decode cannot reuse its owner" {
     try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, decoded.owner_token);
     const decoded_token = decoded.captureOwnerToken();
     try testing.expect(decoded_token != .unassigned and decoded_token != token);
+}
+
+test "interop codec preserves helper-only groups and rejects v17 provenance loss" {
+    const alloc = testing.allocator;
+    const module = @import("module.zig");
+    const semantic_symbol = @import("../semantic/symbol.zig");
+    const names = @import("../runtime_helper_names.zig");
+    var symbols: std.ArrayList(Symbol) = .empty;
+    defer symbols.deinit(alloc);
+    var helpers: module.EsmInteropRuntimeHelperSymbolIds = undefined;
+    inline for (names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+        @field(helpers, @tagName(helper)) = try semantic_symbol.extendSymbol(alloc, &symbols, .variable_var, .bundler_runtime_helper, names.esmInteropRuntimeHelperBaseName(helper), .EMPTY);
+    }
+    var roles: module.RuntimeIdentitySnapshot = .{ .interop_helpers = helpers };
+    const sem = ModuleSemanticData{ .symbols = symbols, .scopes = &.{}, .scope_maps = &.{}, .exported_names = .empty, .symbol_ids = &.{}, .unresolved_references = .empty, .runtime_identities = &roles };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(alloc);
+    try codec.serialize(&sem, &bytes, alloc);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const decoded = try codec.deserialize(bytes.items, arena.allocator());
+    try testing.expect(decoded.runtime_identities != null and decoded.runtime_identities.?.interop_helpers != null);
+    try testing.expectEqualDeep(helpers, decoded.runtime_identities.?.interop_helpers.?);
+    try testing.expect(decoded.runtime_identities.?.interop_internal == null);
+    try testing.expectEqual(module.SemanticOwnerToken.unassigned, decoded.owner_token);
+    const legacy = try alloc.dupe(u8, bytes.items);
+    defer alloc.free(legacy);
+    std.mem.writeInt(u32, legacy[4..8], 17, .little);
+    try testing.expectError(error.UnsupportedVersion, codec.deserialize(legacy, arena.allocator()));
+    // Internal-only groups cannot become a provenance-recovery loophole.
+    var internal: module.EsmInteropRuntimeInternalSymbolIds = undefined;
+    inline for (@typeInfo(module.EsmInteropRuntimeInternalSymbolIds).@"struct".field_names, module.ESM_INTEROP_INTERNAL_ROWS) |field, row| {
+        @field(internal, field) = try semantic_symbol.extendSymbol(alloc, &symbols, row.kind, .esm_interop_runtime_internal_local, row.identity, .EMPTY);
+    }
+    roles.interop_helpers = null;
+    roles.interop_internal = internal;
+    var invalid: std.ArrayList(u8) = .empty;
+    defer invalid.deinit(alloc);
+    const internal_sem = ModuleSemanticData{ .symbols = symbols, .scopes = &.{}, .scope_maps = &.{}, .exported_names = .empty, .symbol_ids = &.{}, .unresolved_references = .empty, .runtime_identities = &roles };
+    try testing.expectError(error.Truncated, codec.serialize(&internal_sem, &invalid, alloc));
 }

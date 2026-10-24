@@ -581,6 +581,21 @@ fn validateRuntimeIdentitySnapshot(owner: *Module) !void {
             if (!validRuntimeIdentity(sem, @field(ids, field), .esm_runtime_internal_local, kind, @field(names, field))) return error.MissingRuntimeHelperSymbol;
         }
     }
+    // Interop roles are published by their exact producers. Module convenience
+    // fields and old rows cannot bootstrap a missing canonical group.
+    if (snapshot.interop_internal != null and snapshot.interop_helpers == null) return error.EsmInteropRuntimeIdentityMissing;
+    if (snapshot.interop_helpers) |ids| {
+        if (!module_mod.validEsmInteropHelperIds(ids, sem.symbols.items)) return error.EsmInteropRuntimeIdentityInvalid;
+        owner.esm_interop_runtime_helper_symbols = ids;
+    } else if (owner.esm_interop_runtime_helper_symbols != null or module_mod.hasEsmInteropHelperRows(sem.symbols.items)) {
+        return error.EsmInteropRuntimeIdentityMissing;
+    }
+    if (snapshot.interop_internal) |ids| {
+        if (!module_mod.validEsmInteropInternalIds(ids, sem.symbols.items)) return error.EsmInteropRuntimeInternalSymbolsInvalid;
+        owner.esm_interop_runtime_internal_symbols = ids;
+    } else if (owner.esm_interop_runtime_internal_symbols != null or module_mod.hasEsmInteropInternalRows(sem.symbols.items)) {
+        return error.EsmInteropRuntimeInternalSymbolsMissing;
+    }
     if (sem.runtime_identities == null and (needs_cjs or needs_esm or needs_binary)) {
         const arena = if (owner.parse_arena) |value| value.allocator() else return error.MissingSemantic;
         (try sem.ensureRuntimeIdentities(arena)).* = bootstrap;

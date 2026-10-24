@@ -12,6 +12,8 @@ const RuntimeHelperImportOutputBinding = @import("../module.zig").RuntimeHelperI
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
+const ModuleIndex = bundler_symbol.ModuleIndex;
+const semantic_symbol = @import("../../semantic/symbol.zig");
 const runtime_helper_names = @import("../../runtime_helper_names.zig");
 const import_scanner = @import("../import_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
@@ -10134,7 +10136,6 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
         .cjs_wrapper_exports_parameter,
         .cjs_wrapper_module_parameter,
         .cjs_runtime_factory,
-        .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
         .require_shim_local,
         => true,
@@ -10972,6 +10973,7 @@ test "ESM interop helper producer group survives hostile semantic reanalysis" {
 
     var old_semantic = (try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
     const old_ids = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &old_semantic.symbols);
+    (try old_semantic.ensureRuntimeIdentities(allocator)).interop_helpers = old_ids;
     const old_start: usize = old_semantic.symbols.items.len - runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS.len;
     const old_rows = try allocator.dupe(SemanticSymbol, old_semantic.symbols.items[old_start..]);
     var module = Module.init(@fromBackingInt(@intCast(27)), "esm-interop-shadow.js");
@@ -11002,18 +11004,22 @@ test "ESM interop helper reanalysis fails closed on missing or malformed produce
     const fresh_fixture = try runtimeHelperReanalysisTestFixture(allocator, "const current = 1;");
     var previous = try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;");
     const ids = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &previous.semantic.symbols);
+    (try previous.semantic.ensureRuntimeIdentities(allocator)).interop_helpers = ids;
     var module = Module.init(@fromBackingInt(@intCast(28)), "esm-interop-invalid.js");
     module.semantic = fresh_fixture.semantic;
     module.esm_interop_runtime_helper_symbols = ids;
 
     try carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(&module, null, allocator);
     module.esm_interop_runtime_helper_symbols = null;
+    try carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(&module, previous.semantic, allocator);
+    try std.testing.expect(module.esm_interop_runtime_helper_symbols != null);
+    previous.semantic.runtime_identities.?.interop_helpers = null;
     try std.testing.expectError(
         error.MissingEsmInteropRuntimeProducerSymbols,
         carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(&module, previous.semantic, allocator),
     );
 
-    module.esm_interop_runtime_helper_symbols = ids;
+    previous.semantic.runtime_identities.?.interop_helpers = ids;
     const original = previous.semantic.symbols.items[@backingInt(ids.create)];
     previous.semantic.symbols.items[@backingInt(ids.create)].synthetic_name = "__getProtoOf";
     try std.testing.expectError(
@@ -11190,6 +11196,7 @@ test "ESM interop helper IDs survive production resync and rename handoff" {
     const arena_allocator = test_arena.allocator();
     var old_semantic = (try runtimeHelperReanalysisTestFixture(arena_allocator, "const previous = 1;")).semantic;
     const old_ids = try appendEsmInteropRuntimeHelperReanalysisTestRows(arena_allocator, &old_semantic.symbols);
+    (try old_semantic.ensureRuntimeIdentities(arena_allocator)).interop_helpers = old_ids;
     const fresh_fixture = try runtimeHelperReanalysisTestFixture(arena_allocator, new_source);
     const fresh_len = fresh_fixture.semantic.symbols.items.len;
     const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@as(u32, 29));
@@ -12017,6 +12024,30 @@ test "graph-owned synthetic rename does not replace an existing exact mapping" {
 /// old_sem 기준으로 **새 맵을 rebuild(교체)** 해 이전 idx 의 stale entry 를 제거 — 다른 심볼이
 /// 잘못된 rename 으로 오염되는 것을 막는다. 단일 resync (대부분) 는 pending 이 비어 폴백만 타므로
 /// 기존과 byte-identical.
+fn remapEsmInteropRuntimeInternalRenames(
+    allocator: std.mem.Allocator,
+    module_index: ModuleIndex,
+    old_sem: ModuleSemanticData,
+    new_sem: ModuleSemanticData,
+    old_renames: []const ?[]const u8,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_roles = old_sem.runtime_identities orelse return;
+    const new_roles = new_sem.runtime_identities orelse return;
+    const old_ids = old_roles.interop_internal orelse return;
+    const new_ids = new_roles.interop_internal orelse return;
+    if (!@import("../module.zig").validEsmInteropInternalIds(old_ids, old_sem.symbols.items) or
+        !@import("../module.zig").validEsmInteropInternalIds(new_ids, new_sem.symbols.items)) return;
+    inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+        const old_raw = @backingInt(@field(old_ids, field));
+        if (old_raw >= old_renames.len) return;
+        if (old_renames[old_raw]) |rename| {
+            const new_id = bundler_symbol.SymbolID.make(module_index, @backingInt(@field(new_ids, field)));
+            try rebuilt.put(allocator, new_id, try allocator.dupe(u8, rename));
+        }
+    }
+}
+
 fn captureRenamesToPending(
     module: *Module,
     rename_table: *const bundler_symbol.RenameTable,
@@ -12035,6 +12066,8 @@ fn captureRenamesToPending(
     scratch_allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
 ) !void {
+    _ = old_esm_interop_runtime_helper_symbols;
+    _ = new_esm_interop_runtime_helper_symbols;
     // old_sem 기준 새 맵을 만들어 교체 — 이전 idx 의 stale entry 누적/오염 방지 (multi-pass).
     var rebuilt: bundler_symbol.RenameTable = .{};
     // `rename_table` (link 시점 = pass0 idx) 폴백은 첫 resync 에서만 허용한다.
@@ -12121,10 +12154,11 @@ fn captureRenamesToPending(
         old_sem.symbols.items,
         new_sem.symbols.items,
         old_renames,
-        old_esm_interop_runtime_helper_symbols,
-        new_esm_interop_runtime_helper_symbols,
+        if (old_sem.runtime_identities) |ids| ids.interop_helpers else null,
+        if (new_sem.runtime_identities) |ids| ids.interop_helpers else null,
         &rebuilt,
     );
+    try remapEsmInteropRuntimeInternalRenames(arena, module.index, old_sem, new_sem.*, old_renames, &rebuilt);
     module.pending_renames = rebuilt;
     module.pending_rename_capture_seen = true;
 }
@@ -12252,8 +12286,10 @@ fn carryToBinaryRuntimeHelperSymbolAfterReanalysis(
     const current = if (module.semantic) |*semantic| semantic else return error.MissingSemantic;
     if (current.symbols.items.len >= @as(usize, std.math.maxInt(u32)))
         return error.RuntimeHelperSymbolTableOverflow;
+    const snapshot = try current.ensureRuntimeIdentities(allocator);
     const new_id: SemanticSymbolId = @fromBackingInt(@intCast(current.symbols.items.len));
     try current.symbols.append(allocator, old_symbol);
+    snapshot.to_binary = new_id;
     module.to_binary_runtime_symbol = new_id;
 }
 
@@ -12289,6 +12325,9 @@ fn carryEsmRuntimeHelperSymbolsAfterReanalysis(
     if (current.symbols.items.len > max_symbol_count - rows_to_append)
         return error.RuntimeHelperSymbolTableOverflow;
 
+    const snapshot = try current.ensureRuntimeIdentities(allocator);
+    const start_len = current.symbols.items.len;
+    errdefer current.symbols.items.len = start_len;
     const old_factory_symbol = previous.symbols.items[@backingInt(old_factory_id)];
     const new_factory_id: SemanticSymbolId = @fromBackingInt(@intCast(current.symbols.items.len));
     try current.symbols.append(allocator, old_factory_symbol);
@@ -12301,14 +12340,17 @@ fn carryEsmRuntimeHelperSymbolsAfterReanalysis(
         new_internal_ids[index] = new_id;
     }
 
-    module.esm_runtime_factory_symbol = new_factory_id;
-    module.esm_runtime_internal_symbols = .{
+    const new_internal: EsmRuntimeInternalSymbolIds = .{
         .factory_parameter = new_internal_ids[0],
         .result_parameter = new_internal_ids[1],
         .catch_parameter = new_internal_ids[2],
         .init_function = new_internal_ids[3],
         .factory_local = new_internal_ids[4],
     };
+    snapshot.esm_factory = new_factory_id;
+    snapshot.esm_internal = new_internal;
+    module.esm_runtime_factory_symbol = new_factory_id;
+    module.esm_runtime_internal_symbols = new_internal;
 }
 
 /// Semantic reanalysis replaces source rows but Module owns the graph-wide raw
@@ -12320,29 +12362,54 @@ fn carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(
     allocator: std.mem.Allocator,
 ) !void {
     const previous = previous_semantic orelse return;
-    const old_ids = module.esm_interop_runtime_helper_symbols orelse {
-        if (hasEsmInteropRuntimeHelperRows(previous.symbols.items)) return error.MissingEsmInteropRuntimeProducerSymbols;
+    const old_snapshot = previous.runtime_identities;
+    const old_helpers = if (old_snapshot) |ids| ids.interop_helpers else null;
+    const old_internal = if (old_snapshot) |ids| ids.interop_internal else null;
+    if (old_helpers == null) {
+        if (old_internal != null or module.esm_interop_runtime_helper_symbols != null or
+            @import("../module.zig").hasEsmInteropHelperRows(previous.symbols.items))
+            return error.MissingEsmInteropRuntimeProducerSymbols;
+        if (module.esm_interop_runtime_internal_symbols != null or @import("../module.zig").hasEsmInteropInternalRows(previous.symbols.items))
+            return error.MissingEsmInteropRuntimeInternalProducerSymbols;
         return;
-    };
-    const old_slots = esmInteropRuntimeHelperSlots(old_ids);
-    if (!validEsmInteropRuntimeHelperSlots(old_slots, previous.symbols.items))
+    }
+    if (!@import("../module.zig").validEsmInteropHelperIds(old_helpers.?, previous.symbols.items))
         return error.InvalidEsmInteropRuntimeProducerSymbols;
-
+    if (old_internal) |ids| {
+        if (!@import("../module.zig").validEsmInteropInternalIds(ids, previous.symbols.items))
+            return error.InvalidEsmInteropRuntimeInternalProducerSymbols;
+    } else if (module.esm_interop_runtime_internal_symbols != null or @import("../module.zig").hasEsmInteropInternalRows(previous.symbols.items)) {
+        return error.MissingEsmInteropRuntimeInternalProducerSymbols;
+    }
     const current = if (module.semantic) |*semantic| semantic else return error.MissingSemantic;
-    const rows_to_append: usize = old_slots.len;
-    const max_symbol_count: usize = std.math.maxInt(u32);
-    if (current.symbols.items.len > max_symbol_count - rows_to_append)
-        return error.RuntimeHelperSymbolTableOverflow;
-
+    const count: usize = runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS.len + (if (old_internal != null) @as(usize, @typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names.len) else 0);
+    if (current.symbols.items.len > @as(usize, std.math.maxInt(u32)) - count) return error.RuntimeHelperSymbolTableOverflow;
+    const snapshot = try current.ensureRuntimeIdentities(allocator);
     const start_len = current.symbols.items.len;
     errdefer current.symbols.items.len = start_len;
-    var new_slots: [runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS.len]SemanticSymbolId = undefined;
-    for (old_slots, 0..) |old_id, index| {
-        const old_index: usize = @backingInt(old_id);
-        new_slots[index] = @fromBackingInt(@intCast(current.symbols.items.len));
-        try current.symbols.append(allocator, previous.symbols.items[old_index]);
+    var new_helpers: EsmInteropRuntimeHelperSymbolIds = undefined;
+    inline for (runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+        const field = @tagName(helper);
+        const old = previous.symbols.items[@backingInt(@field(old_helpers.?, field))];
+        @field(new_helpers, field) = try semantic_symbol.extendSymbol(allocator, &current.symbols, old.kind, old.synthetic_kind.?, old.synthetic_name, old.declaration_span);
+        current.symbols.items[@backingInt(@field(new_helpers, field))] = old;
     }
-    module.esm_interop_runtime_helper_symbols = esmInteropRuntimeHelperIdsFromSlots(new_slots);
+    var new_internal: ?@import("../module.zig").EsmInteropRuntimeInternalSymbolIds = null;
+    if (old_internal) |ids| {
+        var created: @import("../module.zig").EsmInteropRuntimeInternalSymbolIds = undefined;
+        inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+            const old = previous.symbols.items[@backingInt(@field(ids, field))];
+            @field(created, field) = try semantic_symbol.extendSymbol(allocator, &current.symbols, old.kind, old.synthetic_kind.?, old.synthetic_name, old.declaration_span);
+            current.symbols.items[@backingInt(@field(created, field))] = old;
+        }
+        new_internal = created;
+    }
+    // Publish complete groups only after all appends succeed. New IDs belong
+    // to the new semantic owner; old numeric IDs are never copied as handles.
+    snapshot.interop_helpers = new_helpers;
+    snapshot.interop_internal = new_internal;
+    module.esm_interop_runtime_helper_symbols = new_helpers;
+    module.esm_interop_runtime_internal_symbols = new_internal;
 }
 
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
@@ -13765,4 +13832,120 @@ fn testRenameSymbol(kind: SemanticSymbolKind, is_default_export: bool) SemanticS
         .decl_flags = .{ .is_default_export = is_default_export },
         .declaration_span = Span.EMPTY,
     };
+}
+
+fn appendInteropInternalRoleTestRows(allocator: std.mem.Allocator, symbols: *std.ArrayList(SemanticSymbol)) !@import("../module.zig").EsmInteropRuntimeInternalSymbolIds {
+    var ids: @import("../module.zig").EsmInteropRuntimeInternalSymbolIds = undefined;
+    inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names, @import("../module.zig").ESM_INTEROP_INTERNAL_ROWS) |field, row| {
+        @field(ids, field) = try semantic_symbol.extendSymbol(allocator, symbols, row.kind, .esm_interop_runtime_internal_local, row.identity, Span.EMPTY);
+    }
+    return ids;
+}
+
+test "interop full reanalysis carries twenty four typed roles across ten decoy graphs" {
+    const sources = [_][]const u8{
+        "const __create = 1;",                  "let __getProtoOf = 2;",                     "function __copyProps() {}", "class __toESM {}",
+        "var mod, target, keys;",               "function outer(mod) { return () => mod; }", "const key = { to: 1 };",    "let a=1,b=2,c=3,d=4;",
+        "class __toCommonJS { static x = 1; }", "const {to,from} = {to:1,from:2};",
+    };
+    var mismatches: usize = 0;
+    for (sources) |source| {
+        var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer test_arena.deinit();
+        const allocator = test_arena.allocator();
+        var old_sem = (try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
+        const helpers = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &old_sem.symbols);
+        const internals = try appendInteropInternalRoleTestRows(allocator, &old_sem.symbols);
+        const roles = try old_sem.ensureRuntimeIdentities(allocator);
+        roles.interop_helpers = helpers;
+        roles.interop_internal = internals;
+        const old_token = old_sem.captureOwnerToken();
+        // Same-kind, same-label rows cannot change the selected producer IDs.
+        _ = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &old_sem.symbols);
+        _ = try appendInteropInternalRoleTestRows(allocator, &old_sem.symbols);
+        var fresh = try runtimeHelperReanalysisTestFixture(allocator, source);
+        _ = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &fresh.semantic.symbols);
+        _ = try appendInteropInternalRoleTestRows(allocator, &fresh.semantic.symbols);
+        const first_new = fresh.semantic.symbols.items.len;
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "interop-reanalysis.ts");
+        module.ast = fresh.ast;
+        module.parse_arena = &test_arena;
+        module.semantic = fresh.semantic;
+        // Convenience fields deliberately disappear at the owner boundary.
+        var failure: ?anyerror = null;
+        carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(&module, old_sem, allocator) catch |err| {
+            failure = err;
+        };
+        var matches = failure == null;
+        const maybe_roles = module.semantic.?.runtime_identities;
+        if (matches and maybe_roles != null and maybe_roles.?.interop_helpers != null and maybe_roles.?.interop_internal != null) {
+            const new_roles = maybe_roles.?;
+            matches = module.semantic.?.symbols.items.len == first_new + 24 and
+                @backingInt(new_roles.interop_helpers.?.create) == first_new and
+                @backingInt(new_roles.interop_internal.?.copy_props_to) == first_new + 10;
+            try std.testing.expectEqual(@import("../module.zig").SemanticOwnerToken.unassigned, module.semantic.?.owner_token);
+            try std.testing.expect(module.semantic.?.captureOwnerToken() != old_token);
+            var renames: bundler_symbol.RenameTable = .{};
+            inline for (runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                const label = try std.fmt.allocPrint(allocator, "helper:{s}", .{@tagName(helper)});
+                try renames.put(allocator, bundler_symbol.SymbolID.make(module.index, @backingInt(@field(helpers, @tagName(helper)))), label);
+            }
+            inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+                const label = try std.fmt.allocPrint(allocator, "internal:{s}", .{field});
+                try renames.put(allocator, bundler_symbol.SymbolID.make(module.index, @backingInt(@field(internals, field))), label);
+            }
+            try captureRenamesToPending(&module, &renames, old_sem, &module.semantic.?, null, null, null, null, null, null, null, null, null, null, allocator, allocator);
+            if (module.pending_renames.count() != 24) matches = false;
+            inline for (runtime_helper_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                const old = renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(helpers, @tagName(helper))))).?;
+                const actual = module.pending_renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_helpers.?, @tagName(helper)))));
+                if (actual == null or !std.mem.eql(u8, actual.?, old)) matches = false;
+            }
+            inline for (@typeInfo(@import("../module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+                const old = renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(internals, field)))).?;
+                const actual = module.pending_renames.get(bundler_symbol.SymbolID.make(module.index, @backingInt(@field(new_roles.interop_internal.?, field))));
+                if (actual == null or !std.mem.eql(u8, actual.?, old)) matches = false;
+            }
+        } else matches = false;
+        if (!matches) {
+            mismatches += 1;
+            std.debug.print("interop reanalysis mismatch source={s}, failure={any}\n", .{ source, failure });
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
+
+test "interop reanalysis preserves simultaneous ESM binary and helper-only roles" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    var old_sem = (try runtimeHelperReanalysisTestFixture(allocator, "const previous = 1;")).semantic;
+    const esm = try appendEsmRuntimeReanalysisTestRows(allocator, &old_sem.symbols);
+    const binary_id = try semantic_symbol.extendSymbol(allocator, &old_sem.symbols, .variable_var, .bundler_runtime_helper, "__toBinary", Span.EMPTY);
+    const helpers = try appendEsmInteropRuntimeHelperReanalysisTestRows(allocator, &old_sem.symbols);
+    const roles = try old_sem.ensureRuntimeIdentities(allocator);
+    roles.esm_factory = esm.factory_id;
+    roles.esm_internal = esm.internal_ids;
+    roles.to_binary = binary_id;
+    roles.interop_helpers = helpers;
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "interop-combined.ts");
+    module.parse_arena = &test_arena;
+    module.semantic = (try runtimeHelperReanalysisTestFixture(allocator, "const current = 2;")).semantic;
+    module.esm_runtime_factory_symbol = esm.factory_id;
+    module.esm_runtime_internal_symbols = esm.internal_ids;
+    module.to_binary_runtime_symbol = binary_id;
+    module.esm_interop_runtime_helper_symbols = helpers;
+    try carryToBinaryRuntimeHelperSymbolAfterReanalysis(&module, old_sem, allocator);
+    try carryEsmRuntimeHelperSymbolsAfterReanalysis(&module, old_sem, allocator);
+    try carryEsmInteropRuntimeHelperSymbolsAfterReanalysis(&module, old_sem, allocator);
+    const new_roles = module.semantic.?.runtime_identities.?;
+    try std.testing.expectEqual(module.to_binary_runtime_symbol, new_roles.to_binary);
+    try std.testing.expectEqual(module.esm_runtime_factory_symbol, new_roles.esm_factory);
+    try std.testing.expectEqualDeep(module.esm_runtime_internal_symbols, new_roles.esm_internal);
+    try std.testing.expect(new_roles.interop_helpers != null and new_roles.interop_internal == null);
+    try std.testing.expect(@import("../module.zig").validEsmInteropHelperIds(new_roles.interop_helpers.?, module.semantic.?.symbols.items));
+    var bytes: std.ArrayList(u8) = .empty;
+    try @import("../semantic_codec.zig").serialize(&module.semantic.?, &bytes, allocator);
+    const decoded = try @import("../semantic_codec.zig").deserialize(bytes.items, allocator);
+    try std.testing.expectEqualDeep(new_roles.*, decoded.runtime_identities.?.*);
 }

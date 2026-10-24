@@ -1782,10 +1782,16 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     var invalid_helper_ids = helper_ids;
     invalid_helper_ids.create = @fromBackingInt(@as(u32, 999_999));
     module.esm_interop_runtime_helper_symbols = invalid_helper_ids;
-    try std.testing.expectError(error.EsmInteropRuntimeIdentityInvalid, r.linker.prepareEsmInteropRuntimeNames());
+    try r.linker.prepareEsmInteropRuntimeNames();
+    try std.testing.expectEqualDeep(helper_ids, module.esm_interop_runtime_helper_symbols.?);
     module.esm_interop_runtime_helper_symbols = null;
+    try r.linker.prepareEsmInteropRuntimeNames();
+    try std.testing.expectEqualDeep(helper_ids, module.esm_interop_runtime_helper_symbols.?);
+    module.semantic.?.runtime_identities.?.interop_helpers = invalid_helper_ids;
+    try std.testing.expectError(error.EsmInteropRuntimeIdentityInvalid, r.linker.prepareEsmInteropRuntimeNames());
+    module.semantic.?.runtime_identities.?.interop_helpers = null;
     try std.testing.expectError(error.EsmInteropRuntimeIdentityMissing, r.linker.prepareEsmInteropRuntimeNames());
-    module.esm_interop_runtime_helper_symbols = helper_ids;
+    module.semantic.?.runtime_identities.?.interop_helpers = helper_ids;
 
     const ids = module.esm_interop_runtime_internal_symbols orelse return error.TestUnexpectedResult;
     const expected = [_]struct { id: semantic_symbol.SymbolId, identity: []const u8, output_name: []const u8, kind: semantic_symbol.SymbolKind }{
@@ -1855,7 +1861,7 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
 
     const original_synthetic = sem.symbols.items[local_index].synthetic_kind;
     sem.symbols.items[local_index].synthetic_kind = .bundler_runtime_helper;
-    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsMissing, r.linker.prepareEsmInteropRuntimeNames());
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNames());
     sem.symbols.items[local_index].synthetic_kind = original_synthetic;
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
 
@@ -1863,18 +1869,12 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     try r.linker.computeRenamesForModules(&chunk_modules, &.{});
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
 
-    // A semantic rebuild can replace the entire detached-row set while the
-    // Module convenience cache survives. The pre-emit audit must recreate the
-    // whole canonical set before workers start; a partial set still fails above.
+    // A lost canonical set has no producer authority to recreate these IDs.
     const rebuild_sem = &module.semantic.?;
     const first_local = @backingInt(ids.copy_props_to);
     try std.testing.expectEqual(@as(usize, 14), rebuild_sem.symbols.items.len - first_local);
     rebuild_sem.symbols.items.len = first_local;
-    try r.linker.prepareEsmInteropRuntimeNamesForEmit();
-    const regenerated_ids = module.esm_interop_runtime_internal_symbols orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(ids.copy_props_to, regenerated_ids.copy_props_to);
-    try std.testing.expectEqual(ids.to_common_js_module, regenerated_ids.to_common_js_module);
-    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, regenerated_ids);
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNamesForEmit());
 }
 
 test "linker: graph-wide missing ESM interop need is cached" {
@@ -5446,4 +5446,155 @@ test "reuse owner changes reject empty carriers and textually identical fresh gr
     const next = module.semantic.?.captureOwnerToken();
     try std.testing.expect(next != .unassigned and next != old_token);
     try std.testing.expect(!first.linker.renameReuseGuard(&snap));
+}
+
+test "interop canonical roles handle ten cache loss decoy and owner transitions" {
+    const cases = [_]struct { name: []const u8, failure: ?anyerror = null }{
+        .{ .name = "Module fields reset" },
+        .{ .name = "poisoned Module helper field" },
+        .{ .name = "canonical internal group lost", .failure = error.EsmInteropRuntimeInternalSymbolsMissing },
+        .{ .name = "canonical helper group lost", .failure = error.EsmInteropRuntimeIdentityMissing },
+        .{ .name = "canonical snapshot lost", .failure = error.EsmInteropRuntimeIdentityMissing },
+        .{ .name = "duplicate internal spelling decoy" },
+        .{ .name = "canonical internal SID outside owner", .failure = error.EsmInteropRuntimeInternalSymbolsInvalid },
+        .{ .name = "canonical helper SID wrong kind", .failure = error.EsmInteropRuntimeIdentityInvalid },
+        .{ .name = "actual module codec creates new owner" },
+        .{ .name = "legitimate helper-only group" },
+    };
+    var mismatches: usize = 0;
+    var missing_constructor_records: usize = 0;
+    for (cases, 0..) |case, index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", "import * as dep from './dep.cjs'; const __create = 99; function local(mod, target) { return mod + target; } console.log(dep, __create, local(1, 2));");
+        try writeFile(tmp.dir, "dep.cjs", "module.exports = { value: 7 };");
+        var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+        try r.linker.prepareEsmInteropRuntimeNames();
+        const owner_index = r.linker.esm_interop_runtime_internal_owner.?;
+        const owner = r.graph.moduleAtMut(owner_index).?;
+        const arena = owner.parse_arena.?.allocator();
+        const original_helpers = owner.esm_interop_runtime_helper_symbols.?;
+        const original_internal = owner.esm_interop_runtime_internal_symbols.?;
+        const published = try owner.semantic.?.ensureRuntimeIdentities(arena);
+        if (published.interop_helpers == null or published.interop_internal == null) missing_constructor_records += 1;
+        // Seed explicit producer-returned handles to isolate consumer failures
+        // even when a negative-control constructor did not publish its cache.
+        published.interop_helpers = original_helpers;
+        published.interop_internal = original_internal;
+        const original_len = owner.semantic.?.symbols.items.len;
+        var wrong_helpers = original_helpers;
+        wrong_helpers.create = @fromBackingInt(@as(u32, 0));
+        switch (index) {
+            0 => {
+                owner.ast = null; // AST-less semantic roles remain exact.
+                owner.esm_interop_runtime_helper_symbols = null;
+                owner.esm_interop_runtime_internal_symbols = null;
+            },
+            1 => owner.esm_interop_runtime_helper_symbols = wrong_helpers,
+            2 => owner.semantic.?.runtime_identities.?.interop_internal = null,
+            3 => owner.semantic.?.runtime_identities.?.interop_helpers = null,
+            4 => {
+                owner.semantic.?.runtime_identities = null;
+                owner.esm_interop_runtime_helper_symbols = null;
+                owner.esm_interop_runtime_internal_symbols = null;
+            },
+            5 => {
+                const row = owner.semantic.?.symbols.items[@backingInt(original_internal.copy_props_to)];
+                try owner.semantic.?.symbols.append(arena, row);
+            },
+            6 => owner.semantic.?.runtime_identities.?.interop_internal.?.copy_props_to = @fromBackingInt(@as(u32, 999_999)),
+            7 => owner.semantic.?.runtime_identities.?.interop_helpers = wrong_helpers,
+            8 => {
+                const old_token = owner.semantic.?.captureOwnerToken();
+                var bytes: std.ArrayList(u8) = .empty;
+                defer bytes.deinit(std.testing.allocator);
+                try @import("module_codec.zig").serialize(&owner.ast.?, &owner.semantic.?, &bytes, std.testing.allocator);
+                const decoded = try @import("module_codec.zig").deserialize(bytes.items, arena);
+                owner.ast = decoded.ast;
+                owner.semantic = decoded.semantic;
+                try std.testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, owner.semantic.?.owner_token);
+                try std.testing.expect(owner.semantic.?.captureOwnerToken() != old_token);
+                owner.esm_interop_runtime_helper_symbols = wrong_helpers;
+                owner.esm_interop_runtime_internal_symbols = null;
+            },
+            9 => {
+                owner.semantic.?.symbols.items.len = @backingInt(original_internal.copy_props_to);
+                owner.semantic.?.runtime_identities.?.interop_internal = null;
+                owner.esm_interop_runtime_helper_symbols = null;
+                owner.esm_interop_runtime_internal_symbols = null;
+            },
+            else => unreachable,
+        }
+        var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+        defer fresh.deinit();
+        var actual_failure: ?anyerror = null;
+        fresh.prepareEsmInteropRuntimeNames() catch |err| {
+            actual_failure = err;
+        };
+        var matches = actual_failure == case.failure;
+        if (actual_failure == null and case.failure == null) {
+            const maybe_roles = owner.semantic.?.runtime_identities;
+            if (maybe_roles == null or maybe_roles.?.interop_helpers == null or maybe_roles.?.interop_internal == null) {
+                matches = false;
+            } else {
+                const roles = maybe_roles.?;
+                inline for (@import("../runtime_helper_names.zig").ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                    if (@field(roles.interop_helpers.?, @tagName(helper)) != @field(original_helpers, @tagName(helper))) matches = false;
+                    const expected = bundler_symbol.SymbolID.make(owner_index, @backingInt(@field(original_helpers, @tagName(helper))));
+                    if (fresh.esm_interop_runtime_symbol_ids[@backingInt(helper)] == null or
+                        !bundler_symbol.SymbolID.eql(fresh.esm_interop_runtime_symbol_ids[@backingInt(helper)].?, expected)) matches = false;
+                }
+                inline for (@typeInfo(@import("module.zig").EsmInteropRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+                    if (@field(roles.interop_internal.?, field) != @field(original_internal, field)) matches = false;
+                }
+                const expected_len = original_len + @as(usize, if (index == 5) 1 else 0);
+                if (owner.semantic.?.symbols.items.len != expected_len) matches = false;
+            }
+        }
+        if (!matches) {
+            mismatches += 1;
+            std.debug.print("interop canonical role mismatch: {s}; expected={any}, actual={any}\n", .{ case.name, case.failure, actual_failure });
+        }
+    }
+    if (mismatches != 0 or missing_constructor_records != 0) std.debug.print("interop canonical role mismatches={d} missing constructor records={d}\n", .{ mismatches, missing_constructor_records });
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    try std.testing.expectEqual(@as(usize, 0), missing_constructor_records);
+}
+
+test "interop cached linker cannot recreate lost complete provenance as a cold constructor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import * as dep from './dep.cjs'; console.log(dep);");
+    try writeFile(tmp.dir, "dep.cjs", "module.exports = { value: 1 };");
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    try r.linker.prepareEsmInteropRuntimeNames();
+    const owner = r.graph.moduleAtMut(r.linker.esm_interop_runtime_internal_owner.?).?;
+    const first_helper = @backingInt(owner.semantic.?.runtime_identities.?.interop_helpers.?.create);
+    owner.semantic.?.symbols.items.len = first_helper;
+    owner.semantic.?.runtime_identities.?.interop_helpers = null;
+    owner.semantic.?.runtime_identities.?.interop_internal = null;
+    owner.esm_interop_runtime_helper_symbols = null;
+    owner.esm_interop_runtime_internal_symbols = null;
+    try std.testing.expectError(error.EsmInteropRuntimeIdentityMissing, r.linker.prepareEsmInteropRuntimeNames());
+    // A genuinely fresh constructor has no stale selected names/handles and
+    // can create roles in a graph that never retained those runtime rows.
+    var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer fresh.deinit();
+    try fresh.prepareEsmInteropRuntimeNames();
+    const first_internal = @backingInt(owner.semantic.?.runtime_identities.?.interop_internal.?.copy_props_to);
+    owner.semantic.?.symbols.items.len = first_internal;
+    owner.semantic.?.runtime_identities.?.interop_internal = null;
+    owner.esm_interop_runtime_internal_symbols = null;
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsMissing, fresh.prepareEsmInteropRuntimeNames());
+    // Helper-only is a supported producer phase for a new linker.
+    var partial = Linker.init(std.testing.allocator, r.graph, .esm);
+    defer partial.deinit();
+    try partial.prepareEsmInteropRuntimeNames();
+    try std.testing.expect(owner.semantic.?.runtime_identities.?.interop_internal != null);
 }
