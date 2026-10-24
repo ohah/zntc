@@ -5689,3 +5689,71 @@ test "HMR canonical roles survive codec reset decoys and fresh graph owners acro
         try std.testing.expectEqualDeep(carried, owner.hmr_runtime_internal_symbols.?);
     }
 }
+
+test "cross-module mutable const facts reject dynamic writes in the exact provider scope" {
+    const writes = [_][]const u8{
+        "eval('value=9');",
+        "function mutate(){eval('value=9')}mutate();",
+        "(()=>eval('value=9'))();",
+        "({mutate(){eval('value=9')}}).mutate();",
+        "const code='value=9';eval(code);",
+        "eval('value+=7');",
+        "eval('value++');",
+        "eval('[value]=[9]');",
+        "for(let i=0;i<1;i++)eval('value=9');",
+        "function mutate(n){if(n)mutate(n-1);else eval('value=9')}mutate(1);",
+    };
+    for (writes) |write| {
+        for ([_][]const u8{ "let", "var" }) |kind| {
+            const source = try std.fmt.allocPrint(std.testing.allocator, "export {s} value=2;{s}", .{ kind, write });
+            defer std.testing.allocator.free(source);
+            try expectCrossModuleConstFixture(.{
+                .name = write,
+                .provider_source = source,
+                .barrel_source = "export {value} from './provider.mjs';",
+            });
+        }
+    }
+    const controls = [_]CrossModuleConstFixture{
+        .{ .name = "immutable eval read", .provider_source = "export const value=2;eval('value');", .barrel_source = "export {value} from './provider.mjs';", .expected_number = "2" },
+        .{ .name = "ordinary mutable fact", .provider_source = "export let value=2;", .barrel_source = "export {value} from './provider.mjs';", .expected_number = "2" },
+        .{ .name = "indirect eval cannot write module binding", .provider_source = "export let value=2;(0,eval)('globalThis.value=9');", .barrel_source = "export {value} from './provider.mjs';", .expected_number = "2" },
+        .{ .name = "barrel eval does not affect provider owner", .provider_source = "export let value=2;", .barrel_source = "export {value} from './provider.mjs';eval('1');", .expected_number = "2" },
+    };
+    for (controls) |fixture| try expectCrossModuleConstFixture(fixture);
+}
+
+test "cross-module mutable const facts require a valid nondynamic provider ScopeId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import {value} from './provider.mjs';console.log(value);");
+    try writeFile(tmp.dir, "provider.mjs", "export let value=2;");
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.cache.deinit();
+    defer r.destroyGraph();
+    defer r.linker.deinit();
+    const entry_index = findModuleIdx(r.graph, "entry.mjs").?;
+    const provider_index = findModuleIdx(r.graph, "provider.mjs").?;
+    const entry = r.graph.getModule(entry_index).?;
+    const provider = r.graph.moduleAtMut(provider_index).?;
+    const exported = r.linker.export_map.get(.{ .module_index = provider_index.toU32(), .name = "value" }).?;
+    const id = provider.exportBindingSemanticIndex(exported.binding).?;
+    const sem = &provider.semantic.?;
+    const original_scope = sem.symbols.items[id].scope_id;
+    const local = entry.import_bindings[0].local_symbol.semanticIndex().?;
+    // `with` is not a supported ESM source form. This exercises the shared
+    // dynamic-scope flag contract on an otherwise valid exact provider graph.
+    const scopes = try provider.parse_arena.?.allocator().dupe(@import("../semantic/scope.zig").Scope, sem.scopes);
+    sem.scopes = scopes;
+    scopes[original_scope.toIndex()].subtree_has_with = true;
+    try expectNoCrossModuleConstFact(&r, entry_index, local);
+    scopes[original_scope.toIndex()].subtree_has_with = false;
+    sem.symbols.items[id].scope_id = .none;
+    try expectNoCrossModuleConstFact(&r, entry_index, local);
+    sem.symbols.items[id].scope_id = @fromBackingInt(@intCast(sem.scopes.len));
+    try expectNoCrossModuleConstFact(&r, entry_index, local);
+    sem.symbols.items[id].scope_id = original_scope;
+    var facts = try r.linker.buildCrossModuleConstValues(entry, entry.semantic.?);
+    defer facts.deinit(std.testing.allocator);
+    try std.testing.expect(facts.get(local) != null);
+}
