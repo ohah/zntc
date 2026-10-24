@@ -283,6 +283,7 @@ const EXACT_ZERO_COUNTERS = [
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
   'duplicate_scope_owner',
+  'scope_strictness_mismatch',
   'namespace_iife_param_mismatch',
   'enum_iife_param_mismatch',
   'helper_symbol_mismatch',
@@ -348,10 +349,10 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
   ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
-const EXACT_REPORT_SCHEMA_FINGERPRINT = '8eaf0a0ac174e20b';
+const EXACT_REPORT_SCHEMA_FINGERPRINT = '8b9ddfc8e8f7120b';
 const EXACT_NO_DEBT_FINGERPRINT = 'cbf29ce484222325';
 const EXACT_OBSERVATION_FIELD_COUNT = 8;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 16;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 17;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
