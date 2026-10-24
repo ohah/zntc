@@ -349,11 +349,13 @@ pub fn ES2022(comptime Transformer: type) type {
                 @backingInt(new_body), saved_flags,
                 saved_deco_start,      saved_deco_len,
             });
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = .method_definition,
                 .span = node.span,
                 .data = .{ .extra = new_me },
             });
+            try self.remapCopiedScopeOwner(method_node_idx, result);
+            return result;
         }
 
         /// Private method + private field를 단일 Pass로 함께 다운레벨링한다.
@@ -500,6 +502,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         std.debug.panic("private field helper has no direct SymbolId", .{});
                     mapping.binding_node = binding;
                     mapping.symbol_id = @backingInt(id);
+                    try self.private_helper_symbol_ids.put(self.allocator, @backingInt(id), {});
                 }
                 try es_helpers.reservePrivateMethodWeakSetSymbols(
                     self,
@@ -593,7 +596,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         for (method_mappings.items, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, m.weakset_name)) continue;
                             const value = if (emit_method_standalone[part_index])
-                                try es_helpers.makePrivateMethodFunctionRef(self, part)
+                                try es_helpers.makePrivateExactSyntheticRefAtScope(self, part.func_name, part.func_symbol_id, private_helper_scope)
                             else
                                 method_function_values[part_index];
                             switch (part.kind) {
@@ -648,6 +651,9 @@ pub fn ES2022(comptime Transformer: type) type {
                 }
             }
 
+            const source_class_scope = self.current_scope;
+            const constructor_scope = try reservePrivateConstructorScope(self, body_idx, method_mappings.items, field_mappings.items);
+
             var body_nodes: std.ArrayList(NodeIndex) = .empty;
             defer body_nodes.deinit(self.allocator);
 
@@ -672,7 +678,12 @@ pub fn ES2022(comptime Transformer: type) type {
                     // Brand an instance once per private name: a getter/setter
                     // pair adding it twice threw at construction (#5695).
                     if (m.class_name == null and firstPrivateBrand(method_mappings.items, method_mapping_idx - 1)) {
-                        const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, m.weakset_symbol_id, span);
+                        const init_stmt = blk: {
+                            const saved_scope = self.current_scope;
+                            self.current_scope = constructor_scope;
+                            defer self.current_scope = saved_scope;
+                            break :blk try es_helpers.buildPrivateMethodInit(self, m.weakset_name, m.weakset_symbol_id, span);
+                        };
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
                     continue;
@@ -686,7 +697,12 @@ pub fn ES2022(comptime Transformer: type) type {
                     field_mapping_idx += 1;
                     // static은 descriptor가 init 값을 이미 담고 있으므로 ctor 주입 없음, body에서 제거만.
                     if (fm.class_name == null) {
-                        const init_stmt = try buildPrivateFieldSetInit(self, fm, fi, span);
+                        const init_stmt = blk: {
+                            const saved_scope = self.current_scope;
+                            self.current_scope = constructor_scope;
+                            defer self.current_scope = saved_scope;
+                            break :blk try buildPrivateFieldSetInit(self, fm, fi, span, source_class_scope);
+                        };
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
                     continue;
@@ -713,7 +729,7 @@ pub fn ES2022(comptime Transformer: type) type {
                                 var name_ref: NodeIndex = .none;
                                 if (key_node.tag == .computed_property_key and keys_prehoisted) {
                                     const temp_ref = key_node.data.unary.operand;
-                                    try es_helpers.trackKnownHoistedComputedKeyRef(self, temp_ref, self.current_scope);
+                                    try es_helpers.trackKnownHoistedComputedKeyRef(self, temp_ref, constructor_scope);
                                     key_ref = temp_ref;
                                     if (self.options.use_define_for_class_fields and
                                         try @import("parameter_environment.zig").needsRuntimeKeyName(self, key, init_val))
@@ -724,7 +740,7 @@ pub fn ES2022(comptime Transformer: type) type {
                                             self,
                                             temp_ref,
                                             name_ref,
-                                            self.current_scope,
+                                            constructor_scope,
                                             .{ .read = true },
                                         );
                                     }
@@ -741,14 +757,19 @@ pub fn ES2022(comptime Transformer: type) type {
                                         try self.recordTempProducerSymbolId(memo.temp_producer_id, id);
                                         temp_symbol = @backingInt(id);
                                     }
-                                    key_ref = try exactTempRef(self, temp_name, temp_symbol);
+                                    key_ref = try exactTempRef(self, temp_name, temp_symbol, constructor_scope);
                                     // Define semantics name the value like `[k] = fn` does; an
                                     // assignment (`this[_a] = fn`) does not.
                                     if (self.options.use_define_for_class_fields and
                                         try @import("parameter_environment.zig").needsRuntimeKeyName(self, key, init_val))
-                                        name_ref = try exactTempRef(self, temp_name, temp_symbol);
+                                        name_ref = try exactTempRef(self, temp_name, temp_symbol, constructor_scope);
                                 }
-                                const init_stmt = try buildPublicFieldSetInit(self, key, key_ref, init_val, name_ref, span);
+                                const init_stmt = blk: {
+                                    const saved_scope = self.current_scope;
+                                    self.current_scope = constructor_scope;
+                                    defer self.current_scope = saved_scope;
+                                    break :blk try buildPublicFieldSetInit(self, key, key_ref, init_val, name_ref, span, source_class_scope);
+                                };
                                 try ctor_init_stmts.append(self.allocator, init_stmt);
                                 continue;
                             }
@@ -785,7 +806,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (ctor_pos) |pos| {
                     body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
                 } else {
-                    const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span, self.current_scope);
+                    const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span, source_class_scope, constructor_scope);
                     try body_nodes.insert(self.allocator, 0, ctor);
                 }
             }
@@ -799,22 +820,45 @@ pub fn ES2022(comptime Transformer: type) type {
             return true;
         }
 
+        fn reservePrivateConstructorScope(self: *Transformer, body: NodeIndex, methods: []const Transformer.PrivateMethodMapping, fields: []const Transformer.PrivateFieldMapping) Transformer.Error!ScopeId {
+            if (!self.semantic_edit_enabled) return self.current_scope;
+            var needed = false;
+            for (methods) |method| if (method.class_name == null) {
+                needed = true;
+            };
+            for (fields) |field| if (field.class_name == null) {
+                needed = true;
+            };
+            var members = self.ast.iterateExtraList(self.ast.getNode(body).data.list);
+            while (members.next()) |member| {
+                const node = self.ast.getNode(member);
+                if (node.tag == .method_definition) {
+                    if (es_helpers.isConstructorKey(self, self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key)))
+                        return self.outputOwnedScope(member) orelse std.debug.panic("private initializer constructor has no source ScopeId", .{});
+                } else if (node.tag == .property_definition) {
+                    const flags = self.readU32(node.data.extra, ast_mod.PropertyExtra.flags);
+                    if ((flags & ast_mod.PropertyFlags.is_static) == 0 and self.readU32(node.data.extra, ast_mod.PropertyExtra.deco_len) == 0) needed = true;
+                }
+            }
+            return if (needed) try self.reserveGeneratedFunctionScope(self.current_scope) else .none;
+        }
+
         /// A read of an already-named temp: no second collision rename.
-        fn exactTempRef(self: *Transformer, name: []const u8, symbol: ?u32) Transformer.Error!NodeIndex {
+        fn exactTempRef(self: *Transformer, name: []const u8, symbol: ?u32, scope: ScopeId) Transformer.Error!NodeIndex {
             if (!self.semantic_edit_enabled) return es_helpers.makeExactSyntheticRef(self, name);
-            return es_helpers.makeDeferredExactSyntheticRef(self, name, symbol);
+            return es_helpers.makePrivateExactSyntheticRefAtScope(self, name, symbol, scope);
         }
 
         /// `key_ref`: the emitted read of a memoized computed key (`.none` keeps
         /// `key_idx`). `name_ref`: a read of that key naming an anonymous
         /// function value, as in the other field lowering (`__name(fn, _a)`).
-        fn buildPublicFieldSetInit(self: *Transformer, key_idx: NodeIndex, key_ref: NodeIndex, init_idx: NodeIndex, name_ref: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildPublicFieldSetInit(self: *Transformer, key_idx: NodeIndex, key_ref: NodeIndex, init_idx: NodeIndex, name_ref: NodeIndex, span: Span, source_scope: ScopeId) Transformer.Error!NodeIndex {
             const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const visited = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try visitInstanceFieldInitValue(self, init_idx);
+            const visited = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try visitInstanceFieldInitValue(self, init_idx, source_scope);
             const value = if (name_ref.isNone()) visited else blk: {
                 self.runtime_helpers.keep_names = true;
                 const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
@@ -844,7 +888,7 @@ pub fn ES2022(comptime Transformer: type) type {
         }
 
         /// 빈 constructor method_definition에 init_stmts를 넣어 생성.
-        fn buildNewConstructor(self: *Transformer, init_stmts: []const NodeIndex, has_super: bool, span: Span, class_scope: ScopeId) Transformer.Error!NodeIndex {
+        fn buildNewConstructor(self: *Transformer, init_stmts: []const NodeIndex, has_super: bool, span: Span, class_scope: ScopeId, constructor_scope: ScopeId) Transformer.Error!NodeIndex {
             // body: [super(...args), ...init_stmts] (has_super일 때)
             //       [...init_stmts] (has_super가 아닐 때)
             const scratch_top = self.scratch.items.len;
@@ -871,7 +915,12 @@ pub fn ES2022(comptime Transformer: type) type {
                     .span = span,
                     .data = .{ .none = 0 },
                 });
-                args_ref = try es_helpers.makeSyntheticRefFromSpan(self, args_span);
+                args_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, args_span);
+                if (self.semantic_edit_enabled) {
+                    const id = try self.declareSyntheticInScope(args_binding, args_span, .parameter, constructor_scope);
+                    try self.addSyntheticRefInScope(args_ref, id, constructor_scope, .{ .read = true });
+                    try self.trackExactOutputReference(args_ref, @backingInt(id.?));
+                }
                 const spread = try self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = span,
@@ -906,8 +955,8 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = ctor_extra },
             });
-            if (has_super)
-                try self.bindSuperSpreadArgs(constructor, class_scope, args_binding, args_ref);
+            if (self.semantic_edit_enabled)
+                try self.bindReservedFunctionOwner(constructor_scope, constructor);
             return constructor;
         }
 
@@ -1041,8 +1090,8 @@ pub fn ES2022(comptime Transformer: type) type {
         //       별도 작업 필요.
 
         /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
-        fn buildPrivateFieldSetInit(self: *Transformer, mapping: Transformer.PrivateFieldMapping, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+        fn buildPrivateFieldSetInit(self: *Transformer, mapping: Transformer.PrivateFieldMapping, init_idx: NodeIndex, span: Span, source_scope: ScopeId) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{
@@ -1050,7 +1099,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const new_init = if (!init_idx.isNone()) try visitInstanceFieldInitValue(self, init_idx) else try es_helpers.makeVoidZero(self, span);
+            const new_init = if (!init_idx.isNone()) try visitInstanceFieldInitValue(self, init_idx, source_scope) else try es_helpers.makeVoidZero(self, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, new_init }, span);
             return self.ast.addNode(.{
                 .tag = .expression_statement,
@@ -1062,7 +1111,9 @@ pub fn ES2022(comptime Transformer: type) type {
         /// Deferred instance initializers can be visited after their enclosing
         /// class traversal has returned to a static method. Their `super` base
         /// is always the instance prototype, and they are not method bodies.
-        fn visitInstanceFieldInitValue(self: *Transformer, init_idx: NodeIndex) Transformer.Error!NodeIndex {
+        fn visitInstanceFieldInitValue(self: *Transformer, init_idx: NodeIndex, source_scope: ScopeId) Transformer.Error!NodeIndex {
+            try self.reparentGeneratedBodyScopes(source_scope, self.current_scope, init_idx);
+            try @import("class_strict_context.zig").moveSourceReferences(self, init_idx, source_scope, source_scope, self.current_scope);
             const saved_super_is_static = self.current_super_is_static;
             const saved_method_is_static = self.current_method_is_static;
             self.current_super_is_static = false;

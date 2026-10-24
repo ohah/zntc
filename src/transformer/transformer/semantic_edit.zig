@@ -617,6 +617,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         defer live_scopes.deinit(self.allocator);
         try reparentLiveSourceScopes(self, source_scope, scope, &live_scopes);
         try self.moveGeneratedFunctionBodyBindings(source_scope, scope, callback);
+        try es_helpers.relocatePrivateReferences(self, callback, scope);
         var callback_traces = try collectGeneratedNodeTraces(self, callback, scope);
         defer callback_traces.deinit(self.allocator);
         for (wrapper_temps) |temp| {
@@ -2414,6 +2415,7 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     var live_scopes = try liveScopeOwners(self, &live);
     defer live_scopes.deinit(self.allocator);
     try reparentLiveSourceScopes(self, source_scope, function_scope, &live_scopes);
+    try es_helpers.relocatePrivateReferences(self, body, function_scope);
     var traces = try collectGeneratedNodeTraces(self, body, function_scope);
     defer traces.deinit(self.allocator);
     for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);

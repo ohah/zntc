@@ -358,6 +358,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         try self.visitExtraList(.{ .start = self.readU32(e, 4), .len = self.readU32(e, 5) });
     const old_body_idx = self.readNodeIdx(e, 2);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
+    try self.remapCopiedScopeOwner(params_idx_old, new_params_node);
     const result = try self.addExtraNode(.method_definition, node.span, &.{
         @backingInt(new_key), @backingInt(new_params_node), @backingInt(new_body),
         self.readU32(e, 3),   new_decos.start,              new_decos.len,
