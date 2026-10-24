@@ -298,7 +298,7 @@ test "private static descriptors own their data or accessor shape (es2021)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _writeOnly;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _readOnly;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _field;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_field={kind:0,writable:true,value:1}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_field={kind:0,writable:true,value:(function(){\"use strict\";return 1;})()}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_method={kind:0,value:_method_fn,writable:false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_readOnly={kind:1,get:_readOnly_get,set:void 0}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_writeOnly={kind:1,get:void 0,set:_writeOnly_set}") != null);
@@ -1105,7 +1105,7 @@ test "#1278-2: static #field → descriptor + StaticPrivateFieldSpecGet/Set" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _map;") != null);
     // descriptor 객체 선언 (class 밖)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_map={kind:0,writable:true,value:new Map()}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_map={kind:0,writable:true,value:(function(){\"use strict\";return new Map();})()}") != null);
     // static private field property_definition은 body에서 제거
     try std.testing.expect(std.mem.indexOf(u8, r.output, "static #map") == null);
     // helper 경유 접근 (class name은 'Foo')
@@ -1125,7 +1125,7 @@ test "#1278-2: static #field + instance #field 혼합 (brand check + WeakMap 공
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _stc;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let _inst=new WeakMap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_stc={kind:0,writable:true,value:2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_stc={kind:0,writable:true,value:(function(){\"use strict\";return 2;})()}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_inst.get(this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Mixed,Mixed,_stc)") != null);
 }

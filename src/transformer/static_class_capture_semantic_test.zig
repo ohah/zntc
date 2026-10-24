@@ -346,3 +346,90 @@ test "#4819 static class capture private storage reserves its block ScopeId befo
     try std.testing.expectEqual(@as(usize, 1), descriptors.items.len);
     try std.testing.expectEqual(ast.VariableDeclarationKind.let, transformer.ast.variableDeclarationKind(transformer.ast.getNode(pre.items[0])));
 }
+
+test "#4819 strict initializer factory owns references before semantic reconciliation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let outside=7; { class Box { static read=outside+this+(function named(value=outside){return Box;}); } }");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .use_define_for_class_fields = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const ast = @import("../parser/ast.zig");
+    var owner: ast.NodeIndex = .none;
+    var init: ast.NodeIndex = .none;
+    var outside: ast.NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) owner = @fromBackingInt(@intCast(raw));
+        if (node.tag == .property_definition) init = parser.ast.readExtraNode(node.data.extra, ast.PropertyExtra.init);
+        if (outside.isNone() and node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "outside")) outside = @fromBackingInt(@intCast(raw));
+    }
+    try std.testing.expect(!owner.isNone() and !init.isNone() and !outside.isNone());
+    const binding = parser.ast.readExtraNode(parser.ast.getNode(owner).data.extra, ast.ClassExtra.name);
+    const class_self_id = analyzer.class_self_symbol_map.get(@backingInt(owner)).?;
+    const class_scope = analyzer.symbols.items[class_self_id].scope_id;
+    const output_scope = analyzer.scopes.items[class_scope.toIndex()].parent;
+    transformer.current_scope = class_scope;
+    transformer.current_class_name_node = binding;
+    transformer.current_class_self_symbol_id = class_self_id;
+    const context = try @import("es_helpers.zig").enterStaticInitContext(&transformer, parser.ast.getNode(binding).data.string_ref);
+    defer @import("es_helpers.zig").leaveStaticInitContext(&transformer, context);
+    const source_id = transformer.getSymbolIdAt(outside).?;
+    const call = try @import("class_strict_context.zig").visitInitializer(&transformer, init, class_scope, output_scope);
+    const factory = transformer.ast.readExtraNode(transformer.ast.getNode(call).data.extra, 0);
+    const factory_scope = transformer.outputOwnedScope(factory).?;
+    const editor = &transformer.semantic_editor.?;
+    try std.testing.expectEqual(output_scope, editor.scopes.items[factory_scope.toIndex()].parent);
+    try std.testing.expect(editor.scopes.items[factory_scope.toIndex()].is_strict);
+    const source_reference = (try editor.referenceForNode(outside)).?;
+    try std.testing.expectEqual(source_id, @backingInt(source_reference.symbol_id));
+    try std.testing.expectEqual(factory_scope, source_reference.scope_id);
+    const capture = transformer.static_class_captures.get(@backingInt(binding)).?;
+    try std.testing.expectEqual(output_scope, editor.symbols.items[capture.symbol_id.?].scope_id);
+    var named_scope: @import("../semantic/scope.zig").ScopeId = .none;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, call);
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .function_expression) continue;
+        const name = transformer.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+        if (name.isNone() or !std.mem.eql(u8, transformer.ast.identifierNameText(transformer.ast.getNode(name)), "named")) continue;
+        named_scope = transformer.outputOwnedScope(@fromBackingInt(@intCast(raw))).?;
+    }
+    try std.testing.expect(!named_scope.isNone());
+    var enclosing = named_scope;
+    var steps: usize = 0;
+    while (enclosing != factory_scope and !enclosing.isNone() and steps < editor.scopes.items.len) : (steps += 1) {
+        try std.testing.expect(enclosing != class_scope and enclosing != output_scope);
+        enclosing = editor.scopes.items[enclosing.toIndex()].parent;
+    }
+    try std.testing.expectEqual(factory_scope, enclosing);
+    var generated_reads: usize = 0;
+    var direct_reads: usize = 0;
+    for (editor.references.items) |reference| {
+        if (@backingInt(reference.symbol_id) != capture.symbol_id.? or reference.node_index.isNone()) continue;
+        generated_reads += 1;
+        if (reference.scope_id == factory_scope) direct_reads += 1 else try std.testing.expectEqual(named_scope, reference.scope_id);
+        try std.testing.expect(reference.flags.read and !reference.flags.write);
+        try std.testing.expectEqual(capture.symbol_id, transformer.exact_output_ref_symbol_ids.get(@backingInt(reference.node_index)));
+    }
+    try std.testing.expectEqual(@as(usize, 2), generated_reads);
+    try std.testing.expectEqual(@as(usize, 1), direct_reads);
+    const body = transformer.ast.readExtraNode(transformer.ast.getNode(factory).data.extra, ast.FunctionExtra.body);
+    const list = transformer.ast.getNode(body).data.list;
+    try std.testing.expectEqual(@as(u32, 2), list.len);
+    try std.testing.expectEqual(ast.Node.Tag.directive, transformer.ast.getNode(@fromBackingInt(@intCast(transformer.ast.extra_data.items[list.start]))).tag);
+}

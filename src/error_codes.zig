@@ -502,7 +502,7 @@ pub const Code = enum(u16) {
             .regex_modifier_unsupported => "Regular expression inline modifier group is an ES2025 feature not supported by the target",
             .exponentiation_dynamic_scope => "Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe",
             .arrow_dynamic_scope => "Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it",
-            .static_initializer_dynamic_scope => "Static initializer cannot be moved out of its class dynamic lexical environment",
+            .static_initializer_dynamic_scope => "Class initializer or extracted private method cannot preserve its dynamic class lexical environment",
             .arrow_dynamic_eval => "Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax",
         };
     }

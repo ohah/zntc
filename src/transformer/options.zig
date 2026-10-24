@@ -775,7 +775,7 @@ pub const TransformOptions = struct {
     /// Moving an initializer loses its class lexical environment and inherited
     /// strictness; a bounded safe eval expression is the only admitted exception.
     pub const static_initializer_dynamic_scope_msg =
-        "static initializer cannot be moved out of its class because direct eval or with can observe its class lexical environment; select a target and class-field options that retain the initializer natively.";
+        "class initializer or extracted private method cannot be lowered because direct eval or with can observe a class lexical environment that the selected target cannot preserve; select a target and class-field options that retain that class code natively.";
 
     /// Dynamic source passed to direct eval can observe an arbitrary generated
     /// lexical-capture name, so retain the arrow instead of guessing a suffix.

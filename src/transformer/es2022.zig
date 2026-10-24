@@ -306,7 +306,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const value = if (init.isNone())
                 try es_helpers.makeVoidZero(self, member.span)
             else blk: {
-                const visited = try self.visitNode(init);
+                const visited = try @import("class_strict_context.zig").visitInitializer(self, init, class_scope, output_scope);
                 if (self.semantic_edit_enabled)
                     try self.reparentMovedStaticInitializerScopes(visited, class_scope, output_scope);
                 break :blk visited;
@@ -1086,6 +1086,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // static block의 body를 방문
             const new_body = try self.visitNode(static_block_node.data.unary.operand);
+            try @import("class_strict_context.zig").prependDirective(self, new_body);
 
             const span = static_block_node.span;
 

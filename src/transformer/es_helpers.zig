@@ -121,7 +121,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     defer leaveStaticInitContext(self, static_ctx);
 
     const value_key = try makePropertyName(self, "value");
-    const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
+    const value_init = if (!init_idx.isNone()) try @import("class_strict_context.zig").visitInitializer(self, init_idx, source_class_scope, output_scope) else try makeVoidZero(self, span);
     if (self.semantic_edit_enabled and !init_idx.isNone())
         try self.reparentMovedStaticInitializerScopes(value_init, source_class_scope, output_scope);
     try self.scratch.append(self.allocator, try self.ast.addNode(.{
@@ -324,14 +324,7 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
                 if (method.class_name != null and std.mem.eql(u8, method.original_name, name)) return class_self_id;
             }
         }
-        if (node.tag == .call_expression) {
-            const callee_idx = self.readNodeIdx(node.data.extra, 0);
-            if (!callee_idx.isNone()) {
-                const callee = self.ast.getNode(callee_idx);
-                if (callee.tag == .identifier_reference and std.mem.eql(u8, self.ast.getText(callee.data.string_ref), "eval"))
-                    return class_self_id;
-            }
-        }
+        if (@import("static_class_capture.zig").isDirectEvalCall(self, node)) return class_self_id;
         var children = @import("../parser/ast_walk.zig").children(self.ast, node);
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
@@ -389,6 +382,39 @@ fn isParameterEnvironmentScope(self: anytype, scope: ScopeId) bool {
     return false;
 }
 
+fn privateFactorySourceHasUnsafeEval(self: anytype, pm: anytype, class_self_id: u32) !bool {
+    const Entry = struct { node: NodeIndex, scope: ScopeId, parameters: bool };
+    const owner = if (!pm.source_member_idx.isNone()) pm.source_member_idx else pm.member_idx;
+    if (owner.isNone()) return false;
+    const source = self.ast.getNode(owner);
+    const original_scope: ScopeId = if (self.scope_owner_map.get(@backingInt(owner))) |raw| @fromBackingInt(@intCast(raw)) else .none;
+    var stack: std.ArrayList(Entry) = .empty;
+    defer stack.deinit(self.allocator);
+    if (source.tag == .method_definition) {
+        try stack.append(self.allocator, .{ .node = self.readNodeIdx(source.data.extra, ast_mod.MethodExtra.params), .scope = original_scope, .parameters = true });
+        try stack.append(self.allocator, .{ .node = self.readNodeIdx(source.data.extra, ast_mod.MethodExtra.body), .scope = original_scope, .parameters = false });
+    } else try stack.append(self.allocator, .{ .node = owner, .scope = original_scope, .parameters = false });
+    while (stack.pop()) |entry| {
+        if (entry.node.isNone()) continue;
+        const node = self.ast.getNode(entry.node);
+        const scope: ScopeId = if (self.scope_owner_map.get(@backingInt(entry.node))) |raw| @fromBackingInt(@intCast(raw)) else entry.scope;
+        if (@import("static_class_capture.zig").unsafePrivateFactoryEval(self, node, scope, class_self_id, entry.parameters)) return true;
+        if (node.tag == .function_expression or node.tag == .function_declaration or node.tag == .function or node.tag == .method_definition) {
+            const params = self.readNodeIdx(node.data.extra, if (node.tag == .method_definition) ast_mod.MethodExtra.params else ast_mod.FunctionExtra.params);
+            const body = self.readNodeIdx(node.data.extra, if (node.tag == .method_definition) ast_mod.MethodExtra.body else ast_mod.FunctionExtra.body);
+            try stack.append(self.allocator, .{ .node = params, .scope = scope, .parameters = true });
+            try stack.append(self.allocator, .{ .node = body, .scope = scope, .parameters = false });
+        } else if (node.tag == .arrow_function_expression) {
+            try stack.append(self.allocator, .{ .node = self.readNodeIdx(node.data.extra, ast_mod.ArrowExtra.params), .scope = scope, .parameters = true });
+            try stack.append(self.allocator, .{ .node = self.readNodeIdx(node.data.extra, ast_mod.ArrowExtra.body), .scope = scope, .parameters = false });
+        } else {
+            var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+            while (children.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope, .parameters = entry.parameters });
+        }
+    }
+    return false;
+}
+
 pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIndex, span: Span) !?NodeIndex {
     if (!self.semantic_edit_enabled) return null;
     const class_name_node = if (!pm.class_name_node.isNone()) pm.class_name_node else self.current_class_name_node;
@@ -399,6 +425,8 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         return null;
     const function_scope = self.outputOwnedScope(function_node) orelse
         std.debug.panic("static private method has no output function scope", .{});
+    if (self.options.unsupported.class and try privateFactorySourceHasUnsafeEval(self, pm, class_self_id))
+        self.used_unsupported_static_initializer_dynamic_scope = true;
 
     var references: std.ArrayList(NodeIndex) = .empty;
     defer references.deinit(self.allocator);
@@ -419,13 +447,8 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         {
             try references.append(self.allocator, current);
         }
-        if (node.tag == .call_expression) {
-            const callee_idx = self.readNodeIdx(node.data.extra, 0);
-            if (!callee_idx.isNone()) {
-                const callee = self.ast.getNode(callee_idx);
-                if (callee.tag == .identifier_reference and std.mem.eql(u8, self.ast.getText(callee.data.string_ref), "eval"))
-                    has_direct_eval = true;
-            }
+        if (@import("static_class_capture.zig").isDirectEvalCall(self, node)) {
+            has_direct_eval = true;
         }
         var children = @import("../parser/ast_walk.zig").children(self.ast, node);
         while (children.next()) |child| try stack.append(self.allocator, child);
@@ -457,10 +480,8 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     if (pm.class_name == null and (pm.func_outer_binding_node.isNone() or pm.func_outer_symbol_id == null))
         std.debug.panic("captured private instance method has no outer closure identity", .{});
 
-    var private_names = try PrivateNameAllocator.init(self.allocator, self.ast);
-    defer private_names.deinit();
-    const capture_name = try private_names.makeUniqueName("__zntc_class_self_value");
-    defer self.allocator.free(capture_name);
+    var capture_counter: u32 = 0;
+    const capture_name = try uniqueSyntheticNameAvoidingAnyDynamicEval(self, "__zntc_class_self_value", &capture_counter);
     const capture_name_span = try self.ast.addString(capture_name);
     const capture_binding = try makeExactSyntheticBindingFromSpan(self, capture_name_span);
     const capture_symbol = try self.declareSyntheticInScope(capture_binding, span, .parameter, factory_scope) orelse
@@ -468,17 +489,18 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
 
     const class_alias_name_span = try self.ast.addString(self.ast.getText(class_name_span));
     const class_alias_binding = try makeExactSyntheticBindingFromSpan(self, class_alias_name_span);
-    const class_alias_symbol = try self.declareSyntheticInScope(class_alias_binding, span, .variable_const, factory_scope) orelse
+    const class_alias_symbol = try self.declareSyntheticInScope(class_alias_binding, span, if (self.options.unsupported.class) .variable_var else .variable_const, factory_scope) orelse
         std.debug.panic("static private method class alias has no SymbolId", .{});
     const capture_ref = try makeExactSyntheticRefFromSpan(self, capture_name_span);
     try self.addSyntheticRefInScope(capture_ref, capture_symbol, factory_scope, .{ .read = true });
     const class_alias_decl = try makeVarDeclaration(
         self,
         &.{try makeDeclarator(self, class_alias_binding, capture_ref, span)},
-        .@"const",
+        if (self.options.unsupported.class) .@"var" else .@"const",
         span,
     );
-    try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(class_alias_decl));
+    if (!self.options.unsupported.class)
+        try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(class_alias_decl));
 
     try self.reparentGeneratedScope(if (parameter_scope.isNone()) function_scope else parameter_scope, factory_scope);
     for (references.items) |reference| try self.rebindOutputReference(reference, @backingInt(class_alias_symbol));
@@ -495,6 +517,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         .span = span,
         .data = .{ .list = factory_body_list },
     });
+    try @import("class_strict_context.zig").prependDirective(self, factory_body);
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{capture_binding}), span);
     const none = @backingInt(NodeIndex.none);
     const factory_extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(factory_body), 0, none });
