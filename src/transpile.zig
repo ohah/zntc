@@ -208,12 +208,25 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             },
 
             // Ordinary namespace IIFE parameters and exported binding edges are
-            // tracked by SymbolId. Ambient and string-module declarations are
-            // erased and therefore remain on the analyzer fallback path.
+            // tracked by SymbolId. Only a plain ambient namespace with an exact
+            // identifier owner and namespace body is admitted: it erases without
+            // generating runtime scopes. String modules and unsupported declaration
+            // shapes still use the analyzer fallback.
             .ts_module_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
-                if (node.data.binary.flags != 0) {
+                const name_idx = node.data.binary.left;
+                const body_idx = node.data.binary.right;
+                const has_global_name = !name_idx.isNone() and @backingInt(name_idx) < ast.nodes.items.len and
+                    std.mem.eql(u8, ast.getText(ast.getNode(name_idx).span), "global");
+                const plain_ambient_namespace = node.data.binary.flags == 1 and
+                    !name_idx.isNone() and @backingInt(name_idx) < ast.nodes.items.len and
+                    ast.getNode(name_idx).tag == .binding_identifier and
+                    !has_global_name and
+                    !body_idx.isNone() and @backingInt(body_idx) < ast.nodes.items.len and
+                    (ast.getNode(body_idx).tag == .block_statement or
+                        ast.getNode(body_idx).tag == .ts_module_declaration);
+                if (has_global_name or (node.data.binary.flags != 0 and !plain_ambient_namespace)) {
                     facts.has_lenient_unhandled_runtime_syntax = true;
                 }
             },
@@ -2431,6 +2444,8 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "declare const { value, nested: { child } }: { value: number; nested: { child: number } }; console.log(value, child);",
         "declare const [first, second]: [number, number]; console.log(first, second);",
         "declare enum Ambient { A = 1 } console.log(Ambient.A);",
+        "declare namespace Ambient { export const amount: number; } console.log(Ambient.amount);",
+        "declare namespace Ambient.Nested { export const amount: number; } console.log(Ambient.Nested.amount);",
         "declare interface Shape { amount: number; } const value: Shape = { amount: 1 }; console.log(value.amount);",
         "declare type Amount = number; const value: Amount = 1; console.log(value);",
     };
@@ -2445,9 +2460,9 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
 
     const reanalyzed_sources = [_][]const u8{
         "declare const enum Ambient { A } console.log(typeof Ambient);",
-        "declare namespace Ambient { export const amount: number; } console.log(typeof Ambient);",
         "const enum Value { A } console.log(Value.A);",
         "declare module 'ambient' { export const value: number; }",
+        "declare namespace global { export const value: number; } console.log(global.value);",
         "import type { Value } from './types'; const value: Value = {} as Value;",
     };
     for (reanalyzed_sources) |source| {
