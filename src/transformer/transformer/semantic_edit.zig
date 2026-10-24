@@ -1377,7 +1377,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             if (self.runtime_helper_ref_index.contains(@backingInt(reference.node)) or is_virtual_enum_member)
                 null
             else
-                nearestOutputSymbolAtScope(editor, name, reference.scope)
+                nearestOutputSymbolBySpelling(editor, name, reference.scope)
         else
             null;
         if (lexical_id) |id| resolved_id = id;
@@ -1389,7 +1389,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             // reference. Remove the stale source edge and never attach an
             // invisible local SymbolId.
             if (output_name) |name| {
-                if (nearestOutputSymbolAtScope(editor, name, reference.scope) == null)
+                if (nearestOutputSymbolBySpelling(editor, name, reference.scope) == null)
                     try detachInvisibleOutputReferenceAsExternal(self, editor, reference.node, maybe_reference != null);
             }
             continue;
@@ -1463,19 +1463,9 @@ fn outputReferenceName(ast: *const ast_mod.Ast, node: NodeIndex) ?[]const u8 {
     };
 }
 
-/// An exact spelling anywhere up the chain wins before the rename-suffix
-/// fallback is tried at all. A source binding literally named `x$1` is a
-/// different variable from an inner `x`; trying the stripped `x` at each scope
-/// on the way up let that inner binding capture the outer `x$1` (#5605). A
-/// renamed reference never has an exact binding: fresh aliases are reserved
-/// against every symbol name, so the fallback still finds its base spelling.
-fn nearestOutputSymbolAtScope(editor: *SemanticEditor, name: []const u8, start: ScopeId) ?u32 {
-    if (nearestOutputSymbolBySpelling(editor, name, start)) |symbol| return symbol;
-    const normalized = baseOutputName(name);
-    if (std.mem.eql(u8, name, normalized)) return null;
-    return nearestOutputSymbolBySpelling(editor, normalized, start);
-}
-
+/// Fresh aliases already carry their producer-selected SymbolId. A numeric
+/// suffix is part of a spelling, not evidence that an inner base-name binding
+/// owns the reference. Only an exact lexical spelling can override that ID.
 fn nearestOutputSymbolBySpelling(editor: *SemanticEditor, spelling: []const u8, start: ScopeId) ?u32 {
     if (start.isNone()) return null;
     // `\u0078` 과 `x` 는 같은 이름이다. 변환기가 만든 바인딩은 디코딩 키 하나만 갖기도 하므로
@@ -1494,15 +1484,6 @@ fn nearestOutputSymbolBySpelling(editor: *SemanticEditor, spelling: []const u8, 
         current = editor.scopes.items[current.toIndex()].parent;
     }
     return null;
-}
-
-fn baseOutputName(name: []const u8) []const u8 {
-    const dollar = std.mem.lastIndexOfScalar(u8, name, '$') orelse return name;
-    if (dollar == 0 or dollar + 1 == name.len) return name;
-    for (name[dollar + 1 ..]) |c| {
-        if (c < '0' or c > '9') return name;
-    }
-    return name[0..dollar];
 }
 
 /// A lowering can extract an output callback beside the source loop scope
