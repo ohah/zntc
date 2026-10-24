@@ -2233,61 +2233,163 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('lenient TypeScript computed auto-accessors retain exact graph through ES5 lowering', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-auto-accessor-graph-'));
-    const input = join(dir, 'computed-accessor.unknown');
-    const reference = join(dir, 'reference.js');
-    const output = join(dir, 'out.js');
-    const source = [
-      'const _acc_key_0 = "source";',
-      'let keyEvaluations = 0;',
-      'function makeInstanceKey() { keyEvaluations++; return "instanceValue"; }',
-      'function makeStaticKey() { keyEvaluations++; return "staticValue"; }',
-      'class ComputedAccessor {',
-      '  accessor [makeInstanceKey()]: number = 5;',
-      '  static accessor [makeStaticKey()]: number = 7;',
-      '  write(value: number) { this["instanceValue"] = value; return this["instanceValue"]; }',
-      '  static increment() { return ++ComputedAccessor["staticValue"]; }',
-      '}',
-      'const instance = new ComputedAccessor();',
-      'console.log(instance.write(11), ComputedAccessor.increment(), keyEvaluations, _acc_key_0);',
-    ].join('\n');
+  const lenientAutoAccessorCases = [
+    {
+      name: 'instance reads, writes, and source-name collisions',
+      source: [
+        'const _value = "source";',
+        'class Counter { accessor value: number = 5; step(delta: number) { this.value += delta; return this.value; } }',
+        'const counter = new Counter();',
+        'console.log(counter.value, counter.step(3), _value);',
+      ].join('\n'),
+      stdout: '5 8 source\n',
+    },
+    {
+      name: 'static accessor updates',
+      source: [
+        'class Store { static accessor size: number = 4; static add() { this.size += 1; return this.size; } }',
+        'console.log(Store.size, Store.add(), Store.size);',
+      ].join('\n'),
+      stdout: '4 5 5\n',
+    },
+    {
+      name: 'computed instance keys evaluate once',
+      source: [
+        'let evaluations = 0;',
+        'function makeKey() { evaluations++; return "value"; }',
+        'class Box { accessor [makeKey()]: number = 7; }',
+        'const box = new Box();',
+        'console.log(box.value, evaluations);',
+      ].join('\n'),
+      stdout: '7 1\n',
+    },
+    {
+      name: 'computed static keys evaluate once',
+      source: [
+        'let evaluations = 0;',
+        'function makeKey() { evaluations++; return "value"; }',
+        'class Box { static accessor [makeKey()]: number = 7; }',
+        'console.log(Box.value, evaluations);',
+      ].join('\n'),
+      stdout: '7 1\n',
+    },
+    {
+      name: 'computed instance and static temps avoid source collisions',
+      source: [
+        'const _acc_key_0 = "source";',
+        'let keyEvaluations = 0;',
+        'function makeInstanceKey() { keyEvaluations++; return "instanceValue"; }',
+        'function makeStaticKey() { keyEvaluations++; return "staticValue"; }',
+        'class ComputedAccessor {',
+        '  accessor [makeInstanceKey()]: number = 5;',
+        '  static accessor [makeStaticKey()]: number = 7;',
+        '  write(value: number) { this["instanceValue"] = value; return this["instanceValue"]; }',
+        '  static increment() { return ++ComputedAccessor["staticValue"]; }',
+        '}',
+        'const instance = new ComputedAccessor();',
+        'console.log(instance.write(11), ComputedAccessor.increment(), keyEvaluations, _acc_key_0);',
+      ].join('\n'),
+      stdout: '11 8 2 source\n',
+    },
+    {
+      name: 'initializers keep outer bindings distinct from shadowed parameters',
+      source: [
+        'function build(seed: number) {',
+        '  class Box { accessor value: number = seed; read(seed: number) { return this.value + seed; } }',
+        '  return new Box().read(10);',
+        '}',
+        'console.log(build(7));',
+      ].join('\n'),
+      stdout: '17\n',
+    },
+    {
+      name: 'private auto-accessors keep private references linked',
+      source: [
+        'class Vault {',
+        '  accessor #secret: number = 2;',
+        '  add(step: number) { this.#secret += step; return this.#secret; }',
+        '}',
+        'const vault = new Vault();',
+        'console.log(vault.add(3), vault.add(4));',
+      ].join('\n'),
+      stdout: '5 9\n',
+    },
+    {
+      name: 'derived accessors preserve inherited storage and subclass storage',
+      source: [
+        'class Base { accessor value: number = 2; }',
+        'class Derived extends Base { accessor extra: number = 5; total() { return this.value + this.extra; } }',
+        'console.log(new Derived().total());',
+      ].join('\n'),
+      stdout: '7\n',
+    },
+    {
+      name: 'nested classes retain separate accessor bindings',
+      source: [
+        'function make(seed: number) { return class Box { accessor value: number = seed; read() { return this.value; } }; }',
+        'const First = make(1);',
+        'const Second = make(9);',
+        'console.log(new First().read(), new Second().read());',
+      ].join('\n'),
+      stdout: '1 9\n',
+    },
+    {
+      name: 'symbol keys separate static and instance storage',
+      source: [
+        'const key = Symbol("value");',
+        'class Box { accessor [key]: number = 3; static accessor [key]: number = 6; }',
+        'console.log(new Box()[key], Box[key]);',
+      ].join('\n'),
+      stdout: '3 6\n',
+    },
+  ] as const;
 
-    try {
-      writeFileSync(input, source);
-      writeFileSync(
-        reference,
-        ts.transpileModule(source, {
-          compilerOptions: {
-            module: ts.ModuleKind.CommonJS,
-            target: ts.ScriptTarget.ES5,
-          },
-        }).outputText,
-      );
-      const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
-      expect(baseline.status, baseline.stderr).toBe(0);
-      expect(baseline.stdout).toBe('11 8 2 source\n');
+  for (const testCase of lenientAutoAccessorCases) {
+    test(`lenient TypeScript auto-accessors retain exact graph: ${testCase.name}`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-auto-accessor-graph-'));
+      const input = join(dir, 'case.unknown');
+      const reference = join(dir, 'reference.js');
+      const output = join(dir, 'out.js');
 
-      const result = runCoverage(input, TARGETS[0], dir, true);
-      expect(result.exitCode, result.stderr).toBe(0);
-      expect(transpileGraphModeProblems(result.stderr, true, 'retained'), result.stderr).toEqual(
-        [],
-      );
-      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
-      expect(
-        exactIdentityObservationProblems(
-          result.stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity ')) ??
-            '',
-        ),
-      ).toEqual([]);
+      try {
+        writeFileSync(input, testCase.source);
+        writeFileSync(
+          reference,
+          ts.transpileModule(testCase.source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: ts.ScriptTarget.ES5,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout, testCase.name).toBe(testCase.stdout);
 
-      const actual = spawnSync('node', [output], { encoding: 'utf8' });
-      expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe(baseline.stdout);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+        const result = runCoverage(input, TARGETS[0], dir, true);
+        expect(result.exitCode, `${testCase.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${testCase.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(transformIdentityAuditProblems(result.stderr), testCase.name).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+          testCase.name,
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout, testCase.name).toBe(baseline.stdout);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   test('standalone transpile mode report is required and exact for identifier minification', () => {
     const retained =
