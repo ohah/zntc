@@ -47,7 +47,7 @@ console.log(methods.read.call({ input: 41 }), _obj, _obj2);`,
     expect(actual.stdout).toBe(native.stdout);
   });
 
-  test('bundler finalizes object-super home parameters by SymbolId after semantic reanalysis', async () => {
+  test('bundler finalizes object-super home parameters from retained SymbolIds', async () => {
     const fixture = await createFixture({
       'input.js': `var _obj = 'source-obj';
 var _obj$1 = 'source-obj-1';
@@ -86,7 +86,7 @@ console.log(methods.read.call({ input: 'home' }), _obj, _obj$1, _obj$2);`,
         (line) =>
           line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'),
       );
-    expect(mode, transformed.stderr).toContain('semantic_graph=reanalyzed');
+    expect(mode, transformed.stderr).toContain('semantic_graph=retained');
     const report = transformed.stderr
       .split(/\r?\n/)
       .find(
@@ -367,7 +367,7 @@ console.log(result.input, result.read.call({}));`,
     }
   });
 
-  test('bundler object-super home names survive ten hostile collision and scope inputs', async () => {
+  test('bundler object-super home names survive ten hostile inputs across retained and fallback graphs', async () => {
     const cases = [
       {
         name: 'three consecutive module collisions',
@@ -380,6 +380,7 @@ console.log(methods.read.call({x:'v'}));`,
         },
         homeName: '_obj$3',
         clean: true,
+        retainedGraph: true,
       },
       {
         name: 'sparse module collisions leave the base name free',
@@ -392,6 +393,7 @@ console.log(methods.read.call({x:'v'}));`,
         },
         homeName: '_obj',
         clean: true,
+        retainedGraph: true,
       },
       {
         name: 'a single occupied suffix is skipped',
@@ -404,6 +406,7 @@ console.log(methods.read.call({x:'v'}));`,
         },
         homeName: '_obj$1',
         clean: true,
+        retainedGraph: true,
       },
       {
         name: 'two wrappers share a scope with a source collision',
@@ -416,6 +419,7 @@ console.log(methods.a.call({x:4}),methods.b.call({x:4}),_obj);`,
         },
         homeName: '_obj$1',
         clean: true,
+        retainedGraph: true,
       },
       {
         name: 'nested function has its own occupied suffix',
@@ -427,6 +431,7 @@ console.log(f(),_obj);`,
         },
         homeName: '_obj$2',
         clean: true,
+        retainedGraph: true,
       },
       {
         name: 'generator state-machine callback scope',
@@ -438,6 +443,7 @@ console.log(f().next().value);`,
         },
         homeName: '_obj$3',
         clean: true,
+        retainedGraph: false,
       },
       {
         name: 'computed object-method key',
@@ -450,6 +456,7 @@ console.log(methods.read.call({x:'v'}));`,
         },
         homeName: '_obj$2',
         clean: true,
+        retainedGraph: false,
       },
       {
         name: 'async function owner',
@@ -461,6 +468,7 @@ f().then(console.log);`,
         },
         homeName: '_obj$2',
         clean: true,
+        retainedGraph: false,
       },
       {
         name: 'imported module scope after graph linking',
@@ -471,6 +479,7 @@ f().then(console.log);`,
         },
         homeName: '_obj$2',
         clean: true,
+        retainedGraph: false,
       },
       {
         name: 'direct eval stays on its early-name fallback',
@@ -481,6 +490,7 @@ console.log(f());`,
         },
         homeName: '_obj2',
         clean: false,
+        retainedGraph: false,
       },
     ];
 
@@ -515,7 +525,10 @@ console.log(f());`,
         const mode = transformed.stderr
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-        expect(mode, `${item.name}: ${transformed.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(mode, `${item.name}: ${transformed.stderr}`).toBeDefined();
+        expect(mode, `${item.name}: ${transformed.stderr}`).toContain(
+          item.retainedGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+        );
         const report = transformed.stderr
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-prepass '));

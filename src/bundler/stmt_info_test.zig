@@ -63,6 +63,31 @@ test "stmt_info: function declarations" {
     try std.testing.expect(!r.infos.stmts[0].has_side_effects);
 }
 
+test "stmt_info: fallback builder keeps every top-level redeclaration of one var symbol" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\var x = 1;
+        \\var x = 2;
+        \\console.log(x);
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), r.infos.stmts.len);
+    try std.testing.expectEqual(@as(usize, 1), r.infos.stmts[0].declared_symbols.len);
+    try std.testing.expectEqual(@as(usize, 1), r.infos.stmts[1].declared_symbols.len);
+    const x_sym = r.infos.stmts[0].declared_symbols[0];
+    try std.testing.expectEqual(x_sym, r.infos.stmts[1].declared_symbols[0]);
+    try std.testing.expectEqual(@as(?u32, 1), r.infos.declaredStmtBySymbol(x_sym));
+    try std.testing.expectEqualSlices(u32, &.{0}, r.infos.writerStmts(x_sym));
+
+    var reachable = try r.infos.computeReachable(alloc, &.{});
+    defer reachable.deinit();
+    try std.testing.expect(reachable.isSet(0));
+    try std.testing.expect(reachable.isSet(1));
+    try std.testing.expect(reachable.isSet(2));
+}
+
 test "stmt_info: import binding tracked" {
     const alloc = std.testing.allocator;
     var r = try buildTestInfos(alloc,
