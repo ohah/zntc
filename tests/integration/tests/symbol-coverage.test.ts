@@ -762,6 +762,29 @@ function transformIdentityAuditProblems(stderr: string): string[] {
   return problems;
 }
 
+const EXACT_MATRIX_REPORT_PREFIXES = [
+  'zntc: symbol-source-scope-owner ',
+  'zntc: symbol-coverage ',
+  'zntc: symbol-identity ',
+  'zntc: synthetic-coverage ',
+  'zntc: symbol-identity-post-minify ',
+] as const;
+
+function exactMatrixReportProvenanceProblems(stderr: string, expectedFile: string): string[] {
+  const expectedPath = expectedFile.replaceAll('\\', '/');
+  const expectedFixture = relative(FIXTURE_DIR, expectedFile).replaceAll('\\', '/');
+  const lines = stderr.split(/\r?\n/);
+  const problems: string[] = [];
+  for (const prefix of EXACT_MATRIX_REPORT_PREFIXES) {
+    const reports = lines.filter((line) => line.startsWith(prefix));
+    if (reports.length !== 1) continue; // The schema gate reports missing or duplicate rows.
+    if (!reports[0].replaceAll('\\', '/').startsWith(`${prefix}${expectedPath}:`)) {
+      problems.push(`${prefix.trim()} is not attributed to fixture ${expectedFixture}`);
+    }
+  }
+  return problems;
+}
+
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
@@ -946,6 +969,44 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(fingerprintAfter).not.toBe(fingerprintBefore);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('exact matrix reports are attributed to the fixture being audited', () => {
+    const expectedFile = join(FIXTURE_DIR, 'expected-case.mjs');
+    expect(EXACT_MATRIX_REPORT_PREFIXES).toEqual([
+      'zntc: symbol-source-scope-owner ',
+      'zntc: symbol-coverage ',
+      'zntc: symbol-identity ',
+      'zntc: synthetic-coverage ',
+      'zntc: symbol-identity-post-minify ',
+    ]);
+    const expectedPath = expectedFile.replaceAll('\\', '/');
+    const stderr = EXACT_MATRIX_REPORT_PREFIXES.map(
+      (prefix) => `${prefix}${expectedPath}: report payload`,
+    ).join('\n');
+    expect(exactMatrixReportProvenanceProblems(stderr, expectedFile)).toEqual([]);
+    const windowsStylePath = expectedPath.replaceAll('/', '\\');
+    const windowsStyleReports = EXACT_MATRIX_REPORT_PREFIXES.map(
+      (prefix) => `${prefix}${windowsStylePath}: report payload`,
+    ).join('\n');
+    expect(exactMatrixReportProvenanceProblems(windowsStyleReports, expectedFile)).toEqual([]);
+
+    const wrongPaths = [
+      expectedPath.replace('/downlevel-oracle/', '/foreign-fixtures/'),
+      expectedPath.replace('expected-case.mjs', 'not-expected-case.mjs'),
+      `${expectedPath}.bak`,
+      expectedPath.replace('expected-case.mjs', 'different-case.mjs'),
+      expectedPath.replace('/downlevel-oracle/', '/nested/downlevel-oracle/'),
+    ];
+    for (let mutation = 0; mutation < 10; mutation++) {
+      const prefix = EXACT_MATRIX_REPORT_PREFIXES[mutation % EXACT_MATRIX_REPORT_PREFIXES.length];
+      const wrongPath = wrongPaths[Math.floor(mutation / 2)];
+      const mutated = stderr.replace(`${prefix}${expectedPath}:`, `${prefix}${wrongPath}:`);
+      expect(
+        exactMatrixReportProvenanceProblems(mutated, expectedFile),
+        `report path mutation ${mutation}: ${prefix}`,
+      ).toContain(`${prefix.trim()} is not attributed to fixture expected-case.mjs`);
     }
   });
 
@@ -25562,9 +25623,19 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: transform identity audit ${auditProblem}: ${stderr}`,
               );
             }
+            for (const provenanceProblem of exactMatrixReportProvenanceProblems(stderr, file)) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${provenanceProblem}: ${stderr}`,
+              );
+            }
             const exact = stderr
               .split(/\r?\n/)
               .find((line) => line.startsWith('zntc: symbol-identity '));
+            for (const observationProblem of exactIdentityObservationProblems(exact ?? '')) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${observationProblem}: ${stderr}`,
+              );
+            }
             if (exact) {
               generatedBindings += Number(
                 exact.match(/(?:^| )generated_bindings=(\d+)(?: |$)/)?.[1] ?? 0,
