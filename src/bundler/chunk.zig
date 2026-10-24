@@ -276,6 +276,10 @@ pub const Chunk = struct {
     /// src_chunk_index → 이 청크가 그 청크에서 import 해야 할 wrapper(CJS) 모듈 index 목록.
     wrapper_cross_imports: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
 
+    /// Exact ESM wrapper identities consumed by generated cross-chunk references.
+    esm_wrapper_cross_exports: std.AutoHashMapUnmanaged(SymbolID, void),
+    esm_wrapper_cross_imports: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(SymbolID)),
+
     /// 기본값으로 Chunk를 생성한다.
     pub fn init(index: ChunkIndex, kind: ChunkKind, bits: BitSet) Chunk {
         return .{
@@ -292,6 +296,8 @@ pub const Chunk = struct {
             .exports_to = .empty,
             .wrapper_cross_exports = .empty,
             .wrapper_cross_imports = .empty,
+            .esm_wrapper_cross_exports = .empty,
+            .esm_wrapper_cross_imports = .empty,
         };
     }
 
@@ -312,6 +318,10 @@ pub const Chunk = struct {
         var wit = self.wrapper_cross_imports.iterator();
         while (wit.next()) |entry| entry.value_ptr.deinit(allocator);
         self.wrapper_cross_imports.deinit(allocator);
+        self.esm_wrapper_cross_exports.deinit(allocator);
+        var eit = self.esm_wrapper_cross_imports.valueIterator();
+        while (eit.next()) |list| list.deinit(allocator);
+        self.esm_wrapper_cross_imports.deinit(allocator);
         // PR B-1: name_dir 은 sanitizeNameDir 의 결과 — chunk 가 owning.
         // doc 의 "빌림" 표현은 부정확 — 실제로는 chunk lifetime 와 일치하므로
         // 여기서 free 한다(chunk.rel_dir 와 달리 항상 alloc 된 메모리).
@@ -1475,6 +1485,25 @@ fn crossChunkExportIsShaken(
 /// 이 버그였다(#3321 후속). `seen_static` 로 cross_chunk_imports dedup.
 /// imports_from 중복 검사는 O(n) 선형(소스별 심볼 수 작음, import_bindings
 /// 기존 패턴과 동일 — 프로파일 시 set 전환은 양 경로 공동 과제).
+fn addEsmWrapperCrossSymbol(
+    allocator: std.mem.Allocator,
+    chunk_graph: *ChunkGraph,
+    chunk: *Chunk,
+    seen_static: *std.AutoHashMapUnmanaged(u32, void),
+    source_chunk: ChunkIndex,
+    identity: SymbolID,
+) !void {
+    const source = @backingInt(source_chunk);
+    const seen = try seen_static.getOrPut(allocator, source);
+    if (!seen.found_existing) try chunk.cross_chunk_imports.append(allocator, source_chunk);
+    try chunk_graph.chunks.items[source].esm_wrapper_cross_exports.put(allocator, identity, {});
+    const entry = try chunk.esm_wrapper_cross_imports.getOrPut(allocator, source);
+    if (!entry.found_existing) entry.value_ptr.* = .empty;
+    for (entry.value_ptr.items) |existing| {
+        if (existing.eql(identity)) break;
+    } else try entry.value_ptr.append(allocator, identity);
+}
+
 fn addCrossChunkSymbol(
     allocator: std.mem.Allocator,
     chunk_graph: *ChunkGraph,
@@ -1513,6 +1542,11 @@ fn addCrossChunkSymbol(
     }
 
     try chunk_graph.chunks.items[src_ci].exports_to.put(allocator, export_name, {});
+    if (lnk.getModule(canonical_module)) |provider| {
+        if (provider.wrap_kind == .esm) {
+            try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, try provider.esmInitSymbol());
+        }
+    }
 }
 
 /// re-export 이름의 canonical 을 resolveExportChain 으로 추적해, canonical 이
@@ -1734,6 +1768,15 @@ pub fn computeCrossChunkGlobalNames(
     // 3. 전역 deconflict — preferred(원본 local 명)로 시도, 충돌/예약이면 `$N`.
     var used: std.StringHashMapUnmanaged(void) = .empty;
     defer used.deinit(allocator);
+    // Wrapper bindings and ordinary value exports share the JS export namespace.
+    // Reserve only actual typed cross-edge bindings before choosing value aliases.
+    for (chunk_graph.chunks.items) |*chunk| {
+        var wrappers = chunk.esm_wrapper_cross_exports.keyIterator();
+        while (wrappers.next()) |identity| {
+            const owner = lnk.getModule(@backingInt(identity.module)) orelse return error.InvalidEsmInitOwner;
+            try used.put(allocator, try owner.esmWrapperName(identity.*, null), {});
+        }
+    }
     var lazy_symbol_globals: std.AutoHashMapUnmanaged(SymbolID, []const u8) = .empty;
     defer lazy_symbol_globals.deinit(allocator);
     // (#5456) 소비자 청크는 cross-chunk import 를 이 이름의 top-level 바인딩으로 받는다.
@@ -1999,6 +2042,12 @@ pub fn computeCrossChunkLinks(
         }
         chunk.exports_to.clearAndFree(allocator);
         // (#4541) 재실행(HMR re-link) 멱등 — 새 wrapper 맵도 초기화(안 하면 stale export/import).
+        chunk.esm_wrapper_cross_exports.clearAndFree(allocator);
+        {
+            var eit = chunk.esm_wrapper_cross_imports.valueIterator();
+            while (eit.next()) |list| list.deinit(allocator);
+            chunk.esm_wrapper_cross_imports.clearAndFree(allocator);
+        }
         chunk.wrapper_cross_exports.clearAndFree(allocator);
         {
             var wit = chunk.wrapper_cross_imports.iterator();
@@ -2051,6 +2100,19 @@ pub fn computeCrossChunkLinks(
             // 심볼 수준 크로스 청크 바인딩 추적 (linker가 있을 때만)
             if (linker) |lnk| {
                 for (m.import_bindings) |ib| {
+                    if (ib.source_type_only != true and ib.import_record_index < m.import_records.len) {
+                        const target = m.import_records[ib.import_record_index].resolved;
+                        if (!target.isNone()) if (graph.getModule(target)) |provider| {
+                            const source_chunk = chunk_graph.getModuleChunk(target);
+                            if (provider.wrap_kind == .esm and !source_chunk.isNone() and source_chunk != chunk.index and
+                                !(lnk.tree_shaker_active and !provider.is_included))
+                            {
+                                try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmInitSymbol());
+                                if (ib.kind == .namespace)
+                                    try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmNamespaceSymbol());
+                            }
+                        };
+                    }
                     // canonical 모듈: resolved binding 이 있으면 그것, 없으면 **직접 CJS import** fallback.
                     //
                     // (#4494) CJS 는 정적 export 가 없어 resolveExportChain 이 null → `import x from
@@ -2082,6 +2144,7 @@ pub fn computeCrossChunkLinks(
                     if (src_chunk_idx.isNone()) continue;
                     if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
 
+                    if (crossChunkExportIsShaken(chunk_graph, lnk, src_chunk_idx, canonical_mi, canonical.export_name)) continue;
                     try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, src_chunk_idx, canonical.export_name, canonical_mi);
 
                     // canonical 이 namespace re-export 면 그 이름만 가져와선

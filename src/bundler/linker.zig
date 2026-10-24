@@ -4125,7 +4125,7 @@ pub const Linker = struct {
                 var ir_buf: std.ArrayListUnmanaged(um.ImportRef) = .empty;
                 errdefer ir_buf.deinit(self.allocator);
                 const appendSem = struct {
-                    fn f(la: std.mem.Allocator, buf: *std.ArrayListUnmanaged(um.ImportRef), sr: bundler_symbol.SymbolRef) !void {
+                    fn f(la: std.mem.Allocator, buf: *std.ArrayListUnmanaged(um.ImportRef), graph: *const ModuleGraph, sr: bundler_symbol.SymbolRef) !void {
                         if (sr != .semantic) return;
                         const s = sr.semantic;
                         if (s.module.isNone() or s.symbol.isNone()) return;
@@ -4133,9 +4133,29 @@ pub const Linker = struct {
                             .source_module_index = @backingInt(s.module),
                             .source_symbol_id = @backingInt(s.symbol),
                         });
+                        if (graph.getModule(s.module)) |provider| {
+                            if (provider.wrap_kind == .esm) {
+                                const initializer = try provider.esmInitSymbol();
+                                if (s.symbol != initializer.inner) try buf.append(la, .{
+                                    .source_module_index = @backingInt(initializer.module),
+                                    .source_symbol_id = @backingInt(initializer.inner),
+                                });
+                            }
+                        }
                     }
                 }.f;
                 for (m.import_bindings) |ib| {
+                    if (ib.import_record_index < m.import_records.len) {
+                        const target = m.import_records[ib.import_record_index].resolved;
+                        if (!target.isNone()) if (self.getModule(@backingInt(target))) |provider| {
+                            if (provider.wrap_kind == .esm) {
+                                const init_ref = try provider.esmInitSymbol();
+                                try appendSem(self.allocator, &ir_buf, self.graph, init_ref.toRef());
+                                if (ib.kind == .namespace)
+                                    try appendSem(self.allocator, &ir_buf, self.graph, (try provider.esmNamespaceSymbol()).toRef());
+                            }
+                        };
+                    }
                     if (ib.kind == .namespace) {
                         // import * as ns: codegen 이 ns.<prop> 를 target export 의
                         // canonical 직접 참조로 rewrite (ns_member_rewrites). 그
@@ -4150,12 +4170,12 @@ pub const Linker = struct {
                         if (ib.namespace_used_properties) |props| {
                             for (props) |p| {
                                 if (self.resolveSemanticExportSource(tgt, p)) |sr|
-                                    try appendSem(self.allocator, &ir_buf, sr);
+                                    try appendSem(self.allocator, &ir_buf, self.graph, sr);
                             }
                         } else {
                             for (tm.export_bindings) |eb| {
                                 if (self.resolveSemanticExportSource(tgt, eb.exported_name)) |sr|
-                                    try appendSem(self.allocator, &ir_buf, sr);
+                                    try appendSem(self.allocator, &ir_buf, self.graph, sr);
                             }
                         }
                         continue;
@@ -4170,7 +4190,7 @@ pub const Linker = struct {
                         const tgt = m.import_records[ib.import_record_index].resolved;
                         if (!tgt.isNone()) {
                             if (self.resolveSemanticExportSource(tgt, ib.imported_name)) |sr| {
-                                try appendSem(self.allocator, &ir_buf, sr);
+                                try appendSem(self.allocator, &ir_buf, self.graph, sr);
                                 continue;
                             }
                         }
@@ -4185,7 +4205,7 @@ pub const Linker = struct {
                             break :blk self.resolveSemanticExportSource(a.module, ib.imported_name) orelse continue;
                         },
                     };
-                    try appendSem(self.allocator, &ir_buf, sr);
+                    try appendSem(self.allocator, &ir_buf, self.graph, sr);
                 }
                 const ir_owned = try ir_buf.toOwnedSlice(self.allocator);
                 try import_ref_slices.append(self.allocator, ir_owned);

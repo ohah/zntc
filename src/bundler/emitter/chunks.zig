@@ -1280,6 +1280,27 @@ fn emitChunksImpl(
                 }
             }
 
+            if (!reg_split and !options.preserve_modules) {
+                if (chunk.esm_wrapper_cross_imports.get(dep_ci)) |initializers| {
+                    std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
+                    for (initializers.items) |init| {
+                        const name = try esmWrapperNameFor(allocator, graph, init, null);
+                        defer allocator.free(name);
+                        if (cjs_require) {
+                            const provider = graph.getModule(init.module) orelse return error.InvalidEsmInitOwner;
+                            if ((try provider.esmInitSymbol()).eql(init)) {
+                                try chunk_output.print(allocator, "const {s}=function(){{return require(\"{s}\").{s}.apply(this,arguments)}};\n", .{ name, bind_arg, name });
+                            } else {
+                                try chunk_output.print(allocator, "const {{ {s} }}=require(\"{s}\");\n", .{ name, bind_arg });
+                            }
+                        } else {
+                            try chunk_output.print(allocator, "import {{ {s} }} from \"{s}\";\n", .{ name, bind_arg });
+                        }
+                        wrapper_import_emitted = true;
+                    }
+                }
+            }
+
             // (#4580) default-only provider(`module.exports = X`)에서 default 단일 import → require()
             // 결과 **전체**가 default 다. `{ default: x }` 구조분해는 `.default`=undefined(TypeError)
             // 이므로 `const <local> = require("...")` 로 전체를 바인딩한다. dep 이 완전 unwrapped(래퍼
@@ -2240,6 +2261,27 @@ fn emitChunksImpl(
                     try chunk_output.appendSlice(allocator, " };\n");
                 } else {
                     try chunk_output.appendSlice(allocator, "};");
+                }
+            }
+        }
+
+        if (!reg_split and !options.preserve_modules and chunk.esm_wrapper_cross_exports.count() > 0) {
+            var initializers: std.ArrayListUnmanaged(SymbolID) = .empty;
+            defer initializers.deinit(allocator);
+            var init_iterator = chunk.esm_wrapper_cross_exports.keyIterator();
+            while (init_iterator.next()) |init| try initializers.append(allocator, init.*);
+            std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
+            for (initializers.items) |init| {
+                const local = try esmWrapperNameFor(allocator, graph, init, linker);
+                defer allocator.free(local);
+                const public = try esmWrapperNameFor(allocator, graph, init, null);
+                defer allocator.free(public);
+                if (options.format == .cjs) {
+                    try chunk_output.print(allocator, "exports.{s}={s};\n", .{ public, local });
+                } else if (std.mem.eql(u8, local, public)) {
+                    try chunk_output.print(allocator, "export {{ {s} }};\n", .{local});
+                } else {
+                    try chunk_output.print(allocator, "export {{ {s} as {s} }};\n", .{ local, public });
                 }
             }
         }
@@ -3403,6 +3445,16 @@ fn appendCjsExportBinding(
 }
 
 /// (#4524) 위 청크가 export/import 해야 할 **래퍼 심볼 이름들**. caller 가 free.
+fn esmInitLessThan(_: void, a: SymbolID, b: SymbolID) bool {
+    if (a.module != b.module) return @backingInt(a.module) < @backingInt(b.module);
+    return @backingInt(a.inner) < @backingInt(b.inner);
+}
+
+fn esmWrapperNameFor(allocator: std.mem.Allocator, graph: *const ModuleGraph, id: SymbolID, linker: ?*const Linker) ![]const u8 {
+    const module = graph.getModule(id.module) orelse return error.InvalidEsmInitOwner;
+    return allocator.dupe(u8, try module.esmWrapperName(id, if (linker) |l| &l.rename_table else null));
+}
+
 const WrapperNames = struct {
     a: []const u8,
     b: ?[]const u8 = null,

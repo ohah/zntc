@@ -1467,3 +1467,75 @@ test "computeCrossChunkLinks: 직접 CJS import 도 cross-chunk 심볼로 등록
     // provider 청크는 그 이름을 노출한다.
     try std.testing.expect(cg.getChunk(cjs_chunk).exports_to.contains("default"));
 }
+
+test "ESM initializer cross-chunk edges retain graph owner and equal-number SymbolIds" {
+    const alloc = std.testing.allocator;
+    const SymbolID = @import("symbol.zig").SymbolID;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try test_helpers.writeFile(tmp.dir, "left.mjs", "export function read(){return 'left';}");
+    try test_helpers.writeFile(tmp.dir, "right.mjs", "export function read(){return 'right';}");
+    const source = "import {read as left} from './left.mjs';import {read as right} from './right.mjs';console.log(left(),right());";
+    try test_helpers.writeFile(tmp.dir, "a.mjs", source);
+    try test_helpers.writeFile(tmp.dir, "b.mjs", source);
+    const a = try test_helpers.absPath(&tmp, "a.mjs");
+    defer alloc.free(a);
+    const b = try test_helpers.absPath(&tmp, "b.mjs");
+    defer alloc.free(b);
+    var cache = resolve_cache_mod.ResolveCache.init(alloc, .{ .platform = .react_native });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(alloc, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{ a, b });
+    var linker = Linker.init(alloc, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    var chunks = try chunk_mod.generateChunks(alloc, &graph, &.{ a, b }, .{});
+    defer chunks.deinit();
+    var identities: [2]SymbolID = undefined;
+    var found: usize = 0;
+    var importer: ModuleIndex = .none;
+    for (0..graph.moduleCount()) |i| {
+        const module = graph.getModule(ModuleIndex.fromUsize(i)).?;
+        if (std.mem.eql(u8, module.path, a)) importer = module.index;
+        if (!std.mem.endsWith(u8, module.path, "left.mjs") and !std.mem.endsWith(u8, module.path, "right.mjs")) continue;
+        identities[found] = try module.esmInitSymbol();
+        found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found);
+    try std.testing.expect(identities[0].module != identities[1].module);
+    try std.testing.expectEqual(identities[0].inner, identities[1].inner);
+    const first_owner = graph.getModule(identities[0].module).?;
+    try std.testing.expectError(error.InvalidEsmInitOwner, first_owner.esmWrapperName(identities[1], null));
+    const namespace_identity = try first_owner.esmNamespaceSymbol();
+    try std.testing.expect(namespace_identity.inner != identities[0].inner);
+    try std.testing.expect(namespace_identity.module == identities[0].module);
+    _ = try first_owner.esmWrapperName(namespace_identity, null);
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
+    const consumer = chunks.getChunk(chunks.getModuleChunk(importer));
+    for (identities) |identity| {
+        const provider_index = chunks.getModuleChunk(identity.module);
+        const provider = chunks.getChunk(provider_index);
+        try std.testing.expect(provider.esm_wrapper_cross_exports.contains(identity));
+        const imports = consumer.esm_wrapper_cross_imports.get(@backingInt(provider_index)) orelse return error.TestUnexpectedResult;
+        var present = false;
+        for (imports.items) |imported| if (imported.eql(identity)) {
+            present = true;
+        };
+        try std.testing.expect(present);
+    }
+    // Recomputing must not keep stale edges or duplicate an initializer use.
+    try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
+    const provider_index = chunks.getModuleChunk(identities[0].module);
+    try std.testing.expectEqual(@as(usize, 2), chunks.getChunk(provider_index).esm_wrapper_cross_exports.count());
+    try std.testing.expectEqual(@as(usize, 2), chunks.getChunk(chunks.getModuleChunk(importer)).esm_wrapper_cross_imports.get(@backingInt(provider_index)).?.items.len);
+
+    var single = try chunk_mod.generateChunks(alloc, &graph, &.{a}, .{});
+    defer single.deinit();
+    // A one-entry graph has no foreign chunk edge for these same identities.
+    try chunk_mod.computeCrossChunkLinks(&single, &graph, alloc, &linker);
+    for (single.chunks.items) |chunk| {
+        try std.testing.expectEqual(@as(usize, 0), chunk.esm_wrapper_cross_exports.count());
+        try std.testing.expectEqual(@as(usize, 0), chunk.esm_wrapper_cross_imports.count());
+    }
+}
