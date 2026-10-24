@@ -2403,6 +2403,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const new_extra = try self.ast.addExtras(&class_slots);
             const copied = try self.ast.addNode(.{ .tag = class_node.tag, .span = class_node.span, .data = .{ .extra = new_extra } });
             try self.remapCopiedScopeOwner(class_idx, copied);
+            // Header suspension creates a new class owner node. Carry the
+            // source's exact inner self identity alongside its copied scope;
+            // the outer declaration binding is a different SymbolId.
+            if (self.class_self_symbol_map.get(@backingInt(class_idx))) |self_symbol| {
+                try self.class_self_symbol_map.put(self.allocator, @backingInt(copied), self_symbol);
+            }
             return copied;
         }
 
@@ -4547,12 +4553,23 @@ test "#4819 class-header generator temps carry producer IDs across hostile sourc
             if (node.tag != .class_declaration) continue;
             const class_idx: NodeIndex = @fromBackingInt(@intCast(raw));
             if (first_class.isNone()) first_class = class_idx;
-            _ = try ES2015Generator(Transformer).extractClassHeaderYields(
+            const expected_self = transformer.class_self_symbol_map.get(@backingInt(class_idx)) orelse return error.MissingSourceClassSelf;
+            const expected_scope = transformer.outputOwnedScope(class_idx) orelse return error.MissingSourceClassScope;
+            const copied = try ES2015Generator(Transformer).extractClassHeaderYields(
                 &transformer,
                 class_idx,
                 &operations,
                 &next_label,
             );
+            try std.testing.expectEqual(@as(?u32, expected_self), transformer.class_self_symbol_map.get(@backingInt(copied)));
+            try std.testing.expectEqual(@as(?u32, expected_self), transformer.class_self_symbol_map.get(@backingInt(class_idx)));
+            try std.testing.expectEqual(node.tag, transformer.ast.getNode(copied).tag);
+            const copied_extra = transformer.ast.getNode(copied).data.extra;
+            try std.testing.expectEqual(transformer.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name), transformer.readNodeIdx(copied_extra, ast_mod.ClassExtra.name));
+            if (!transformer.readNodeIdx(node.data.extra, ast_mod.ClassExtra.super).isNone())
+                try std.testing.expect(!transformer.readNodeIdx(copied_extra, ast_mod.ClassExtra.super).isNone());
+            try std.testing.expectEqual(expected_scope, transformer.outputOwnedScope(copied).?);
+            try std.testing.expectEqual(@backingInt(class_idx), transformer.scope_owner_origins.get(@backingInt(copied)).?);
             class_count += 1;
         }
         if (first_class.isNone()) return error.MissingGeneratorClassHeader;
