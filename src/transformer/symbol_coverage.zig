@@ -209,6 +209,8 @@ pub fn print(allocator: std.mem.Allocator, file_path: []const u8, report: *const
 pub const ExactReport = struct {
     generated_bindings: usize = 0,
     generated_references: usize = 0,
+    /// Live transform-created scopes whose AST owner is reachable and valid.
+    generated_scope_owners_checked: usize = 0,
     external_references: usize = 0,
     missing_binding: usize = 0,
     invalid_reference_node: usize = 0,
@@ -269,6 +271,7 @@ pub const ExactReport = struct {
     fn isObservationField(comptime name: []const u8) bool {
         return std.mem.eql(u8, name, "generated_bindings") or
             std.mem.eql(u8, name, "generated_references") or
+            std.mem.eql(u8, name, "generated_scope_owners_checked") or
             std.mem.eql(u8, name, "external_references") or
             std.mem.eql(u8, name, "declaration_anchors_checked") or
             std.mem.eql(u8, name, "namespace_iife_params") or
@@ -3292,7 +3295,11 @@ fn checkExactImpl(
                 // Empty dead scopes left by a lowering are inert: no symbol,
                 // reference, or descendant scope depends on them. Gate every
                 // semantically live transform scope and its ancestor chain.
-                if (!live_scope_ids.contains(scope_id) or reachable_scope_owners.contains(scope_id)) continue;
+                if (!live_scope_ids.contains(scope_id)) continue;
+                if (reachable_scope_owners.contains(scope_id)) {
+                    report.generated_scope_owners_checked += 1;
+                    continue;
+                }
                 const mapped_owner = scopeOwnerNode(scope_owner_map, scope_id);
                 const owner_node = if (mapped_owner) |raw|
                     if (raw < ast.nodes.items.len) ast.nodes.items[raw].tag else .program
@@ -4465,12 +4472,13 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
         },
     ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} declaration_anchors_checked={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} generated_scope_owners_checked={d} external={d} declaration_anchors_checked={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
         .{
             name,
             file_path,
             report.generated_bindings,
             report.generated_references,
+            report.generated_scope_owners_checked,
             report.external_references,
             report.declaration_anchors_checked,
             report.missing_binding,
