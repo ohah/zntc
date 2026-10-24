@@ -6489,16 +6489,44 @@ test "#4819 private field helper references retain their producer SymbolIds" {
 
         if (target == .es2015) {
             const outer_class_id: u32 = @intCast(analyzer.scope_maps.items[0].get("Fields") orelse return error.TestUnexpectedResult);
-            var static_block_class_refs: usize = 0;
+            var capture_id: ?u32 = null;
+            for (edited.symbols.items, 0..) |symbol, id| {
+                if (std.mem.startsWith(u8, symbol.synthetic_name, "_classThis")) {
+                    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, symbol.kind);
+                    capture_id = @intCast(id);
+                }
+            }
+            try std.testing.expect(capture_id != null);
+            var initialized_from_exact_class = false;
+            for (transformer.ast.nodes.items) |node| {
+                if (node.tag != .variable_declarator) continue;
+                const binding = transformer.ast.readExtraNode(node.data.extra, 0);
+                if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != capture_id) continue;
+                const value = transformer.ast.readExtraNode(node.data.extra, 2);
+                try std.testing.expect(!value.isNone());
+                try std.testing.expectEqual(@as(?u32, outer_class_id), edited.symbol_ids[@backingInt(value)]);
+                initialized_from_exact_class = true;
+            }
+            try std.testing.expect(initialized_from_exact_class);
+            var static_block_capture_refs: usize = 0;
+            var exact_class_value_reads: usize = 0;
             for (edited.references) |reference| {
                 if (reference.node_index.isNone()) continue;
                 const node = transformer.ast.getNode(reference.node_index);
-                if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields")) continue;
-                if (edited.scopes[reference.scope_id.toIndex()].kind != .block) continue;
-                try std.testing.expectEqual(outer_class_id, @backingInt(reference.symbol_id));
-                static_block_class_refs += 1;
+                if (node.tag != .identifier_reference) continue;
+                if (@backingInt(reference.symbol_id) == capture_id.? and
+                    edited.scopes[reference.scope_id.toIndex()].kind == .block)
+                {
+                    try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    static_block_capture_refs += 1;
+                }
+                if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields") and
+                    @backingInt(reference.symbol_id) == outer_class_id and
+                    reference.flags.read)
+                    exact_class_value_reads += 1;
             }
-            try std.testing.expect(static_block_class_refs > 0);
+            try std.testing.expect(static_block_capture_refs > 0);
+            try std.testing.expect(exact_class_value_reads > 0);
         }
 
         const helper_names = [_][]const u8{ "_value", "_count" };

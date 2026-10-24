@@ -103,6 +103,7 @@ const AstFacts = struct {
 };
 
 pub const TranspileError = error{
+    StaticInitializerDynamicScope,
     ParseError,
     SemanticError,
     TransformError,
@@ -1743,6 +1744,10 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
+    if (transformer.used_unsupported_static_initializer_dynamic_scope) {
+        std.log.err("zntc: {s}: ZNTC1505: {s}", .{ file_path, TransformOptions.static_initializer_dynamic_scope_msg });
+        return error.StaticInitializerDynamicScope;
+    }
     if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__values", options.minify_whitespace);
     }

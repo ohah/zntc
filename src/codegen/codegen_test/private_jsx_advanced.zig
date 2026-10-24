@@ -1482,7 +1482,10 @@ test "#3680-V1: static private field init 의 super.method() receiver 가 class 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x={kind:0,writable:true,value:") != null);
     // receiver 가 raw this 가 아니라 class 식별자 D
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(this)") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Base.factor.call(D)") != null);
+    const capture = try helpers.staticClassCaptureName(r.output, "D", "const");
+    var buffer: [160]u8 = undefined;
+    const receiver = try std.fmt.bufPrint(&buffer, "Base.factor.call({s})", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, receiver) != null);
 }
 
 // V2: F1 의 non-derived class 의 static private field init 안 super → 'Object'/'Function.prototype' fallback.

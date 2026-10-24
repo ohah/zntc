@@ -42,6 +42,7 @@ const isTypeOnlyNode = type_only_mod.isTypeOnlyNode;
 
 pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
+    @import("../static_class_capture.zig").noteDynamicEval(self, node);
 
     // --------------------------------------------------------
     // 1단계: TS 타입 전용 노드는 통째로 삭제
@@ -607,6 +608,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .function,
         => self.visitFunction(node, idx),
         .arrow_function_expression => {
+            try @import("../static_class_capture.zig").noteArrowDynamicEval(self, idx);
             const arrow_extra = node.data.extra;
             const is_async_arrow = arrow_extra + 2 < self.ast.extra_data.items.len and
                 (self.ast.extra_data.items[arrow_extra + 2] & ast_mod.ArrowFlags.is_async) != 0;
@@ -623,6 +625,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const capture_needs_downlevel = (arrow_needs_downlevel and captures.any()) or
                 (self.options.unsupported.new_target and captures.new_target_value);
             if (self.with_statement_depth > 0 and capture_needs_downlevel) {
+                if (self.static_block_class_name != null and self.this_depth == 0)
+                    self.used_unsupported_static_initializer_dynamic_scope = true;
                 // The emitted arrow keeps the actual dynamic environment. A
                 // generated `_this`/`_arguments`/`_newTarget` name could be
                 // intercepted by the `with` object regardless of its suffix.
@@ -810,6 +814,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2022 static block 다운레벨링 중이고, 일반 함수 안이 아니면 치환
             if (self.static_block_class_name) |class_span| {
                 if (self.this_depth == 0) {
+                    if (try @import("../static_class_capture.zig").makeThisReference(self)) |ref| return ref;
                     return self.makeCurrentClassRef(class_span);
                 }
             }
@@ -1101,6 +1106,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
+            if (try @import("../static_class_capture.zig").makeClassSelfReference(self, idx)) |ref| return ref;
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
                 @backingInt(idx) < self.parser_node_count and
@@ -1139,6 +1145,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.copyNodeDirect(idx);
         },
         .assignment_target_identifier => {
+            // Native static postludes must keep the inner class binding's
+            // readonly semantics. ES5 already uses its exact setter target.
+            if (!self.options.unsupported.class) {
+                if (try @import("../static_class_capture.zig").makeClassSelfReference(self, idx)) |ref| return ref;
+            }
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
                 @backingInt(idx) < self.parser_node_count and

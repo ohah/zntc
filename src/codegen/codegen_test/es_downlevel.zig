@@ -1578,7 +1578,7 @@ test "ES2022: static block this → class name" {
     // → class Foo {} (() => { Foo.x = 1; })();
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}(()=>{Foo.x=1;})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(()=>{_classThis0.x=1;})();", r.output);
 }
 
 test "ES2022: static block this in nested function not replaced" {
@@ -1592,7 +1592,7 @@ test "ES2022: static block this in arrow replaced" {
     // arrow function은 this 상속 → 치환 대상
     var r = try e2eTarget(std.testing.allocator, "class Baz { static { const f = () => this.x; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Baz{}(()=>{const f=()=>Baz.x;})();", r.output);
+    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(()=>{const f=()=>_classThis0.x;})();", r.output);
 }
 
 test "ES2022: static block anonymous class - this uses generated class self" {
@@ -1600,7 +1600,10 @@ test "ES2022: static block anonymous class - this uses generated class self" {
     var r = try e2eTarget(std.testing.allocator, "var x = class { static { this.y = 1; } };", .es2021);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "class _a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a.y") != null);
+    const capture = try helpers.staticClassCaptureName(r.output, "_a", "const");
+    var buffer: [128]u8 = undefined;
+    const assignment = try std.fmt.bufPrint(&buffer, "{s}.y=1", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, assignment) != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y") == null);
 }
 
@@ -1613,7 +1616,7 @@ test "ES2022: static block this - no transform on esnext" {
 test "ES2022: multiple static blocks with this" {
     var r = try e2eTarget(std.testing.allocator, "class A { static { this.x = 1; } static { this.y = 2; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class A{}(()=>{A.x=1;})();(()=>{A.y=2;})();", r.output);
+    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(()=>{_classThis0.x=1;})();(()=>{_classThis0.y=2;})();", r.output);
 }
 
 // --- ES2015: template literal ---
@@ -2702,7 +2705,10 @@ test "ES2015: static super access는 parent constructor 참조" {
 
     var r2 = try e2eTarget(std.testing.allocator, "class C extends P{static x=super.y;}", .es5);
     defer r2.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r2.output, "__superGet(_super,\"y\",C)") != null);
+    const capture = try helpers.staticClassCaptureName(r2.output, "C", "var");
+    var receiver_buffer: [160]u8 = undefined;
+    const receiver = try std.fmt.bufPrint(&receiver_buffer, "__superGet(_super,\"y\",{s})", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, receiver) != null);
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "_super.prototype") == null);
 }
 
@@ -3014,7 +3020,10 @@ test "ES2015: destructuring object rest" {
 test "ES2017: static field arrow this becomes class reference" {
     var r = try e2eTarget(std.testing.allocator, "class A { static x = 1; static f = () => this.x; }", .es2017);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "()=>A.x") != null);
+    const capture = try helpers.staticClassCaptureName(r.output, "A", "const");
+    var buffer: [160]u8 = undefined;
+    const read = try std.fmt.bufPrint(&buffer, "()=>{s}.x", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, read) != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this") == null);
 }
 
@@ -3022,7 +3031,10 @@ test "ES2017: static field arrow super is lowered outside class" {
     var r = try e2eTarget(std.testing.allocator, "class P { static s() {} } class Q extends P { static t = () => super.s(); }", .es2017);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(Q)") != null);
+    const capture = try helpers.staticClassCaptureName(r.output, "Q", "const");
+    var buffer: [160]u8 = undefined;
+    const receiver = try std.fmt.bufPrint(&buffer, ".call({s})", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, receiver) != null);
 }
 
 // 메서드·getter·중첩 클래스는 자기 `this` 를 가진다 — static 초기값·static 블록 안에서도 치환 금지.
@@ -3047,7 +3059,10 @@ test "ES2017: static private field arrow this becomes class reference" {
     var r = try e2eTarget(std.testing.allocator, "class A { static #x = () => this; static get() { return A.#x(); } }", .es2017);
     defer r.deinit();
     // The lowered field keeps its NamedEvaluation name "#x" (#5519).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>A,\"#x\")}") != null);
+    const capture = try helpers.staticClassCaptureName(r.output, "A", "const");
+    var buffer: [160]u8 = undefined;
+    const named_value = try std.fmt.bufPrint(&buffer, "(()=>{s},\"#x\")}}", .{capture});
+    try std.testing.expect(std.mem.indexOf(u8, r.output, named_value) != null);
 }
 
 // 변환이 고정 이름으로 만드는 합성 변수(`_this`·`_super`·`_loop`)가 사용자 변수와 겹치면 서로를 가렸다

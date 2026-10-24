@@ -4864,6 +4864,8 @@ pub fn validateDeferredGeneratedTempHandoffs(
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     if (!self.semantic_edit_enabled) return null;
+    if (self.static_class_contexts.items.len != 0 or self.static_class_captures.count() != 0)
+        std.debug.panic("static class capture has no completed output owner", .{});
     try resolveReachableScopeOwners(self);
     // Scope-owner remaps are semantic edits even when no binding/reference was
     // synthesized. Arrow-to-function and copied body scopes need a final map.

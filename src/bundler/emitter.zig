@@ -2101,6 +2101,10 @@ pub fn emitModule(
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
+    // Public callers normally diagnose this during graph prepass. Keep the
+    // direct/legacy emitter path fail-closed when it transforms an AST itself.
+    if (transformer.used_unsupported_static_initializer_dynamic_scope)
+        return error.StaticInitializerDynamicScope;
     if (options.transform_options_base.ignore_annotations) {
         purity.clearPureCallFlags(transformer.ast);
     } else {

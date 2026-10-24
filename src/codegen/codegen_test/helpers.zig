@@ -527,3 +527,18 @@ pub fn e2eJSXClassicTarget(allocator: std.mem.Allocator, source: []const u8, tar
         .unsupported = TransformOptions.compat.fromESTarget(target),
     }, .{ .minify_whitespace = true }, ".tsx");
 }
+
+/// Identify the single producer-owned static snapshot in a small codegen
+/// fixture, and require its exact declaration kind and class-value initializer.
+pub fn staticClassCaptureName(output: []const u8, class_name: []const u8, kind: []const u8) ![]const u8 {
+    var prefix_buffer: [80]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&prefix_buffer, "{s} _classThis", .{kind});
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, prefix));
+    const declaration = std.mem.indexOf(u8, output, prefix) orelse return error.MissingStaticCapture;
+    const name_start = declaration + kind.len + 1;
+    const equals = std.mem.indexOfScalarPos(u8, output, name_start, '=') orelse return error.MissingStaticCaptureValue;
+    var value_buffer: [256]u8 = undefined;
+    const expected_value = try std.fmt.bufPrint(&value_buffer, "={s};", .{class_name});
+    try std.testing.expect(std.mem.startsWith(u8, output[equals..], expected_value));
+    return output[name_start..equals];
+}

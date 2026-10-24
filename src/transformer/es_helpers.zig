@@ -117,7 +117,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
     }));
 
     // #3680-F1 / #4801: 클래스 밖 descriptor 로 옮기는 init — `this`·`super` 를 클래스 기준으로.
-    const static_ctx = enterStaticInitContext(self, class_name_span);
+    const static_ctx = try enterStaticInitContext(self, class_name_span);
     defer leaveStaticInitContext(self, static_ctx);
 
     const value_key = try makePropertyName(self, "value");
@@ -3462,6 +3462,7 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 ///
 /// `class_name_span` 이 null 이면(이름을 붙일 수 없는 문맥) `this` 는 치환하지 않고 `super` 만 낮춘다.
 pub const StaticInitSnapshot = struct {
+    capture_context_depth: usize,
     static_block_class_name: ?Span,
     this_depth: u32,
     super_is_static: bool,
@@ -3470,8 +3471,9 @@ pub const StaticInitSnapshot = struct {
     static_field_initializer_depth: u32,
 };
 
-pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitSnapshot {
+pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) !StaticInitSnapshot {
     const snap = StaticInitSnapshot{
+        .capture_context_depth = self.static_class_contexts.items.len,
         .static_block_class_name = self.static_block_class_name,
         .this_depth = self.this_depth,
         .super_is_static = self.current_super_is_static,
@@ -3479,6 +3481,7 @@ pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitS
         .super_in_extracted_fn = self.current_super_in_extracted_fn,
         .static_field_initializer_depth = self.static_field_initializer_depth,
     };
+    try @import("static_class_capture.zig").pushContext(self, class_name_span);
     self.static_block_class_name = class_name_span;
     self.this_depth = 0;
     self.current_super_is_static = true;
@@ -3489,6 +3492,7 @@ pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitS
 }
 
 pub fn leaveStaticInitContext(self: anytype, snap: StaticInitSnapshot) void {
+    self.static_class_contexts.shrinkRetainingCapacity(snap.capture_context_depth);
     self.static_block_class_name = snap.static_block_class_name;
     self.this_depth = snap.this_depth;
     self.current_super_is_static = snap.super_is_static;

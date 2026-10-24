@@ -70,3 +70,7 @@
 - `semantic_edit.zig`의 `splitParameterBodyVarBinding` 호출은 census snapshot `7346fc2`에서 L4340이고, 현재 main `ec7b100d`에서는 L4595다 ([현재 main source](https://github.com/ohah/zntc/blob/ec7b100d2eef3e9a07c16d9389a00a2dfcde594d/src/transformer/transformer/semantic_edit.zig#L4595)). 위 census 행은 snapshot 커밋에 고정해 source-line drift를 분리한다.
 
 이 delta도 bounded AST constructor 분모만 갱신한다. 전체 producer 누락 수나 #4819 완료 여부를 뜻하지 않는다.
+
+## Post-census producer addition (2026-10-25)
+
+The historical 112-callsite index above remains a snapshot of its stated base. `src/transformer/static_class_capture.zig::ensureCapture` adds one reachable `makeExactSyntheticBindingFromSpan` callsite for immutable moved-static-initializer captures. Its exact SID/owner, declaration/reference handoff, dynamic-environment boundary, and late output-name consumer are documented in the [producer audit delta](./SYMBOL_IDENTITY_PRODUCER_AUDIT.md#static-initializer-immutable-capture-delta-2026-10-25). This is an explicit addition to the bounded inventory, not evidence that every output-graph producer has been migrated.

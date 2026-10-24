@@ -335,6 +335,8 @@ pub const Transformer = struct {
     /// class body. Their generated var temps must wait for the output hoist
     /// owner before their SymbolIds are reserved.
     static_field_initializer_depth: u32 = 0,
+    static_class_contexts: std.ArrayListUnmanaged(@import("static_class_capture.zig").Frame) = .empty,
+    static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
@@ -745,6 +747,7 @@ pub const Transformer = struct {
     /// A lexical-capturing arrow was kept intact because a non-literal direct
     /// eval argument can observe any generated capture alias.
     used_unsupported_arrow_dynamic_eval: bool = false,
+    used_unsupported_static_initializer_dynamic_scope: bool = false,
 
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.

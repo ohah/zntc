@@ -116,6 +116,7 @@ fn appendStaticStatements(
     field_ref_scope: ScopeId,
     parts: StaticParts,
 ) Error!void {
+    const capture_position = out.items.len;
     var static_elements: std.ArrayList(es2022.StaticElement) = .empty;
     defer static_elements.deinit(self.allocator);
     try es2022.orderStaticElements(
@@ -131,6 +132,8 @@ fn appendStaticStatements(
         .field => |i| try self.buildStaticFieldAssignment(class_name, parts.fields[i], field_ref_scope),
         .block => |i| parts.blocks[i],
     });
+    if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, self.ast.getNode(class_name).span)) |capture|
+        try out.insert(self.allocator, capture_position, capture);
 }
 
 /// useDefineForClassFields=false / experimentalDecorators 처리.
@@ -405,6 +408,13 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         .ctor_params = &ctor_params,
     };
 
+    // Static captures are declared while their initializer is visited. A
+    // named class expression must already own its emitted wrapper scope.
+    if (self.semantic_edit_enabled and as_expression and !legacy_decorator_statement_class and
+        !new_name.isNone() and prepared_wrapper_scope.isNone() and
+        classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null and !ctx.static_fields_as_blocks))
+        prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+
     // 익명 클래스 식인데 static field / static block 을 **클래스 밖 문장**으로 낮춰야 하면
     // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
     // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
@@ -668,6 +678,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
+        if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, node.span)) |capture|
+            try self.pending_nodes.append(self.allocator, capture);
         for (post.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         return .none;
     }
@@ -701,6 +713,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items);
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
+        if (try @import("../static_class_capture.zig").takeDeclaration(self, self.current_class_name_node, node.span)) |capture|
+            try self.pending_nodes.append(self.allocator, capture);
         // V_ASSIGN fix: descriptor 를 class 뒤에 emit.
         for (assign_static_descriptors.items) |desc| try self.pending_nodes.append(self.allocator, desc);
         return .none;

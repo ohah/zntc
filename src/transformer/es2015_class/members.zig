@@ -157,7 +157,7 @@ pub fn Members(comptime Transformer: type) type {
             }
             if (!has_raw) return;
 
-            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
             // 본문 문장이 만든 보류/후행 노드(중첩 클래스 선언 `var C = …`, 키 temp 등)는 그 문장
@@ -962,7 +962,7 @@ pub fn Members(comptime Transformer: type) type {
         }
 
         pub fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
+            const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
             return buildStaticFieldDefineProperty(self, obj, key_idx, init_idx, span);
         }
