@@ -216,6 +216,8 @@ Fallback을 제거할 조건은 모든 지원되는 Worklet 호출자가 semanti
 
 ## 검증과 완료 보고
 
+- moved static initializer의 생성 class-name read는 생성 시 보유한 declaration `NodeIndex`에서 exact SID를 받는다. Native class를 유지하는 ES2015/ES2017에서는 바깥 선언 SID를, ES5 class IIFE에서는 이미 생성자가 선택한 implementation class-self SID를 사용한다. `this` 치환이 class-body self SID를 잘못 물려준 뒤 최종 AST의 이름 검색으로 교정받던 경로를 이 producer에서 제거한다. 일반 class-self read, 다른 producer의 이름 검색, 사후 binding 분리 및 semantic reanalysis 전체 제거는 별도 잔여다.
+
 - exact scope audit는 서로 다른 reachable lexical owner가 같은 `ScopeId`를 공유하면 `duplicate_scope_owner`로 실패한다. unreachable stale owner map entry는 lowering 뒤 남을 수 있어 허용한다. 두 sibling block의 ID를 하나로 바꾸는 Zig 재현 케이스는 실패하고, 같은 ID를 가진 unreachable stale block은 허용됨을 확인한다.
 - synthetic inventory는 orphan generated Symbol을 `synthetic_name`뿐 아니라 `synthetic_kind`와 AST string-table name span으로도 식별한다. 이름 표식 하나가 사라져도 orphan 검사가 우회되지 않으며, source span을 가진 stale source symbol은 허용한다.
 - source scope-owner audit는 owner mismatch, parent-mismatch, duplicate owner 세 counter를 각각 한 번만 허용하며 0이 아닌 값, 누락·중복, unknown field, malformed token/value를 거부한다. marker 텍스트가 경로에 있어도 실제 report payload만 읽는다.
