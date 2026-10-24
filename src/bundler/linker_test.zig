@@ -4482,34 +4482,25 @@ test "reuse PR-C: 변경-한정 가드(carrier set)가 전량 가드와 동일 v
     r.graph.changed_emit_paths = null;
 }
 
-test "reuse: G3 by-name 재유도 — 스냅샷의 inner idx 가 흔들려도 이름으로 복원" {
+test "reuse: G3 rejects corrupted cached exact SymbolIDs without name recovery" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
+    try writeFile(tmp.dir, "a.ts", "import './b'; export const count = 0;");
     try writeFile(tmp.dir, "b.ts", "export const count = 1;");
-
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
     defer r.destroyGraph();
     defer r.cache.deinit();
-
     var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
     defer snap.deinit();
-
-    // 스냅샷의 모든 엔트리의 id.inner 를 의도적으로 망가뜨린다(maxInt-기반 가짜값).
-    // injectPreservedRenames 가 id.inner 를 신뢰하지 않고 local_name 으로 findSymbolIdx
-    // 재유도하므로, 망가진 idx 와 무관하게 동일 결과가 나와야 한다 (G3 핵심).
-    for (snap.entries) |*e| {
-        // local_name 은 유지, id.inner 만 손상.
-        e.id.inner = @fromBackingInt(@intCast(@as(u32, 0xFFFF)));
-    }
-
+    try std.testing.expect(snap.entries.len > 0);
+    for (snap.entries) |*entry| entry.id.inner = @fromBackingInt(@as(u32, 0xFFFF));
     var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
     defer fresh.deinit();
     try fresh.link();
-    try fresh.injectPreservedRenames(&snap);
-    // by-name 재유도가 동작했으면 recompute 와 동일.
-    try expectRenameTablesEqual(&r.linker, &fresh);
+    try std.testing.expect(!fresh.renameReuseGuard(&snap));
+    try std.testing.expectError(error.InvalidPreservedRenameIdentity, fresh.injectPreservedRenames(&snap));
+    try std.testing.expectEqual(@as(usize, 0), fresh.rename_table.count());
 }
 
 test "reuse: fingerprint — 같은 그래프는 guard true, module_count 불일치는 false (G0)" {
@@ -4667,7 +4658,7 @@ test "reuse: wrap_kind flip (ESM→CJS) 시 guard=false" {
     try std.testing.expect(!rB.linker.renameReuseGuard(&snap));
 }
 
-test "reuse: F5 — rename_table 키의 symbolLocalName 이 null 이면 스냅샷 폐기(capture null)" {
+test "reuse: F5 invalid exact rename identity discards snapshot capture" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import './b';\nexport const count = 0;");
@@ -4684,15 +4675,9 @@ test "reuse: F5 — rename_table 키의 symbolLocalName 이 null 이면 스냅�
         ok.deinit();
     }
 
-    // 2) symbolLocalName 이 null 을 반환하는 인위적 SymbolID 를 rename_table 에 주입한다.
-    //    module 인덱스를 모듈 수 밖(out-of-range)으로 잡으면 getModule→null →
-    //    symbolLocalName→null 이 된다. scope_maps 에도 없고 synthetic 도 아닌, totality 가
-    //    깨지는 정확한 케이스. value 는 borrow 라 별도 free 불필요(canonical_strings 소유가
-    //    아닌 string literal — RenameTable.deinit 은 map 만 해제).
+    // An out-of-range module cannot identify a current semantic symbol.
     const oob_module: types.ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(r.graph.moduleCount())) + 7));
     const bad_id = bundler_symbol.SymbolID.make(oob_module, 0);
-    // sanity: 정말로 null 을 반환하는지 — buildRenameSnapshot 폐기 조건의 전제 확인.
-    try std.testing.expect(r.linker.symbolLocalName(bad_id) == null);
     try r.linker.rename_table.put(std.testing.allocator, bad_id, "synthetic_should_not_leak");
 
     // 3) 이제 capture 는 불완전 스냅샷을 폐기하고 null 을 반환해야 한다.
@@ -5336,4 +5321,129 @@ test "missing export diagnostics select exact import identity across ten poisone
         std.debug.print("exact diagnostic mismatches={d}, conservative mismatches={d}\n", .{ mismatches, conservative_mismatches });
     try std.testing.expectEqual(@as(usize, 0), mismatches);
     try std.testing.expectEqual(@as(usize, 0), conservative_mismatches);
+}
+
+test "reuse exact owner IDs survive ten poisoned scope maps without spelling recovery" {
+    const Case = struct { declaration: []const u8, astless: bool = false };
+    const cases = [_]Case{
+        .{ .declaration = "export const collision = 1;" },
+        .{ .declaration = "export let collision = 1;" },
+        .{ .declaration = "export var collision = 1;" },
+        .{ .declaration = "export function collision() { return 1; }" },
+        .{ .declaration = "export class collision {}" },
+        .{ .declaration = "export const { collision } = { collision: 1 };" },
+        .{ .declaration = "export const collision = function() { return 1; };" },
+        .{ .declaration = "export const collision = () => 1;" },
+        .{ .declaration = "export enum collision { x = 1 }" },
+        .{ .declaration = "export const collision = 1;", .astless = true },
+    };
+    var mismatches: usize = 0;
+    var clean_mismatches: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", "import './dep'; const collision = 0; const decoy = 2; console.log(collision, decoy);");
+        const dep_source = try std.fmt.allocPrint(std.testing.allocator, "{s} const decoy = 3; console.log(collision, decoy);", .{case.declaration});
+        defer std.testing.allocator.free(dep_source);
+        try writeFile(tmp.dir, "dep.ts", dep_source);
+        var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+        defer r.linker.deinit();
+        defer r.destroyGraph();
+        defer r.cache.deinit();
+        if (case.astless) {
+            const provider = r.graph.moduleAtMut(findModuleIdx(r.graph, "dep.ts").?).?;
+            provider.ast = null;
+        }
+        var snap = (try r.linker.buildRenameSnapshot(std.testing.allocator)).?;
+        defer snap.deinit();
+        try std.testing.expect(snap.entries.len > 0);
+        // Normal same-owner reuse must exactly match the computed table.
+        {
+            var clean = Linker.init(std.testing.allocator, r.graph, .esm);
+            defer clean.deinit();
+            try std.testing.expect(clean.renameReuseGuard(&snap));
+            try clean.injectPreservedRenames(&snap);
+            var equal = clean.rename_table.count() == r.linker.rename_table.count();
+            for (snap.entries) |entry| {
+                const actual = clean.rename_table.get(entry.id);
+                if (actual == null or !std.mem.eql(u8, actual.?, entry.canonical)) equal = false;
+            }
+            if (!equal) {
+                clean_mismatches += 1;
+                std.debug.print("clean rename mismatch: {s}\n", .{case.declaration});
+            }
+        }
+        var poisoned: usize = 0;
+        for (snap.entries) |entry| {
+            const module = r.graph.moduleAtMut(entry.id.module).?;
+            const sem = &module.semantic.?;
+            var decoy: ?usize = null;
+            var map = @constCast(&sem.scope_maps[0]);
+            var names = map.iterator();
+            while (names.next()) |name| {
+                if (std.mem.eql(u8, name.key_ptr.*, "decoy")) decoy = name.value_ptr.*;
+            }
+            const wrong = decoy orelse continue;
+            if (wrong == @backingInt(entry.id.inner)) continue;
+            var values = map.valueIterator();
+            while (values.next()) |value| {
+                if (value.* == @backingInt(entry.id.inner)) {
+                    value.* = wrong;
+                    poisoned += 1;
+                }
+            }
+        }
+        try std.testing.expect(poisoned > 0);
+        var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+        defer fresh.deinit();
+        try fresh.injectPreservedRenames(&snap);
+        var equal = fresh.rename_table.count() == r.linker.rename_table.count();
+        for (snap.entries) |entry| {
+            const actual = fresh.rename_table.get(entry.id);
+            if (actual == null or !std.mem.eql(u8, actual.?, entry.canonical)) equal = false;
+        }
+        if (!equal) mismatches += 1;
+    }
+    if (mismatches != 0 or clean_mismatches != 0) std.debug.print("poisoned rename identity mismatches={d} clean={d}\n", .{ mismatches, clean_mismatches });
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    try std.testing.expectEqual(@as(usize, 0), clean_mismatches);
+}
+
+test "reuse owner changes reject empty carriers and textually identical fresh graphs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './dep'; export const collision = 0;");
+    try writeFile(tmp.dir, "dep.ts", "export const collision = 1;");
+    var first = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer first.linker.deinit();
+    defer first.destroyGraph();
+    defer first.cache.deinit();
+    var snap = (try first.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer snap.deinit();
+    var fresh = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer fresh.linker.deinit();
+    defer fresh.destroyGraph();
+    defer fresh.cache.deinit();
+    fresh.graph.changed_emit_paths = .empty;
+    defer fresh.graph.changed_emit_paths = null;
+    // Identical text and fingerprints cannot establish shared ownership.
+    try std.testing.expect(!fresh.linker.renameReuseGuard(&snap));
+    try std.testing.expectError(error.InvalidPreservedRenameIdentity, fresh.linker.injectPreservedRenames(&snap));
+    var fresh_snap = (try fresh.linker.buildRenameSnapshot(std.testing.allocator)).?;
+    defer fresh_snap.deinit();
+    try std.testing.expect(!fresh.linker.renameReuseGuard(&snap));
+    try std.testing.expect(fresh.linker.renameReuseGuard(&fresh_snap));
+    // A replacement semantic literal starts unstamped, even if its backing
+    // addresses happen to match an old allocation (ABA-style negative control).
+    const module = first.graph.moduleAtMut(ModuleIndex.fromUsize(0)).?;
+    const old_token = module.semantic.?.owner_token;
+    module.ast = null; // AST-less roles obey the same physical owner contract.
+    module.semantic.?.owner_token = .unassigned;
+    first.graph.changed_emit_paths = .empty;
+    defer first.graph.changed_emit_paths = null;
+    try std.testing.expect(!first.linker.renameReuseGuard(&snap));
+    try std.testing.expectError(error.InvalidPreservedRenameIdentity, first.linker.injectPreservedRenames(&snap));
+    const next = module.semantic.?.captureOwnerToken();
+    try std.testing.expect(next != .unassigned and next != old_token);
+    try std.testing.expect(!first.linker.renameReuseGuard(&snap));
 }

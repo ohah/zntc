@@ -172,10 +172,30 @@ pub const CachedResolvedDep = struct {
     };
 };
 
+/// Process-local ownership identity. Never serialize this token: an on-disk
+/// semantic graph owns new allocations even when all symbol names match.
+pub const SemanticOwnerToken = enum(u64) { unassigned = 0, _ };
+var semantic_owner_sequence = std.atomic.Value(u64).init(1);
+
+fn nextSemanticOwnerToken(sequence: *std.atomic.Value(u64)) SemanticOwnerToken {
+    var next = sequence.load(.monotonic);
+    while (next != 0 and next != std.math.maxInt(u64)) {
+        if (sequence.cmpxchgWeak(next, next + 1, .monotonic, .monotonic)) |actual| {
+            next = actual;
+        } else return @fromBackingInt(@intCast(next));
+    }
+    // Saturate forever instead of wrapping into zero or reusing an old token.
+    return .unassigned;
+}
+
 /// Semantic analyzer 결과 또는 AST 없는 그래프 생성 심볼의 저장소.
 /// 모든 backing 데이터는 parse_arena가 소유하며 linker가 import→export 연결 + 이름 충돌 해결에 사용.
 pub const ModuleSemanticData = struct {
     const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
+    /// Assigned lazily when capturing a rename snapshot. New analyzer/codec
+    /// structs remain unassigned; physical moves and exact SID edits retain it.
+    owner_token: SemanticOwnerToken = .unassigned,
+
     /// Semantic 심볼 배열. parse_arena가 backing 메모리를 소유.
     /// #1328 Phase 4e-2 / RFC #1338: ArrayList로 보관하여 bundler가
     /// `extendSymbol`로 합성 심볼을 post-semantic 단계에 추가할 수 있게 한다.
@@ -216,6 +236,12 @@ pub const ModuleSemanticData = struct {
         identities.* = .{};
         self.runtime_identities = identities;
         return identities;
+    }
+
+    pub fn captureOwnerToken(self: *ModuleSemanticData) SemanticOwnerToken {
+        if (self.owner_token == .unassigned)
+            self.owner_token = nextSemanticOwnerToken(&semantic_owner_sequence);
+        return self.owner_token;
     }
 
     /// AST 변경 전에 의미 정보를 가변 소유자로 복사한다. allocator는 parse_arena여야 한다.
@@ -1443,4 +1469,15 @@ fn cjsStorageTestSymbol(name: []const u8, kind: semantic_symbol.SymbolKind, writ
         .write_count = write_count,
         .synthetic_name = name,
     };
+}
+
+test "semantic owner tokens are unique and saturate without ABA reuse" {
+    var sequence = std.atomic.Value(u64).init(1);
+    try std.testing.expectEqual(@as(u64, 1), @backingInt(nextSemanticOwnerToken(&sequence)));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(nextSemanticOwnerToken(&sequence)));
+    sequence.store(std.math.maxInt(u64) - 1, .monotonic);
+    try std.testing.expectEqual(std.math.maxInt(u64) - 1, @backingInt(nextSemanticOwnerToken(&sequence)));
+    try std.testing.expectEqual(SemanticOwnerToken.unassigned, nextSemanticOwnerToken(&sequence));
+    try std.testing.expectEqual(SemanticOwnerToken.unassigned, nextSemanticOwnerToken(&sequence));
+    try std.testing.expectEqual(std.math.maxInt(u64), sequence.load(.monotonic));
 }

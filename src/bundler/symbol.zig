@@ -215,9 +215,8 @@ pub const PreservedRenames = struct {
     /// 스냅샷 전용 arena — 모든 owned 문자열의 backing. `deinit` 이 일괄 해제.
     arena: std.heap.ArenaAllocator,
 
-    /// 보존된 rename_table 엔트리. `SymbolID → owned name`. inner idx 는 *초기 빌드*
-    /// 의 module-local 인덱스라, 재파싱된 모듈은 idx 가 흔들릴 수 있어 inject 시
-    /// 이름으로 재유도(G3)한다. 변경 안 된 모듈은 idx 가 그대로라 직접 재키잉.
+    /// Exact cached SymbolIDs, valid only while their physical semantic owner
+    /// token matches. Reparsed graphs must recompute instead of guessing by name.
     entries: []Entry,
 
     /// 보존된 `reserved_globals` 키 집합 (owned). inject 시 Linker.reserved_globals 복원.
@@ -231,10 +230,8 @@ pub const PreservedRenames = struct {
     module_count: u32,
 
     pub const Entry = struct {
-        /// 초기 빌드 시점의 SymbolID (module, inner). inner 는 by-name 재유도 전 키.
+        /// Exact SymbolID in the captured semantic owner.
         id: SymbolID,
-        /// 초기 빌드 시점의 module-local 이름 (재유도용 lookup 키, owned).
-        local_name: []const u8,
         /// 최종 rename 결과 (owned).
         canonical: []const u8,
     };
@@ -242,6 +239,8 @@ pub const PreservedRenames = struct {
     /// 모듈 단위 fingerprint. 가드가 "이 모듈의 rename 결과에 영향을 주는 입력"이
     /// 초기 빌드와 같은지 1-pass 로 판정한다.
     pub const ModuleFingerprint = struct {
+        /// Memory ownership only; null means the module has no semantic graph.
+        owner_token: ?@import("module.zig").SemanticOwnerToken = null,
         /// 경로 해시 (G0/G1 — 모듈 동일성). path 문자열 자체는 보관 안 함(해시로 충분).
         path_hash: u64,
         /// 실행 순서 (G1 — deconflict 는 exec_index 오름차순 tie-break 라 순서 변경 = 결과 변경).
