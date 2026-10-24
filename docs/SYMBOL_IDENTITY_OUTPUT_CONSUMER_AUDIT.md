@@ -62,3 +62,23 @@ spelling을 주입한 컴파일 가능한 변이 10개가 검출됐다. 정상 s
 ## 결론
 
 현재 source survey는 위 10개 consumer family를 연결했다. 기준 main `26e005cf1`에서 조사한 범위의 확인된 실제 mismatch는 0건이다. #6186/#6187/#6189의 emitted-output 연결과 JSX 보정, #6192의 private-name 보정 및 #6202의 숫자 상수 post-pass graph 보존이 main에 반영됐다. 새 10입력 gate는 CJS/IIFE 각 출력에서 provider 선언·export local·consumer import local·실제 본문 참조를 함께 검사한다. 이 문서는 출력 소비자 감사 결과만 기록한다. #5954의 최종 종료 여부는 전체 producer/fallback crosswalk와 별도 same-graph 작업 #6193의 경계를 대조한 뒤 결정한다.
+
+
+### Runtime role IDs의 semantic cache 보존
+
+CJS factory와 네 내부 binding, ESM factory와 다섯 내부 binding, `__toBinary`
+helper의 typed ID는 이제 해당 `ModuleSemanticData.runtime_identities`에 저장한다.
+레코드는 필요할 때만 parse arena에 할당하고 semantic codec v17이 함께 보존한다.
+`Module`의 편의 필드를 비운 뒤에도 같은 semantic owner의 ID를 직접 복원하며,
+이들 역할을 찾기 위한 symbols 배열의 protocol-name 검색은 제거했다.
+protocol label과 kind 비교는 이미 지정된 ID의 역할을 검증하는 데만 사용한다.
+
+캐시는 범위 밖 ID, 중복 역할 ID, 불완전한 factory/internal 묶음 및 잘못된 presence
+값을 거부한다. 복원된 ID의 kind/family/role label이 맞지 않으면 graph finalization은
+오류를 반환하며 이름으로 다른 심볼을 찾거나 새 ID를 만들어 덮지 않는다.
+이 레코드는 같은 semantic graph의 소유권만 나타낸다. 재분석으로 graph를 교체하는
+경로에 이전 ID를 직접 복사하지 않는다.
+
+이 변경은 interop/HMR/require shim/wrapper 역할 전체의 마이그레이션이나 변환 후
+재분석 제거 완료를 뜻하지 않는다. 해당 producer와 rename 보존 bridge는 별도 잔여
+경계다. 전체 #4819/#6193 완료 여부는 그 경계를 제거한 뒤 판단한다.

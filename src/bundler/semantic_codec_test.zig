@@ -591,7 +591,7 @@ test "semantic_codec: 변조/버전/매직/truncated 거부 (fail-safe)" {
 }
 
 // #4438 결함2 회귀: checksum 은 유효하지만 HashMap count 가 거대한 손상 캐시는 panic 이 아니라
-// error 로 거부돼야 한다. 빈 sem 직렬화의 payload 끝 4B(= helper_scope_map count)를 maxInt(u32)
+// error 로 거부돼야 한다. 빈 sem 직렬화의 runtime presence 앞 4B(= 마지막 map count)를 maxInt(u32)
 // 로 바꾸고 checksum 을 재계산(=유효) → checkedMapCount 가 payload 길이 대비 상한해 Truncated.
 // 가드 없으면 ensureTotalCapacity(maxInt) 의 ceilPowerOfTwo unreachable 로 panic(테스트 크래시).
 test "semantic_codec: checksum 유효 + 거대 map count → panic 아닌 error (결함2)" {
@@ -619,15 +619,92 @@ test "semantic_codec: checksum 유효 + 거대 map count → panic 아닌 error 
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
 
-    // payload 끝 4B = 마지막 map(helper_scope_map) 의 count. maxInt(u32) 로 변조.
+    // 마지막 runtime presence 앞의 namespace_declaration_owners count를 변조.
     const dup = try alloc.dupe(u8, buf.items);
     defer alloc.free(dup);
     const HEADER_LEN: usize = 16; // magic(4)+version(4)+checksum(8)
-    std.mem.writeInt(u32, dup[dup.len - 4 ..][0..4], std.math.maxInt(u32), .little);
+    std.mem.writeInt(u32, dup[dup.len - 8 ..][0..4], std.math.maxInt(u32), .little);
     // checksum 재계산(payload = HEADER_LEN..). 변조했어도 checksum 은 유효하게 만들어 가드만 검증.
     const new_checksum = wyhash.hashU64(dup[HEADER_LEN..]);
     std.mem.writeInt(u64, dup[8..16], new_checksum, .little);
 
     // checksum 통과(ChecksumMismatch 아님) + count 상한 위반 → Truncated (panic 아님).
     try testing.expectError(error.Truncated, codec.deserialize(dup, arena.allocator()));
+}
+
+// Role IDs are graph-local. Malformed caches must fail before linker names
+// can accidentally turn a corrupt role into another symbol.
+test "semantic_codec: runtime identity roles reject malformed checksummed snapshots" {
+    const alloc = testing.allocator;
+    const module = @import("module.zig");
+    const wyhash = @import("../util/wyhash.zig");
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    var symbols: std.ArrayList(Symbol) = .empty;
+    defer symbols.deinit(alloc);
+    for (0..12) |_| try symbols.append(alloc, std.mem.zeroInit(Symbol, .{ .synthetic_name = @as([]const u8, "") }));
+    var snapshot: module.RuntimeIdentitySnapshot = .{
+        .cjs_factory = @fromBackingInt(0),
+        .cjs_internal = .{ .callback_parameter = @fromBackingInt(1), .module_parameter = @fromBackingInt(2), .catch_parameter = @fromBackingInt(3), .require_function = @fromBackingInt(4) },
+        .esm_factory = @fromBackingInt(5),
+        .esm_internal = .{ .factory_parameter = @fromBackingInt(6), .result_parameter = @fromBackingInt(7), .catch_parameter = @fromBackingInt(8), .init_function = @fromBackingInt(9), .factory_local = @fromBackingInt(10) },
+        .to_binary = @fromBackingInt(11),
+    };
+    var sem: ModuleSemanticData = .{
+        .symbols = symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+        .references = &.{},
+        .numeric_const_texts = .empty,
+        .helper_scope_map = .empty,
+        .runtime_identities = &snapshot,
+    };
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try codec.serialize(&sem, &buf, alloc);
+    const restored = try codec.deserialize(buf.items, arena.allocator());
+    try testing.expectEqualDeep(snapshot, restored.runtime_identities.?.*);
+    // Snapshot tail: present, CJS factory, CJS present + four IDs,
+    // ESM factory, ESM present + five IDs, binary (15 u32 words).
+    const tail = buf.items.len - 15 * 4;
+    const corruptions = [_]struct { word: usize, value: u32 }{
+        .{ .word = 0, .value = 2 }, // invalid snapshot presence
+        .{ .word = 1, .value = 12 }, // out-of-range factory
+        .{ .word = 1, .value = 0xffffffff }, // partial CJS pair
+        .{ .word = 2, .value = 2 }, // invalid group presence
+        .{ .word = 3, .value = 0xffffffff }, // required role missing
+        .{ .word = 4, .value = 1 }, // duplicate CJS role
+        .{ .word = 7, .value = 0xffffffff }, // partial ESM pair
+        .{ .word = 8, .value = 2 }, // invalid ESM presence
+        .{ .word = 13, .value = 0 }, // cross-family duplicate
+        .{ .word = 14, .value = 12 }, // out-of-range binary role
+    };
+    for (corruptions) |corruption| {
+        const bytes = try arena.allocator().dupe(u8, buf.items);
+        const offset = tail + corruption.word * 4;
+        std.mem.writeInt(u32, bytes[offset..][0..4], corruption.value, .little);
+        std.mem.writeInt(u64, bytes[8..16], wyhash.hashU64(bytes[16..]), .little);
+        try testing.expectError(error.Truncated, codec.deserialize(bytes, arena.allocator()));
+    }
+    const trailing = try arena.allocator().alloc(u8, buf.items.len + 1);
+    @memcpy(trailing[0..buf.items.len], buf.items);
+    trailing[buf.items.len] = 0;
+    std.mem.writeInt(u64, trailing[8..16], wyhash.hashU64(trailing[16..]), .little);
+    try testing.expectError(error.Truncated, codec.deserialize(trailing, arena.allocator()));
+    // The writer also rejects malformed in-memory handles.
+    const valid = snapshot;
+    snapshot.cjs_internal = null;
+    try testing.expectError(error.Truncated, codec.serialize(&sem, &buf, alloc));
+    snapshot = valid;
+    snapshot.to_binary = @fromBackingInt(12);
+    try testing.expectError(error.Truncated, codec.serialize(&sem, &buf, alloc));
+    snapshot = valid;
+    snapshot.to_binary = snapshot.cjs_factory;
+    try testing.expectError(error.Truncated, codec.serialize(&sem, &buf, alloc));
+    snapshot = valid;
+    snapshot.to_binary = @fromBackingInt(0xffffffff);
+    try testing.expectError(error.Truncated, codec.serialize(&sem, &buf, alloc));
 }

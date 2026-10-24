@@ -48,6 +48,16 @@ pub const EsmRuntimeInternalSymbolIds = struct {
     factory_local: SemanticSymbolId,
 };
 
+/// Output-owned runtime identities are part of the semantic snapshot. Module
+/// fields may be rebuilt, but cached graph ownership must not depend on names.
+pub const RuntimeIdentitySnapshot = struct {
+    cjs_factory: ?SemanticSymbolId = null,
+    cjs_internal: ?CjsRuntimeInternalSymbolIds = null,
+    esm_factory: ?SemanticSymbolId = null,
+    esm_internal: ?EsmRuntimeInternalSymbolIds = null,
+    to_binary: ?SemanticSymbolId = null,
+};
+
 /// Symbol identities for graph-wide bindings in the raw ESM interop preamble.
 pub const EsmInteropRuntimeHelperSymbolIds = struct {
     create: SemanticSymbolId,
@@ -196,6 +206,17 @@ pub const ModuleSemanticData = struct {
     /// `ImportBinding.is_helper=true` 인 binding 의 local_symbol 을 이 맵에서 찾도록 해
     /// 사용자가 같은 이름의 식별자를 선언해도 충돌이 일어나지 않게 한다.
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
+    /// Allocated only for a module that owns output runtime bindings; the
+    /// parse arena owns this record together with its symbols and scopes.
+    runtime_identities: ?*RuntimeIdentitySnapshot = null,
+
+    pub fn ensureRuntimeIdentities(self: *ModuleSemanticData, allocator: std.mem.Allocator) std.mem.Allocator.Error!*RuntimeIdentitySnapshot {
+        if (self.runtime_identities) |identities| return identities;
+        const identities = try allocator.create(RuntimeIdentitySnapshot);
+        identities.* = .{};
+        self.runtime_identities = identities;
+        return identities;
+    }
 
     /// AST 변경 전에 의미 정보를 가변 소유자로 복사한다. allocator는 parse_arena여야 한다.
     pub fn beginEdit(self: *const ModuleSemanticData, allocator: std.mem.Allocator, ast: *Ast) @import("../semantic/editor.zig").Error!SemanticEditor {

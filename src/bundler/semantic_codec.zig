@@ -29,13 +29,76 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v16: Symbol records include the preserved-JSX component-name constraint.
-pub const FORMAT_VERSION: u32 = 16;
+// v17: Output runtime identities persist with their owning semantic graph.
+pub const FORMAT_VERSION: u32 = 17;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
 /// 안전한 sentinel(SymbolId.none/ScopeId.none 과 동일 패턴).
 const NULL_U32: u32 = std.math.maxInt(u32);
+const CJS_RUNTIME_FIELDS = [_][]const u8{ "callback_parameter", "module_parameter", "catch_parameter", "require_function" };
+const ESM_RUNTIME_FIELDS = [_][]const u8{ "factory_parameter", "result_parameter", "catch_parameter", "init_function", "factory_local" };
+
+comptime {
+    if (@typeInfo(module.RuntimeIdentitySnapshot).@"struct".field_names.len != 5 or
+        @typeInfo(module.CjsRuntimeInternalSymbolIds).@"struct".field_names.len != CJS_RUNTIME_FIELDS.len or
+        @typeInfo(module.EsmRuntimeInternalSymbolIds).@"struct".field_names.len != ESM_RUNTIME_FIELDS.len)
+        @compileError("Runtime identity snapshot changed; update the semantic codec layout and version.");
+}
+
+fn putRuntimeId(out: *std.ArrayList(u8), allocator: std.mem.Allocator, id: ?symbol_mod.SymbolId) !void {
+    if (id) |value| if (@backingInt(value) == NULL_U32) return error.Truncated;
+    try putU32(out, allocator, if (id) |value| @backingInt(value) else NULL_U32);
+}
+
+fn putRuntimeGroup(comptime fields: []const []const u8, out: *std.ArrayList(u8), allocator: std.mem.Allocator, group: anytype) !void {
+    try putU32(out, allocator, @intFromBool(group != null));
+    if (group) |ids| inline for (fields) |field| {
+        const id: symbol_mod.SymbolId = @field(ids, field);
+        try putRuntimeId(out, allocator, id);
+    };
+}
+
+fn readRuntimeId(r: *Reader, symbols_len: usize) Error!?symbol_mod.SymbolId {
+    const raw = try r.u32v();
+    if (raw == NULL_U32) return null;
+    if (raw >= symbols_len) return error.Truncated;
+    return @fromBackingInt(raw);
+}
+
+fn readRuntimeGroup(comptime T: type, comptime fields: []const []const u8, r: *Reader, symbols_len: usize) Error!?T {
+    const present = try r.u32v();
+    if (present == 0) return null;
+    if (present != 1) return error.Truncated;
+    var ids: T = undefined;
+    inline for (fields) |field| @field(ids, field) = (try readRuntimeId(r, symbols_len)) orelse return error.Truncated;
+    return ids;
+}
+
+fn validRuntimeIdentityLayout(snapshot: module.RuntimeIdentitySnapshot, symbols_len: usize) bool {
+    if ((snapshot.cjs_factory == null) != (snapshot.cjs_internal == null) or
+        (snapshot.esm_factory == null) != (snapshot.esm_internal == null)) return false;
+    const ids = [_]?symbol_mod.SymbolId{
+        snapshot.cjs_factory,
+        if (snapshot.cjs_internal) |x| x.callback_parameter else null,
+        if (snapshot.cjs_internal) |x| x.module_parameter else null,
+        if (snapshot.cjs_internal) |x| x.catch_parameter else null,
+        if (snapshot.cjs_internal) |x| x.require_function else null,
+        snapshot.esm_factory,
+        if (snapshot.esm_internal) |x| x.factory_parameter else null,
+        if (snapshot.esm_internal) |x| x.result_parameter else null,
+        if (snapshot.esm_internal) |x| x.catch_parameter else null,
+        if (snapshot.esm_internal) |x| x.init_function else null,
+        if (snapshot.esm_internal) |x| x.factory_local else null,
+        snapshot.to_binary,
+    };
+    for (ids, 0..) |id, i| {
+        if (id == null) continue;
+        if (@backingInt(id.?) >= symbols_len) return false;
+        for (ids[0..i]) |previous| if (id == previous) return false;
+    }
+    return true;
+}
 
 comptime {
     // synthetic_kind 직렬화(putSymbol/readSymbol)가 0xFF 를 ?SyntheticKind 의 null sentinel 로
@@ -83,10 +146,10 @@ comptime {
         "stmt_idx:u32;scope_stmt_idx:u32;flags:semantic.symbol.ReferenceFlags;";
     if (!std.mem.eql(u8, fieldSig(Reference), reference_sig))
         @compileError("Reference 필드 시그니처가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Reference));
-    // serialize/deserialize 는 ModuleSemanticData 의 11개 필드를 손으로 열거한다. 필드가 추가되면
+    // serialize/deserialize 는 ModuleSemanticData 의 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 13) {
+    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 14) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -286,6 +349,15 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
     for (ns_decl_keys) |key| {
         try putU32(&payload, alloc, key);
         try putU32(&payload, alloc, sem.namespace_declaration_owners.get(key).?);
+    }
+    try putU32(&payload, alloc, @intFromBool(sem.runtime_identities != null));
+    if (sem.runtime_identities) |ids| {
+        if (!validRuntimeIdentityLayout(ids.*, sem.symbols.items.len)) return error.Truncated;
+        try putRuntimeId(&payload, alloc, ids.cjs_factory);
+        try putRuntimeGroup(&CJS_RUNTIME_FIELDS, &payload, alloc, ids.cjs_internal);
+        try putRuntimeId(&payload, alloc, ids.esm_factory);
+        try putRuntimeGroup(&ESM_RUNTIME_FIELDS, &payload, alloc, ids.esm_internal);
+        try putRuntimeId(&payload, alloc, ids.to_binary);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -499,6 +571,23 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         namespace_declaration_owners.putAssumeCapacity(key, value);
     }
 
+    var runtime_identities: ?*module.RuntimeIdentitySnapshot = null;
+    const has_runtime_ids = try r.u32v();
+    if (has_runtime_ids > 1) return error.Truncated;
+    if (has_runtime_ids == 1) {
+        const snapshot: module.RuntimeIdentitySnapshot = .{
+            .cjs_factory = try readRuntimeId(&r, symbols_len),
+            .cjs_internal = try readRuntimeGroup(module.CjsRuntimeInternalSymbolIds, &CJS_RUNTIME_FIELDS, &r, symbols_len),
+            .esm_factory = try readRuntimeId(&r, symbols_len),
+            .esm_internal = try readRuntimeGroup(module.EsmRuntimeInternalSymbolIds, &ESM_RUNTIME_FIELDS, &r, symbols_len),
+            .to_binary = try readRuntimeId(&r, symbols_len),
+        };
+        if (!validRuntimeIdentityLayout(snapshot, symbols_len)) return error.Truncated;
+        runtime_identities = try arena.create(module.RuntimeIdentitySnapshot);
+        runtime_identities.?.* = snapshot;
+    }
+    if (r.remaining() != 0) return error.Truncated;
+
     return .{
         .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len, .pointer_stability = .{} },
         .scopes = scopes,
@@ -513,5 +602,6 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .class_self_symbol_map = class_self_symbol_map,
         .namespace_member_owners = namespace_member_owners,
         .namespace_declaration_owners = namespace_declaration_owners,
+        .runtime_identities = runtime_identities,
     };
 }
