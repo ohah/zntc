@@ -2167,6 +2167,72 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('lenient TypeScript private fields retain exact graph across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-private-class-graph-'));
+    const input = join(dir, 'private-class.unknown');
+    const source = [
+      'const seed: number = 40;',
+      'class Vault {',
+      '  #value: number;',
+      '  static #count: number = 1;',
+      '  constructor(value: number) { this.#value = value; }',
+      '  #read(step: number): number { return this.#value + step; }',
+      '  read(step: number): number {',
+      '    const value: number = 1000;',
+      '    return this.#read(step) + value;',
+      '  }',
+      '  hasValue(target: object): boolean { return #value in target; }',
+      '  static count(): number { return Vault.#count; }',
+      '}',
+      'const vault = new Vault(seed);',
+      'console.log(vault.read(2), Vault.count(), vault.hasValue(vault));',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      for (const target of [TARGETS[0], TARGETS[4]]) {
+        const reference = join(dir, `reference-${target.name}.js`);
+        const output = join(dir, 'out.js');
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: target.name === 'es5' ? ts.ScriptTarget.ES5 : ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe('1042 1 true\n');
+
+        const result = runCoverage(input, target, dir, true);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(baseline.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('standalone transpile mode report is required and exact for identifier minification', () => {
     const retained =
       'zntc: symbol-identity-transpile-mode /tmp/case.unknown: semantic_graph=retained';
