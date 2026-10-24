@@ -2239,3 +2239,47 @@ test "#1558 Phase 5: partial used + live export — 사용 import 경로만 전�
 
 // TODO: 자동 순수 판별 테스트는 기능 활성화 시 아래 주석 해제
 // isModulePure 활성화 PR에서 이 테스트들을 복원하고 기존 테스트도 업데이트 필요
+
+test "retained numeric export folding refreshes exact constant facts across ten graphs" {
+    const cases = [_]struct { expression: []const u8, expected: ?[]const u8, declaration: []const u8 = "const", suffix: []const u8 = "" }{
+        .{ .expression = "base + 1", .expected = "2" },
+        .{ .expression = "base + 2", .expected = "3" },
+        .{ .expression = "base * 3", .expected = "3" },
+        .{ .expression = "base - 1", .expected = "0" },
+        .{ .expression = "base / 2", .expected = "0.5" },
+        .{ .expression = "base % 2", .expected = "1" },
+        .{ .expression = "(base + 1) * 3", .expected = "6" },
+        .{ .expression = "base & 3", .expected = "1" },
+        .{ .expression = "base | 2", .expected = "3" },
+        .{ .expression = "base ** 3", .expected = "1" },
+        .{ .expression = "base << 2", .expected = null },
+        .{ .expression = "base / 0", .expected = null },
+        .{ .expression = "base + 1", .expected = "2", .declaration = "let" },
+        .{ .expression = "base + 1", .expected = null, .suffix = "value = 9;" },
+    };
+    var mismatches: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "seed.ts", "export const base = 1;");
+        const provider = try std.fmt.allocPrint(std.testing.allocator, "import {{ base }} from './seed'; const unusedLocal = 123; export {s} value = {s}; {s}", .{ case.declaration, case.expression, case.suffix });
+        defer std.testing.allocator.free(provider);
+        try writeFile(tmp.dir, "left.ts", provider);
+        try writeFile(tmp.dir, "barrel.ts", "export { value as answer } from './left';");
+        try writeFile(tmp.dir, "entry.ts", "import { answer } from './barrel'; console.log(answer);");
+        var result = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+        defer result.deinit();
+        const module = result.graph.getModule(ModuleIndex.fromUsize(result.findModule("left.ts") orelse return error.MissingProvider)) orelse return error.MissingProvider;
+        const binding = module.findExportBinding("value") orelse return error.MissingValueExport;
+        const id = binding.symbol.semanticIndex() orelse return error.MissingValueIdentity;
+        const sem = module.semantic orelse return error.MissingSemantic;
+        const expected_kind: @import("../semantic/symbol.zig").ConstValue.Kind = if (case.expected != null) .number else .none;
+        if (sem.symbols.items[id].const_kind != expected_kind or
+            !std.mem.eql(u8, case.expected orelse "", sem.numericConstText(id)))
+        {
+            mismatches += 1;
+            std.debug.print("numeric fact mismatch expr={s} decl={s} suffix={s} writes={d} kind={s} value={s}\n", .{ case.expression, case.declaration, case.suffix, sem.symbols.items[id].write_count, @tagName(sem.symbols.items[id].kind), sem.numericConstText(id) });
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
