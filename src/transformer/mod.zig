@@ -73,6 +73,7 @@ test {
     _ = @import("es2021_temp_identity_semantic_test.zig");
     _ = @import("es2015_spread_temp_identity_semantic_test.zig");
     _ = @import("class_key_temp_identity_semantic_test.zig");
+    _ = @import("static_class_reference_semantic_test.zig");
     _ = @import("object_computed_temp_identity_semantic_test.zig");
     _ = @import("es2015_parameter_temp_identity_semantic_test.zig");
     _ = @import("runtime_key_name_temp_identity_semantic_test.zig");

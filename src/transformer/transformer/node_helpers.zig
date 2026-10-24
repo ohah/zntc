@@ -417,14 +417,19 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
     const cls = self.current_class_name_node;
     const same = !cls.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(cls).data.string_ref), self.ast.getText(name_span));
     if (self.semantic_edit_enabled and isCurrentStaticClassName(self, name_span)) {
-        const lookup_scope = classNameOutputLookupScope(self, scope);
-        if (outputScopeResolvesCurrentClass(self, self.ast.getText(name_span), lookup_scope)) {
-            const ref = try makeLexicalScopeRefAtScope(self, self.ast.getText(name_span), lookup_scope);
-            const output_id = self.getSymbolIdAt(ref) orelse
-                std.debug.panic("generated static class-name read lost its checked output binding", .{});
-            try self.trackExactOutputReference(ref, output_id);
-            return ref;
-        }
+        // Native-class static postludes use the declaration handle. A lowered
+        // class instead owns its implementation binding inside the generated
+        // IIFE. Both handles are already known; never select one by spelling.
+        const output_id = if (self.options.unsupported.class)
+            self.current_class_self_symbol_id orelse
+                std.debug.panic("generated static class-name read has no implementation SymbolId", .{})
+        else
+            self.getSymbolIdAt(cls) orelse
+                std.debug.panic("generated static class-name read has no declaration SymbolId", .{});
+        const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+        try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(output_id)), scope, .{ .read = true });
+        try self.trackExactOutputReference(ref, output_id);
+        return ref;
     }
     // 클래스 이름 노드가 합성(`const C = class {}` 의 안쪽 `C`)이면 `propagateSymbolId` 가 합성 표시를
     // 물려준다. 심볼이 없다는 이유만으로 합성이라 하지 않는다 — 그러면 심볼을 빠뜨린 경우도 가려진다.
