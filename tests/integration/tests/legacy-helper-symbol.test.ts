@@ -816,6 +816,69 @@ console.log(events.join('|'));
     }
   });
 
+  test('standalone Flow metadata keeps generated Object and Function references lexical', async () => {
+    const source = `
+// @flow
+const events = [];
+function identity(value) { return value; }
+function ObjectSentinel() {}
+function FunctionSentinel() {}
+function build(Object, Function) {
+  const expectedObject = Object;
+  const expectedFunction = Function;
+  Reflect.metadata = function (key, value) {
+    return function (_target, property) {
+      if (key === 'design:paramtypes') {
+        const kind = property === undefined ? 'class' : 'param';
+        events.push(kind + ':' + (value[0] === expectedObject ? 'exact' : 'wrong'));
+      }
+      if (key === 'design:type' && property === 'method')
+        events.push(value === expectedFunction ? 'method:exact' : 'method:wrong');
+      if (key === 'design:returntype' && property === 'method')
+        events.push(value === expectedObject ? 'return:exact' : 'return:wrong');
+    };
+  };
+  @identity
+  class Service {
+    constructor(value: Object) {}
+    @identity method(value: number): string { return String(value); }
+  }
+  return Service;
+}
+const Service = build(ObjectSentinel, FunctionSentinel);
+new Service({}).method(1);
+console.log(events.sort().join('|'));
+`;
+    const fixture = await createFixture({
+      'input.js': source,
+      'input.unknown': source,
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    });
+    cleanup = fixture.cleanup;
+    for (const input of ['input.js', 'input.unknown']) {
+      const output = join(fixture.dir, `${input}.out.js`);
+      const result = spawnSync(
+        ZNTC_BIN,
+        [input, '--target=es2020', '--minify-identifiers', '--minify-syntax', '-o', output],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, `${input}: ${result.stderr}`).toBe(0);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, `${input}: ${runtime.stderr}`).toBe(0);
+      expect(runtime.stdout, input).toBe('class:exact|method:exact|param:exact|return:exact\n');
+      expect(result.stderr, input).toMatch(
+        /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
+      );
+    }
+  });
+
   for (const target of ['es5', 'es2022'] as const) {
     for (const minify of [false, true]) {
       test(`standalone ${target} ${minify ? 'minified ' : ''}using helper pair uses collision-free SymbolId names`, async () => {
