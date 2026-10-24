@@ -5642,27 +5642,19 @@ pub const Linker = struct {
             if (recompute) |r| if (!r.contains(@intCast(i))) continue;
             const importer = self.moduleAtMut(@intCast(i)) orelse continue;
             const sem_opt = importer.semantic;
-            const module_scope_opt = if (sem_opt) |sem|
-                if (sem.scope_maps.len > 0) sem.scope_maps[0] else null
-            else
-                null;
             const mod_idx: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(i));
 
             for (importer.import_bindings) |*ib| {
-                // current-side: scope_maps[0]에서 로컬 심볼 조회.
-                // #3068: helper binding 은 user 가 같은 이름을 선언했어도 격리된
-                // helper_scope_map 에서 lookup. 일반 module_scope.get 가 user 의 sym_idx 를
-                // 반환하면 JSX call 이 user binding 으로 잘못 묶인다.
-                if (module_scope_opt) |module_scope| {
-                    const sym_lookup = if (ib.is_helper) blk: {
-                        if (importer.semantic) |*sem| {
-                            if (sem.helper_scope_map.get(ib.local_name)) |sym_idx| break :blk @as(?usize, sym_idx);
-                        }
-                        break :blk @as(?usize, null);
-                    } else module_scope.get(ib.local_name);
-                    if (sym_lookup) |sym_idx| {
-                        ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(mod_idx, sym_idx);
-                    }
+                // Clear stale IDs before resolving this graph's exact anchor.
+                // Helper/user spelling collisions do not affect the node map.
+                ib.local_symbol = bundler_symbol.SymbolRef.invalid;
+                if (sem_opt) |sem| {
+                    ib.local_symbol = @import("binding_scanner.zig").resolveImportLocalSymbol(ib.*, .{
+                        .module_index = mod_idx,
+                        .ast = if (importer.ast) |*ast| ast else null,
+                        .symbol_ids = sem.symbol_ids,
+                        .symbols = sem.symbols.items,
+                    });
                 }
 
                 // source-side: import_record 따라 source 모듈의 export 심볼 복사

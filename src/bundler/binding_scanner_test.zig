@@ -896,3 +896,123 @@ fn expectSemanticExportSymbol(export_binding: ExportBinding, expected_symbol: u3
         .semantic => |semantic_ref| try std.testing.expectEqual(expected_symbol, @backingInt(semantic_ref.symbol)),
     }
 }
+
+test "#4819 import local identity rejects malformed exact anchors without name recovery" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+    const source = "import { value as local, extra } from './dep'; const decoy = 1; console.log(local, extra, decoy);";
+    var scanner = try Scanner.init(arena_alloc, source);
+    scanner.is_module = true;
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const records = try import_scanner.extractImports(arena_alloc, &parser.ast);
+    const imports = try extractImportBindings(arena_alloc, &parser.ast, records, null);
+    try std.testing.expectEqual(@as(usize, 2), imports.len);
+    const binding = imports[0];
+    const node = binding.local_symbol_node orelse return error.MissingImportAnchor;
+    const raw = @backingInt(node);
+    const expected = analyzer.symbol_ids.items[raw] orelse return error.MissingImportSymbol;
+    const decoy = analyzer.scope_maps.items[0].get("decoy") orelse return error.MissingImportDecoy;
+    const context: binding_scanner.ImportLocalSymbolContext = .{
+        .module_index = types.ModuleIndex.fromUsize(3),
+        .ast = &parser.ast,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .symbols = analyzer.symbols.items,
+        .module_scope = analyzer.scope_maps.items[0],
+    };
+    const resolved = binding_scanner.resolveImportLocalSymbol(binding, context);
+    try std.testing.expectEqual(expected, resolved.semanticIndex().?);
+    try std.testing.expectEqual(context.module_index, resolved.moduleIndex());
+
+    // A same-kind, in-range wrong SID corrupts the authoritative producer map.
+    // Consumers must not guess a repair from spelling; the existing exact
+    // declaration audit rejects that graph before output is trusted.
+    const other_import = analyzer.scope_maps.items[0].get("extra") orelse return error.MissingOtherImportSymbol;
+    const coverage = @import("../transformer/symbol_coverage.zig");
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for ([_]u32{ expected, @intCast(other_import) }) |mapped| {
+        analyzer.symbol_ids.items[raw] = mapped;
+        try std.testing.expectEqual(mapped, binding_scanner.resolveImportLocalSymbol(binding, context).semanticIndex().?);
+        const report = try coverage.checkExactWithDeclarationAnchors(
+            allocator,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            analyzer.symbol_ids.items,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+        );
+        if (mapped == expected) {
+            if (!report.isClean()) std.debug.print("import declaration audit: {any}\n", .{report});
+            try std.testing.expect(report.isClean());
+        } else {
+            try std.testing.expect(!report.isClean());
+            try std.testing.expect(report.declaration_identity_mismatch + report.declaration_anchor_mismatch > 0);
+        }
+    }
+    analyzer.symbol_ids.items[raw] = expected;
+
+    var malformed_binding = binding;
+    malformed_binding.local_symbol_node = null;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(malformed_binding, context).isValid());
+    malformed_binding.local_symbol_node = .none;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(malformed_binding, context).isValid());
+    malformed_binding.local_symbol_node = @fromBackingInt(@as(u32, @intCast(parser.ast.nodes.items.len)));
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(malformed_binding, context).isValid());
+
+    analyzer.symbol_ids.items[raw] = null;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, context).isValid());
+    analyzer.symbol_ids.items[raw] = @intCast(analyzer.symbols.items.len);
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, context).isValid());
+    analyzer.symbol_ids.items[raw] = @intCast(decoy);
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, context).isValid());
+    analyzer.symbol_ids.items[raw] = expected;
+
+    const original_tag = parser.ast.nodes.items[raw].tag;
+    // Emotion's CSS import alias is a generated binding_identifier rather
+    // than the parser's identifier_reference import-local representation.
+    parser.ast.nodes.items[raw].tag = .binding_identifier;
+    try std.testing.expectEqual(expected, binding_scanner.resolveImportLocalSymbol(binding, context).semanticIndex().?);
+    parser.ast.nodes.items[raw].tag = .numeric_literal;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, context).isValid());
+    parser.ast.nodes.items[raw].tag = original_tag;
+    var missing_ast = context;
+    missing_ast.ast = null;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, missing_ast).isValid());
+    var empty_map = context;
+    empty_map.symbol_ids = &.{};
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(binding, empty_map).isValid());
+
+    // The explicit semantic-less API retains the old scope contract; helper
+    // selection stays separate from a same-spelling source binding.
+    var helper_scope: std.StringHashMapUnmanaged(usize) = .empty;
+    try helper_scope.put(arena_alloc, "local", decoy);
+    const legacy_context: binding_scanner.ImportLocalSymbolContext = .{
+        .module_index = context.module_index,
+        .module_scope = analyzer.scope_maps.items[0],
+        .helper_scope = helper_scope,
+    };
+    try std.testing.expectEqual(expected, binding_scanner.resolveImportLocalSymbol(binding, legacy_context).semanticIndex().?);
+    malformed_binding = binding;
+    malformed_binding.is_helper = true;
+    try std.testing.expectEqual(@as(u32, @intCast(decoy)), binding_scanner.resolveImportLocalSymbol(malformed_binding, legacy_context).semanticIndex().?);
+    var no_helper_scope = legacy_context;
+    no_helper_scope.helper_scope = null;
+    try std.testing.expect(!binding_scanner.resolveImportLocalSymbol(malformed_binding, no_helper_scope).isValid());
+}

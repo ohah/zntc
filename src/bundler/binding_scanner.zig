@@ -53,16 +53,15 @@ pub const ImportBinding = struct {
     /// #1328 Phase 4c-3b: 현재 모듈의 로컬 바인딩 심볼 (semantic scope).
     /// import preamble/rename 경로에서 "현재 모듈 기준" canonical 조회에 사용.
     /// `symbol`은 source 모듈 쪽을 가리키므로 local 경로에는 쓸 수 없다.
-    /// linker.populateImportSymbols가 채움. invalid = synthetic binding 등
-    /// semantic scope에 로컬이 없는 경우.
+    /// linker.populateImportSymbols가 exact local_symbol_node의 SID로 채운다.
+    /// invalid = exact semantic anchor가 없거나 유효하지 않은 경우.
     local_symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
     /// Exact AST node that declares this local import binding. Parse-time
     /// consumers can recover its analyzer SymbolId without a name-based lookup.
     local_symbol_node: ?NodeIndex = null,
     /// #3068: helper marker (runtime helper / JSX runtime) 가 적용된 binding.
-    /// linker 의 local_symbol lookup 이 일반 `module_scope` 가 아닌 격리된
-    /// `helper_scope_map` 에서 sym_index 를 찾아야 사용자가 같은 이름의 식별자를
-    /// 선언한 경우에도 충돌이 일어나지 않는다.
+    /// semantic ID map이 없는 저수준 caller의 호환 lookup은 이 marker로
+    /// helper_scope_map을 선택한다. 분석된 경로는 marker/이름 대신 exact node를 쓴다.
     is_helper: bool = false,
     /// TypeScript only: the binding is used as a type alone **in the source**,
     /// so the import is elided. Judged at parse time, before transforms can
@@ -86,6 +85,44 @@ pub const ImportBinding = struct {
             (self.kind == .named and preamble_writer.isDefaultExportName(self.imported_name));
     }
 };
+
+pub const ImportLocalSymbolContext = struct {
+    module_index: ModuleIndex,
+    ast: ?*const Ast = null,
+    /// Non-null means this is an analyzed path, even when the map is empty.
+    /// Missing/malformed exact anchors must not fall through to a name lookup.
+    symbol_ids: ?[]const ?u32 = null,
+    symbols: []const SemanticSymbol = &.{},
+    /// Explicit compatibility inputs for callers without a semantic ID map.
+    module_scope: ?std.StringHashMapUnmanaged(usize) = null,
+    helper_scope: ?std.StringHashMapUnmanaged(usize) = null,
+};
+
+/// Resolve the current-side import binding from its scanner-owned AST anchor.
+/// The node map is authoritative; spelling is never used to repair an analyzed
+/// graph. Low-level callers can explicitly omit the ID map and provide scopes.
+pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymbolContext) symbol_mod.SymbolRef {
+    if (context.symbol_ids) |ids| {
+        const ast = context.ast orelse return symbol_mod.SymbolRef.invalid;
+        const node = binding.local_symbol_node orelse return symbol_mod.SymbolRef.invalid;
+        if (node.isNone()) return symbol_mod.SymbolRef.invalid;
+        const raw = @backingInt(node);
+        if (raw >= ast.nodes.items.len or raw >= ids.len) return symbol_mod.SymbolRef.invalid;
+        switch (ast.nodes.items[raw].tag) {
+            .identifier_reference, .binding_identifier, .import_default_specifier, .import_namespace_specifier => {},
+            else => return symbol_mod.SymbolRef.invalid,
+        }
+        const sid = ids[raw] orelse return symbol_mod.SymbolRef.invalid;
+        if (sid >= context.symbols.len or context.symbols[sid].kind != .import_binding)
+            return symbol_mod.SymbolRef.invalid;
+        return symbol_mod.SymbolRef.makeSemantic(context.module_index, sid);
+    }
+
+    const scope = if (binding.is_helper) context.helper_scope else context.module_scope;
+    const symbol_index = (scope orelse return symbol_mod.SymbolRef.invalid).get(binding.local_name) orelse
+        return symbol_mod.SymbolRef.invalid;
+    return symbol_mod.SymbolRef.makeSemantic(context.module_index, symbol_index);
+}
 
 pub const ExportBinding = struct {
     /// 외부에 노출되는 이름 (e.g. "x", "default", "b" in `export { a as b }`)
@@ -205,9 +242,9 @@ fn stableIdentifierTextFromSpan(allocator: std.mem.Allocator, ast: *const Ast, s
 /// AST에서 import 바인딩 상세를 추출한다.
 /// import_record_map: import source span → ImportRecord 인덱스 매핑
 /// `helper_ref_nodes` 가 non-null 이면 import_specifier 의 local_node idx 가 그 slice 에
-/// 있을 때 해당 binding 에 `is_helper=true` 를 set 한다. linker 가 이 binding 의 local_symbol
-/// 을 일반 module_scope 가 아닌 격리된 helper_scope_map 에서 찾도록 보장 — 사용자가 같은
-/// 식별자를 선언해도 충돌 회피 (#3068).
+/// 있을 때 해당 binding 에 `is_helper=true` 를 set 한다. 이 marker는 semantic-less
+/// caller의 격리된 helper scope 선택에 쓰인다. 분석된 import의 local_symbol은 사용자와
+/// 같은 철자를 쓰더라도 local_symbol_node의 exact SID로만 결정한다 (#3068).
 ///
 /// `helper_ref_nodes` 는 ascending sorted 여야 한다 (binary search 전제). transformer 의
 /// `markRuntimeHelperRef` 가 새 NodeIndex 만 단조 증가로 append → `ownedHelperRefNodes` 가

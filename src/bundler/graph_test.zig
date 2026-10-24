@@ -2183,6 +2183,22 @@ test "graph: TS import type-use classification keeps exact binding across hostil
         try std.testing.expect(!entry.import_records[0].ts_elided);
         symbol_ids[binding_node_index] = binding_symbol_id;
 
+        // A valid ID of another binding kind is not an import identity.
+        symbol_ids[binding_node_index] = @intCast(decoy_symbol);
+        entry.import_bindings[0].source_type_only = null;
+        graph_parse_module.markSourceTypeOnlyImports(&graph, entry, importer_ast, arena_alloc);
+        try std.testing.expectEqual(@as(?bool, null), entry.import_bindings[0].source_type_only);
+        try std.testing.expect(!entry.import_records[0].ts_elided);
+        symbol_ids[binding_node_index] = binding_symbol_id;
+
+        // Even a completely missing anchor must not classify a same-spelling
+        // decoy. The value-used positive control would otherwise be elided.
+        entry.import_bindings[0].local_symbol_node = null;
+        entry.import_bindings[0].source_type_only = null;
+        graph_parse_module.markSourceTypeOnlyImports(&graph, entry, importer_ast, arena_alloc);
+        try std.testing.expectEqual(@as(?bool, null), entry.import_bindings[0].source_type_only);
+        try std.testing.expect(!entry.import_records[0].ts_elided);
+
         // A present-but-invalid producer handle is different from a missing
         // handle and must not fall back to the name map either.
         entry.import_bindings[0].local_symbol_node = .none;
