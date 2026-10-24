@@ -30,7 +30,7 @@ const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v17: Output runtime identities persist with their owning semantic graph.
-pub const FORMAT_VERSION: u32 = 17;
+pub const FORMAT_VERSION: u32 = 18;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -39,10 +39,15 @@ const NULL_U32: u32 = std.math.maxInt(u32);
 const CJS_RUNTIME_FIELDS = [_][]const u8{ "callback_parameter", "module_parameter", "catch_parameter", "require_function" };
 const ESM_RUNTIME_FIELDS = [_][]const u8{ "factory_parameter", "result_parameter", "catch_parameter", "init_function", "factory_local" };
 
+const INTEROP_HELPER_FIELDS = [_][]const u8{ "create", "get_proto_of", "def_prop", "get_own_prop_names", "get_own_prop_desc", "has_own", "copy_props", "to_esm", "export_helper", "to_common_js" };
+const INTEROP_INTERNAL_FIELDS = [_][]const u8{ "copy_props_to", "copy_props_from", "copy_props_desc", "copy_props_keys", "copy_props_index", "copy_props_key", "copy_props_closure_key", "to_esm_module", "to_esm_node_mode", "to_esm_target", "export_target", "export_all", "export_name", "to_common_js_module" };
+
 comptime {
-    if (@typeInfo(module.RuntimeIdentitySnapshot).@"struct".field_names.len != 5 or
+    if (@typeInfo(module.RuntimeIdentitySnapshot).@"struct".field_names.len != 7 or
         @typeInfo(module.CjsRuntimeInternalSymbolIds).@"struct".field_names.len != CJS_RUNTIME_FIELDS.len or
-        @typeInfo(module.EsmRuntimeInternalSymbolIds).@"struct".field_names.len != ESM_RUNTIME_FIELDS.len)
+        @typeInfo(module.EsmRuntimeInternalSymbolIds).@"struct".field_names.len != ESM_RUNTIME_FIELDS.len or
+        @typeInfo(module.EsmInteropRuntimeHelperSymbolIds).@"struct".field_names.len != INTEROP_HELPER_FIELDS.len or
+        @typeInfo(module.EsmInteropRuntimeInternalSymbolIds).@"struct".field_names.len != INTEROP_INTERNAL_FIELDS.len)
         @compileError("Runtime identity snapshot changed; update the semantic codec layout and version.");
 }
 
@@ -78,6 +83,7 @@ fn readRuntimeGroup(comptime T: type, comptime fields: []const []const u8, r: *R
 fn validRuntimeIdentityLayout(snapshot: module.RuntimeIdentitySnapshot, symbols_len: usize) bool {
     if ((snapshot.cjs_factory == null) != (snapshot.cjs_internal == null) or
         (snapshot.esm_factory == null) != (snapshot.esm_internal == null)) return false;
+    if (snapshot.interop_internal != null and snapshot.interop_helpers == null) return false;
     const ids = [_]?symbol_mod.SymbolId{
         snapshot.cjs_factory,
         if (snapshot.cjs_internal) |x| x.callback_parameter else null,
@@ -91,6 +97,30 @@ fn validRuntimeIdentityLayout(snapshot: module.RuntimeIdentitySnapshot, symbols_
         if (snapshot.esm_internal) |x| x.init_function else null,
         if (snapshot.esm_internal) |x| x.factory_local else null,
         snapshot.to_binary,
+        if (snapshot.interop_helpers) |x| x.create else null,
+        if (snapshot.interop_helpers) |x| x.get_proto_of else null,
+        if (snapshot.interop_helpers) |x| x.def_prop else null,
+        if (snapshot.interop_helpers) |x| x.get_own_prop_names else null,
+        if (snapshot.interop_helpers) |x| x.get_own_prop_desc else null,
+        if (snapshot.interop_helpers) |x| x.has_own else null,
+        if (snapshot.interop_helpers) |x| x.copy_props else null,
+        if (snapshot.interop_helpers) |x| x.to_esm else null,
+        if (snapshot.interop_helpers) |x| x.export_helper else null,
+        if (snapshot.interop_helpers) |x| x.to_common_js else null,
+        if (snapshot.interop_internal) |x| x.copy_props_to else null,
+        if (snapshot.interop_internal) |x| x.copy_props_from else null,
+        if (snapshot.interop_internal) |x| x.copy_props_desc else null,
+        if (snapshot.interop_internal) |x| x.copy_props_keys else null,
+        if (snapshot.interop_internal) |x| x.copy_props_index else null,
+        if (snapshot.interop_internal) |x| x.copy_props_key else null,
+        if (snapshot.interop_internal) |x| x.copy_props_closure_key else null,
+        if (snapshot.interop_internal) |x| x.to_esm_module else null,
+        if (snapshot.interop_internal) |x| x.to_esm_node_mode else null,
+        if (snapshot.interop_internal) |x| x.to_esm_target else null,
+        if (snapshot.interop_internal) |x| x.export_target else null,
+        if (snapshot.interop_internal) |x| x.export_all else null,
+        if (snapshot.interop_internal) |x| x.export_name else null,
+        if (snapshot.interop_internal) |x| x.to_common_js_module else null,
     };
     for (ids, 0..) |id, i| {
         if (id == null) continue;
@@ -359,6 +389,8 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
         try putRuntimeId(&payload, alloc, ids.esm_factory);
         try putRuntimeGroup(&ESM_RUNTIME_FIELDS, &payload, alloc, ids.esm_internal);
         try putRuntimeId(&payload, alloc, ids.to_binary);
+        try putRuntimeGroup(&INTEROP_HELPER_FIELDS, &payload, alloc, ids.interop_helpers);
+        try putRuntimeGroup(&INTEROP_INTERNAL_FIELDS, &payload, alloc, ids.interop_internal);
     }
 
     const checksum = wyhash.hashU64(payload.items);
@@ -582,6 +614,8 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
             .esm_factory = try readRuntimeId(&r, symbols_len),
             .esm_internal = try readRuntimeGroup(module.EsmRuntimeInternalSymbolIds, &ESM_RUNTIME_FIELDS, &r, symbols_len),
             .to_binary = try readRuntimeId(&r, symbols_len),
+            .interop_helpers = try readRuntimeGroup(module.EsmInteropRuntimeHelperSymbolIds, &INTEROP_HELPER_FIELDS, &r, symbols_len),
+            .interop_internal = try readRuntimeGroup(module.EsmInteropRuntimeInternalSymbolIds, &INTEROP_INTERNAL_FIELDS, &r, symbols_len),
         };
         if (!validRuntimeIdentityLayout(snapshot, symbols_len)) return error.Truncated;
         runtime_identities = try arena.create(module.RuntimeIdentitySnapshot);
