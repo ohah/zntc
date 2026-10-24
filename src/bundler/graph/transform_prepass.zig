@@ -6550,6 +6550,33 @@ fn hasTopLevelAwaitInRetainedGraph(
     return false;
 }
 
+fn refreshRetainedModuleTopLevelAwait(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    module: *Module,
+) bool {
+    const semantic = module.semantic orelse return false;
+    const has_tla = hasTopLevelAwaitInRetainedGraph(
+        allocator,
+        ast,
+        semantic.scopes,
+        &semantic.scope_owner_map,
+    ) orelse return false;
+    module.self_uses_top_level_await = has_tla;
+    return true;
+}
+
+fn shouldRefreshRetainedModuleTopLevelAwait(
+    can_keep_semantic_graph: bool,
+    retained_simple_console_drops: bool,
+    has_dropped_labeled_statement: bool,
+    module_self_uses_top_level_await: bool,
+) bool {
+    return can_keep_semantic_graph and
+        (retained_simple_console_drops or has_dropped_labeled_statement) and
+        module_self_uses_top_level_await;
+}
+
 fn canRetainGraphForSimpleConsoleDrops(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -6678,9 +6705,8 @@ fn canKeepPrepassSemanticGraph(
     // The TLA wrapper/deferral options only affect this program-level lowering
     // when the module actually contains top-level await.
     if (has_top_level_await and options.unsupported.top_level_await) return false;
-    // Label deletion does not have a TLA metadata reconciliation step. Console
-    // drops update the module-local bit from the retained AST after editing.
-    if (has_dropped_labeled_statement and module.self_uses_top_level_await) return false;
+    // Label and console deletion update the module-local TLA bit from the
+    // retained AST after editing.
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     const allow_nonverbatim_javascript_imports = canRetainPlainJavaScriptImportsForConsoleDrop(
         self,
@@ -8490,6 +8516,153 @@ test "retained graph TLA scan rejects incomplete scope evidence" {
     try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .missing_scopes)) == null);
 }
 
+fn refreshRetainedModuleTlaForTest(source: []const u8, initial_self_tla: bool) !?bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.mjs");
+    module.ast = parser.ast;
+    module.self_uses_top_level_await = initial_self_tla;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    if (!refreshRetainedModuleTopLevelAwait(allocator, &parser.ast, &module)) return null;
+    return module.self_uses_top_level_await;
+}
+
+test "retained graph refreshes only module-local TLA metadata" {
+    try std.testing.expect(!(try refreshRetainedModuleTlaForTest("console.log('ok');", true)).?);
+    try std.testing.expect((try refreshRetainedModuleTlaForTest(
+        "for await (const value of values) { void value; }",
+        false,
+    )).?);
+    try std.testing.expect(!(try refreshRetainedModuleTlaForTest(
+        "async function read() { await Promise.resolve(1); }",
+        true,
+    )).?);
+}
+
+fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "DEV: await Promise.resolve(); console.log('ok');";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.mjs");
+    module.source = source;
+    module.module_type = .js;
+    module.uses_top_level_await = analyzer.has_top_level_await;
+    module.self_uses_top_level_await = analyzer.has_top_level_await;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const test_context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    const labels = [_][]const u8{"DEV"};
+    var options: TransformOptions = .{ .strip_types = true, .drop_labels = &labels };
+    options.unsupported.top_level_await = unsupported_top_level_await;
+    var allow_super_get = false;
+    var allow_super_set = false;
+    return canKeepPrepassSemanticGraph(
+        &test_context,
+        &module,
+        options,
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+        null,
+    );
+}
+
+test "drop-label TLA retains the graph only for native TLA output" {
+    try std.testing.expect(try canRetainDroppedLabelTlaForTest(false));
+    try std.testing.expect(!try canRetainDroppedLabelTlaForTest(true));
+}
+
+test "TLA refresh is limited to retained edits that can remove module await" {
+    try std.testing.expect(shouldRefreshRetainedModuleTopLevelAwait(true, false, true, true));
+    try std.testing.expect(shouldRefreshRetainedModuleTopLevelAwait(true, true, false, true));
+    try std.testing.expect(!shouldRefreshRetainedModuleTopLevelAwait(true, false, false, true));
+    try std.testing.expect(!shouldRefreshRetainedModuleTopLevelAwait(false, false, true, true));
+    try std.testing.expect(!shouldRefreshRetainedModuleTopLevelAwait(true, false, true, false));
+}
+
+test "drop-label source scan recognizes only configured labels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "DEV: await Promise.resolve();");
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    defer parser.deinit();
+    _ = try parser.parse();
+    const configured_labels = [_][]const u8{"DEV"};
+    const other_labels = [_][]const u8{"TEST"};
+    try std.testing.expect(hasDroppedLabeledStatement(&parser.ast, &configured_labels));
+    try std.testing.expect(!hasDroppedLabeledStatement(&parser.ast, &other_labels));
+}
+
 const DefinePreflightMutation = enum {
     none,
     truncated_symbol_id_map,
@@ -9024,6 +9197,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             hasReachableStaticPublicClassField(ast_ptr)
         else
             @as(?bool, false);
+    const has_dropped_labeled_statement = hasDroppedLabeledStatement(ast_ptr, opts.drop_labels);
     var allow_es5_async_method_super_get = false;
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
@@ -9365,23 +9539,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
-    if (can_keep_semantic_graph and retained_simple_console_drops and
-        module.self_uses_top_level_await)
-    {
-        if (module.semantic) |semantic| {
-            if (hasTopLevelAwaitInRetainedGraph(
-                arena_alloc,
-                transformer.ast,
-                semantic.scopes,
-                &semantic.scope_owner_map,
-            )) |has_tla| {
-                // Finalize resets the transitive bit from this module-local bit
-                // before propagating TLA through the updated import graph.
-                module.self_uses_top_level_await = has_tla;
-            } else {
-                can_keep_semantic_graph = false;
-            }
-        } else {
+    if (shouldRefreshRetainedModuleTopLevelAwait(
+        can_keep_semantic_graph,
+        retained_simple_console_drops,
+        has_dropped_labeled_statement,
+        module.self_uses_top_level_await,
+    )) {
+        // Finalize resets the transitive bit from this module-local bit before
+        // propagating TLA through the updated import graph.
+        if (!refreshRetainedModuleTopLevelAwait(arena_alloc, transformer.ast, module)) {
             can_keep_semantic_graph = false;
         }
     }

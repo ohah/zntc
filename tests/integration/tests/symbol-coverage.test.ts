@@ -2196,18 +2196,44 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42\n',
       },
       {
-        name: 'top-level await metadata is refreshed by reanalysis',
+        name: 'top-level await metadata is refreshed from the retained graph',
         source: "DEV: await Promise.resolve(); console.log('ok');",
+        graph: 'retained',
+        stdout: 'ok\n',
+        format: 'esm',
+      },
+      {
+        name: 'surviving top-level await keeps refreshed module metadata',
+        source: "DEV: await Promise.resolve(); await Promise.resolve(); console.log('ok');",
+        graph: 'retained',
+        stdout: 'ok\n',
+        format: 'esm',
+      },
+      {
+        name: 'dropping labeled for-await keeps fallback when its loop scope is removed',
+        source:
+          "DEV: for await (const value of [Promise.resolve('gone')]) { console.log(value); } console.log('ok');",
         graph: 'reanalyzed',
         stdout: 'ok\n',
         format: 'esm',
+        extension: 'mjs',
+      },
+      {
+        name: 'surviving top-level for-await keeps refreshed module metadata',
+        source:
+          "DEV: await Promise.resolve(); for await (const value of [Promise.resolve('ok')]) { console.log(value); }",
+        graph: 'retained',
+        stdout: 'ok\n',
+        format: 'esm',
+        extension: 'mjs',
       },
     ];
     try {
       for (const [index, item] of cases.entries()) {
-        const input = join(dir, `${index}.ts`);
+        const inputExtension = 'extension' in item ? item.extension : 'ts';
+        const input = join(dir, `${index}.${inputExtension}`);
         const format = item.format ?? 'cjs';
-        const output = join(dir, `${index}.${format === 'esm' ? 'mjs' : 'cjs'}`);
+        const output = join(dir, `${index}.out.${format === 'esm' ? 'mjs' : 'cjs'}`);
         writeFileSync(input, item.source);
         const bundled = spawnSync(
           ZNTC_BIN,
