@@ -432,6 +432,7 @@ pub fn emitChunkRuntimeHelpers(
 ) !void {
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
+    var needs_to_common_js_runtime = false;
     var needs_to_esm_runtime = false;
     var needs_to_binary = false;
     for (chunk.modules.items) |mod_idx| {
@@ -439,6 +440,11 @@ pub fn emitChunkRuntimeHelpers(
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
+        for (m.import_records) |record| {
+            if (Module.esmRecordWrapperUse(record.kind) != .init_and_namespace or record.resolved.isNone()) continue;
+            const target = graph.getModule(record.resolved) orelse continue;
+            if (target.wrap_kind == .esm) needs_to_common_js_runtime = true;
+        }
         // (#4120) cross-chunk 으로 default 를 노출하는 CJS 모듈은 provider 청크 자체가
         // `var g = __toESM(require_X()).default` 를 materialize(chunks.zig writeCjsInteropMaterialize)
         // 한다 — 그 모듈이 *직접 import* 를 안 해도 __toESM 가 필요하다. (consumer 의 preamble 은
@@ -462,7 +468,7 @@ pub fn emitChunkRuntimeHelpers(
             needs_esm_wrap_runtime = true;
         }
         if (m.loader == .binary) needs_to_binary = true;
-        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
+        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_common_js_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     // (#4510/#4522) dynamic entry 청크의 CJS entry 는 `export default __toESM(require_x())` 를
     // 깐다(chunks.zig cjs_dyn_entry) — 그 모듈을 import 하는 바인딩이 이 청크에 없어도 필요.
@@ -483,7 +489,7 @@ pub fn emitChunkRuntimeHelpers(
             if (em.wrap_kind == .cjs and !em.can_skip_cjs_default_interop) needs_to_esm_runtime = true;
         }
     }
-    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+    if (needs_cjs_runtime or needs_esm_wrap_runtime or needs_to_common_js_runtime) {
         // bundle 경로와 동일 정책. chunk 의 module index 들을 graph 로 resolve 후 동일 검사.
         if (needsRequireShimForChunk(chunk, graph, options)) {
             var chunk_modules: std.ArrayList(*const Module) = .empty;
@@ -508,7 +514,7 @@ pub fn emitChunkRuntimeHelpers(
                 .{};
             try rt.appendCommonJsFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
         }
-        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
+        if (needs_to_esm_runtime or needs_esm_wrap_runtime or needs_to_common_js_runtime) {
             const helper_names = if (linker) |l|
                 try l.esmInteropRuntimeNames()
             else
@@ -558,6 +564,11 @@ pub fn emitChunkRuntimeHelpers(
         else
             rt_names.EsmInteropRuntimeInternalNames{};
         try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
+    }
+    if (needs_to_common_js_runtime and !needs_esm_wrap_runtime) {
+        const names = if (linker) |l| try l.esmInteropRuntimeNames() else rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
+        const internal = if (linker) |l| try l.esmInteropRuntimeInternalNames() else rt_names.EsmInteropRuntimeInternalNames{};
+        try rt.appendEsmInteropWrappersWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, names, internal);
     }
     // The virtual decorator module is distributed with its importing chunk.
     // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator

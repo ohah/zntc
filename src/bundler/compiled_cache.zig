@@ -100,7 +100,7 @@ pub const InputHasher = struct {
 ///   emit_module_pass 의 per-module 결과 (dev_codes / compiled_cache entry) 는 동일하므로
 ///   module-level cache key 에 영향 없음. dev_mode incremental rebuild 가 first=false 만
 ///   set 해도 first build 의 entry 와 동일 input_hash → cache hit.
-const expected_emit_options_field_count: usize = 60;
+const expected_emit_options_field_count: usize = 61;
 const intentionally_unhashed_fields = [_][]const u8{
     "skip_bundle_output",
     // PR-3b-i: 어느 청크를 outputs 로 쓸지(chunk 선택)만 거르고 per-module 컴파일 결과는
@@ -122,6 +122,11 @@ comptime {
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
 pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addU32(@backingInt(options.format));
+    h.addBool(options.preinitialized_esm_namespace != null);
+    if (options.preinitialized_esm_namespace) |namespace| {
+        h.addU32(@backingInt(namespace.module));
+        h.addU32(@backingInt(namespace.inner));
+    }
     h.addBool(options.minify_whitespace);
     h.addBool(options.minify_syntax);
     h.addBool(options.minify_identifiers);

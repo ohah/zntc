@@ -219,6 +219,9 @@ const emitter_tree_shake = @import("emitter/tree_shake.zig");
 const purity = @import("purity.zig");
 
 pub const EmitOptions = struct {
+    /// Existing namespace storage initialized by this output instance before CJS requires.
+    preinitialized_esm_namespace: ?@import("symbol.zig").SymbolID = null,
+
     /// PR-3b-i (lazy compilation): non-null 이면 이 인덱스의 청크 *하나만* emit 한다
     /// (나머지는 skip). dev lazy 의 on-demand 단일청크 컴파일에 사용 — 첫 GET 시 해당
     /// lazy seed 청크만 emit. cross-chunk 컨텍스트(chunk_graph/linker)는 전체가 유지되어

@@ -1013,6 +1013,28 @@ pub const Module = struct {
         return if (name.len > 0) name else null;
     }
 
+    pub const EsmRecordWrapperUse = enum { none, init_only, init_and_namespace };
+
+    /// Binding-less record lowerers: bare imports evaluate, require also reads namespace.
+    /// Binding/re-export/dynamic paths retain their own structured value-use planning.
+    pub fn esmRecordWrapperUse(kind: types.ImportKind) EsmRecordWrapperUse {
+        return switch (kind) {
+            .side_effect => .init_only,
+            .require => .init_and_namespace,
+            .static_import, .dynamic_import, .re_export, .worker, .glob, .require_context, .css_url, .css_import => .none,
+        };
+    }
+
+    /// A wrapper getter reads its binding's direct source namespace. The caller
+    /// visits export bindings once, separately from ordinary import records.
+    pub fn esmReExportWrapperSource(self: *const Module, binding: ExportBinding) ?ModuleIndex {
+        if (self.wrap_kind != .esm) return null;
+        const record_index = binding.import_record_index orelse return null;
+        if (record_index >= self.import_records.len) return null;
+        const source = self.import_records[record_index].resolved;
+        return if (source.isNone()) null else source;
+    }
+
     /// Graph-owned identity for a generated lexical ESM initialization call.
     pub fn esmInitSymbol(self: *const Module) !SymbolID {
         if (self.wrap_kind != .esm) return error.InvalidEsmInitOwner;

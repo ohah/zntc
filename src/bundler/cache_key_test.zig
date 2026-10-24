@@ -200,3 +200,27 @@ test "차등: 보수↔정밀 trade-off — compute 의 options_hash 메커니�
     const sel2 = cache_key.SelectiveOptions{ .jsx_transform = true, .define_hash = 0xFED };
     try testing.expect(sel_a != cache_key.compute(sh, m.flags, cache_key.hashSelective(&sel2), BUILD_ID));
 }
+
+test "hashEmitOptions distinguishes namespace initialization owner and SymbolId" {
+    const EmitOptions = @import("emitter.zig").EmitOptions;
+    const InputHasher = @import("compiled_cache.zig").InputHasher;
+    const hashEmitOptions = @import("compiled_cache.zig").hashEmitOptions;
+    const SymbolID = @import("symbol.zig").SymbolID;
+    const scenarios = [_]?SymbolID{
+        null,
+        SymbolID.make(@fromBackingInt(@as(u32, 0)), @as(u32, 1)),
+        SymbolID.make(@fromBackingInt(@as(u32, 1)), @as(u32, 1)),
+        SymbolID.make(@fromBackingInt(@as(u32, 0)), @as(u32, 2)),
+    };
+    var hashes: [scenarios.len]u64 = undefined;
+    for (scenarios, 0..) |namespace, index| {
+        var options = EmitOptions{ .format = .cjs, .preinitialized_esm_namespace = namespace };
+        var hasher = InputHasher.init(0);
+        hashEmitOptions(&hasher, &options);
+        hashes[index] = hasher.final();
+        var repeated = InputHasher.init(0);
+        hashEmitOptions(&repeated, &options);
+        try std.testing.expectEqual(hashes[index], repeated.final());
+        for (hashes[0..index]) |previous| try std.testing.expect(previous != hashes[index]);
+    }
+}

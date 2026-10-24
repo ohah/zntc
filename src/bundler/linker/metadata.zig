@@ -1158,6 +1158,14 @@ pub fn buildMetadataForAst(
                     continue;
                 }
 
+                if (self.usesCjsLiveWrapperNamespaces() and canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
+                    const namespace_owner = canonical_m_opt.?;
+                    const namespace = try namespace_owner.esmNamespaceSymbol();
+                    const reference = try namespace_owner.esmWrapperName(namespace, &self.rename_table);
+                    try putOwnedRename(self, &renames, &owned_nested_renames, ns_sym_id, reference);
+                    continue;
+                }
+
                 const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
                 // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
@@ -1342,20 +1350,46 @@ pub fn buildMetadataForAst(
                 }
                 break :blk_eff target_name;
             } else target_name;
-            if (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0])) {
+            var live_cjs_target: ?[]const u8 = null;
+            defer if (live_cjs_target) |value| self.allocator.free(value);
+            if (self.usesCjsLiveWrapperNamespaces()) if (resolved) |binding| {
+                const owner_index = @backingInt(binding.canonical.module_index);
+                if (self.isCrossChunkConsumer(module_index, owner_index)) if (self.graph.getModule(binding.canonical.module_index)) |owner| {
+                    if (owner.wrap_kind == .esm) {
+                        const namespace = try owner.esmNamespaceSymbol();
+                        const namespace_name = try owner.esmWrapperName(namespace, &self.rename_table);
+                        const key = try std.json.Stringify.valueAlloc(self.allocator, binding.canonical.export_name, .{});
+                        defer self.allocator.free(key);
+                        // A named import call must remain an unbound value, unlike ns.method().
+                        if (binding.canonical.synthetic_member) |member| {
+                            const member_key = try std.json.Stringify.valueAlloc(self.allocator, member, .{});
+                            defer self.allocator.free(member_key);
+                            live_cjs_target = try std.fmt.allocPrint(self.allocator, "(0,{s}[{s}][{s}])", .{ namespace_name, key, member_key });
+                        } else {
+                            live_cjs_target = try std.fmt.allocPrint(self.allocator, "(0,{s}[{s}])", .{ namespace_name, key });
+                        }
+                    }
+                };
+            };
+            if (live_cjs_target != null or (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0]))) {
                 if (importBindingLocalSemanticIndex(ib, &module_scope, module_index)) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를
                     // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
                     // 소유권 경로(owned_nested_renames)로 등록.
                     const synth_member: ?[]const u8 = if (resolved) |rb| rb.canonical.synthetic_member else null;
-                    const rename_value = if (synth_member) |member|
+                    const rename_value = if (live_cjs_target) |live|
+                        if (lazy_esm_import)
+                            try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, live)
+                        else
+                            try self.allocator.dupe(u8, live)
+                    else if (synth_member) |member|
                         try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ target_name, member })
                     else if (lazy_esm_import)
                         try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, effective_target)
                     else
                         effective_target;
-                    if (synth_member != null or lazy_esm_import) {
+                    if (live_cjs_target != null or synth_member != null or lazy_esm_import) {
                         var rename_owned_by_list = false;
                         errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
                         try owned_nested_renames.append(self.allocator, rename_value);

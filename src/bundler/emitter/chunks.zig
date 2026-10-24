@@ -78,6 +78,7 @@ fn emitChunkModuleRange(
     used_names_by_modidx: []const UsedNamesEntry,
     shaker: ?*const TreeShaker,
     with_sourcemap: bool,
+    initialized_namespaces: *const std.AutoHashMapUnmanaged(SymbolID, void),
     results: []ChunkModuleEmitResult,
     lo: usize,
     hi: usize,
@@ -93,10 +94,16 @@ fn emitChunkModuleRange(
             used_names_by_modidx[mi].names
         else
             null;
+        var module_options = options.*;
+        module_options.preinitialized_esm_namespace = null;
+        if (module.exports_symbol) |symbol| {
+            const namespace = SymbolID{ .module = module.index, .inner = symbol };
+            if (initialized_namespaces.contains(namespace)) module_options.preinitialized_esm_namespace = namespace;
+        }
         results[i].code = emitModule(
             allocator,
             module,
-            options,
+            &module_options,
             linker,
             is_entry,
             used_names,
@@ -273,6 +280,7 @@ fn emitPmCjsLiveImport(
     bind_arg: []const u8,
     lazy_local_keys: bool,
     min: bool,
+    legacy_syntax: bool,
     used_locals: *std.StringHashMapUnmanaged(void),
     natural_bindings: *const std.StringHashMapUnmanaged(void),
     alias_strs: *std.ArrayList([]const u8),
@@ -284,7 +292,7 @@ fn emitPmCjsLiveImport(
     // 키(borrow)로 넣을 수 있어(기존 caller 는 안정 slice 를 넘김) `defer free` 하면 UAF 다.
     try alias_strs.append(allocator, ns_base);
     const ns_local = try mintConsumerLocal(allocator, ns_base, used_locals, natural_bindings, alias_strs);
-    try chunk_output.appendSlice(allocator, "const ");
+    try chunk_output.appendSlice(allocator, if (legacy_syntax) "var " else "const ");
     try chunk_output.appendSlice(allocator, ns_local);
     try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
     try chunk_output.appendSlice(allocator, bind_arg);
@@ -301,7 +309,9 @@ fn emitPmCjsLiveImport(
         // 예전엔 재할당 심볼을 holder 만 내고 `continue` 해 심볼의 로컬 선언이 없었다 →
         // ns-member 재작성(`ns.A`→`A`)·re-export bottom(`exports.A = A`)이 bare export-local
         // 명(`A`)을 참조하는데 미선언 → `ReferenceError: A is not defined`.
-        if (!destructure_open) {
+        if (legacy_syntax) {
+            // The already allocated bindings use member reads when destructuring is unsupported.
+        } else if (!destructure_open) {
             try chunk_output.appendSlice(allocator, if (min) "const{" else "const { ");
             destructure_open = true;
         } else {
@@ -317,7 +327,11 @@ fn emitPmCjsLiveImport(
             // top-level 충돌이 없다(같은 이름 import+local 은 소스 단계 SyntaxError). linker 가
             // null 이면(단위 테스트) 라이브 rename 은 못 걸어도 바인딩은 나므로 무크래시(방어적).
             if (!used_locals.contains(key)) try used_locals.put(allocator, key, {});
-            try chunk_output.appendSlice(allocator, key);
+            if (legacy_syntax) {
+                const quoted = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                defer allocator.free(quoted);
+                try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ key, ns_local, quoted });
+            } else try chunk_output.appendSlice(allocator, key);
             if (linker) |l| {
                 const member = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_local, key });
                 defer allocator.free(member);
@@ -326,7 +340,11 @@ fn emitPmCjsLiveImport(
         } else {
             // 비재할당 심볼: 현행 스냅샷 구조분해.
             const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, null, allocator, used_locals, natural_bindings, alias_strs);
-            if (!std.mem.eql(u8, key, local)) {
+            if (legacy_syntax) {
+                const quoted = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                defer allocator.free(quoted);
+                try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ local, ns_local, quoted });
+            } else if (!std.mem.eql(u8, key, local)) {
                 try chunk_output.appendSlice(allocator, key);
                 try chunk_output.appendSlice(allocator, if (min) ":" else ": ");
                 try chunk_output.appendSlice(allocator, local);
@@ -731,6 +749,8 @@ fn emitChunksImpl(
         if (chunkRestrictSkip(chunk, ci, options.restrict_to_chunk)) continue;
 
         var chunk_output: std.ArrayList(u8) = .empty;
+        var initialized_namespaces: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
+        defer initialized_namespaces.deinit(allocator);
         errdefer chunk_output.deinit(allocator);
 
         // dev+split per-module HMR code (RFC_LAZY_DEV_MODULE_HMR PR-1):
@@ -1119,7 +1139,7 @@ fn emitChunksImpl(
                     // `__toCommonJS(undefined)` → `TypeError: Cannot convert undefined or null
                     // to object` 로 죽는다. (첫 수정이 여기까지 못 갔다.)
                     if (names.b) |b| {
-                        try chunk_output.appendSlice(allocator, "let ");
+                        try chunk_output.appendSlice(allocator, if (options.transform_options_base.unsupported.block_scoping) "var " else "let ");
                         try chunk_output.appendSlice(allocator, b);
                         try chunk_output.appendSlice(allocator, if (min) "=require(\"" else " = require(\"");
                         try chunk_output.appendSlice(allocator, bind_arg);
@@ -1163,7 +1183,7 @@ fn emitChunksImpl(
                             // 전역명 없을 때 로컬을 반환하므로 read 로는 부적합.
                             try pm_reads.append(allocator, global_name orelse sym.name);
                         }
-                        try chunk_output.appendSlice(allocator, "let ");
+                        try chunk_output.appendSlice(allocator, if (options.transform_options_base.unsupported.block_scoping) "var " else "let ");
                         for (pm_locals.items, 0..) |local, si| {
                             if (si > 0) try chunk_output.appendSlice(allocator, if (min) "," else ", ");
                             try chunk_output.appendSlice(allocator, local);
@@ -1172,9 +1192,13 @@ fn emitChunksImpl(
                     }
 
                     // `require_X` / `init_X` — 함수. 호출 시점에 조회(lazy forwarding).
-                    try chunk_output.appendSlice(allocator, "const ");
+                    const legacy_proxy = options.transform_options_base.unsupported.block_scoping;
+                    try chunk_output.appendSlice(allocator, if (legacy_proxy) "var " else "const ");
                     try chunk_output.appendSlice(allocator, names.a);
-                    try chunk_output.appendSlice(allocator, if (min) "=function(){const m=require(\"" else " = function() { const m = require(\"");
+                    try chunk_output.appendSlice(allocator, if (legacy_proxy)
+                        (if (min) "=function(){var m=require(\"" else " = function() { var m = require(\"")
+                    else
+                        (if (min) "=function(){const m=require(\"" else " = function() { const m = require(\""));
                     try chunk_output.appendSlice(allocator, bind_arg);
                     try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
                     if (names.b) |b| {
@@ -1191,7 +1215,10 @@ fn emitChunksImpl(
                         // init **전에** 하면 여전히 undefined 를 집는다(함수 선언만 hoisting 으로
                         // 우연히 살아남는다 — 바로 그 은폐 패턴). init 은 memoize 라 이후 재갱신이
                         // 없으니 이 순서가 유일한 기회다.
-                        try chunk_output.appendSlice(allocator, if (min) "const r=m." else "\t\tconst r = m.");
+                        try chunk_output.appendSlice(allocator, if (legacy_proxy)
+                            (if (min) "var r=m." else "\t\tvar r = m.")
+                        else
+                            (if (min) "const r=m." else "\t\tconst r = m."));
                         try chunk_output.appendSlice(allocator, names.a);
                         try chunk_output.appendSlice(allocator, if (min) ".apply(this,arguments);" else ".apply(this, arguments);\n");
                         for (0..syms.len) |si| {
@@ -1252,7 +1279,7 @@ fn emitChunksImpl(
                                 const tmod = graph.getModule(@fromBackingInt(@intCast(wm))) orelse continue;
                                 const wn = try wrapperNamesFor(allocator, tmod, null);
                                 defer wn.deinit(allocator);
-                                try chunk_output.appendSlice(allocator, "const ");
+                                try chunk_output.appendSlice(allocator, "var ");
                                 try chunk_output.appendSlice(allocator, wn.a);
                                 try chunk_output.appendSlice(allocator, if (min) "=function(){return require(\"" else " = function() { return require(\"");
                                 try chunk_output.appendSlice(allocator, bind_arg);
@@ -1289,9 +1316,9 @@ fn emitChunksImpl(
                         if (cjs_require) {
                             const provider = graph.getModule(init.module) orelse return error.InvalidEsmInitOwner;
                             if ((try provider.esmInitSymbol()).eql(init)) {
-                                try chunk_output.print(allocator, "const {s}=function(){{return require(\"{s}\").{s}.apply(this,arguments)}};\n", .{ name, bind_arg, name });
+                                try chunk_output.print(allocator, "var {s}=function(){{return require(\"{s}\").{s}.apply(this,arguments)}};\n", .{ name, bind_arg, name });
                             } else {
-                                try chunk_output.print(allocator, "const {{ {s} }}=require(\"{s}\");\n", .{ name, bind_arg });
+                                try chunk_output.print(allocator, "var {s}=require(\"{s}\").{s};\n", .{ name, bind_arg, name });
                             }
                         } else {
                             try chunk_output.print(allocator, "import {{ {s} }} from \"{s}\";\n", .{ name, bind_arg });
@@ -1388,10 +1415,25 @@ fn emitChunksImpl(
                         bind_arg,
                         lazy_local_keys,
                         options.minify_whitespace,
+                        options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring,
                         &used_locals,
                         &natural_bindings,
                         &alias_strs,
                     );
+                    continue;
+                }
+
+                if (cjs_require and (options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring)) {
+                    for (import_symbols) |sym| {
+                        const binding = crossChunkBindingName(linker, sym);
+                        const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
+                        const key = if (lazy_local_keys or (has_global and !entryChunkExportsPublicName(graph, dep_chunk, sym.name, options))) binding else sym.name;
+                        const consumer = if (options.preserve_modules and chunk.modules.items.len == 1) @as(?u32, @backingInt(chunk.modules.items[0])) else null;
+                        const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, consumer, allocator, &used_locals, &natural_bindings, &alias_strs);
+                        const quoted = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                        defer allocator.free(quoted);
+                        try chunk_output.print(allocator, "var {s}=require(\"{s}\")[{s}];\n", .{ local, bind_arg, quoted });
+                    }
                     continue;
                 }
 
@@ -1611,6 +1653,30 @@ fn emitChunksImpl(
             }
         };
 
+        // Namespace allocation is an instantiation step, before dependency evaluation.
+        // Its output position is planned directly, using only actual cross-edge SIDs.
+        if (options.format == .cjs and !options.preserve_modules and linker != null and linker.?.usesCjsLiveWrapperNamespaces()) {
+            var prefix: std.ArrayList(u8) = .empty;
+            defer prefix.deinit(allocator);
+            var namespaces: std.ArrayListUnmanaged(SymbolID) = .empty;
+            defer namespaces.deinit(allocator);
+            var identities = chunk.esm_wrapper_cross_exports.keyIterator();
+            while (identities.next()) |identity| {
+                const owner = graph.getModule(identity.module) orelse return error.InvalidEsmInitOwner;
+                if (identity.eql(try owner.esmNamespaceSymbol())) try namespaces.append(allocator, identity.*);
+            }
+            std.mem.sort(SymbolID, namespaces.items, {}, esmInitLessThan);
+            for (namespaces.items) |identity| {
+                const local = try esmWrapperNameFor(allocator, graph, identity, linker);
+                defer allocator.free(local);
+                const public = try esmWrapperNameFor(allocator, graph, identity, null);
+                defer allocator.free(public);
+                try prefix.print(allocator, "var {s}={{}};exports.{s}={s};\n", .{ local, public, local });
+                try initialized_namespaces.put(allocator, identity, {});
+            }
+            if (prefix.items.len > 0) try chunk_output.insertSlice(allocator, external_imports_pos, prefix.items);
+        }
+
         // 엔트리 모듈 인덱스 (final exports용). manual/common 은 엔트리 모듈 없음.
         const entry_mod_idx: ?u32 = switch (chunk.kind) {
             .entry_point => |info| @backingInt(info.module),
@@ -1704,6 +1770,7 @@ fn emitChunksImpl(
                         used_names_by_modidx,
                         shaker,
                         chunk_sm != null,
+                        &initialized_namespaces,
                         module_results,
                         start,
                         end,
@@ -1722,6 +1789,7 @@ fn emitChunksImpl(
                     used_names_by_modidx,
                     shaker,
                     chunk_sm != null,
+                    &initialized_namespaces,
                     module_results,
                     0,
                     batch_mods.len,
@@ -2272,6 +2340,7 @@ fn emitChunksImpl(
             while (init_iterator.next()) |init| try initializers.append(allocator, init.*);
             std.mem.sort(SymbolID, initializers.items, {}, esmInitLessThan);
             for (initializers.items) |init| {
+                if (initialized_namespaces.contains(init)) continue;
                 const local = try esmWrapperNameFor(allocator, graph, init, linker);
                 defer allocator.free(local);
                 const public = try esmWrapperNameFor(allocator, graph, init, null);

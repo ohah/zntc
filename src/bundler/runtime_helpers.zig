@@ -2613,6 +2613,19 @@ pub fn appendEsmWrapRuntimeWithGraphInternalNames(
 ) !void {
     try appendEsmFactoryRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, factory_name, internal_names);
 
+    try appendEsmInteropWrappersWithGraphInternalNames(buf, allocator, minify, es5_syntax, configurable, names, interop_internal_names);
+}
+
+/// Shared export/to-CommonJS ABI, without allocating an unused ESM factory instance.
+pub fn appendEsmInteropWrappersWithGraphInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    names: names_mod.EsmInteropRuntimeNames,
+    interop_internal_names: names_mod.EsmInteropRuntimeInternalNames,
+) !void {
     const export_runtime = if (configurable)
         (if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE)
     else if (es5_syntax)

@@ -1530,6 +1530,16 @@ fn addCrossChunkSymbol(
     if (!gop.found_existing)
         try chunk.cross_chunk_imports.append(allocator, src_chunk_idx);
 
+    if (lnk.usesCjsLiveWrapperNamespaces()) {
+        if (lnk.getModule(canonical_module)) |provider| {
+            if (provider.wrap_kind == .esm) {
+                try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, try provider.esmInitSymbol());
+                try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, seen_static, src_chunk_idx, try provider.esmNamespaceSymbol());
+                return;
+            }
+        }
+    }
+
     const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
     if (!ifgop.found_existing) ifgop.value_ptr.* = .empty;
     // dedup 은 (export 이름, canonical 모듈) 둘 다로 — 서로 다른 모듈이 *같은* export
@@ -2153,6 +2163,28 @@ pub fn computeCrossChunkLinks(
                     // (CJS canonical 은 export_bindings 가 없어 항상 null → no-op.)
                     if (nsReExportTarget(graph, canonical.module_index, canonical.export_name)) |ns_target|
                         try linkNamespaceCrossChunkOnce(allocator, chunk_graph, chunk, &seen_static, &seen_ns_target, lnk, ns_target, module_count);
+                }
+
+                for (m.import_records) |record| {
+                    const use = Module.esmRecordWrapperUse(record.kind);
+                    if (use == .none or record.resolved.isNone()) continue;
+                    const provider = graph.getModule(record.resolved) orelse continue;
+                    const source_chunk = chunk_graph.getModuleChunk(record.resolved);
+                    if (provider.wrap_kind != .esm or source_chunk.isNone() or source_chunk == chunk.index or
+                        (lnk.tree_shaker_active and !provider.is_included)) continue;
+                    try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmInitSymbol());
+                    if (use == .init_and_namespace)
+                        try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmNamespaceSymbol());
+                }
+
+                for (m.export_bindings) |binding| {
+                    const source = m.esmReExportWrapperSource(binding) orelse continue;
+                    const provider = graph.getModule(source) orelse continue;
+                    const source_chunk = chunk_graph.getModuleChunk(source);
+                    if (provider.wrap_kind != .esm or source_chunk.isNone() or source_chunk == chunk.index or
+                        (lnk.tree_shaker_active and !provider.is_included)) continue;
+                    try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmInitSymbol());
+                    try addEsmWrapperCrossSymbol(allocator, chunk_graph, chunk, &seen_static, source_chunk, try provider.esmNamespaceSymbol());
                 }
 
                 // named re-export (`export { x } from "./y"`): import_binding 이
