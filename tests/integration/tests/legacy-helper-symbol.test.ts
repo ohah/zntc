@@ -758,6 +758,60 @@ console.log(${sourceName}, new Service().method(7));
     });
   }
 
+  test('standalone JavaScript metadata references keep shadowed Object and Function identities', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+const events = [];
+function identity(value) { return value; }
+function ObjectSentinel() {}
+function FunctionSentinel() {}
+function build(Object, Function) {
+  const expectedObject = Object;
+  const expectedFunction = Function;
+  Reflect.metadata = function (key, value) {
+    return function (_target, property) {
+      if (key === 'design:paramtypes' && property === undefined)
+        events.push(value[0] === expectedObject ? 'class:exact' : 'class:wrong');
+      if (key === 'design:type' && property === 'method')
+        events.push(value === expectedFunction ? 'method:exact' : 'method:wrong');
+    };
+  };
+  @identity
+  class Service {
+    constructor(value) {}
+    @identity method() {}
+  }
+  return Service;
+}
+const Service = build(ObjectSentinel, FunctionSentinel);
+new Service(1).method();
+console.log(events.join('|'));
+`,
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+      }),
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = spawnSync(
+      ZNTC_BIN,
+      ['input.js', '--target=es2020', '--minify-identifiers', '--minify-syntax', '-o', output],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('method:exact|class:exact\n');
+    expect(result.stderr).toMatch(
+      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
+    );
+  });
+
   for (const target of ['es5', 'es2022'] as const) {
     for (const minify of [false, true]) {
       test(`standalone ${target} ${minify ? 'minified ' : ''}using helper pair uses collision-free SymbolId names`, async () => {

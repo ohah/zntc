@@ -600,10 +600,13 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers) return false;
 
-    // emitDecoratorMetadata is currently modeled for TypeScript legacy
-    // decorators. Other parser modes/options stay on the established analyzer.
+    // emitDecoratorMetadata currently has a complete exact graph for TypeScript
+    // and strict JavaScript legacy decorators. Flow and lenient/unknown parser
+    // modes stay on the established analyzer until their metadata type semantics
+    // and generated references are covered together.
     if (options.emit_decorator_metadata and parser.ast.has_decorator and
-        (parser.is_flow or parser.source_mode != .ts or !options.experimental_decorators)) return false;
+        (parser.is_flow or !options.experimental_decorators or
+            (parser.source_mode != .ts and parser.source_mode != .js_strict))) return false;
 
     // Flow's type-only syntax does not change the exact graph edits made by
     // legacy decorator lowering. Keep Flow runtime constructs without complete
@@ -2555,9 +2558,13 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     try std.testing.expect(!js_parser.is_flow);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &js_parser));
     try std.testing.expect(canMangleWithTransformSemantic(legacy, &js_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &js_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
         .emit_decorator_metadata = true,
     }, &js_parser));
 
@@ -2570,6 +2577,11 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     _ = try unknown_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), unknown_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &unknown_parser));
 
     var unknown_ts_scanner = try Scanner.init(
         allocator,
@@ -2581,6 +2593,11 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     _ = try unknown_ts_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), unknown_ts_parser.errors.items.len);
     try std.testing.expect(!canMangleWithTransformSemantic(legacy, &unknown_ts_parser));
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &unknown_ts_parser));
 
     var flow_scanner = try Scanner.init(
         allocator,
@@ -2697,6 +2714,11 @@ test "#4819 decorator metadata without decorators keeps the transform semantic g
     _ = try ts_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), ts_parser.errors.items.len);
     try std.testing.expect(ts_parser.ast.has_decorator);
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, &ts_parser));
     try std.testing.expect(!canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .emit_decorator_metadata = true,
