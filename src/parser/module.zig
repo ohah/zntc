@@ -191,29 +191,33 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
     const options = try parseImportCallOptions(self);
     try self.expect(.r_paren);
 
+    const call_node = try self.ast.addNode(.{
+        .tag = .import_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .binary = .{ .left = arg, .right = options, .flags = 0 } },
+    });
+
     // Inline scan: dynamic import — 인자가 string_literal이면 레코드 추가
     if (self.enable_scan and !arg.isNone() and @backingInt(arg) < self.ast.nodes.items.len) {
         const arg_node = self.ast.getNode(arg);
         if (arg_node.tag == .string_literal) {
             const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
             const spec = extractImportSpecifier(self, raw);
-            _ = appendImportRecord(self, spec, .dynamic_import, arg_node.span);
+            const idx = appendImportRecord(self, spec, .dynamic_import, arg_node.span);
+            if (idx < self.scan_import_records.items.len) self.scan_import_records.items[idx].call_node = call_node;
         } else {
             // 비-literal specifier: record(빈 specifier + reason). graph resolve
             // 가 warning 후 resolved=.none 유지 → 원본 import() 네이티브 passthrough.
             const idx = appendImportRecord(self, "", .dynamic_import, arg_node.span);
             if (idx < self.scan_import_records.items.len) {
+                self.scan_import_records.items[idx].call_node = call_node;
                 self.scan_import_records.items[idx].dynamic_invalid_reason =
                     scan_results_mod.dynamic_import_non_literal_reason;
             }
         }
     }
 
-    return try self.ast.addNode(.{
-        .tag = .import_expression,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = arg, .right = options, .flags = 0 } },
-    });
+    return call_node;
 }
 
 pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {

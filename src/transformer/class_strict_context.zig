@@ -65,6 +65,8 @@ pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, pre
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
+        try self.relocateNodeScopeProvenance(idx, source, target);
+        if (previous_output != source) try self.relocateNodeScopeProvenance(idx, previous_output, target);
         const existing = editor.referenceForNode(idx) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => std.debug.panic("strict initializer cannot inspect its source reference: {s}", .{@errorName(err)}),

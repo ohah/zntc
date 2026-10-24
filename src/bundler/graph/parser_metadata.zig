@@ -51,6 +51,7 @@ pub fn materialize(
                 .context_mode = ctx_mode,
                 .context_invalid_reason = sr.context_invalid_reason,
                 .dynamic_invalid_reason = sr.dynamic_invalid_reason,
+                .call_node = sr.call_node,
             };
         }
         module.import_records = records;

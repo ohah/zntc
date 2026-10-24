@@ -31,8 +31,11 @@ pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker:
         const module_wrapped = module.wrap_kind == .esm;
         var live_dynamic = false;
         if (graph.inline_dynamic_imports) {
+            var actual_origins = try @import("../interop_callsite.zig").collectLiveDynamicOrigins(graph.allocator, module);
+            defer actual_origins.deinit(graph.allocator);
             for (module.import_records, 0..) |record, index| {
                 if (record.kind != .dynamic_import or record.resolved.isNone()) continue;
+                if (!actual_origins.contains(record.call_node)) continue;
                 const target = graph.getModule(record.resolved) orelse continue;
                 if (target.wrap_kind != .cjs) continue;
                 if (shaker) |s| if (!try s.isImportRecordLive(module.index.toU32(), @intCast(index))) continue;
@@ -126,6 +129,7 @@ pub fn emitBundleRuntimeHelpers(
             try @import("../runtime_interop_ast.zig").emit(output, allocator, graph, linker orelse return error.InteropAstProviderMissingLinker, options);
         }
     }
+    if (graph.dynamic_import_ast_provider != null) try @import("../runtime_dynamic_import_ast.zig").emit(output, allocator, graph, linker orelse return error.InteropAstProviderMissingLinker, options);
     if (needs_esm_wrap_runtime) {
         const factory_name = if (linker) |l|
             try l.esmFactoryRuntimeName()

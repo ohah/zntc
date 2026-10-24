@@ -1713,6 +1713,7 @@ fn transpileWithCallbackInternal(
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
         transformer.helper_scope_map = analyzer.helper_scope_map;
         transformer.namespace_member_owners = &analyzer.namespace_member_owners;
@@ -1800,6 +1801,7 @@ fn transpileWithCallbackInternal(
             transformer.scopes = analyzer.scopes.items;
             transformer.scope_maps = analyzer.scope_maps.items;
             transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.node_scope_provenance = analyzer.node_scope_provenance;
             transformer.helper_scope_map = analyzer.helper_scope_map;
         }
     }
@@ -3239,6 +3241,7 @@ test "#6003 moved TLA default export avoids escaped eval-visible facade names" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.current_scope = transformer.programScope();
 
     _ = try transformer.visitNode(program);
@@ -3335,6 +3338,7 @@ test "#4819 using temp codegen detects ten corrupted SymbolId table entries" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.semantic_edit_enabled = true;
 
@@ -3695,6 +3699,7 @@ test "#4819 Flow ref-component helper is finalized through its exact SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -6369,6 +6374,7 @@ test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.helper_scope_map = analyzer.helper_scope_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
@@ -6382,6 +6388,7 @@ test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
     transformer.scopes = edited.scopes;
     transformer.scope_maps = edited.scope_maps;
     transformer.scope_owner_map = edited.scope_owner_map;
+    transformer.node_scope_provenance = edited.node_scope_provenance;
     transformer.helper_scope_map = edited.helper_scope_map;
     transformer.references = edited.references;
 

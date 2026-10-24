@@ -45,6 +45,7 @@ pub const dynamic_import_non_literal_reason =
     "dynamic import() requires a string literal specifier; non-literal (variable/template/concatenated) specifiers are left as native runtime import() and not code-split";
 
 pub const ScanImportRecord = struct {
+    call_node: @import("ast.zig").NodeIndex = .none,
     /// 원본 import 경로 (따옴표 제거됨, 소스 코드 참조)
     specifier: []const u8,
     /// import 종류

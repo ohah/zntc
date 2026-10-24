@@ -1485,6 +1485,53 @@ fn expectedReferenceScope(
     return expectedReferenceScopeFromParent(ast, root, parent_by_node, scope_owner_map, node, parent);
 }
 
+/// Validate expression-use provenance against real AST lexical owners. This
+/// shares the same parameter/body and computed-key boundary rules as the exact
+/// reference audit; expressions never become scope owners to satisfy it.
+pub fn validateNodeScopeProvenance(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    provenance: *const @import("../semantic/node_scope_provenance.zig").Map,
+) std.mem.Allocator.Error!bool {
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    defer allocator.free(reachable);
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    for (reachable) |raw| {
+        var children = ast_walk.children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            if (@backingInt(child) >= ast.nodes.items.len) return false;
+            const entry = try parents.getOrPut(allocator, @backingInt(child));
+            if (entry.found_existing and entry.value_ptr.* != raw and provenance.contains(child)) return false;
+            entry.value_ptr.* = raw;
+        }
+    }
+    for (reachable) |raw| {
+        const node: NodeIndex = @fromBackingInt(raw);
+        const entry = provenance.get(node) orelse {
+            if (ast.nodes.items[raw].tag == .import_expression) return false;
+            continue;
+        };
+        if (entry.source_node.isNone() or @backingInt(entry.source_node) >= ast.nodes.items.len) return false;
+        const expected = expectedReferenceScope(ast, root, &parents, scope_owner_map, raw) orelse return false;
+        if (entry.scope.isNone() or @backingInt(entry.scope) != expected.scope) return false;
+        var child = raw;
+        var with_environment = false;
+        var hops: usize = 0;
+        while (parents.get(child)) |parent| : (hops += 1) {
+            if (hops >= ast.nodes.items.len) return false;
+            const ancestor = ast.nodes.items[parent];
+            if (ancestor.tag == .with_statement and @backingInt(ancestor.data.binary.right) == child) with_environment = true;
+            child = parent;
+        }
+        if (entry.with_environment != with_environment) return false;
+    }
+    return true;
+}
+
 fn topLevelStatementIndex(
     ast: *const Ast,
     root: NodeIndex,

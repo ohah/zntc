@@ -1605,6 +1605,12 @@ pub const Parser = struct {
         /// speculative parse 시 스캔된 comment 가 codegen 으로 leak 되지 않도록
         /// 복원 — 누락 시 같은 comment 가 speculation 횟수만큼 중복 emit.
         comments_len: usize,
+        // Inline graph records belong to successful parse creation, not a
+        // discarded speculative expression with the same source span.
+        scan_import_records_len: usize,
+        scan_import_bindings_len: usize,
+        scan_export_bindings_len: usize,
+        scan_result: scan_results_mod.ScanResult,
         /// 중첩 한계 초과 표시 (타입 #4146/#4518, 식 #4519). **버려지는 speculation 이 낸
         /// 초과는 함께 버려야 한다.** 예: `a < a < a < …` (유효한 비교 연산 체인)은 식 파서가
         /// 먼저 타입 인자로 speculative 파싱했다가 `>` 가 없어 되돌린다. 이때 초과 표시가 남으면
@@ -1624,6 +1630,10 @@ pub const Parser = struct {
             .template_depth_len = self.scanner.template_depth_stack.items.len,
             .line_offsets_len = self.scanner.line_offsets.items.len,
             .comments_len = self.scanner.comments.items.len,
+            .scan_import_records_len = self.scan_import_records.items.len,
+            .scan_import_bindings_len = self.scan_import_bindings.items.len,
+            .scan_export_bindings_len = self.scan_export_bindings.items.len,
+            .scan_result = self.scan_result,
             .depth_overflow = self.depth_overflow,
         };
     }
@@ -1632,6 +1642,11 @@ pub const Parser = struct {
         // speculation 이 낸 초과 표시를 되돌린다 (#4146/#4519). (type_depth/expr_depth 자체는
         // 각 초크포인트의 defer 로 이미 호출 스택과 함께 정확히 복원돼 있어 저장/복원 대상이 아니다.)
         self.depth_overflow = s.depth_overflow;
+        self.scan_import_records.shrinkRetainingCapacity(s.scan_import_records_len);
+        self.scan_import_bindings.shrinkRetainingCapacity(s.scan_import_bindings_len);
+        self.scan_export_bindings.shrinkRetainingCapacity(s.scan_export_bindings_len);
+        self.scan_import_binding_map.clearRetainingCapacity();
+        self.scan_result = s.scan_result;
         self.scanner.current = s.current;
         self.scanner.start = s.start;
         self.scanner.token = s.token;
@@ -2107,3 +2122,38 @@ pub const Parser = struct {
         });
     }
 };
+
+test "inline dynamic import anchors exclude discarded speculative creations" {
+    const sources = [_][]const u8{
+        "(import('./dep.cjs'));",
+        "var result;with((result=import('./dep.cjs'),{})){}",
+        "var result;(result=import('./dep.cjs'));",
+        "function run(value=import('./dep.cjs')){}",
+        "function run(value=()=>import('./dep.cjs')){}",
+        "(async()=>import('./dep.cjs'))();",
+        "class Read{static value=import('./dep.cjs');}",
+        "(function(){return import('./dep.cjs')})();",
+        "true?import('./dep.cjs'):0;",
+        "(0,import('./dep.cjs'));",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.enable_scan = true;
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 1), parser.scan_import_records.items.len);
+        const record = parser.scan_import_records.items[0];
+        try std.testing.expectEqual(scan_results_mod.ImportKind.dynamic_import, record.kind);
+        const live = try @import("ast_walk.zig").collectReachableNodeIndices(a, &parser.ast);
+        var count: usize = 0;
+        for (live) |raw| {
+            if (parser.ast.nodes.items[raw].tag != .import_expression) continue;
+            count += 1;
+            try std.testing.expectEqual(raw, @as(usize, @backingInt(record.call_node)));
+        }
+        try std.testing.expectEqual(@as(usize, 1), count);
+    }
+}

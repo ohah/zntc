@@ -158,6 +158,9 @@ pub const SemanticAnalyzer = struct {
     /// 원본 AST에서 새 어휘 스코프를 연 노드 → ScopeId. 변환기의 스코프 커서용.
     /// 한 노드가 두 스코프를 열면 안쪽 스코프를 기록한다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Lexical use context of an expression; never claims ownership of a scope.
+    node_scope_provenance: @import("node_scope_provenance.zig").Map = .empty,
+    with_environment_depth: u32 = 0,
     /// A class name syntax node can denote both the outer declaration and the
     /// immutable self binding. Anchor the latter to the class node itself.
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -374,7 +377,7 @@ pub const SemanticAnalyzer = struct {
 
     /// 변환 패스가 사용할 append-only 의미 정보 편집기를 만든다.
     pub fn beginEdit(self: *SemanticAnalyzer) @import("editor.zig").Error!@import("editor.zig").SemanticEditor {
-        return @import("editor.zig").SemanticEditor.init(
+        var editor = try @import("editor.zig").SemanticEditor.init(
             self.allocator,
             self.ast,
             self.symbols.items,
@@ -385,6 +388,9 @@ pub const SemanticAnalyzer = struct {
             self.symbol_ids.items,
             self.helper_scope_map,
         );
+        errdefer editor.deinit();
+        try editor.importNodeScopeProvenance(self.node_scope_provenance);
+        return editor;
     }
 
     /// 트랜스포머가 갱신한 배열을 받는다. 이전 배열도 같은 모듈 arena가 소유한다.
@@ -394,6 +400,7 @@ pub const SemanticAnalyzer = struct {
         self.scopes = std.ArrayList(Scope).fromOwnedSlice(result.scopes);
         self.scope_maps = std.ArrayList(std.StringHashMapUnmanaged(usize)).fromOwnedSlice(result.scope_maps);
         self.scope_owner_map = result.scope_owner_map;
+        self.node_scope_provenance = result.node_scope_provenance;
         self.helper_scope_map = result.helper_scope_map;
         self.references = std.ArrayList(symbol_mod.Reference).fromOwnedSlice(result.references);
         self.symbol_ids = std.ArrayList(?u32).fromOwnedSlice(result.symbol_ids);
@@ -411,6 +418,7 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.node_scope_provenance.deinit(self.allocator);
         self.class_self_symbol_map.deinit(self.allocator);
         for (self.namespace_member_groups.items) |*group| group.members.deinit(self.allocator);
         self.namespace_member_groups.deinit(self.allocator);
@@ -1916,6 +1924,10 @@ pub const SemanticAnalyzer = struct {
         defer self.current_visit_node = saved_visit_node;
 
         const node = self.ast.getNode(idx);
+        if (node.tag == .import_expression) {
+            std.debug.assert(!self.current_scope.isNone());
+            try self.node_scope_provenance.put(self.allocator, idx, .{ .scope = self.current_scope, .source_node = idx, .with_environment = self.with_environment_depth != 0 });
+        }
         // TS/Flow 타입 wrapper: 값(operand)만 순회, 타입 부분 스킵 (#3129 단일 source).
         // as/satisfies 는 binary(left=expr,right=type) 이나 extern union 이라
         // unary.operand == binary.left — 값 부분만 방문된다.
@@ -1986,6 +1998,8 @@ pub const SemanticAnalyzer = struct {
                 // 모든 상위 스코프의 바인딩 mangling을 차단.
                 self.markScopeFieldToRoot("subtree_has_with");
                 try self.visitNode(node.data.binary.left);
+                self.with_environment_depth += 1;
+                defer self.with_environment_depth -= 1;
                 try self.visitNode(node.data.binary.right);
             },
             .switch_case => try self.visitSwitchCase(node),
@@ -5696,3 +5710,35 @@ pub const SemanticAnalyzer = struct {
         }
     }
 };
+
+test "initial import expression provenance distinguishes parameter and body use scopes" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "function run(value=import('./parameter.cjs')) { const body=1; return import('./body.cjs'); } run();");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(u32, 2), analyzer.node_scope_provenance.count());
+    var parameter_scope: ScopeId = .none;
+    var body_scope: ScopeId = .none;
+    for (analyzer.symbols.items) |row| {
+        if (std.mem.eql(u8, row.nameText(parser.ast.source), "value")) parameter_scope = row.scope_id;
+        if (std.mem.eql(u8, row.nameText(parser.ast.source), "body")) body_scope = row.scope_id;
+    }
+    try std.testing.expect(!parameter_scope.isNone() and !body_scope.isNone() and parameter_scope != body_scope);
+    var entries = analyzer.node_scope_provenance.iterator();
+    while (entries.next()) |entry| {
+        const raw = @backingInt(entry.key_ptr.*);
+        try std.testing.expect(!analyzer.scope_owner_map.contains(raw));
+        const node = parser.ast.getNode(entry.key_ptr.*);
+        const argument = parser.ast.getNode(node.data.binary.left);
+        const text = parser.ast.getText(argument.span);
+        if (std.mem.indexOf(u8, text, "parameter") != null) try std.testing.expectEqual(parameter_scope, entry.value_ptr.scope) else try std.testing.expectEqual(body_scope, entry.value_ptr.scope);
+    }
+}

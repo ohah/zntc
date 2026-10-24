@@ -259,7 +259,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                 if (top_level.isSet(ni)) has_module_exports = true;
             },
             .import_expression => {
-                if (tryExtractDynamicImport(ast, node)) |record| {
+                if (tryExtractDynamicImport(ast, node, @fromBackingInt(@intCast(ni)))) |record| {
                     try records.append(allocator, record);
                 }
             },
@@ -600,7 +600,7 @@ fn tryExtractExportNamed(ast: *const Ast, node: Node) ?ImportRecord {
 
 /// import("./foo"): unary { operand=arg }
 /// operand가 string_literal이면 추출, 아니면 null (computed → 정적 분석 불가).
-fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
+fn tryExtractDynamicImport(ast: *const Ast, node: Node, call_node: NodeIndex) ?ImportRecord {
     const arg_idx = node.data.binary.left;
     if (arg_idx.isNone()) return null;
 
@@ -611,6 +611,7 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
         return .{
             .specifier = "",
             .kind = .dynamic_import,
+            .call_node = call_node,
             .span = arg_node.span,
             .dynamic_invalid_reason = scan_results.dynamic_import_non_literal_reason,
         };
@@ -621,6 +622,7 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
     return .{
         .specifier = specifier,
         .kind = .dynamic_import,
+        .call_node = call_node,
         .span = arg_node.span,
     };
 }

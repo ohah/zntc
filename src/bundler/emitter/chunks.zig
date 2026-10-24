@@ -3352,7 +3352,7 @@ pub fn rewriteDynamicImportsSingleFile(
 
     var has_dynamic = false;
     for (module.import_records) |rec| {
-        if (rec.kind != .dynamic_import) continue;
+        if (rec.kind != .dynamic_import or rec.callsite_lowered) continue;
         // #4616: external alias 대상도 켠다 — `resolved == .none` 이라 아래 조건에 안 걸린다.
         if (rec.resolved != .none or lower_unresolved_dynamic_imports or rec.external_specifier != null) {
             has_dynamic = true;
@@ -3365,7 +3365,7 @@ pub fn rewriteDynamicImportsSingleFile(
     errdefer allocator.free(result);
 
     for (module.import_records) |rec| {
-        if (rec.kind != .dynamic_import) continue;
+        if (rec.kind != .dynamic_import or rec.callsite_lowered) continue;
         if (rec.resolved == .none) {
             // #4616: external alias — 호출 전체가 아니라 지정자 문자열만 바꾼다.
             if (rec.external_specifier) |ext_name| {

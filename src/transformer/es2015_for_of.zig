@@ -659,6 +659,7 @@ fn checkNativeStateLoopRegistration(source: []const u8, native: bool) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(loop)).?);
     transformer.state_machine_depth = 1;

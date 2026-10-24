@@ -827,3 +827,47 @@ test "HMR codec preserves independent canonical roles and rejects corrupt role h
     std.mem.writeInt(u32, legacy[4..8], 18, .little);
     try testing.expectError(error.UnsupportedVersion, codec.deserialize(legacy, alloc));
 }
+
+test "semantic_codec: import expression use scopes survive cache independently from owners" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "function read(x=import('./parameter')) { return import('./body'); } with({}){import('./with');}");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    const sem: ModuleSemanticData = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    const restored = try codec.deserialize(bytes.items, a);
+    try testing.expectEqual(@as(u32, 3), restored.node_scope_provenance.count());
+    var entries = sem.node_scope_provenance.iterator();
+    while (entries.next()) |entry| {
+        try testing.expectEqualDeep(entry.value_ptr.*, restored.node_scope_provenance.get(entry.key_ptr.*).?);
+        try testing.expect(!restored.scope_owner_map.contains(@backingInt(entry.key_ptr.*)));
+    }
+    var editor = try sem.beginEdit(a, &parser.ast);
+    _ = try editor.finish();
+    editor = try sem.beginEdit(a, &parser.ast);
+    editor.node_scope_provenance.clearRetainingCapacity();
+    try testing.expectError(error.InvalidScope, editor.finish());
+    editor = try sem.beginEdit(a, &parser.ast);
+    var scope_entries = editor.node_scope_provenance.keyIterator();
+    const first = scope_entries.next().?.*;
+    editor.node_scope_provenance.getPtr(first).?.scope = @fromBackingInt(@as(u32, 0));
+    try testing.expectError(error.InvalidScope, editor.finish());
+}

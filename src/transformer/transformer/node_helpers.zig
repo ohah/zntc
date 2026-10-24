@@ -235,8 +235,21 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
 
 /// 파서 노드 -> 트랜스포머 노드로 symbol_id 전파.
 /// 통합 AST에서는 old_idx와 new_idx가 같은 배열의 인덱스.
+fn copyExpressionScopeProvenance(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error!void {
+    if (src_idx == dst_idx) return;
+    if (self.transformed_node_scope_provenance.get(src_idx) orelse self.node_scope_provenance.get(src_idx)) |scope| {
+        try self.transformed_node_scope_provenance.put(self.allocator, dst_idx, scope);
+        self.node_scope_provenance_changed = true;
+        if (self.semantic_editor) |*editor| editor.copyNodeScopeProvenance(src_idx, dst_idx) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("copied expression lost its exact scope provenance", .{});
+        };
+    }
+}
+
 pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) Error!void {
     try inheritSynthetic(self, old_idx, new_idx);
+    try copyExpressionScopeProvenance(self, old_idx, new_idx);
     if (self.symbol_ids.items.len == 0) return; // 전파 비활성
     if (old_idx.isNone() or new_idx.isNone()) return;
 
@@ -289,6 +302,7 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
 /// 노드 복제 시 symbol_id가 누락되지 않도록 사용.
 pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error!void {
     try inheritSynthetic(self, src_idx, dst_idx);
+    try copyExpressionScopeProvenance(self, src_idx, dst_idx);
     if (self.symbol_ids.items.len == 0) return;
     if (src_idx.isNone() or dst_idx.isNone()) return;
 

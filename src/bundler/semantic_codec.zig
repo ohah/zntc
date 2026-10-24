@@ -30,7 +30,7 @@ const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v19: HMR runtime roles persist with their owning semantic graph.
-pub const FORMAT_VERSION: u32 = 19;
+pub const FORMAT_VERSION: u32 = 20;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -197,7 +197,8 @@ comptime {
     // serialize/deserialize 는 ModuleSemanticData 의 persisted 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 15) {
+    if (@typeInfo(@import("../semantic/node_scope_provenance.zig").Entry).@"struct".field_names.len != 3) @compileError("expression provenance fields changed; update semantic codec");
+    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 16) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -367,6 +368,21 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
     for (owner_keys) |key| {
         try putU32(&payload, alloc, key);
         try putU32(&payload, alloc, sem.scope_owner_map.get(key).?);
+    }
+    try putU32(&payload, alloc, @intCast(sem.node_scope_provenance.count()));
+    const use_keys = try alloc.alloc(u32, sem.node_scope_provenance.count());
+    defer alloc.free(use_keys);
+    var use_it = sem.node_scope_provenance.keyIterator();
+    for (use_keys) |*key| key.* = @backingInt(use_it.next().?.*);
+    std.mem.sortUnstable(u32, use_keys, {}, std.sort.asc(u32));
+    for (use_keys) |key| {
+        const entry = sem.node_scope_provenance.get(@fromBackingInt(key)).?;
+        const scope = entry.scope;
+        if (entry.source_node.isNone() or @backingInt(entry.source_node) >= sem.symbol_ids.len or key >= sem.symbol_ids.len or scope.isNone() or scope.toIndex() >= sem.scopes.len) return error.Truncated;
+        try putU32(&payload, alloc, key);
+        try putU32(&payload, alloc, @backingInt(scope));
+        try putU32(&payload, alloc, @backingInt(entry.source_node));
+        try putU8(&payload, alloc, @intFromBool(entry.with_environment));
     }
     try putU32(&payload, alloc, @intCast(sem.class_self_symbol_map.count()));
     const class_keys = try alloc.alloc(u32, sem.class_self_symbol_map.count());
@@ -594,6 +610,20 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         if (key >= symbol_ids_len or value >= scopes_len or scope_owner_map.contains(key)) return error.Truncated;
         scope_owner_map.putAssumeCapacity(key, value);
     }
+    var node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty;
+    const use_count = try checkedMapCount(&r, try r.u32v());
+    try node_scope_provenance.ensureTotalCapacity(arena, use_count);
+    for (0..use_count) |_| {
+        const key = try r.u32v();
+        const scope = try r.u32v();
+        const node: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(key);
+        if (key >= symbol_ids_len or scope >= scopes_len or node_scope_provenance.contains(node)) return error.Truncated;
+        const source_node = try r.u32v();
+        if (source_node >= symbol_ids_len) return error.Truncated;
+        const with_environment = (try r.take(1))[0];
+        if (with_environment > 1) return error.Truncated;
+        node_scope_provenance.putAssumeCapacity(node, .{ .scope = @fromBackingInt(scope), .source_node = @fromBackingInt(source_node), .with_environment = with_environment != 0 });
+    }
     var class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const class_count = try checkedMapCount(&r, try r.u32v());
     try class_self_symbol_map.ensureTotalCapacity(arena, class_count);
@@ -654,6 +684,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .numeric_const_texts = numeric_const_texts,
         .helper_scope_map = helper_scope_map,
         .scope_owner_map = scope_owner_map,
+        .node_scope_provenance = node_scope_provenance,
         .class_self_symbol_map = class_self_symbol_map,
         .namespace_member_owners = namespace_member_owners,
         .namespace_declaration_owners = namespace_declaration_owners,

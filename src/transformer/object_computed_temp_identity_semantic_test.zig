@@ -66,6 +66,7 @@ fn checkObjectComputedTempIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     transformer.semantic_edit_enabled = true;
@@ -171,6 +172,7 @@ test "#4819 object computed-key temp handle survives name lookup loss" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = program_scope;
 

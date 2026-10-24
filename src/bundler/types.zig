@@ -782,6 +782,9 @@ pub const ImportRecord = struct {
         return self.external_specifier orelse self.specifier;
     }
 
+    /// Exact source import() expression, assigned when its AST node is created.
+    call_node: @import("../parser/ast.zig").NodeIndex = .none,
+    callsite_lowered: bool = false,
     /// 원본 import 경로 (예: "./foo", "react", "../utils")
     specifier: []const u8,
     /// import 종류

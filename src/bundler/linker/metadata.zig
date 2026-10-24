@@ -729,6 +729,16 @@ pub fn buildMetadataForAst(
 
         // import 바인딩 → canonical 이름
         for (m.import_bindings) |ib| {
+            if (ib.callsite_target) |target| {
+                const local = @import("../binding_scanner.zig").resolveImportLocalSymbol(ib, .{ .module_index = m.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+                const raw = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
+                const name = try self.callsiteTargetName(target);
+                try putOwnedRename(self, &renames, &owned_nested_renames, raw, name);
+                if (target.declaration.isNone() or @backingInt(target.declaration) >= ast.nodes.items.len) return error.InvalidCallsiteBinding;
+                skip_nodes.set(@backingInt(target.declaration));
+                continue;
+            }
+
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
 

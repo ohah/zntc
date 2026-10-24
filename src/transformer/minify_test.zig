@@ -1243,6 +1243,7 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
 
     const ctx: minify_mod.MinifyCtx = .{
@@ -1410,6 +1411,7 @@ test "dead store: await using — 유지" {
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
     const ctx: minify_mod.MinifyCtx = .{
         .symbols = analyzer.symbols.items,
@@ -1495,6 +1497,7 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
     const ctx: minify_mod.MinifyCtx = .{
         .symbols = analyzer.symbols.items,
@@ -1534,6 +1537,7 @@ fn expectMinifyTopLevelInlineOpts(
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
     const ctx: minify_mod.MinifyCtx = .{
         .symbols = analyzer.symbols.items,
@@ -1620,6 +1624,7 @@ test "dead store: cascading — y dead 여부는 x 제거의 감산으로 결정
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
 
     // 초기: y 의 reference_count 가 1 (x 의 init 에서 읽힘)
@@ -2114,6 +2119,7 @@ test "unused: /*#__PURE__*/ super(x, y) — derived constructor semantic 필수 
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
     const ctx: minify_mod.MinifyCtx = .{
         .symbols = analyzer.symbols.items,

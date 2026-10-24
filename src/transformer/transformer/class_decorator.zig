@@ -1254,6 +1254,7 @@ test "#4819 class computed-key read retains its producer handle after lookup los
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 

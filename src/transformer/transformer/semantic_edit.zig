@@ -52,6 +52,8 @@ fn editorFor(self: *Transformer) Transformer.Error!*SemanticEditor {
             self.symbol_ids.items,
             self.helper_scope_map,
         ) catch |err| return editError(err);
+        self.semantic_editor.?.importNodeScopeProvenance(self.node_scope_provenance) catch |err| return editError(err);
+        self.semantic_editor.?.importNodeScopeProvenance(self.transformed_node_scope_provenance) catch |err| return editError(err);
     }
     return &self.semantic_editor.?;
 }
@@ -1060,6 +1062,12 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
         var scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (node.tag == .import_expression) {
+            if (!editor.node_scope_provenance.contains(work.node))
+                std.debug.panic("output import expression lost its creation scope provenance", .{});
+            editor.recordNodeScopeProvenance(work.node, scope) catch |err| return editError(err);
+            try self.transformed_node_scope_provenance.put(self.allocator, work.node, editor.node_scope_provenance.get(work.node).?);
+        }
         if (node.tag == .block_statement and self.outputOwnedScope(work.node) == null) {
             const function_body = !work.parent.isNone() and switch (self.ast.getNode(work.parent).tag) {
                 .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => true,
@@ -2257,6 +2265,22 @@ fn reparentLiveSourceScopes(self: *Transformer, source_scope: ScopeId, target_sc
     }
 }
 
+/// Move only an expression directly evaluated in the relocated source scope.
+/// Nested functions keep their own use scopes while their lexical root moves.
+pub fn relocateNodeScopeProvenance(self: *Transformer, node: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    const previous = editor.node_scope_provenance.get(node) orelse {
+        if (self.ast.getNode(node).tag == .import_expression)
+            std.debug.panic("moved import expression lost its creation scope provenance", .{});
+        return;
+    };
+    if (previous.scope != source) return;
+    editor.recordNodeScopeProvenance(node, target) catch |err| return editError(err);
+    try self.transformed_node_scope_provenance.put(self.allocator, node, editor.node_scope_provenance.get(node).?);
+    self.node_scope_provenance_changed = true;
+}
+
 pub fn reparentGeneratedBodyScopes(self: *Transformer, source_scope: ScopeId, target_scope: ScopeId, body: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled or source_scope.isNone() or target_scope.isNone() or body.isNone()) return;
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -2269,6 +2293,7 @@ pub fn reparentGeneratedBodyScopes(self: *Transformer, source_scope: ScopeId, ta
         const raw = @backingInt(node);
         if (live.contains(raw)) continue;
         try live.put(self.allocator, raw, {});
+        try self.relocateNodeScopeProvenance(node, source_scope, target_scope);
         var children = ast_walk.children(self.ast, self.ast.getNode(node));
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
@@ -4863,7 +4888,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     try resolveReachableScopeOwners(self);
     // Scope-owner remaps are semantic edits even when no binding/reference was
     // synthesized. Arrow-to-function and copied body scopes need a final map.
-    if (self.semantic_editor == null and self.scope_owner_remaps.count() > 0) {
+    if (self.semantic_editor == null and (self.scope_owner_remaps.count() > 0 or self.node_scope_provenance_changed)) {
         _ = try editorFor(self);
     }
     const editor = if (self.semantic_editor) |*e| e else return null;
@@ -4933,6 +4958,11 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
                 if (ref.node_index.isNone() or live.contains(@backingInt(ref.node_index))) continue;
                 try removeReference(self, editor, ref.node_index);
             }
+            var stale_uses: std.ArrayList(NodeIndex) = .empty;
+            defer stale_uses.deinit(self.allocator);
+            var uses = editor.node_scope_provenance.keyIterator();
+            while (uses.next()) |node| if (!live.contains(@backingInt(node.*))) try stale_uses.append(self.allocator, node.*);
+            for (stale_uses.items) |node| _ = editor.node_scope_provenance.remove(node);
             try elideUnreachableEmptyGeneratedScopes(self, editor, &live);
         }
     }
@@ -5017,6 +5047,7 @@ const HoistedTempHostileFixture = struct {
         fixture.transformer.scopes = fixture.analyzer.scopes.items;
         fixture.transformer.scope_maps = fixture.analyzer.scope_maps.items;
         fixture.transformer.scope_owner_map = fixture.analyzer.scope_owner_map;
+        fixture.transformer.node_scope_provenance = fixture.analyzer.node_scope_provenance;
         fixture.transformer.semantic_edit_enabled = true;
         fixture.transformer.current_scope = fixture.program_scope;
         return fixture;

@@ -92,6 +92,7 @@ test "define replacement removes the exact source reference from semantic graph"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -152,6 +153,7 @@ test "define primitive replacement removes the local edge and marks its explicit
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -936,6 +938,7 @@ pub fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []cons
         t.symbols = a.symbols.items;
         t.class_self_symbol_map = a.class_self_symbol_map;
         t.scope_owner_map = a.scope_owner_map;
+        t.node_scope_provenance = a.node_scope_provenance;
         t.references = a.references.items;
         t.scopes = a.scopes.items;
         t.scope_maps = a.scope_maps.items;

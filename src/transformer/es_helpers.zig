@@ -944,6 +944,39 @@ pub fn nameAppearsInAnyDynamicEvalString(self: anytype, name: []const u8) !bool 
 
 /// Evaluate the string-producing subset without running user code: string
 /// literals, string-only `+`, and templates with statically known strings.
+/// Reserve statically visible eval tokens for a program-level generated
+/// binding. This is output-name collision checking, never SymbolId recovery.
+/// Keys use self.allocator; the caller owns the map backing allocator.
+pub fn collectDynamicEvalReservedNames(self: anytype, names: *std.StringHashMapUnmanaged(void), map_allocator: std.mem.Allocator) !void {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var has_eval = astContainsDirectEvalCall(self);
+    for (scopes) |scope| if (scope.subtree_has_direct_eval) {
+        has_eval = true;
+        break;
+    };
+    if (!has_eval) return;
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        switch (node.tag) {
+            .string_literal, .template_literal, .binary_expression, .parenthesized_expression => {},
+            else => continue,
+        }
+        const source = try staticStringExpressionValue(self, @fromBackingInt(@as(u32, @intCast(raw))), 0) orelse continue;
+        defer self.allocator.free(source);
+        var scanner = try Scanner.init(self.allocator, source);
+        defer scanner.deinit();
+        while (true) {
+            try scanner.next();
+            const token = scanner.token;
+            if (token.kind == .eof) break;
+            if (token.kind != .identifier or token.span.end > source.len or token.span.start > token.span.end) continue;
+            const raw_name = source[token.span.start..token.span.end];
+            var decoded: [1024]u8 = undefined;
+            const name = Scanner.decodeIdentifierEscapesInto(raw_name, &decoded) orelse raw_name;
+            if (!names.contains(name)) try names.put(map_allocator, try self.allocator.dupe(u8, name), {});
+        }
+    }
+}
+
 fn staticStringExpressionValue(self: anytype, idx: NodeIndex, depth: u8) !?[]u8 {
     if (idx.isNone() or depth >= 32) return null;
     const node = self.ast.getNode(idx);

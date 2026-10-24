@@ -329,6 +329,8 @@ pub const ModuleSemanticData = struct {
     /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Expression use scopes, independent of AST nodes that own scopes.
+    node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     namespace_member_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
@@ -370,7 +372,7 @@ pub const ModuleSemanticData = struct {
 
     /// AST 변경 전에 의미 정보를 가변 소유자로 복사한다. allocator는 parse_arena여야 한다.
     pub fn beginEdit(self: *const ModuleSemanticData, allocator: std.mem.Allocator, ast: *Ast) @import("../semantic/editor.zig").Error!SemanticEditor {
-        return SemanticEditor.init(
+        var editor = try SemanticEditor.init(
             allocator,
             ast,
             self.symbols.items,
@@ -381,6 +383,9 @@ pub const ModuleSemanticData = struct {
             self.symbol_ids,
             self.helper_scope_map,
         );
+        errdefer editor.deinit();
+        try editor.importNodeScopeProvenance(self.node_scope_provenance);
+        return editor;
     }
 
     /// 변환이 끝난 뒤 동일 SymbolId를 유지한 배열을 모듈에 돌려준다.
@@ -389,6 +394,7 @@ pub const ModuleSemanticData = struct {
         self.scopes = result.scopes;
         self.scope_maps = result.scope_maps;
         self.scope_owner_map = result.scope_owner_map;
+        self.node_scope_provenance = result.node_scope_provenance;
         self.helper_scope_map = result.helper_scope_map;
         self.references = result.references;
         self.symbol_ids = result.symbol_ids;
