@@ -5127,3 +5127,108 @@ test "foreign import identity clears previous source refs across ten invalidatio
     }
     try std.testing.expectEqual(@as(usize, 0), stale_refs);
 }
+
+test "missing export diagnostics select exact import identity across ten poisoned scopes" {
+    const Case = struct { source: []const u8, value_used: bool, same_name: bool = false };
+    const cases = [_]Case{
+        .{ .source = "import { absent as local } from './dep'; console.log(local); const decoy = 0;", .value_used = true },
+        .{ .source = "import { absent as local } from './dep'; function use() { return local; } const decoy = 0;", .value_used = true },
+        .{ .source = "import { absent as local } from './dep'; console.log(typeof local); const decoy = 0;", .value_used = true },
+        .{ .source = "import { absent as local } from './dep'; console.log({local}); function shadow(local) { return 0; }", .value_used = true, .same_name = true },
+        .{ .source = "import { absent as local } from './dep'; new local(); function shadow(local) { return 0; }", .value_used = true, .same_name = true },
+        .{ .source = "import local from './dep'; console.log(local); const decoy = 0;", .value_used = true },
+        // Default imports do not use named-import type-only classification.
+        .{ .source = "import local, { present } from './dep'; console.log(present); const decoy = 0; console.log(decoy);", .value_used = false },
+        .{ .source = "import { absent as local, present } from './dep'; console.log(present); type T = local; const decoy = 0; console.log(decoy);", .value_used = false },
+        .{ .source = "import { absent as local, present } from './dep'; console.log(present); interface T extends local {} function shadow(local) { return local; }", .value_used = false, .same_name = true },
+        .{ .source = "import { absent as local, present } from './dep'; console.log(present); const decoy = 0; console.log(decoy);", .value_used = false },
+        .{ .source = "import { absent as local, present } from './dep'; console.log(present); type T = typeof local; function shadow(local) { return local; }", .value_used = false, .same_name = true },
+    };
+    var mismatches: usize = 0;
+    var conservative_mismatches: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.ts", case.source);
+        try writeFile(tmp.dir, "dep.ts", "export const present = 1;");
+        var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+        defer r.cache.deinit();
+        defer r.destroyGraph();
+        defer r.linker.deinit();
+        var clean_missing = false;
+        for (r.linker.fatal_diagnostics.items) |d| {
+            if (d.code == .missing_export) clean_missing = true;
+        }
+        try std.testing.expectEqual(case.value_used, clean_missing);
+        const module = r.graph.moduleAtMut(findModuleIdx(r.graph, "entry.ts").?) orelse return error.MissingDiagnosticEntry;
+        const sem = &module.semantic.?;
+        const binding = &module.import_bindings[0];
+        const exact_sid = sem.symbol_ids[@backingInt(binding.local_symbol_node.?)].?;
+        var decoy: ?usize = null;
+        for (sem.symbols.items, 0..) |sym, sid| {
+            if (sid != exact_sid and std.mem.eql(u8, module.ast.?.source[sym.name.start..sym.name.end], if (case.same_name) "local" else "decoy")) {
+                decoy = sid;
+                break;
+            }
+        }
+        const wrong_sid = decoy orelse return error.MissingDiagnosticDecoy;
+        try @constCast(&sem.scope_maps[0]).put(module.parse_arena.?.allocator(), binding.local_name, wrong_sid);
+        // A generated helper may have the same spelling. Neither map owns the
+        // source binding's identity; only its scanner anchor does.
+        try sem.helper_scope_map.put(module.parse_arena.?.allocator(), binding.local_name, wrong_sid);
+        binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, wrong_sid);
+        var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
+        defer fresh.deinit();
+        try fresh.link();
+        var missing = false;
+        for (fresh.fatal_diagnostics.items) |d| {
+            if (d.code == .missing_export) missing = true;
+        }
+        if (missing != case.value_used) mismatches += 1;
+
+        // Missing exact identity cannot prove an import unused/type-only.
+        // Both spelling maps and cached local_symbol remain poisoned.
+        const original_anchor = binding.local_symbol_node;
+        const original_ids = sem.symbol_ids;
+        const anchor_raw = @backingInt(original_anchor.?);
+        const original_sid = original_ids[anchor_raw];
+        for (0..5) |malformation| {
+            switch (malformation) {
+                0 => binding.local_symbol_node = null,
+                1 => sem.symbol_ids = &.{},
+                2 => @constCast(sem.symbol_ids)[anchor_raw] = null,
+                3 => @constCast(sem.symbol_ids)[anchor_raw] = @intCast(sem.symbols.items.len),
+                4 => @constCast(sem.symbol_ids)[anchor_raw] = @intCast(wrong_sid),
+                else => unreachable,
+            }
+            var malformed = Linker.init(std.testing.allocator, r.graph, .esm);
+            defer malformed.deinit();
+            try malformed.link();
+            var conservative_missing = false;
+            for (malformed.fatal_diagnostics.items) |d| {
+                if (d.code == .missing_export) conservative_missing = true;
+            }
+            if (!conservative_missing) std.debug.print("missing conservative diagnostic malformed={d} source={s}\n", .{ malformation, case.source });
+            if (!conservative_missing) conservative_mismatches += 1;
+            binding.local_symbol_node = original_anchor;
+            sem.symbol_ids = original_ids;
+            @constCast(sem.symbol_ids)[anchor_raw] = original_sid;
+        }
+        // Existing explicit suppression contracts remain controls.
+        binding.is_helper = true;
+        var helper = Linker.init(std.testing.allocator, r.graph, .esm);
+        defer helper.deinit();
+        try helper.link();
+        try std.testing.expectEqual(@as(usize, 0), helper.fatal_diagnostics.items.len);
+        binding.is_helper = false;
+        var shim = Linker.init(std.testing.allocator, r.graph, .esm);
+        defer shim.deinit();
+        shim.shim_missing_exports = true;
+        try shim.link();
+        try std.testing.expectEqual(@as(usize, 0), shim.fatal_diagnostics.items.len);
+    }
+    if (mismatches != 0 or conservative_mismatches != 0)
+        std.debug.print("exact diagnostic mismatches={d}, conservative mismatches={d}\n", .{ mismatches, conservative_mismatches });
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    try std.testing.expectEqual(@as(usize, 0), conservative_mismatches);
+}

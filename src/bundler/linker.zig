@@ -5057,21 +5057,26 @@ pub const Linker = struct {
                     // esbuild/rolldown parity. (export_bindings 는 TS 구문 미기록이라 사용 불가.)
                     const tgt_cjs = if (self.graph.getModule(source_record.resolved)) |t| t.wrap_kind == .cjs else true;
                     var type_only = false;
-                    // value_used: importer 의 로컬 바인딩이 *값* 위치에서 참조되는가. 미해결
-                    // import 는 local_symbol 이 invalid 라 isImportBindingTypeOnly 가 판정 못 하므로
-                    // module scope(scope_maps[0])에서 local_name → symbol 을 찾아 references 의
-                    // value-use 를 직접 확인한다. type-only(타입 위치만 사용, strip)·미사용 import 는
-                    // false → 진단 surface 안 함(런타임에 식별자가 emit 되지 않아 ReferenceError 없음).
-                    var value_used = false;
+                    // Unknown/malformed exact identity cannot prove this import is
+                    // unused. Keep diagnostics conservative; never repair an analyzed
+                    // binding from its spelling or from a stale local_symbol.
+                    var value_used = true;
                     if (m.semantic) |*sem| {
-                        type_only = metadata_mod.isImportBindingTypeOnly(sem, ib);
-                        if (sem.scope_maps.len > 0) {
-                            if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
-                                for (sem.references) |r| {
-                                    if (@backingInt(r.symbol_id) == sym_idx and r.isValueUse()) {
-                                        value_used = true;
-                                        break;
-                                    }
+                        const local = @import("binding_scanner.zig").resolveImportLocalSymbol(ib, .{
+                            .module_index = m.index,
+                            .ast = if (m.ast) |*ast| ast else null,
+                            .symbol_ids = sem.symbol_ids,
+                            .symbols = sem.symbols.items,
+                        });
+                        if (local.semanticIndex()) |sym_idx| {
+                            var exact_binding = ib;
+                            exact_binding.local_symbol = local;
+                            type_only = metadata_mod.isImportBindingTypeOnly(sem, exact_binding);
+                            value_used = false;
+                            for (sem.references) |r| {
+                                if (@backingInt(r.symbol_id) == sym_idx and r.isValueUse()) {
+                                    value_used = true;
+                                    break;
                                 }
                             }
                         }
