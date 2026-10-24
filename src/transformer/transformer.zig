@@ -1072,6 +1072,7 @@ pub const Transformer = struct {
     pub const addGeneratedFunctionScope = @import("transformer/semantic_edit.zig").addGeneratedFunctionScope;
     pub const addGeneratedCatchScope = @import("transformer/semantic_edit.zig").addGeneratedCatchScope;
     pub const reserveGeneratedFunctionScope = @import("transformer/semantic_edit.zig").reserveGeneratedFunctionScope;
+    pub const reserveGeneratedNameScope = @import("transformer/semantic_edit.zig").reserveGeneratedNameScope;
     pub const bindReservedFunctionOwner = @import("transformer/semantic_edit.zig").bindReservedFunctionOwner;
     pub const reparentGeneratedScope = @import("transformer/semantic_edit.zig").reparentGeneratedScope;
     pub const outputScopeParent = @import("transformer/semantic_edit.zig").outputScopeParent;
