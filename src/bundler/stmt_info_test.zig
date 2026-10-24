@@ -429,3 +429,123 @@ test "stmt_info: 함수 RHS 가 exports 안 참조하면 prune 가능 유지" {
     }
     try std.testing.expect(any_safe);
 }
+
+// A transform can project a generated storage declaration onto its source class
+// span. That projection cannot turn reads of its exact SID into declarations.
+fn expectOverlappingDeclarationSpanKeepsDependency(source: []const u8) !void {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    scanner.is_module = true;
+    var parser = Parser.init(a, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const ast = &parser.ast;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    const statements = ast.extra_data.items[root.data.list.start .. root.data.list.start + root.data.list.len];
+    const storage_sid: u32 = @intCast(analyzer.scope_maps.items[0].get("storage") orelse return error.MissingStorage);
+    analyzer.symbols.items[storage_sid].declaration_span = ast.nodes.items[statements[1]].span;
+    var infos = (try build(alloc, ast, analyzer.symbols.items, analyzer.scopes.items, analyzer.symbol_ids.items, &analyzer.unresolved_references, false, false)) orelse return error.NullResult;
+    defer infos.deinit();
+    try std.testing.expectEqualSlices(u32, &.{storage_sid}, infos.stmts[0].declared_symbols);
+    try std.testing.expect(std.mem.indexOfScalar(u32, infos.stmts[1].declared_symbols, storage_sid) == null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, infos.stmts[1].referenced_symbols, storage_sid) != null);
+    try std.testing.expectEqual(@as(?u32, 0), infos.declaredStmtBySymbol(storage_sid));
+    var reachable = try infos.computeReachable(alloc, &.{});
+    defer reachable.deinit();
+    try std.testing.expect(reachable.isSet(0));
+    try std.testing.expect(reachable.isSet(1));
+    try std.testing.expect(reachable.isSet(2));
+}
+
+test "stmt_info: overlapping declaration span preserves method dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};class Box{read(){return storage;}}console.log(new Box().read());");
+}
+
+test "stmt_info: overlapping declaration span preserves constructor dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};class Box{constructor(){this.value=storage;}}console.log(new Box());");
+}
+
+test "stmt_info: overlapping declaration span preserves getter dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};class Box{get value(){return storage;}}console.log(new Box().value);");
+}
+
+test "stmt_info: overlapping declaration span preserves static-method dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};class Box{static read(){return storage;}}console.log(Box.read());");
+}
+
+test "stmt_info: overlapping declaration span preserves arrow dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};const read=()=>storage;console.log(read());");
+}
+
+test "stmt_info: overlapping declaration span preserves ordinary-function dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};function read(){return storage;}console.log(read());");
+}
+
+test "stmt_info: overlapping declaration span preserves parameter-default dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};function read(value=storage){return value;}console.log(read());");
+}
+
+test "stmt_info: overlapping declaration span preserves generator dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};function* read(){yield storage;}console.log(read().next());");
+}
+
+test "stmt_info: overlapping declaration span preserves async-function dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("const storage={};async function read(){return storage;}console.log(read());");
+}
+
+test "stmt_info: overlapping declaration span preserves write dependency" {
+    try expectOverlappingDeclarationSpanKeepsDependency("let storage={};function read(){storage={n:1};return storage;}console.log(read());");
+}
+
+test "stmt_info: binding roles preserve imports and still discard dead closure storage" {
+    const alloc = std.testing.allocator;
+    var imports = try buildTestInfos(alloc, "import value from './value';import * as ns from './ns';import {item as local} from './item';console.log(value,ns,local);");
+    defer imports.infos.deinit();
+    defer imports.arena.deinit();
+    for (imports.infos.stmts[0..3]) |stmt| {
+        try std.testing.expectEqual(@as(usize, 1), stmt.declared_symbols.len);
+        try std.testing.expectEqual(@as(usize, 0), stmt.referenced_symbols.len);
+    }
+    var live = try imports.infos.computeReachable(alloc, &.{});
+    defer live.deinit();
+    for (0..4) |i| try std.testing.expect(live.isSet(i));
+
+    var dead = try buildTestInfos(alloc, "const storage={};const read=()=>storage;");
+    defer dead.infos.deinit();
+    defer dead.arena.deinit();
+    var unused = try dead.infos.computeReachable(alloc, &.{});
+    defer unused.deinit();
+    try std.testing.expect(!unused.isSet(0));
+    try std.testing.expect(!unused.isSet(1));
+}
+
+test "stmt_info: binding roles exclude nested parameters and member spellings" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc, "const storage={};function read(storage){return storage;}console.log(read(1));");
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+    try std.testing.expectEqual(@as(usize, 1), r.infos.stmts[1].declared_symbols.len);
+    try std.testing.expectEqual(@as(usize, 1), r.infos.stmts[1].referenced_symbols.len);
+    try std.testing.expect(r.infos.stmts[1].referenced_symbols[0] != r.infos.stmts[0].declared_symbols[0]);
+    var reachable = try r.infos.computeReachable(alloc, &.{});
+    defer reachable.deinit();
+    try std.testing.expect(!reachable.isSet(0));
+    try std.testing.expect(reachable.isSet(1));
+    try std.testing.expect(reachable.isSet(2));
+
+    var members = try buildTestInfos(alloc, "const storage={};const box={storage:1};console.log(box.storage);");
+    defer members.infos.deinit();
+    defer members.arena.deinit();
+    try std.testing.expectEqual(@as(usize, 0), members.infos.stmts[1].referenced_symbols.len);
+    var member_live = try members.infos.computeReachable(alloc, &.{});
+    defer member_live.deinit();
+    try std.testing.expect(!member_live.isSet(0));
+    try std.testing.expect(member_live.isSet(1));
+    try std.testing.expect(member_live.isSet(2));
+}
