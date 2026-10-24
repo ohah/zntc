@@ -93,6 +93,8 @@ const AstFacts = struct {
     has_runtime_sensitive_syntax: bool = false,
     /// Runtime transforms whose graph edits are not certified for Flow-mode input yet.
     has_flow_runtime_syntax_without_complete_graph: bool = false,
+    /// Runtime syntax whose edited graph is not certified in legacy JS parser mode.
+    has_lenient_unhandled_runtime_syntax: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
     /// Qualified metadata names with spellings the transform graph cannot yet
@@ -163,25 +165,41 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             => facts.has_non_named_import = true,
 
             // Flow class lowering preserves source binding identities in the edited graph.
-            .class_declaration, .class_expression => facts.has_runtime_sensitive_syntax = true,
+            .class_declaration, .class_expression => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             .private_identifier,
             .private_field_expression,
             => {
                 facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
-            .accessor_property => facts.has_runtime_sensitive_syntax = true,
+            .accessor_property => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // Stage 3 decorator lowering records generated bindings, references,
             // and class/decorator scopes in the edited semantic graph for Flow too.
-            .decorator => facts.has_runtime_sensitive_syntax = true,
+            .decorator => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // TypeScript enum lowering now records the emitted IIFE parameter
             // and initializer references in the edited semantic graph.
             .ts_enum_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
+                const extra = node.data.extra;
+                if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3 or
+                    ast.extra_data.items[extra + 3] != 0)
+                {
+                    facts.has_lenient_unhandled_runtime_syntax = true;
+                }
             },
 
             // Namespace IIFE parameters and exported binding edges are tracked
@@ -189,13 +207,17 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             .ts_module_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // Import-equals is rewritten to a const declaration by the
             // transformer. Its binding and value references are retained in
             // the edited semantic graph, so it does not need post-transform
             // symbol reconstruction.
-            .ts_import_equals_declaration => facts.has_runtime_sensitive_syntax = true,
+            .ts_import_equals_declaration => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             .ts_type_reference => {
                 if (qualified_type_name.typeReferenceName(ast, node)) |name| {
@@ -211,27 +233,43 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
 
             // `export = expr` preserves its value reference; lowering adds a global `module`
             // reference and an ordinary `.exports` property name.
-            .ts_export_assignment => facts.has_runtime_sensitive_syntax = true,
+            .ts_export_assignment => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // `export as namespace` is erased and carries no runtime references or bindings.
-            .ts_namespace_export_declaration => facts.has_runtime_sensitive_syntax = true,
+            .ts_namespace_export_declaration => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // Flow match is fully lowered by the semantic editor: its generated
             // function scope, parameter symbol, arm scopes, and references are
             // already part of the transform graph.
-            .flow_match_expression => facts.has_runtime_sensitive_syntax = true,
+            .flow_match_expression => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // Flow enum declaration and references have exact source SymbolIds;
             // codegen emits the declaration name through the same symbol-aware path.
-            .flow_enum_declaration => facts.has_runtime_sensitive_syntax = true,
+            .flow_enum_declaration => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             // Flow component-with-ref adds the helper binding and call reference
             // to the same transform graph, including when its body lowers JSX.
-            .flow_component_wrapper => facts.has_runtime_sensitive_syntax = true,
+            .flow_component_wrapper => {
+                facts.has_runtime_sensitive_syntax = true;
+                facts.has_lenient_unhandled_runtime_syntax = true;
+            },
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
+                    facts.has_lenient_unhandled_runtime_syntax = true;
                 }
             },
 
@@ -631,7 +669,7 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     }
     if (parser.source_mode == .js_lenient) return !facts.has_import_declaration and
         (!facts.has_typescript_syntax or
-            (!facts.has_runtime_sensitive_syntax and !facts.has_type_only_bindings));
+            (!facts.has_type_only_bindings and !facts.has_lenient_unhandled_runtime_syntax));
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2368,8 +2406,11 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
 
     const reanalyzed_sources = [_][]const u8{
         "declare const value: number;",
-        "enum Value { A }",
+        "declare enum Ambient { A } console.log(typeof Ambient);",
+        "const enum Value { A } console.log(Value.A);",
         "namespace Value { export const member = 1; }",
+        "enum Color { Red } class Box { amount: number = 1; } console.log(Color.Red, new Box().amount);",
+        "enum Color { Red } namespace Values { export const member = 1; } console.log(Color.Red, Values.member);",
         "import type { Value } from './types'; const value: Value = {} as Value;",
         "class Value { amount: number = 1; }",
     };
@@ -2389,6 +2430,33 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
     _ = try import_parser.parse();
     try std.testing.expect(import_parser.is_module);
     try std.testing.expect(!canMangleWithTransformSemantic(minify, &import_parser));
+
+    var import_equals_scanner = try Scanner.init(allocator, "import Runtime = require('runtime'); console.log(Runtime.value);");
+    var import_equals_parser = Parser.init(allocator, &import_equals_scanner);
+    import_equals_parser.configureFromExtension(".mjs");
+    import_equals_parser.source_mode = .js_lenient;
+    _ = try import_equals_parser.parse();
+    try std.testing.expect(import_equals_parser.is_module);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &import_equals_parser));
+}
+
+test "#4819 extensionless JavaScript enum retains its exact transform graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const base = 40; enum Color { Red = base, Green = Red + 1 }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
+
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        parser.ast.extra_data.items[node.data.extra + 3] = 4;
+        break;
+    }
+    try std.testing.expect(!canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
 }
 
 test "#4819 class lowering reuses transform semantic graph" {
