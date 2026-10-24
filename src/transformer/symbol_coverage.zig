@@ -963,6 +963,43 @@ fn collectBindingPatternNodes(
     }
 }
 
+fn collectFlowMatchPatternDeclarations(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    bindings: *std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!void {
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(idx);
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .flow_match_binding_pattern => try bindings.put(allocator, raw, {}),
+            .flow_match_rest => if (node.data.none != 0) try bindings.put(allocator, raw, {}),
+            .flow_match_as_pattern => {
+                try stack.append(allocator, node.data.binary.left);
+                if (!node.data.binary.right.isNone())
+                    try bindings.put(allocator, @backingInt(node.data.binary.right), {});
+            },
+            .flow_match_guard_pattern => try stack.append(allocator, node.data.binary.left),
+            .flow_match_object_prop => try stack.append(allocator, node.data.binary.right),
+            .flow_match_instance_pattern => try stack.append(allocator, node.data.binary.right),
+            .flow_match_object_pattern, .flow_match_array_pattern => {
+                var children = ast_walk.children(ast, node);
+                while (children.next()) |child| try stack.append(allocator, child);
+            },
+            // The analyzer and current lowering deliberately do not bind
+            // identifiers inside OR alternatives.
+            .flow_match_or_pattern => {},
+            else => {},
+        }
+    }
+}
+
 pub fn collectDeclarationNodes(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -1015,6 +1052,7 @@ pub fn collectDeclarationNodes(
                 if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
             },
             .catch_clause => try collectBindingPatternNodes(allocator, ast, node.data.binary.left, &bindings),
+            .flow_match_arm => try collectFlowMatchPatternDeclarations(allocator, ast, node.data.binary.left, &bindings),
             .variable_declarator => {
                 if (ast.hasExtra(node.data.extra, 1)) {
                     const pattern: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
@@ -1343,7 +1381,10 @@ fn expectedReferenceScopeFromParent(
             .{ .node = child, .scope = scope }
         else
             null;
-        if (!childSkipsScopeOwner(ast, parent_raw, child)) {
+        const parent_node = ast.nodes.items[parent_raw];
+        const flow_match_pattern_value = parent_node.tag == .flow_match_arm and
+            isFlowMatchPatternValueReference(ast, parent_by_node, scope_owner_map, node, parent_raw);
+        if (!childSkipsScopeOwner(ast, parent_raw, child) and !flow_match_pattern_value) {
             if (scope_owner_map.get(parent_raw)) |scope| return .{ .node = parent_raw, .scope = scope };
         }
         child = parent_raw;
@@ -1354,6 +1395,54 @@ fn expectedReferenceScopeFromParent(
         parent = parent_by_node.get(child);
     }
     return null;
+}
+
+/// Flow evaluates value expressions in a match pattern before entering the
+/// arm's binding scope. Guards and the arm body run after that scope is entered.
+fn isFlowMatchPatternValueReference(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+    arm_raw: u32,
+) bool {
+    if (node >= ast.nodes.items.len or arm_raw >= ast.nodes.items.len or
+        ast.nodes.items[arm_raw].tag != .flow_match_arm) return false;
+
+    var child = node;
+    var parent = parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ast.nodes.items.len or raw >= ast.nodes.items.len) return false;
+        if (raw == arm_raw) return @backingInt(ast.nodes.items[raw].data.binary.left) == child;
+        // A nested function/class scope owns its own value references. Such a
+        // reference must keep that nearer owner instead of skipping the arm.
+        if (scope_owner_map.contains(raw)) return false;
+
+        const owner = ast.nodes.items[raw];
+        switch (owner.tag) {
+            .flow_match_guard_pattern, .flow_match_as_pattern => {
+                if (@backingInt(owner.data.binary.right) == child) return false;
+                if (@backingInt(owner.data.binary.left) != child) return false;
+            },
+            .flow_match_object_prop => {
+                if (@backingInt(owner.data.binary.left) == child) {
+                    if (ast.nodes.items[child].tag != .computed_property_key) return false;
+                } else if (@backingInt(owner.data.binary.right) != child) {
+                    return false;
+                }
+            },
+            .flow_match_instance_pattern => {
+                if (@backingInt(owner.data.binary.left) != child and
+                    @backingInt(owner.data.binary.right) != child) return false;
+            },
+            .flow_match_or_pattern, .flow_match_object_pattern, .flow_match_array_pattern => {},
+            else => {},
+        }
+        child = raw;
+        parent = parent_by_node.get(child);
+    }
+    return false;
 }
 
 fn expectedReferenceScope(
@@ -1506,6 +1595,7 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
         .ts_module_declaration, .ts_enum_declaration, .flow_component_wrapper => kind == .function,
+        .flow_match_arm => kind == .block,
         else => false,
     };
 }
@@ -1531,6 +1621,44 @@ fn isFlowComponentImplementationFunction(
     const parent = ast.nodes.items[parent_raw];
     if (parent.tag != .flow_component_wrapper or parent.data.extra >= ast.extra_data.items.len) return false;
     return ast.extra_data.items[parent.data.extra] == function_raw;
+}
+
+fn isFlowMatchWildcardReference(ctx: *const ExactCtx, node_raw: u32) bool {
+    if (node_raw >= ctx.ast.nodes.items.len) return false;
+    const node = ctx.ast.nodes.items[node_raw];
+    if (node.tag != .identifier_reference or !std.mem.eql(u8, ctx.ast.getText(node.span), "_")) return false;
+
+    var child = node_raw;
+    var parent = ctx.parent_by_node.get(child);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ctx.ast.nodes.items.len or raw >= ctx.ast.nodes.items.len) return false;
+        const owner = ctx.ast.nodes.items[raw];
+        switch (owner.tag) {
+            .flow_match_arm => return @backingInt(owner.data.binary.left) == child,
+            .flow_match_guard_pattern => {
+                if (@backingInt(owner.data.binary.right) == child) return false;
+                if (@backingInt(owner.data.binary.left) != child) return false;
+            },
+            .flow_match_as_pattern => {
+                if (@backingInt(owner.data.binary.right) == child) return false;
+                if (@backingInt(owner.data.binary.left) != child) return false;
+            },
+            .flow_match_object_prop => {
+                if (@backingInt(owner.data.binary.left) == child) return false;
+                if (@backingInt(owner.data.binary.right) != child) return false;
+            },
+            .flow_match_instance_pattern => {
+                if (@backingInt(owner.data.binary.left) == child) return false;
+                if (@backingInt(owner.data.binary.right) != child) return false;
+            },
+            .flow_match_object_pattern, .flow_match_array_pattern, .flow_match_or_pattern => {},
+            else => return false,
+        }
+        child = raw;
+        parent = ctx.parent_by_node.get(child);
+    }
+    return false;
 }
 
 fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
@@ -1566,6 +1694,12 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             const key = node.data.binary.left;
             const value = node.data.binary.right;
             if (!value.isNone() and value != key) ctx.markName(key);
+            return .descend;
+        },
+        .flow_match_object_prop => {
+            // The left side is a property key; the right side is the
+            // value/binding pattern that participates in semantic analysis.
+            ctx.markName(node.data.binary.left);
             return .descend;
         },
         .assignment_target_property_property => {
@@ -1625,7 +1759,10 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             ctx.markName(node.data.unary.operand);
             return .descend;
         },
-        .identifier_reference, .binding_identifier, .assignment_target_identifier => ctx.checkIdentifier(idx),
+        .identifier_reference => if (!isFlowMatchWildcardReference(ctx, @backingInt(idx))) ctx.checkIdentifier(idx),
+        .binding_identifier, .assignment_target_identifier => ctx.checkIdentifier(idx),
+        .flow_match_binding_pattern => ctx.checkIdentifier(idx),
+        .flow_match_rest => if (node.data.none != 0) ctx.checkIdentifier(idx),
         else => {},
     }
     return .descend;
@@ -1895,7 +2032,10 @@ const ExactCtx = struct {
             "zntc: symbol-identity-traversal-mismatch node={d} name={s} root={d}\n",
             .{ raw, ctx.ast.getText(node.data.string_ref), @backingInt(ctx.root) },
         );
-        const name = ctx.ast.getText(node.data.string_ref);
+        const name = switch (node.tag) {
+            .flow_match_binding_pattern, .flow_match_rest => ctx.ast.getText(node.span),
+            else => ctx.ast.getText(node.data.string_ref),
+        };
         const generated = raw >= ctx.parser_node_count;
         const finding: ExactFinding = .{
             .name = name,
@@ -1971,16 +2111,19 @@ const ExactCtx = struct {
             const symbol_name = exactSymbolName(ctx.ast, &symbol);
             // `\u0078` 와 `x` 는 같은 이름 — escape 를 풀어 비교한다 (#5667).
             if (!Scanner.identifierNamesEqual(baseName(name), baseName(symbol_name))) ctx.report.identity_mismatch += 1;
-            if (node.tag == .binding_identifier) {
+            if (node.tag == .binding_identifier or isFlowMatchDeclarationNode(ctx, raw)) {
                 const expected_scope = expectedBindingScope(ctx, raw, symbol.kind);
                 if (expected_scope) |expected| {
-                    const lexical_scope = expectedReferenceScope(
-                        ctx.ast,
-                        ctx.root,
-                        ctx.parent_by_node,
-                        ctx.scope_owner_map,
-                        raw,
-                    );
+                    const lexical_scope = if (node.tag == .binding_identifier)
+                        expectedReferenceScope(
+                            ctx.ast,
+                            ctx.root,
+                            ctx.parent_by_node,
+                            ctx.scope_owner_map,
+                            raw,
+                        )
+                    else
+                        null;
                     const resolved = resolveInScopes(ctx.scopes, ctx.scope_maps, symbol_name, @fromBackingInt(@intCast(expected)));
                     const owner_binding = if (expected < ctx.scope_maps.len)
                         ctx.scope_maps[expected].get(symbol_name)
@@ -2309,10 +2452,38 @@ fn nonSimpleParameterScope(ctx: *const ExactCtx, node: u32) ?u32 {
     return null;
 }
 
+fn isFlowMatchDeclarationNode(ctx: *const ExactCtx, node_raw: u32) bool {
+    if (node_raw >= ctx.ast.nodes.items.len or !ctx.declaration_nodes.contains(node_raw)) return false;
+    const node = ctx.ast.nodes.items[node_raw];
+    switch (node.tag) {
+        .flow_match_binding_pattern, .flow_match_rest => return true,
+        .identifier_reference => {
+            const parent_raw = ctx.parent_by_node.get(node_raw) orelse return false;
+            if (parent_raw >= ctx.ast.nodes.items.len) return false;
+            const parent = ctx.ast.nodes.items[parent_raw];
+            return parent.tag == .flow_match_as_pattern and @backingInt(parent.data.binary.right) == node_raw;
+        },
+        else => return false,
+    }
+}
+
 fn expectedBindingScope(ctx: *const ExactCtx, node: u32, kind: @import("../semantic/symbol.zig").SymbolKind) ?u32 {
     if (node >= ctx.ast.nodes.items.len) return null;
     const binding_name = ctx.ast.nodes.items[node];
-    if (binding_name.tag != .binding_identifier) return null;
+    if (binding_name.tag != .binding_identifier and !ctx.declaration_nodes.contains(node)) return null;
+    if (binding_name.tag != .binding_identifier) {
+        var child = node;
+        var parent = ctx.parent_by_node.get(child);
+        var hops: usize = 0;
+        while (parent) |raw| : (hops += 1) {
+            if (hops >= ctx.ast.nodes.items.len or raw >= ctx.ast.nodes.items.len) return null;
+            if (ctx.ast.nodes.items[raw].tag == .flow_match_arm)
+                return ctx.scope_owner_map.get(raw);
+            child = raw;
+            parent = ctx.parent_by_node.get(child);
+        }
+        return null;
+    }
     if (kind == .parameter) {
         if (nonSimpleParameterScope(ctx, node)) |scope| return scope;
     }
@@ -2435,6 +2606,49 @@ pub fn checkExactWithDeclarationAnchors(
         null,
         null,
         null,
+        true,
+    );
+}
+
+/// Exact audit for an untransformed source graph. Every semantically live
+/// ScopeId must have a reachable AST owner; unlike a transformed graph, there
+/// are no pre-existing source scopes whose owners may have been lowered away.
+pub fn checkExactWithCompleteSourceScopeOwners(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        null,
+        null,
+        0,
         true,
     );
 }
@@ -3187,7 +3401,7 @@ fn checkExactImpl(
         const is_generated = raw >= parser_node_count;
         const expected_kind: ?ScopeKind = switch (tag) {
             .program => null, // global vs module depends on parser mode
-            .block_statement, .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement => .block,
+            .block_statement, .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .flow_match_arm => .block,
             .switch_statement => .switch_block,
             // The source analyzer enters catch and body-block scopes on the
             // same owner node; the latter may be the recorded owner.

@@ -797,6 +797,8 @@ pub const Node = struct {
                 .for_statement => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2, 3 } },
                 // switch_statement: extra = [discriminant(0), cases_start(1), cases_len(2)]
                 .switch_statement => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                // flow_match_expression: extra = [discriminant(0), arms_start(1), arms_len(2)]
+                .flow_match_expression => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // switch_case: extra = [test(0), stmts_start(1), stmts_len(2)]
                 .switch_case => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // variable_declaration: extra = [kind_flags, list_start(1), list_len(2)]
@@ -874,7 +876,6 @@ pub const Node = struct {
                 .flow_type_alias_declaration,
                 .flow_opaque_type,
                 .flow_interface_declaration,
-                .flow_match_expression,
                 .flow_property_signature,
                 => .{ .kind = .extra, .child_offsets = &.{} },
             };

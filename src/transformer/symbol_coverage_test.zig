@@ -94,6 +94,184 @@ fn checkExactFixture(
     );
 }
 
+test "source scope audit rejects a live ScopeId with no reachable AST owner" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("orphan");
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{}));
+
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const orphan_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    var orphan_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer orphan_names.deinit(allocator);
+    try orphan_names.put(allocator, "orphan", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, orphan_names };
+    const symbols = [_]Symbol{.{
+        .name = name,
+        .scope_id = orphan_scope,
+        .origin_scope = orphan_scope,
+        .kind = .variable_let,
+        .declaration_span = name,
+    }};
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const legacy = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(legacy.isClean());
+
+    const complete = try coverage.checkExactWithCompleteSourceScopeOwners(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), complete.scope_owner_mismatch);
+    try std.testing.expectEqualStrings(
+        "generated-scope-owner-unreachable",
+        complete.first_scope_owner_mismatch.?.issue,
+    );
+    try std.testing.expect(!complete.isClean());
+
+    // The source audit must include ScopeId 0 too: a missing program owner is
+    // not covered by a boundary that starts at the first child scope.
+    _ = owners.remove(@backingInt(root));
+    const missing_program_owner = try coverage.checkExactWithCompleteSourceScopeOwners(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(missing_program_owner.scope_owner_mismatch > complete.scope_owner_mismatch);
+}
+
+test "source scope audit accepts the exact Flow match-arm ScopeId owner" {
+    const allocator = std.testing.allocator;
+    const source = "function classify(_a, input, expected, patternValue, item) { return match (input) { { kind: expected, payload: const payload } if (payload > 0) => payload, [const first, ...const rest] => first + rest.length, patternValue as alias => alias, const item if (item > 2) => item, { fallback: const item } => item, _ => _a }; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_flow = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var found_arm = false;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .flow_match_arm) continue;
+        found_arm = true;
+        const scope_raw = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingFlowMatchScopeOwner;
+        try std.testing.expect(scope_raw < analyzer.scopes.items.len);
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, analyzer.scopes.items[scope_raw].kind);
+    }
+    try std.testing.expect(found_arm);
+
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try coverage.checkExactWithCompleteSourceScopeOwners(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.scope_owner_mismatch);
+    try std.testing.expect(report.isClean());
+
+    var wrong_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    defer allocator.free(wrong_symbols);
+    var corrupted_flow_binding: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .flow_match_binding_pattern) continue;
+        corrupted_flow_binding = analyzer.symbol_ids.items[raw] orelse return error.MissingFlowMatchBindingSymbol;
+        break;
+    }
+    const flow_binding_id = corrupted_flow_binding orelse return error.MissingFlowMatchBinding;
+    wrong_symbols[flow_binding_id].scope_id = @fromBackingInt(0);
+
+    const wrong_binding_scope = try coverage.checkExactWithCompleteSourceScopeOwners(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        wrong_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(wrong_binding_scope.binding_scope_mismatch > 0);
+    try std.testing.expect(!wrong_binding_scope.isClean());
+}
+
 test "exact scope audit permits only the verified CommonJS callback boundary" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
