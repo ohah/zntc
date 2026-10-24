@@ -2038,6 +2038,8 @@ type PluginDispatcherLifecycle = {
   takeLifecycleFailures(): PluginFailureResult[];
   /** plugin hook 의 `this.warn(...)` 으로 수집된 경고를 꺼내 result.warnings 로 surfacing. */
   takePluginWarnings(): Diagnostic[];
+  /** Native graph pre-pass needs to know whether a module may gain AST references. */
+  hasAstFunctionHooks: boolean;
 };
 type PluginDispatcher = ((
   hookName: string,
@@ -2579,6 +2581,7 @@ function createPluginDispatcher(plugins: ZntcPlugin[]): PluginDispatcher {
   } as PluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
+  dispatcher.hasAstFunctionHooks = reg.astFunctionHooks.length > 0;
   return dispatcher;
 }
 
@@ -2607,6 +2610,7 @@ function createSyncPluginDispatcher(plugins: ZntcPlugin[]): SyncPluginDispatcher
   } as SyncPluginDispatcher;
   dispatcher.takeLifecycleFailures = () => reg.lifecycleFailures.splice(0);
   dispatcher.takePluginWarnings = () => reg.pluginWarnings.splice(0);
+  dispatcher.hasAstFunctionHooks = reg.astFunctionHooks.length > 0;
   return dispatcher;
 }
 
