@@ -175,6 +175,88 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [{ report: 'exact', field: 'enum_iife_params', minimum: 1 }],
   },
 ];
+// These fixtures use syntax that .unknown's legacy JS script mode rejects
+// before semantic analysis. Keep the exact rejected inputs visible so a new
+// unsupported parse failure cannot disappear from the lenient graph census.
+const LENIENT_UNKNOWN_PARSE_DIAGNOSTICS = new Map<string, readonly string[]>([
+  ['4730-using-module/lib.mjs', ['ZNTC0305']],
+  ['4730-using-module/main.mjs', ['ZNTC0300']],
+  ['4760-module-block-export-shadow.mjs', ['ZNTC0305']],
+  ['4790-object-rest-decl-temps.mjs', ['ZNTC0305']],
+  ['4819-classic-jsx-member-factory.tsx', ['ZNTC0600', 'ZNTC0912']],
+  ['4819-classic-jsx-shadowed-factory.tsx', ['ZNTC0600', 'ZNTC0912']],
+  ['4819-export-equals-transform-graph.ts', ['ZNTC0305']],
+  ['4819-import-equals-producer-observation.ts', ['ZNTC0300']],
+  ['4819-import-equals-transform-graph.ts', ['ZNTC0300']],
+  ['4819-import-export-identities/main.mjs', ['ZNTC0300', 'ZNTC0305']],
+  ['4819-import-export-identities/source.mjs', ['ZNTC0305']],
+  ['4819-sourced-reexports/barrel.mjs', ['ZNTC0305']],
+  ['4819-sourced-reexports/main.mjs', ['ZNTC0300']],
+  ['4819-sourced-reexports/upstream.mjs', ['ZNTC0305']],
+]);
+const LENIENT_UNKNOWN_REANALYZED_FIXTURES = [
+  '4819-namespace-class-export.ts',
+  '4819-namespace-generated-scopes.ts',
+] as const;
+const LENIENT_UNKNOWN_GATE_PROBES = [
+  {
+    name: 'class-only',
+    source: 'class Box { value: number = 1; } console.log(new Box().value);',
+    graph: 'retained',
+  },
+  {
+    name: 'namespace-only',
+    source: 'namespace Box { export const value = 1; } console.log(Box.value);',
+    graph: 'retained',
+  },
+  {
+    name: 'namespace-plus-class',
+    source: 'namespace Box { export class Inner {} } console.log(new Box.Inner());',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'decorator-only',
+    source: 'function dec(value: any) {} @dec class Box {}',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-binding',
+    source: 'declare const ambientValue: number; console.log(typeof ambientValue);',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ordinary-enum',
+    source: 'enum Color { Red = 1 } console.log(Color.Red);',
+    graph: 'retained',
+  },
+  {
+    name: 'const-enum',
+    source: 'const enum Color { Red = 1 } console.log(Color.Red);',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'auto-accessor',
+    source: 'class Box { accessor value: number = 1; } console.log(new Box().value);',
+    graph: 'retained',
+  },
+  {
+    name: 'private-field',
+    source:
+      'class Box { #value: number = 1; read(): number { return this.#value; } } console.log(new Box().read());',
+    graph: 'retained',
+  },
+  {
+    name: 'type-only',
+    source: 'type Value = number; const value: Value = 1; console.log(value);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace',
+    source:
+      'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
+    graph: 'reanalyzed',
+  },
+] as const;
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
   'invalid_reference_node',
@@ -1904,6 +1986,135 @@ describe('symbol identity coverage gate (#4819)', () => {
       'missing strict report payload',
     );
   });
+
+  test('all oracle fixtures retain exact identity accounting in legacy .unknown mode', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-matrix-'));
+    const expectedParseFailures = new Set(LENIENT_UNKNOWN_PARSE_DIAGNOSTICS.keys());
+    const observedParseFailures = new Set<string>();
+    const reanalyzedFixtures: string[] = [];
+    let successful = 0;
+    let retained = 0;
+    try {
+      for (const fixture of fixtures) {
+        const relativeFixture = relative(FIXTURE_DIR, fixture).replaceAll('\\', '/');
+        const suffix = [
+          '.flow.mjs',
+          '.mjs',
+          '.cjs',
+          '.js',
+          '.mts',
+          '.cts',
+          '.tsx',
+          '.jsx',
+          '.ts',
+          '.flow',
+        ].find((candidate) => relativeFixture.endsWith(candidate));
+        expect(suffix, `${relativeFixture}: fixture extension must be converted`).toBeDefined();
+        const unknownName = relativeFixture.slice(0, -(suffix?.length ?? 0)) + '.unknown';
+        expect(unknownName.endsWith('.unknown'), relativeFixture).toBe(true);
+        expect(unknownName.endsWith('.ts'), relativeFixture).toBe(false);
+
+        const uniqueSuffix = createHash('sha256').update(relativeFixture).digest('hex').slice(0, 8);
+        const inputName = unknownName.replaceAll('/', '__');
+        const input = join(
+          dir,
+          `${inputName.slice(0, -'.unknown'.length)}-${uniqueSuffix}.unknown`,
+        );
+        const inputPath = input.replaceAll('\\', '/');
+        writeFileSync(input, readFileSync(fixture));
+        expect(inputPath.endsWith('.unknown')).toBe(true);
+
+        const isFlow = relativeFixture.endsWith('.flow.mjs') || relativeFixture.endsWith('.flow');
+        const result = runCoverage(input, TARGETS[0], dir, true, isFlow ? ['--flow'] : []);
+        if (result.exitCode !== 0) {
+          const expectedCodes = LENIENT_UNKNOWN_PARSE_DIAGNOSTICS.get(relativeFixture);
+          expect(
+            expectedCodes,
+            `${relativeFixture}: unexpected .unknown parse failure`,
+          ).toBeDefined();
+          const codes = [
+            ...new Set([...result.stderr.matchAll(/\[(ZNTC\d{4})\]/g)].map((match) => match[1])),
+          ].sort();
+          expect(codes, `${relativeFixture}: ${result.stderr}`).toEqual(expectedCodes);
+          observedParseFailures.add(relativeFixture);
+          continue;
+        }
+
+        successful++;
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${relativeFixture}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          postMinifyAuditProblems(result.stderr),
+          `${relativeFixture}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transpileGraphModeProblems(result.stderr, true),
+          `${relativeFixture}: ${result.stderr}`,
+        ).toEqual([]);
+
+        const lines = result.stderr.split(/\r?\n/);
+        for (const prefix of EXACT_MATRIX_REPORT_PREFIXES) {
+          const reports = lines.filter((line) => line.startsWith(prefix));
+          expect(reports, `${relativeFixture}: ${prefix}`).toHaveLength(1);
+          expect(
+            reports[0]?.replaceAll('\\', '/').startsWith(`${prefix}${inputPath}:`),
+            `${relativeFixture}: report path must point to its .unknown input`,
+          ).toBe(true);
+        }
+
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(
+          exactIdentityObservationProblems(identity ?? ''),
+          `${relativeFixture}: ${identity ?? 'missing exact report'}`,
+        ).toEqual([]);
+        const modeLine = lines.find((line) =>
+          line.startsWith('zntc: symbol-identity-transpile-mode '),
+        );
+        if (modeLine?.endsWith('semantic_graph=reanalyzed')) {
+          reanalyzedFixtures.push(relativeFixture);
+        } else {
+          retained++;
+        }
+      }
+
+      expect(successful + observedParseFailures.size).toBe(fixtures.length);
+      expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
+      expect(successful).toBe(288);
+      expect(retained).toBe(286);
+      expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
+
+      for (const probe of LENIENT_UNKNOWN_GATE_PROBES) {
+        const input = join(dir, `${probe.name}.unknown`);
+        const inputPath = input.replaceAll('\\', '/');
+        writeFileSync(input, probe.source);
+        const result = runCoverage(input, TARGETS[0], dir, true);
+        expect(result.exitCode, `${probe.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), `${probe.name}: ${result.stderr}`).toEqual(
+          [],
+        );
+        expect(
+          transpileGraphModeProblems(result.stderr, true, probe.graph),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        for (const prefix of EXACT_MATRIX_REPORT_PREFIXES) {
+          const reports = result.stderr.split(/\r?\n/).filter((line) => line.startsWith(prefix));
+          expect(reports, `${probe.name}: ${prefix}`).toHaveLength(1);
+          expect(
+            reports[0]?.replaceAll('\\', '/').startsWith(`${prefix}${inputPath}:`),
+            `${probe.name}: report path must point to its .unknown input`,
+          ).toBe(true);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   test('lenient type-only TypeScript retains exact graph while runtime forms reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-type-graph-'));
