@@ -301,6 +301,9 @@ pub const Transformer = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     /// analyzer가 기록한 원본 스코프 생성 노드 → ScopeId. 별도 소유권은 analyzer/module에 있다.
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
+    transformed_node_scope_provenance: @import("../semantic/node_scope_provenance.zig").Map = .empty,
+    node_scope_provenance_changed: bool = false,
     class_self_symbol_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Anonymous default class declarations lower to an outer synthetic var.
     /// Keep its exact binding node so the export reference targets its SymbolId.
@@ -1154,6 +1157,7 @@ pub const Transformer = struct {
     pub const splitOutputBindingAsVar = @import("transformer/semantic_edit.zig").splitOutputBindingAsVar;
     pub const relocateOutputSymbolAs = @import("transformer/semantic_edit.zig").relocateOutputSymbolAs;
     pub const rebindOutputReference = @import("transformer/semantic_edit.zig").rebindOutputReference;
+    pub const relocateNodeScopeProvenance = @import("transformer/semantic_edit.zig").relocateNodeScopeProvenance;
     pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
     pub const ensureSymbolDeclaration = @import("transformer/semantic_edit.zig").ensureSymbolDeclaration;
     pub const ensureSymbolDeclarationAtNode = @import("transformer/semantic_edit.zig").ensureSymbolDeclarationAtNode;

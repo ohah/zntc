@@ -426,6 +426,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
                 .scopes = analyzer.scopes.items,
                 .scope_maps = analyzer.scope_maps.items,
                 .scope_owner_map = analyzer.scope_owner_map,
+                .node_scope_provenance = analyzer.node_scope_provenance,
                 .class_self_symbol_map = analyzer.class_self_symbol_map,
                 .namespace_member_owners = analyzer.namespace_member_owners,
                 .namespace_declaration_owners = analyzer.namespace_declaration_owners,

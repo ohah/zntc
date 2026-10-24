@@ -68,6 +68,7 @@ test "#4819 namespace variable uses become member AST nodes with the exact IIFE 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -184,6 +185,7 @@ test "#4819 merged namespace proxy references become member AST nodes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -318,6 +320,7 @@ test "#4819 nested merged namespace proxy uses the canonical namespace owner" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -382,6 +385,7 @@ test "#4819 namespace destructuring temp has one IIFE binding and exact read ref
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -459,6 +463,7 @@ test "#4819 empty namespace destructuring temps retain SymbolId and IIFE scope" 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -523,6 +528,7 @@ test "namespace generated references retain their declaration owner through two 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();

@@ -3469,6 +3469,7 @@ fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -3595,6 +3596,7 @@ fn checkGeneratorAssignmentBindingIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -3689,6 +3691,7 @@ fn checkGeneratorHoistProducerUsesExactBindingHandle(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -3893,6 +3896,7 @@ test "#4819 deferred generator temp identity bypasses the span registry" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -3992,6 +3996,7 @@ fn checkGeneratorVarProducerHandleSelection() !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -4100,6 +4105,7 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
@@ -4272,6 +4278,7 @@ test "#4819 generator temp producer bypasses a stale span identity in another ow
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -4388,6 +4395,7 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -4594,6 +4602,7 @@ test "#4819 class-header generator temps carry producer IDs across hostile sourc
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
         const generator_scope = transformer.programScope();
@@ -4862,6 +4871,7 @@ fn checkUsingCleanupStateStorage(source: []const u8, ordinary_try: bool) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;

@@ -109,6 +109,7 @@ fn checkParameterTempScopeImplWithOutputScope(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -190,6 +191,7 @@ fn expectArrowParameterTempDirectReservation(source: []const u8, target: ESTarge
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -430,6 +432,7 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.state_machine_depth = 1;
@@ -511,6 +514,7 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.state_machine_depth = 1;
@@ -615,6 +619,7 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.state_machine_depth = 1;
@@ -713,6 +718,7 @@ test "#4819 parameter temp defers when its output owner is misparented or ambigu
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -786,6 +792,7 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -904,6 +911,7 @@ fn lowerParameterPatternAndCheckCreation(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -1057,6 +1065,7 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();

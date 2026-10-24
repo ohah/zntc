@@ -41,6 +41,7 @@ fn runSemanticPipeline(
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.references = analyzer.references.items;
     transformer.line_offsets = scanner.line_offsets.items;
     const root = try transformer.transform();

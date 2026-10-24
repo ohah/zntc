@@ -341,6 +341,7 @@ pub const ModuleGraph = struct {
     /// graph 가 build() 동안 owner — `Plugin.context` 에서 `*const SourceOptions` 로 참조.
     helper_plugin_opts: runtime_helper_modules.SourceOptions = .{},
     /// Primary-analysis provider used by the single-output interop prelude.
+    dynamic_import_ast_provider: ?@import("runtime_dynamic_import_ast.zig").Provider = null,
     interop_ast_provider: ?@import("runtime_interop_ast.zig").Provider = null,
     /// `self.plugins` 앞에 ZNTC builtin runtime helper plugin 을 prepend 한 slice.
     /// `graph.allocator` 소유. `ensureBuiltinPlugins` 에서 lazy 초기화 후 PluginRunner.init

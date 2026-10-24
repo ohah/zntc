@@ -49,6 +49,7 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -188,6 +189,7 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -359,6 +361,7 @@ test "#4819 generator for-in temps retain their exact wrapper symbols" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -470,6 +473,7 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const source_scope = transformer.programScope();
@@ -545,6 +549,7 @@ test "#6142 using wrapper temp gets its exact owner SymbolId at production" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const none = @backingInt(ast_mod.NodeIndex.none);
@@ -637,6 +642,7 @@ test "#4819 callback temp reference binds through its exact producer node" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const none = @backingInt(ast_mod.NodeIndex.none);
@@ -904,6 +910,7 @@ test "#4819 generator state-machine keeps late using temps for exact final namin
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -949,6 +956,7 @@ fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -1137,6 +1145,7 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1182,6 +1191,7 @@ fn checkDeferredCallbackTempProducerIdOverlap(anchor: []const u8, producer_prefi
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const source_scope = transformer.programScope();
@@ -1303,6 +1313,7 @@ test "#6142 deferred callback temp producers keep identical spans separate by ID
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const add_owner = struct {
@@ -1434,6 +1445,7 @@ test "#6142 same-callback refs with identical spans bind by producer ID" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const source_scope = transformer.programScope();
@@ -1513,6 +1525,7 @@ test "#6142 missing callback producer ID cannot fall back to source or none span
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const source_scope = transformer.programScope();

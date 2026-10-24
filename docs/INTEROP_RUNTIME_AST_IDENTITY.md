@@ -44,8 +44,10 @@ callee Reference rows:
 - `codegen/modules.zig`: import lowering through `LinkingMetadata.to_esm_name`.
 - `linker/metadata.zig` and `linker/preamble_writer.zig`: CJS namespace/default
   materialization, final exports and wrapper/namespace helper calls.
-- `emitter/chunks.zig`: `dynamicCjsNamespaceExpr` and
-  `rewriteDynamicImportsSingleFile` after module codegen.
+- `emitter/chunks.zig`: split/legacy dynamic callsites and explicit native
+  boundaries still use their existing routes. The supported single-output
+  one-argument route now creates actual local import/callee/callback AST and
+  Reference rows; see [dynamic callsite ownership](DYNAMIC_IMPORT_CALLSITE_IDENTITY.md).
 
 A semantic Reference contains a module-local SID. Do not insert a foreign
 provider SID into a source module's local symbol table. Create an actual local

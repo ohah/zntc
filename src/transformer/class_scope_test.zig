@@ -41,6 +41,7 @@ fn expectAnonymousClassTempNameMarks(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -146,6 +147,7 @@ fn expectES5SuperNullishTempIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -206,6 +208,7 @@ test "#4819 producer SymbolId attaches a super temp binding without its span reg
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
@@ -301,6 +304,7 @@ fn expectStage3ComputedKeyIdentityCase(expression: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -474,6 +478,7 @@ test "#4819 ES5 computed super assignment and update temps have exact identity" 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -570,6 +575,7 @@ fn expectES5SuperPropertyTempProducerIdentity(source: []const u8, operation: []c
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -691,6 +697,7 @@ test "#4819 reused super-temp allocator slots keep distinct producer identities"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -814,6 +821,7 @@ test "#4819 lexical this captures receive late names through exact SymbolIds" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -884,6 +892,7 @@ test "#4819 lexical arguments captures receive late names through exact SymbolId
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -977,6 +986,7 @@ test "#4819 class field computed-key prehoist binds temp identity exactly" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -1026,6 +1036,7 @@ test "#4819 class computed-key memo binds only its producer reference" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -1124,6 +1135,7 @@ test "#4819 class computed-key handoff keeps a deferred producer handle" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const program_scope = transformer.programScope();
@@ -1233,6 +1245,7 @@ test "#4819 static-block computed-key memo owns an exact producer identity" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -1337,6 +1350,7 @@ test "#4819 anonymous private class wrapper owns its generated name exactly" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -1447,6 +1461,7 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1647,6 +1662,7 @@ test "#4819 ES5 class IIFE scopes enclose source class bodies" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1710,6 +1726,7 @@ test "#4819 ES5 named class expression stores exact inner self in wrapper" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1760,6 +1777,7 @@ test "#4819 ES5 class IIFE check alias does not resolve to shadowing parameter" 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1823,6 +1841,7 @@ test "#4819 ES5 class declaration IIFE check keeps outer and inner identities" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1879,6 +1898,7 @@ test "#4819 using class copies preserve exact source scope owners" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1923,6 +1943,7 @@ test "#4819 default derived constructors own exact newTarget symbols per functio
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -1988,6 +2009,7 @@ test "#4819 explicit derived constructor super calls reuse the exact newTarget h
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -2068,6 +2090,7 @@ test "#4819 derived field insertion tracks the exact generated super assignment"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -2151,6 +2174,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -2782,6 +2806,7 @@ test "#4819 Stage 3 member extra initializer binds its synthetic constructor rea
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -2861,6 +2886,7 @@ test "#4819 Stage 3 instance extra initializer keeps exact block and constructor
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -2954,6 +2980,7 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3023,6 +3050,7 @@ test "#4819 simple named class keeps inner name environment and binds constructo
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3069,6 +3097,7 @@ test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wr
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3146,6 +3175,7 @@ test "#4819 anonymous ES5 class expression names are finalized from exact Symbol
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3187,6 +3217,7 @@ test "#4819 anonymous ES5 class expression name reserves identifiers seen by dir
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3222,6 +3253,7 @@ test "#4819 anonymous default ES5 class export has an exact generated binding" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -3317,6 +3349,7 @@ test "#4819 anonymous default ES5 class export marks its late output name by Sym
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3358,6 +3391,7 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -3460,6 +3494,7 @@ test "#4819 inferred anonymous class does not gain a named-class wrapper" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3504,6 +3539,7 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -3561,6 +3597,7 @@ test "#4819 generated class super parameter owns colliding alias references" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 

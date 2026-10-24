@@ -62,6 +62,7 @@ fn checkCaptureSymbolsWithUnsupported(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -155,6 +156,7 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8, expected_name: []con
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -392,6 +394,7 @@ test "#4819 class field arrows share their exact constructor capture binding" {
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
@@ -471,6 +474,7 @@ test "#4819 explicit arguments binding moves to the exact capture initializer" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -546,6 +550,7 @@ test "#4819 nested source functions keep distinct capture symbol IDs and scopes"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -620,6 +625,7 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();

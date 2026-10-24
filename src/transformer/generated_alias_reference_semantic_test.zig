@@ -48,6 +48,7 @@ fn expectAliasCaptureWithText(base: []const u8, alias: []const u8, body: []const
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     // Existing codegen supports selected output names keyed by SymbolId,
     // without requiring every copied AST reference's text to be rewritten.

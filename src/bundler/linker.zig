@@ -967,6 +967,9 @@ pub const Linker = struct {
         module_index: u32,
         name_to_owners: *NameToOwnersMap,
     ) !void {
+        // The scheduler owns one exact output binding planned separately,
+        // before ordinary source names. An inactive candidate owns no output.
+        if (self.graph.dynamic_import_ast_provider) |provider| if (provider.module_index == m.index) return;
         const Ctx = struct {
             linker: *Linker,
             map: *NameToOwnersMap,
@@ -1289,6 +1292,7 @@ pub const Linker = struct {
         self.clearExternalParamNames();
         var mit = self.graph.modulesIterator();
         while (mit.next()) |m| {
+            if (self.graph.dynamic_import_ast_provider) |provider| if (provider.module_index == m.index and !provider.active) continue;
             const sem = m.semantic orelse continue;
             var it = sem.unresolved_references.iterator();
             while (it.next()) |entry| {
@@ -1880,6 +1884,18 @@ pub const Linker = struct {
         base: []const u8,
         cross_chunk_export_name: ?[]const u8,
     ) ![]const u8 {
+        return self.calculateGraphWideRuntimeHelperNameImpl(symbol_id, base, cross_chunk_export_name, false);
+    }
+
+    fn calculateGraphWideRuntimeHelperNameImpl(
+        self: *Linker,
+        symbol_id: bundler_symbol.SymbolID,
+        base: []const u8,
+        cross_chunk_export_name: ?[]const u8,
+        avoid_dynamic_eval: bool,
+    ) ![]const u8 {
+        var eval_names = std.heap.ArenaAllocator.init(self.allocator);
+        defer eval_names.deinit();
         const module_index = @backingInt(symbol_id.module);
         const owner_module = self.getModule(module_index) orelse return error.BundlerRuntimeHelperOwnerMissing;
         const previous_name = self.rename_table.get(symbol_id);
@@ -1910,6 +1926,13 @@ pub const Linker = struct {
         var modules = self.graph.modulesIterator();
         while (modules.next()) |m| {
             if (m.semantic) |sem| {
+                if (avoid_dynamic_eval) {
+                    if (m.ast) |*ast| {
+                        const EvalNames = struct { allocator: std.mem.Allocator, ast: *const Ast, scopes: []const @import("../semantic/scope.zig").Scope, semantic_editor: ?@import("../semantic/editor.zig").SemanticEditor = null };
+                        var source: EvalNames = .{ .allocator = eval_names.allocator(), .ast = ast, .scopes = sem.scopes };
+                        try @import("../transformer/es_helpers.zig").collectDynamicEvalReservedNames(&source, &self.reserved_globals, self.allocator);
+                    }
+                }
                 var unresolved = sem.unresolved_references.keyIterator();
                 while (unresolved.next()) |name| try self.reserved_globals.put(self.allocator, name.*, {});
                 // Runtime callsites can be injected into nested expressions
@@ -2952,6 +2975,16 @@ pub const Linker = struct {
         defer self.clearNestedBindingCache();
 
         try self.resolvePostGraphOutputHintNames(&name_to_owners, null);
+
+        if (self.graph.dynamic_import_ast_provider) |provider| if (provider.active) {
+            const exact = try @import("runtime_dynamic_import_ast.zig").exactBinding(self.graph);
+            const owner = self.graph.getModule(exact.module) orelse return error.InvalidCallsiteTarget;
+            const selected = try self.calculateGraphWideRuntimeHelperNameImpl(exact, owner.symbolName(exact.inner) orelse return error.InvalidCallsiteTarget, null, true);
+            self.allocator.free(selected);
+            // Map keys borrow the canonical string owned until Linker deinit.
+            const output_name = self.rename_table.get(exact) orelse return error.InvalidCallsiteTarget;
+            try self.addNameOwner(&name_to_owners, output_name, .{ .module_index = exact.module.toU32(), .exec_index = owner.exec_index, .path = owner.path, .symbol_id = exact });
+        };
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
@@ -4967,6 +5000,7 @@ pub const Linker = struct {
         for (0..self.graph.moduleCount()) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
             for (m.import_bindings) |ib| {
+                if (ib.callsite_target != null) continue;
                 if (ib.kind == .namespace) continue; // namespace import는 별도 처리 (후순위)
 
                 const source_record = if (ib.import_record_index < m.import_records.len)
@@ -5611,6 +5645,11 @@ pub const Linker = struct {
                 // Cached bindings may lose their source/export or become namespace
                 // imports. Only a match in this graph can supply a current ref.
                 ib.symbol = bundler_symbol.SymbolRef.invalid;
+                if (ib.callsite_target) |target| {
+                    _ = self.callsiteTargetName(target) catch continue;
+                    ib.symbol = target.symbol.toRef();
+                    continue;
+                }
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
@@ -5954,6 +5993,8 @@ pub const Linker = struct {
     /// (#4120) CJS interop default 의 `__toESM` 2번째 인자(node 모드) 여부. consumer 의
     /// cjsInteropMode 와 동형 — CJS 모듈 첫 importer 의 def_format(없으면 babel). RN 은 항상 babel.
     /// 판정은 **`isNodeEsm`** — `"module"` 필드 해석분은 Node 기준 CJS 다 (#4659).
+    pub const cjsInteropIsNodeForCallsite = cjsInteropIsNode;
+
     fn cjsInteropIsNode(self: *const Linker, cjs_mod: *const Module) bool {
         if (self.graph.resolve_cache.platform == .react_native) return false;
         for (cjs_mod.importers.items) |imp| {
@@ -6233,6 +6274,15 @@ pub const Linker = struct {
         const tm = self.graph.getModule(target) orelse return null;
         if (tm.wrap_kind != .cjs) return null;
         return .{ .module_index = target, .export_name = ib.imported_name };
+    }
+
+    pub fn callsiteTargetName(self: *const Linker, target: anytype) ![]const u8 {
+        const module = self.graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
+        const sem = module.semantic orelse return error.InvalidCallsiteTarget;
+        const raw = @backingInt(target.symbol.inner);
+        if (target.owner == .unassigned or target.owner != sem.owner_token or raw >= sem.symbols.items.len) return error.InvalidCallsiteTarget;
+        try @import("interop_callsite.zig").validateTargetRole(self.graph, target);
+        return self.rename_table.get(target.symbol) orelse module.symbolName(target.symbol.inner) orelse error.InvalidCallsiteTarget;
     }
 
     /// (#4510) **namespace** import(`import * as ns from './x.cjs'`)가 가리키는 CJS canonical.

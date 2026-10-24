@@ -6266,6 +6266,7 @@ test "bundler retains graph for decorator options without decorator syntax" {
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -6324,6 +6325,7 @@ test "bundler retains graph for decorator options without decorator syntax" {
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -7795,6 +7797,7 @@ test "plugin graph retention vetoes AST capabilities even without matching sourc
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -8002,6 +8005,7 @@ test "primitive defines retain only an exact local reference graph" {
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -8321,6 +8325,7 @@ fn canRetainConsoleDropForTest(source: []const u8, mutation: ConsolePreflightMut
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -8562,6 +8567,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -8839,6 +8845,7 @@ fn refreshRetainedModuleTlaForTest(source: []const u8, initial_self_tla: bool) !
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -8895,6 +8902,7 @@ fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -9078,6 +9086,7 @@ fn canRetainSimpleDefineForTest(
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -9563,6 +9572,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
+        transformer.node_scope_provenance = sem.node_scope_provenance;
         transformer.class_self_symbol_map = sem.class_self_symbol_map;
         transformer.helper_scope_map = sem.helper_scope_map;
         transformer.namespace_member_owners = &sem.namespace_member_owners;
@@ -9639,6 +9649,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.scopes = module.semantic.?.scopes;
         transformer.scope_maps = module.semantic.?.scope_maps;
         transformer.scope_owner_map = module.semantic.?.scope_owner_map;
+        transformer.node_scope_provenance = module.semantic.?.node_scope_provenance;
         transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
     }
@@ -10648,6 +10659,7 @@ fn runtimeHelperReanalysisTestFixture(
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -12499,6 +12511,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             analyzer.explicit_global_ref_nodes = cache.explicit_global_ref_nodes;
         }
         try analyzer.analyze();
+        if (previous_semantic) |*previous| try @import("../../semantic/node_scope_provenance.zig").preserveSourceOrigins(ast, &analyzer.node_scope_provenance, &previous.node_scope_provenance);
 
         // Restore only producer-marked binding identities. No text lookup is
         // involved, and dead intermediate nodes have no re-analyzed SymbolId.
@@ -12587,6 +12600,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
             .scopes = analyzer.scopes.items,
             .scope_maps = analyzer.scope_maps.items,
             .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
             .class_self_symbol_map = analyzer.class_self_symbol_map,
             .namespace_member_owners = analyzer.namespace_member_owners,
             .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -13679,6 +13693,7 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -13799,6 +13814,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,

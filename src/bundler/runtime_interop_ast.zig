@@ -338,6 +338,7 @@ pub fn build(arena: std.mem.Allocator, flavor: source_module.InteropFlavor, opti
         .scopes = analyzer.scopes.items,
         .scope_maps = analyzer.scope_maps.items,
         .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
         .class_self_symbol_map = analyzer.class_self_symbol_map,
         .namespace_member_owners = analyzer.namespace_member_owners,
         .namespace_declaration_owners = analyzer.namespace_declaration_owners,
@@ -623,6 +624,7 @@ test "interop AST unused and side effect only consumers do not execute a provide
             try std.testing.expect(!provider.active);
             try std.testing.expect(!graph.getModule(provider.module_index).?.is_included);
         }
+        if (graph.dynamic_import_ast_provider) |provider| try std.testing.expect(!provider.active);
         try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyDescriptor") == null);
         if (std.mem.indexOf(u8, result.output, "__toESM") != null) std.debug.print("dead interop control {d}:\n{s}\n", .{ index, result.output });
         try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);

@@ -1656,6 +1656,14 @@ pub const Bundler = struct {
                     break;
                 }
             }
+            var may_need_dynamic = false;
+            var dynamic_modules = graph.modulesIterator();
+            while (dynamic_modules.next()) |module| {
+                for (module.import_records) |record| {
+                    if (record.kind == .dynamic_import and !record.resolved.isNone()) may_need_dynamic = true;
+                }
+            }
+            if (may_need_dynamic) try @import("runtime_dynamic_import_ast.zig").installCandidate(graph, io);
             if (may_need_interop) try @import("runtime_interop_ast.zig").installCandidate(graph, io, .{
                 .minify = self.options.minify_whitespace,
                 .es5 = self.options.unsupported.arrow,
@@ -1802,6 +1810,7 @@ pub const Bundler = struct {
             // 활성화된다.
             if (linker) |*l| l.tree_shaker_active = true;
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s);
+            if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
             // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
@@ -1818,6 +1827,8 @@ pub const Bundler = struct {
                         .clear_first = true,
                         .populate_namespace_accesses = false,
                     });
+                } else if (graph.dynamic_import_ast_provider != null and graph.dynamic_import_ast_provider.?.active) {
+                    try (&(linker.?)).finalize(.{ .compute_renames = true, .compute_mangling = false, .clear_first = true });
                 } else if (s.ast_mutated_after_link) {
                     // Tree-shake constant folding only removes/replaces references. Graph
                     // resync preserves existing canonical names, so emit only needs import
@@ -1843,6 +1854,10 @@ pub const Bundler = struct {
         } else null;
         if (!will_tree_shake) {
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
+            if (linker) |*l| {
+                try @import("interop_callsite.zig").lower(graph, l, null);
+                if (graph.dynamic_import_ast_provider) |provider| if (provider.active) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
+            }
         }
         // tree_shaker pointer 를 linker 로 전달 — namespace force_inline 결정 (3 caller
         // in metadata.zig) 이 `isExportUsed` 로 transitively used 검사. unused

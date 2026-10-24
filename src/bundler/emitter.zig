@@ -604,6 +604,7 @@ pub fn emitWithTreeShaking(
     for (0..graph.moduleCount()) |i| {
         const m = graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (graph.interop_ast_provider) |provider| if (provider.module_index == m.index) continue;
+        if (graph.dynamic_import_ast_provider) |provider| if (provider.module_index == m.index) continue;
         const is_asset = m.loader.isAsset() and m.source.len > 0;
         const is_js = (m.module_type.isJavaScriptLike() or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
         if (is_js) {
@@ -2099,6 +2100,7 @@ pub fn emitModule(
         transformer.scopes = sem.scopes;
         transformer.scope_maps = sem.scope_maps;
         transformer.scope_owner_map = sem.scope_owner_map;
+        transformer.node_scope_provenance = sem.node_scope_provenance;
         transformer.class_self_symbol_map = sem.class_self_symbol_map;
         transformer.unresolved_references = &sem.unresolved_references;
     }

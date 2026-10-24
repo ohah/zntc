@@ -33,6 +33,7 @@ fn expectStaticCaptureIdentity(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -181,6 +182,7 @@ test "#4819 static class capture attaches exact identity before output reconcili
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -254,6 +256,7 @@ test "#4819 moved static eval guards builtin identity and inherited strictness" 
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
@@ -293,6 +296,7 @@ test "#4819 static class capture private storage reserves its block ScopeId befo
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const ast = @import("../parser/ast.zig");

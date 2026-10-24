@@ -51,6 +51,7 @@ fn expectNamespaceDeclarationSymbolId(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -63,6 +64,7 @@ fn expectNamespaceDeclarationSymbolId(
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
     }
 
     const semantic_options: CodegenOptions = .{
@@ -212,6 +214,7 @@ fn expectAmbiguousGeneratedIifeParameter(
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
@@ -222,6 +225,7 @@ fn expectAmbiguousGeneratedIifeParameter(
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
     }
 
     const parameter_kind = switch (owner_kind) {
@@ -887,6 +891,7 @@ fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, r
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.references = analyzer.references.items;
     const root = try transformer.transform();
 
@@ -961,6 +966,7 @@ fn e2eNamespaceBindingWithRename(
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.references = analyzer.references.items;
     const root = try transformer.transform();
 
@@ -1208,6 +1214,7 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in semantic
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.namespace_member_owners = &analyzer.namespace_member_owners;
     transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
@@ -1220,6 +1227,7 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in semantic
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
     }
 
     var namespace_name: ?NodeIndex = null;
@@ -1394,6 +1402,7 @@ test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.references = analyzer.references.items;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
@@ -1405,6 +1414,7 @@ test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" 
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
     }
 
     const semantic_options: CodegenOptions = .{
@@ -1480,6 +1490,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.references = analyzer.references.items;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
@@ -1491,6 +1502,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
     }
 
     const options: CodegenOptions = .{

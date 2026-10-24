@@ -1719,10 +1719,23 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         // Compiler-owned prelude source receives a fresh initial analysis per build.
         if (self.interop_ast_provider) |provider| if (provider.module_index == m.index) continue;
+        if (self.dynamic_import_ast_provider) |provider| if (provider.module_index == m.index) continue;
         // Disabled modules have no parse payload to reuse. Some receive a
         // parse_arena only to own graph-generated runtime SymbolIds, which must
         // not turn them into cache entries that no discovery path can hit.
         if (m.parse_arena == null or m.is_disabled) continue;
+        // These real AST imports capture process-local provider owners. Until
+        // exact foreign handles can be rebound across graph reconstruction,
+        // invalidate this consumer rather than reuse a stale generated graph.
+        var has_callsite_targets = false;
+        for (m.import_bindings) |binding| if (binding.callsite_target != null) {
+            has_callsite_targets = true;
+            break;
+        };
+        if (has_callsite_targets) {
+            store.evict(m.path);
+            continue;
+        }
         // (#4557 B-precise, [3]) baked 인데 provider 를 정밀 추적 못한 모듈(다단 re-export 체인
         // 미추적 / dupe OOM / parse_arena 없음 → const_providers 비어있음)은 **crude-b 폴백**:
         // 캐시에서 제외(+과거 엔트리 evict)해 다음 warm 이 무조건 clean reparse 하도록 강제한다.

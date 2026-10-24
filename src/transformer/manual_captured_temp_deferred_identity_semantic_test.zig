@@ -117,6 +117,7 @@ fn checkDeferredManualCapture(
     transformer_value.scopes = analyzer.scopes.items;
     transformer_value.scope_maps = analyzer.scope_maps.items;
     transformer_value.scope_owner_map = analyzer.scope_owner_map;
+    transformer_value.node_scope_provenance = analyzer.node_scope_provenance;
     transformer_value.unresolved_references = &analyzer.unresolved_references;
     transformer_value.semantic_edit_enabled = true;
     var transformer = &transformer_value;
@@ -257,6 +258,7 @@ fn checkManualCaptureSlotReuse() !void {
     transformer_value.scopes = analyzer.scopes.items;
     transformer_value.scope_maps = analyzer.scope_maps.items;
     transformer_value.scope_owner_map = analyzer.scope_owner_map;
+    transformer_value.node_scope_provenance = analyzer.node_scope_provenance;
     transformer_value.unresolved_references = &analyzer.unresolved_references;
     transformer_value.semantic_edit_enabled = true;
     var transformer = &transformer_value;

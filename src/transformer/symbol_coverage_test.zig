@@ -2091,6 +2091,7 @@ fn checkDuplicatedIdentifierReferences(source: []const u8, options: TransformOpt
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
     _ = try transformer.transform();
@@ -2172,6 +2173,7 @@ test "optional chain captures unresolved globals once and tracks exact temp prov
             transformer.scopes = analyzer.scopes.items;
             transformer.scope_maps = analyzer.scope_maps.items;
             transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.node_scope_provenance = analyzer.node_scope_provenance;
             transformer.unresolved_references = &analyzer.unresolved_references;
             transformer.semantic_edit_enabled = true;
             if (audit) {
@@ -2244,6 +2246,7 @@ test "#4819 function and top-level nullish temps keep separate SymbolIds through
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -2294,6 +2297,7 @@ test "#4819 optional call captures bind their writes and reads across scopes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -2334,6 +2338,7 @@ test "#4819 spread-new callee captures keep distinct function and module symbols
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -2373,6 +2378,7 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     try std.testing.expectEqual(@as(usize, 6), transformer.synthetic_temp_symbol_ids.count());
@@ -2450,6 +2456,7 @@ test "#4819 assignment target temps exclude unused candidate references" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     try std.testing.expectEqual(@as(usize, 8), transformer.synthetic_temp_symbol_ids.count());
@@ -2525,6 +2532,7 @@ test "#4819 assignment target temp references keep producer SymbolIds after span
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -2609,6 +2617,7 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     try std.testing.expectEqual(@as(usize, 2), transformer.synthetic_temp_symbol_ids.count());
@@ -2667,6 +2676,7 @@ fn checkTrackedTempsStayFixedWhenDynamicLookupCanObserveThem(source: []const u8,
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -2731,6 +2741,7 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -2796,6 +2807,7 @@ test "#4819 lexical synthetic temps finalize only through their exact binding ID
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     const name_span = try transformer.ast.addUniqueString("_lexicalTemp");
@@ -2840,6 +2852,7 @@ test "#4819 tracked captures attach the write SymbolId before reads" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -2885,6 +2898,7 @@ test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -2930,6 +2944,7 @@ fn expectPrehoistedClassKeyProducerIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -3005,6 +3020,7 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -3112,6 +3128,7 @@ fn checkKnownHoistedTempRefAfterSlotReuse(source: []const u8, counter_start: u32
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = program_scope;
     transformer.temp_var_counter = counter_start;
@@ -3237,6 +3254,7 @@ fn expectGenericHoistedTempProducerIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
@@ -3394,6 +3412,7 @@ test "#6004 pending producer references retain their lexical scope when bound in
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     const source_scope = reference_scope orelse return error.MissingFunctionScope;
     transformer.current_scope = source_scope;
@@ -3453,6 +3472,7 @@ test "#6004 producer IDs bind immediately in stable scopes during an outer state
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     const scope = reference_scope orelse return error.MissingFunctionScope;
     transformer.current_scope = scope;
@@ -3510,6 +3530,7 @@ test "#6004 producer IDs stay pending for deferred generator callback scopes dur
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = program_scope;
 
@@ -3577,6 +3598,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     transformer.semantic_edit_enabled = true;
 
@@ -3833,6 +3855,7 @@ test "#4819 transformed scope owners retain their original ScopeId" {
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     _ = try transformer.transform();
     try std.testing.expect(transformer.scope_owner_remaps.count() >= 2);
 
@@ -3926,6 +3949,7 @@ fn countsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !Coun
     transformer.references = analyzer.references.items;
     transformer.synthetic_idents = .empty;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     const root = try transformer.transform();
 
     var report = try coverage.check(allocator, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null);
@@ -4001,6 +4025,7 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4087,6 +4112,7 @@ fn expectGeneratedLoopExactIdentity(source: []const u8) !void {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     transformer.semantic_edit_enabled = true;
     const transformed_root = try transformer.transform();
@@ -4253,6 +4279,7 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4325,6 +4352,7 @@ test "#4819 decorator access functions own separate parameter symbols" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4387,6 +4415,7 @@ test "#4819 runtime helper calls bind isolated import symbols before resync" {
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
@@ -4427,6 +4456,7 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
 
@@ -4490,6 +4520,7 @@ test "#4819 later runtime helper callsites reuse their already selected SymbolId
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
 
@@ -4540,6 +4571,7 @@ test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -4588,6 +4620,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = transformer.programScope();
 
@@ -4673,6 +4706,7 @@ test "#4819 private field runtime import keeps its producer-selected alias under
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4723,6 +4757,7 @@ test "#4819 JSX runtime imports bind exact helper symbols before resync" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4792,6 +4827,7 @@ test "#4819 classic JSX factory reference follows its lexical binding" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4843,6 +4879,7 @@ test "#4819 classic JSX custom factory binds through the current scope" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4915,6 +4952,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5082,6 +5120,7 @@ fn transformEmotionCssAliasForTest(allocator: std.mem.Allocator, source: []const
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5127,6 +5166,7 @@ test "#4819 Emotion css prop import keeps its staging name when descendant eval 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
@@ -5170,6 +5210,7 @@ test "#4819 Flow component classic JSX reads are recorded in the transform graph
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -5248,6 +5289,7 @@ fn transformFlowForwardRefHelperForTest(allocator: std.mem.Allocator, source: []
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
@@ -5314,6 +5356,7 @@ test "#4819 JSX dev runtime call binds its isolated import symbol" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -5371,6 +5414,7 @@ test "#4819 standalone JSX imports bind exact symbols without bundler helper imp
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -5430,6 +5474,7 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     // Model generator operation collection: the wrapper binding identity is
@@ -5513,6 +5558,7 @@ test "#4819 pending extracted for-of producers assign temp identities immediatel
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     transformer.semantic_edit_enabled = true;
@@ -5567,6 +5613,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     transformer.state_machine_depth = 1;
@@ -5644,6 +5691,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     transformer.state_machine_depth = 1;
@@ -5759,6 +5807,7 @@ fn checkStandaloneForOfTempFinalization(source: []const u8, expect_late_names: b
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     const expected_temp_scope = transformer.nearestVarScope(loop_scope);
@@ -5830,6 +5879,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     var producer_symbol_ids: [2]u32 = undefined;
@@ -5911,6 +5961,7 @@ test "#4819 for-await error catch binds its generated reference by exact symbol 
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -6005,6 +6056,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -6210,6 +6262,7 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -6269,6 +6322,7 @@ test "#4819 for-of using head keeps its staging name when descendant eval can ob
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
@@ -6334,6 +6388,7 @@ test "#4819 downlevel using lowering preserves exact transform identities" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
@@ -6409,6 +6464,7 @@ test "#4819 generated default-export reference keeps its exact allocated name" {
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
 
     // uniqueSourceName intentionally selects _default2 because that spelling is
@@ -6472,6 +6528,7 @@ test "#4819 SymbolId reference helper ignores resolver reservations for its exac
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     const scope = transformer.programScope();
     transformer.current_scope = scope;
@@ -6609,6 +6666,7 @@ test "#4819 private field helper references retain their producer SymbolIds" {
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
@@ -6733,6 +6791,7 @@ test "#4819 private method helpers retain their producer SymbolIds" {
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
@@ -6815,6 +6874,7 @@ test "#4819 class-self captured private methods keep separate inner and outer fu
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
@@ -6916,6 +6976,7 @@ test "#4819 static private method extraction retains class-self capture from par
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     _ = try transformer.finishSemanticEdit();
@@ -6951,6 +7012,7 @@ test "#4819 synthesized private accessors retain exact function and parameter sc
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -7059,6 +7121,7 @@ test "#4819 static private accessor and method temps have exact semantic referen
         transformer.scopes = analyzer.scopes.items;
         transformer.scope_maps = analyzer.scope_maps.items;
         transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
@@ -7125,6 +7188,7 @@ fn checkPrivateForInTargetTemp(source: []const u8, expect_late_name: bool) !void
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;

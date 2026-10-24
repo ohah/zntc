@@ -28,7 +28,19 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SemanticSymbol = semantic_symbol.Symbol;
 
+pub const CallsiteRole = enum { schedule, to_esm, require, esm_init, esm_namespace };
+pub const CallsiteTarget = struct {
+    role: CallsiteRole,
+    symbol: symbol_mod.SymbolID,
+    owner: @import("module.zig").SemanticOwnerToken,
+    declaration: NodeIndex,
+};
+
 pub const ImportBinding = struct {
+    /// Compiler-created import whose use is represented by real callsite AST.
+    /// The foreign identity is captured at creation, never recovered by name.
+    callsite_target: ?CallsiteTarget = null,
+
     kind: Kind,
     /// 이 모듈에서 사용하는 로컬 이름 (e.g. "bar" in `import { foo as bar }`)
     local_name: []const u8,

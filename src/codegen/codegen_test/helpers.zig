@@ -203,6 +203,7 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
         t.symbols = analyzer.symbols.items;
         t.class_self_symbol_map = analyzer.class_self_symbol_map;
         t.scope_owner_map = analyzer.scope_owner_map;
+        t.node_scope_provenance = analyzer.node_scope_provenance;
         t.references = analyzer.references.items;
         t.scopes = analyzer.scopes.items;
         t.scope_maps = analyzer.scope_maps.items;
@@ -225,6 +226,7 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
                 t.scopes = analyzer.scopes.items;
                 t.scope_maps = analyzer.scope_maps.items;
                 t.scope_owner_map = analyzer.scope_owner_map;
+                t.node_scope_provenance = analyzer.node_scope_provenance;
                 t.helper_scope_map = analyzer.helper_scope_map;
             }
         }

@@ -41,6 +41,7 @@ pub const SemanticEditor = struct {
     scopes: std.ArrayList(Scope) = .empty,
     scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)) = .empty,
     scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    node_scope_provenance: @import("node_scope_provenance.zig").Map = .empty,
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
     references: std.ArrayList(Reference) = .empty,
     reference_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
@@ -55,6 +56,7 @@ pub const SemanticEditor = struct {
         scopes: []Scope,
         scope_maps: []std.StringHashMapUnmanaged(usize),
         scope_owner_map: std.AutoHashMapUnmanaged(u32, u32),
+        node_scope_provenance: @import("node_scope_provenance.zig").Map = .empty,
         helper_scope_map: std.StringHashMapUnmanaged(usize),
         references: []Reference,
         symbol_ids: []?u32,
@@ -102,6 +104,7 @@ pub const SemanticEditor = struct {
         for (self.scope_maps.items) |*map| map.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.node_scope_provenance.deinit(self.allocator);
         self.helper_scope_map.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -111,6 +114,23 @@ pub const SemanticEditor = struct {
     }
 
     pub fn finish(self: *SemanticEditor) Error!Result {
+        // Every reachable source import expression must retain its actual use
+        // scope. Expression provenance is never inferred from scope ownership.
+        const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(self.allocator, self.ast);
+        defer self.allocator.free(reachable);
+        for (reachable) |raw| {
+            const node: NodeIndex = @fromBackingInt(@intCast(raw));
+            if (self.ast.getNode(node).tag != .import_expression) continue;
+            const scope = self.node_scope_provenance.get(node) orelse return error.InvalidScope;
+            if (!self.validScope(scope.scope)) return error.InvalidScope;
+        }
+        const provenance_root = self.ast.transformed_root orelse if (self.ast.nodes.items.len == 0) NodeIndex.none else @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
+        if (self.node_scope_provenance.count() > 0 and !try @import("../transformer/symbol_coverage.zig").validateNodeScopeProvenance(self.allocator, self.ast, provenance_root, &self.scope_owner_map, &self.node_scope_provenance)) return error.InvalidScope;
+        var uses = self.node_scope_provenance.iterator();
+        while (uses.next()) |entry| {
+            if (entry.key_ptr.isNone() or @backingInt(entry.key_ptr.*) >= self.ast.nodes.items.len) return error.InvalidNode;
+            if (!self.validScope(entry.value_ptr.scope)) return error.InvalidScope;
+        }
         if (self.scope_reparented) {
             for (self.references.items) |ref| {
                 if (!self.visibleFrom(ref.symbol_id, ref.scope_id)) return error.InvalidScope;
@@ -122,19 +142,41 @@ pub const SemanticEditor = struct {
         const symbol_ids = try self.symbol_ids.toOwnedSlice(self.allocator);
         const symbols = self.symbols;
         const scope_owner_map = self.scope_owner_map;
+        const node_scope_provenance = self.node_scope_provenance;
         const helper_scope_map = self.helper_scope_map;
         self.symbols = .empty;
         self.scope_owner_map = .empty;
+        self.node_scope_provenance = .empty;
         self.helper_scope_map = .empty;
         return .{
             .symbols = symbols,
             .scopes = scopes,
             .scope_maps = scope_maps,
             .scope_owner_map = scope_owner_map,
+            .node_scope_provenance = node_scope_provenance,
             .helper_scope_map = helper_scope_map,
             .references = references,
             .symbol_ids = symbol_ids,
         };
+    }
+
+    pub fn importNodeScopeProvenance(self: *SemanticEditor, source: @import("node_scope_provenance.zig").Map) Error!void {
+        var entries = source.iterator();
+        while (entries.next()) |entry| try self.node_scope_provenance.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+
+    pub fn recordNodeScopeProvenance(self: *SemanticEditor, node: NodeIndex, scope: ScopeId) Error!void {
+        if (!self.validScope(scope)) return error.InvalidScope;
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return error.InvalidNode;
+        var entry = self.node_scope_provenance.get(node) orelse @import("node_scope_provenance.zig").Entry{ .scope = scope, .source_node = node };
+        entry.scope = scope;
+        try self.node_scope_provenance.put(self.allocator, node, entry);
+    }
+
+    pub fn copyNodeScopeProvenance(self: *SemanticEditor, source: NodeIndex, target: NodeIndex) Error!void {
+        const scope = self.node_scope_provenance.get(source) orelse return error.InvalidScope;
+        if (!self.validScope(scope.scope) or target.isNone() or @backingInt(target) >= self.ast.nodes.items.len) return error.InvalidScope;
+        try self.node_scope_provenance.put(self.allocator, target, scope);
     }
 
     fn validScope(self: *const SemanticEditor, id: ScopeId) bool {
