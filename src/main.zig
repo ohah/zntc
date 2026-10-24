@@ -144,6 +144,9 @@ fn transpileFile(
         // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
             error.ParseError, error.SemanticError => {},
+            error.StaticInitializerDynamicScope => {
+                try stderr.print("zntc: {s}: ZNTC1505: {s}\n", .{ file_path, lib.transformer.TransformOptions.static_initializer_dynamic_scope_msg });
+            },
             else => {
                 try stderr.print("zntc: {s}: {}\n", .{ file_path, err });
             },
