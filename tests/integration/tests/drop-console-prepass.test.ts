@@ -105,7 +105,7 @@ describe('drop console graph pre-pass gate', () => {
     const dynamic_argument = await bundle(
       'const console = {}; function evaluate() { process.stdout.write("unexpected"); return 1; } console.log(`value ${evaluate()}`); process.stdout.write("42");',
     );
-    expect(dynamic_argument.stderr).toContain('semantic_graph=reanalyzed');
+    expect(dynamic_argument.stderr).toContain('semantic_graph=retained');
     expect(dynamic_argument.stdout).toBe('42');
   });
 
@@ -141,7 +141,7 @@ describe('drop console graph pre-pass gate', () => {
     expect(multiple.stdout).toBe('42');
 
     const unresolved = await bundle('console.log(notDeclared); process.stdout.write("42");');
-    expect(unresolved.stderr).toContain('semantic_graph=reanalyzed');
+    expect(unresolved.stderr).toContain('semantic_graph=retained');
     expect(unresolved.stdout).toBe('42');
   });
 });
