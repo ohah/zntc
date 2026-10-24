@@ -61,6 +61,7 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
                 const symbol_id = self.getSymbolIdAt(generated_export_binding) orelse
                     std.debug.panic("anonymous default class export reference lost its exact binding SymbolId", .{});
                 const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
+                try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(symbol_id)), self.current_scope, .{ .read = true });
                 try self.trackExactOutputRead(ref, symbol_id);
                 break :blk ref;
             } else blk: {

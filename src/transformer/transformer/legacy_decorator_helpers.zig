@@ -113,8 +113,9 @@ pub fn transformExperimentalDecorators(
     self.runtime_helpers.legacy_decorator = true;
 
     // class 이름 텍스트를 가져옴 (let Foo = class Foo {} 에 필요)
-    const class_name_text = if (!new_name.isNone()) blk: {
-        const name_node = self.ast.getNode(new_name);
+    const output_binding = if (!new_name.isNone()) new_name else anonymous_default_export_binding;
+    const class_name_text = if (!output_binding.isNone()) blk: {
+        const name_node = self.ast.getNode(output_binding);
         break :blk self.ast.getText(name_node.data.string_ref);
     } else null;
 
@@ -123,7 +124,7 @@ pub fn transformExperimentalDecorators(
     // the emitted class-expression binding must keep the inner class-self ID;
     // the generated `let` below retains the source declaration's outer ID.
     var class_expr_name = new_name;
-    if (self.semantic_edit_enabled and node.tag == .class_declaration and class_name_text != null and
+    if (self.semantic_edit_enabled and node.tag == .class_declaration and !name_old_idx.isNone() and class_name_text != null and
         (old_deco_len > 0 or ctor_param_decos.len > 0 or !anonymous_default_export_binding.isNone()))
     {
         if (self.class_self_symbol_map.get(@backingInt(source_idx))) |class_self_id| {
@@ -145,7 +146,7 @@ pub fn transformExperimentalDecorators(
     // class decorator 또는 constructor param decorator가 있으면 → let Foo = class Foo {}; 로 변환
     if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
         // let Foo = class Foo {};
-        const name_span = self.ast.getNode(new_name).data.string_ref;
+        const name_span = self.ast.getNode(output_binding).data.string_ref;
         const var_name = if (!anonymous_default_export_binding.isNone())
             anonymous_default_export_binding
         else
@@ -194,7 +195,7 @@ pub fn transformExperimentalDecorators(
     // pending_nodes는 child 앞에 삽입되므로, class 노드도 pending에 넣고
     // decorator 호출을 그 뒤에 추가한 후 .none을 반환한다.
     if (member_decos.len > 0 and class_name_text != null) {
-        const name_span = self.ast.getNode(new_name).data.string_ref;
+        const name_span = self.ast.getNode(output_binding).data.string_ref;
 
         // 익명 default class는 export binding과 class-self binding이 다르므로
         // `let C = class C {}`를 내보내고 바깥 binding으로 멤버 decorator를 호출한다.

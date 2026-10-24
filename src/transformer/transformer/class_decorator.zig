@@ -551,24 +551,33 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     std.debug.panic("static class field has no source class scope", .{});
                 break :blk self.outputScopeParent(class_scope);
             } else self.current_scope;
-            const is_anonymous_default_export = self.semantic_edit_enabled and
-                source_idx == self.default_export_operand and raw_name_idx.isNone() and !new_name.isNone();
-            const generated_export_scope = if (is_anonymous_default_export)
+            const is_anonymous_default_export = source_idx == self.default_export_operand and raw_name_idx.isNone();
+            const generated_export_scope = if (self.semantic_edit_enabled and is_anonymous_default_export)
                 self.programScope()
             else
                 static_field_ref_scope;
             var anonymous_default_export_binding: NodeIndex = .none;
             if (is_anonymous_default_export) {
-                const name_span = self.ast.getNode(new_name).data.string_ref;
+                // Member-only decorators also need a real outer export slot.
+                // Keep an anonymous class's inner name absent unless another
+                // lowering already owns an explicit generated class-self slot.
+                const name_span = if (!new_name.isNone())
+                    self.ast.getNode(new_name).data.string_ref
+                else blk: {
+                    const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_Class", generated_export_scope);
+                    break :blk try self.ast.addString(output_name.name);
+                };
                 const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span);
-                const symbol_id = try self.declareSyntheticInScope(
-                    binding,
-                    node.span,
-                    .variable_let,
-                    generated_export_scope,
-                ) orelse std.debug.panic("anonymous default decorator wrapper has no direct SymbolId", .{});
-                if (es_helpers.canUseLateStandaloneOutputName(self, generated_export_scope))
-                    es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
+                if (self.semantic_edit_enabled) {
+                    const symbol_id = try self.declareSyntheticInScope(
+                        binding,
+                        node.span,
+                        .variable_let,
+                        generated_export_scope,
+                    ) orelse std.debug.panic("anonymous default decorator wrapper has no direct SymbolId", .{});
+                    if (es_helpers.canUseLateStandaloneOutputName(self, generated_export_scope))
+                        es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
+                }
                 try self.lowered_anonymous_class_export_bindings.put(
                     self.allocator,
                     @backingInt(source_idx),
