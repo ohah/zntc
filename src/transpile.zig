@@ -86,9 +86,6 @@ const AstFacts = struct {
     /// type-only subset can reuse the runtime graph; runtime-changing syntax is
     /// gated separately below.
     has_typescript_syntax: bool = false,
-    /// Parser-removed `declare` and other type-only bindings remain outside the
-    /// runtime graph, so a lenient file with such names is not yet graph-neutral.
-    has_type_only_bindings: bool = false,
     /// class / private / decorator / TS runtime syntax / using — runtime transform needed.
     has_runtime_sensitive_syntax: bool = false,
     /// Runtime transforms whose graph edits are not certified for Flow-mode input yet.
@@ -153,7 +150,6 @@ fn transpileFastPathDisabledByEnv() bool {
 
 fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMemory}!AstFacts {
     var facts: AstFacts = .{};
-    facts.has_type_only_bindings = ast.type_only_binding_names.count() > 0;
 
     for (ast.nodes.items) |node| {
         if (std.mem.startsWith(u8, @tagName(node.tag), "ts_")) {
@@ -672,9 +668,11 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
         return !facts.has_unhandled_runtime_syntax and
             !(options.emit_decorator_metadata and facts.has_unsupported_qualified_metadata_type_reference);
     }
+    // Parser-removed `declare` names stay out of the runtime AST. Their sideband
+    // is consumed by type-only export elision before analysis and does not make
+    // the emitted semantic graph differ from the transform graph.
     if (parser.source_mode == .js_lenient) return !facts.has_import_declaration and
-        (!facts.has_typescript_syntax or
-            (!facts.has_type_only_bindings and !facts.has_lenient_unhandled_runtime_syntax));
+        (!facts.has_typescript_syntax or !facts.has_lenient_unhandled_runtime_syntax);
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2412,18 +2410,37 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         typed_parser.configureFromExtension(".unknown");
         _ = try typed_parser.parse();
         try std.testing.expect(typed_parser.source_mode == .js_lenient);
-        try std.testing.expect(typed_parser.ast.type_only_binding_names.count() == 0);
+        try std.testing.expect(canMangleWithTransformSemantic(minify, &typed_parser));
+    }
+
+    const retained_type_only_sources = [_][]const u8{
+        "declare const value: number; console.log(value);",
+        "declare let value: number; console.log(value);",
+        "declare var value: number; console.log(value);",
+        "declare function value(): number; console.log(value());",
+        "declare class Value { amount: number; }",
+        "declare abstract class Value { amount: number; }",
+        "declare const first: number, second: string; console.log(first, second);",
+        "declare const { value, nested: { child } }: { value: number; nested: { child: number } }; console.log(value, child);",
+        "declare const [first, second]: [number, number]; console.log(first, second);",
+        "declare interface Shape { amount: number; } const value: Shape = { amount: 1 }; console.log(value.amount);",
+        "declare type Amount = number; const value: Amount = 1; console.log(value);",
+    };
+    for (retained_type_only_sources) |source| {
+        var typed_scanner = try Scanner.init(allocator, source);
+        var typed_parser = Parser.init(allocator, &typed_scanner);
+        typed_parser.configureFromExtension(".unknown");
+        _ = try typed_parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), typed_parser.errors.items.len);
         try std.testing.expect(canMangleWithTransformSemantic(minify, &typed_parser));
     }
 
     const reanalyzed_sources = [_][]const u8{
-        "declare const value: number;",
         "declare enum Ambient { A } console.log(typeof Ambient);",
+        "declare namespace Ambient { export const amount: number; } console.log(typeof Ambient);",
         "const enum Value { A } console.log(Value.A);",
-        "declare namespace Ambient { export const value: number; }",
         "declare module 'ambient' { export const value: number; }",
         "import type { Value } from './types'; const value: Value = {} as Value;",
-        "declare const externalValue: number; function seal(value: any): any { return value; } @seal class Box { amount: number = externalValue; }",
     };
     for (reanalyzed_sources) |source| {
         var typed_scanner = try Scanner.init(allocator, source);
@@ -2505,18 +2522,25 @@ test "#4819 extensionless TypeScript classes retain supported class graphs" {
     try std.testing.expect(parser.source_mode == .js_lenient);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
-    const unsupported_sources = [_][]const u8{
+    const retained_type_only_sources = [_][]const u8{
         "declare const externalValue: number; function seal(value: any): any { return value; } @seal class Box { value: number = externalValue; }",
         "declare class External { value: number; }",
     };
-    for (unsupported_sources) |unsupported_source| {
-        var unsupported_scanner = try Scanner.init(allocator, unsupported_source);
-        var unsupported_parser = Parser.init(allocator, &unsupported_scanner);
-        unsupported_parser.configureFromExtension(".unknown");
-        _ = try unsupported_parser.parse();
-        try std.testing.expectEqual(@as(usize, 0), unsupported_parser.errors.items.len);
-        try std.testing.expect(!canMangleWithTransformSemantic(minify, &unsupported_parser));
+    for (retained_type_only_sources) |retained_source| {
+        var retained_scanner = try Scanner.init(allocator, retained_source);
+        var retained_parser = Parser.init(allocator, &retained_scanner);
+        retained_parser.configureFromExtension(".unknown");
+        _ = try retained_parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), retained_parser.errors.items.len);
+        try std.testing.expect(canMangleWithTransformSemantic(minify, &retained_parser));
     }
+
+    var unsupported_scanner = try Scanner.init(allocator, "declare module 'ambient' { export const value: number; }");
+    var unsupported_parser = Parser.init(allocator, &unsupported_scanner);
+    unsupported_parser.configureFromExtension(".unknown");
+    _ = try unsupported_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), unsupported_parser.errors.items.len);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &unsupported_parser));
 }
 
 test "#4819 extensionless TypeScript private fields retain their graph" {
