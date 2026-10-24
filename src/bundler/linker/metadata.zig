@@ -2051,6 +2051,13 @@ pub fn buildCrossModuleConstValuesProfiled(
         // `const`는 재할당 불가라 write_count가 무조건 0. `let` + write_count>0는 inline 금지.
         // 예: `export let counter = 42; counter++;` → counter 참조를 42로 inline하면 버그.
         if (target_sym.write_count > 0) continue;
+        // Direct eval/with can write mutable bindings without a static write
+        // edge. Consult the exact provider binding's current graph scope,
+        // including descendant eval, rather than the importer's environment.
+        if (target_sym.kind == .variable_let or target_sym.kind == .variable_var) {
+            if (target_sym.scope_id.isNone() or target_sym.scope_id.toIndex() >= lookup.sem.scopes.len) continue;
+            if (lookup.sem.scopes[target_sym.scope_id.toIndex()].blocksMangling()) continue;
+        }
         // import binding의 local symbol에 매핑
         if (ib.local_symbol.semanticIndex()) |local_sym| {
             try const_values.put(self.allocator, local_sym, cv);
