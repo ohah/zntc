@@ -2346,10 +2346,32 @@ pub const Linker = struct {
         return ids;
     }
 
+    /// Runtime prelude demand and import emission use the same exact binding
+    /// liveness. An unused import still evaluates its source, without creating
+    /// an interop namespace value.
+    pub fn isInteropImportLive(self: *const Linker, module: *const Module, binding: ImportBinding) bool {
+        if (self.graph.interop_ast_provider == null) return true;
+        if (binding.source_type_only == true) return false;
+        if (self.tree_shaker) |shaker| return shaker.isImportSymbolLive(module.index.toU32(), binding.local_symbol);
+        if (binding.local_symbol.moduleIndex() != module.index) return true;
+        const id = binding.local_symbol.semanticIndex() orelse return true;
+        const semantic = module.semantic orelse return true;
+        if (id >= semantic.symbols.items.len) return true;
+        const infos = module.prebuilt_stmt_info orelse return true;
+        const ast = module.ast orelse return true;
+        for (infos.referencingStmts(id)) |statement| {
+            if (statement >= infos.stmts.len) return true;
+            const node = infos.stmts[statement].node_idx;
+            if (node >= ast.nodes.items.len or ast.nodes.items[node].tag != .import_declaration) return true;
+        }
+        return false;
+    }
+
     /// Resolve all raw ESM interop helper bindings from graph-level synthetic
     /// SymbolIDs. Fully semantic-less graphs retain the canonical template
     /// names; a semantic graph must have a parse-backed owner for every helper.
     pub fn esmInteropRuntimeNames(self: *const Linker) !rt_names.EsmInteropRuntimeNames {
+        if (self.graph.interop_ast_provider != null) return @import("runtime_interop_ast.zig").outputNames(self.graph, &self.rename_table);
         const mutable = @constCast(self);
         if (mutable.esm_interop_runtime_names == null) try mutable.prepareEsmInteropRuntimeNames();
         return mutable.esm_interop_runtime_names orelse return error.EsmInteropRuntimeNamesMissing;
@@ -2360,7 +2382,9 @@ pub const Linker = struct {
         return names.get(helper);
     }
 
-    pub fn currentEsmInteropRuntimeNames(self: *const Linker) rt_names.EsmInteropRuntimeNames {
+    pub fn currentEsmInteropRuntimeNames(self: *const Linker) WrapperNameError!rt_names.EsmInteropRuntimeNames {
+        if (self.graph.interop_ast_provider == null and self.graph.path_to_module.contains(@import("../runtime_helper_modules.zig").interopId(.wrapped))) return error.MissingWrapperSymbol;
+        if (self.graph.interop_ast_provider != null) return @import("runtime_interop_ast.zig").outputNames(self.graph, &self.rename_table) catch return error.MissingWrapperSymbol;
         return self.esm_interop_runtime_names orelse rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
     }
 
@@ -2543,6 +2567,11 @@ pub const Linker = struct {
     }
 
     pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
+        if (self.graph.interop_ast_provider == null and self.graph.path_to_module.contains(@import("../runtime_helper_modules.zig").interopId(.wrapped))) return error.InvalidInteropIdentity;
+        if (self.graph.interop_ast_provider != null) {
+            _ = try @import("runtime_interop_ast.zig").resolveBindings(self.graph);
+            return;
+        }
         var has_semantic_module = false;
         var anchor_index: ?ModuleIndex = null;
         var helper_owner_index: ?ModuleIndex = null;
@@ -2711,8 +2740,9 @@ pub const Linker = struct {
     }
 
     fn reserveEsmInteropRuntimeNames(self: *Linker) !void {
+        if (self.graph.interop_ast_provider != null) return;
         try self.prepareEsmInteropRuntimeNames();
-        const names = self.currentEsmInteropRuntimeNames();
+        const names = try self.currentEsmInteropRuntimeNames();
         inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
             const selected_name = names.get(helper);
             try self.reserved_globals.put(self.allocator, selected_name, {});

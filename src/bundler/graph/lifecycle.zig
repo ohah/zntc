@@ -42,6 +42,7 @@ pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGr
 /// 모듈 단위 state 도 reset. reset() 만 호출하면 modules 의 stale ast/semantic 이
 /// 그대로 남음 — Sub-PR-B.3 의 wire-up 에서 invalidateModule 와 함께 사용.
 pub fn reset(self: *ModuleGraph) void {
+    self.interop_ast_provider = null;
     for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
     self.owned_diagnostic_strings.clearRetainingCapacity();
     self.diagnostics.clearRetainingCapacity();

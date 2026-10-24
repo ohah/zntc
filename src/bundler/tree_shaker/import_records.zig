@@ -68,6 +68,16 @@ pub fn importRecordBelongsToStmt(self: anytype, mod_idx: u32, infos: StmtInfos, 
     return stmt_indices[rec_idx] == stmt_idx;
 }
 
+pub fn isImportRecordLive(self: anytype, mod_idx: u32, record_idx: u32) !bool {
+    if (mod_idx >= self.reachable_stmts.len or mod_idx >= self.module_stmt_infos.len) return true;
+    const reachable = self.reachable_stmts[mod_idx] orelse return true;
+    const infos = self.module_stmt_infos[mod_idx] orelse return true;
+    const indices = (try ensureImportRecordStmtIndices(self, mod_idx, infos)) orelse return true;
+    if (record_idx >= indices.len) return true;
+    const statement = indices[record_idx] orelse return true;
+    return reachable.isSet(statement);
+}
+
 fn ensureImportRecordStmtIndices(self: anytype, mod_idx: u32, infos: StmtInfos) !?[]?u32 {
     const mod_count = self.graph.moduleCount();
     if (mod_idx >= mod_count) return null;

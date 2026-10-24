@@ -3311,7 +3311,7 @@ test "#1621 minify: __toESM compact __copyProps shape" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "i<keys.length") != null);
 
     // 일반 minified variant는 짧은 arrow IIFE로 key를 capture하고 descriptor enumerable은 유지한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(k=>()=>from[k])(key)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(k=>{\"use strict\";return ()=>{\"use strict\";return from[k];};})(key)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "enumerable:!(desc=$gD(from,key))||desc.enumerable") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyNames") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyDescriptor") != null);
@@ -3343,7 +3343,7 @@ test "#1621 minify+react-native: configurable __toESM stays ES5 and compact" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$cp=function(to,from,desc)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$tE=function(mod,isNodeMode,target)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "configurable:true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(function(k){return from[k]}).bind(null,key)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(function(k){\"use strict\";return from[k];}).bind(null,key)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(k=>()=>from[k])(key)") == null);
 
     // compacting invariant는 configurable variant에도 동일하게 적용된다.

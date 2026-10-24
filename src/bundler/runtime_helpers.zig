@@ -2568,18 +2568,16 @@ pub fn appendEsmWrapRuntimeWithInternalNames(
     try appendEsmWrapRuntimeWithGraphInternalNames(buf, allocator, minify, es5_syntax, configurable, factory_name, names, internal_names, .{});
 }
 
-/// Emit the ESM wrapper with exact SymbolId-derived names for both the
-/// `__esm` factory body and raw ESM interop helper locals.
-pub fn appendEsmWrapRuntimeWithGraphInternalNames(
+/// Emit only the raw __esm factory. AST-backed interop providers emit their
+/// own scoped declarations through ordinary codegen.
+pub fn appendEsmFactoryRuntimeWithNames(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     minify: bool,
     es5_syntax: bool,
     configurable: bool,
     factory_name: []const u8,
-    names: names_mod.EsmInteropRuntimeNames,
     internal_names: names_mod.EsmRuntimeInternalNames,
-    interop_internal_names: names_mod.EsmInteropRuntimeInternalNames,
 ) !void {
     // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
     const fn_syntax = es5_syntax or configurable;
@@ -2599,6 +2597,21 @@ pub fn appendEsmWrapRuntimeWithGraphInternalNames(
     } else {
         try appendEsmRuntimeWithNames(buf, allocator, runtime, default_factory_name, factory_name, internal_names);
     }
+}
+
+/// Emit the legacy raw wrapper factory and interop helper declarations.
+pub fn appendEsmWrapRuntimeWithGraphInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+    names: names_mod.EsmInteropRuntimeNames,
+    internal_names: names_mod.EsmRuntimeInternalNames,
+    interop_internal_names: names_mod.EsmInteropRuntimeInternalNames,
+) !void {
+    try appendEsmFactoryRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, factory_name, internal_names);
 
     const export_runtime = if (configurable)
         (if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE)

@@ -14,6 +14,42 @@ const parent = @import("../emitter.zig");
 const chunks = @import("chunks.zig");
 const EmitOptions = parent.EmitOptions;
 
+/// The initial candidate is disconnected. Only included live use-sites add
+/// dependency edges and exact declaration seeds after ordinary tree-shaking.
+pub fn activateSingleBundleInterop(graph: *ModuleGraph, linker: *Linker, shaker: ?*@import("../tree_shaker.zig").TreeShaker) !void {
+    const provider = graph.interop_ast_provider orelse return;
+    const old_shaker = linker.tree_shaker;
+    linker.tree_shaker = shaker;
+    defer linker.tree_shaker = old_shaker;
+    var needs = false;
+    var wrapped = false;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |module| {
+        if (module.index == provider.module_index) continue;
+        if (shaker) |s| if (!s.isIncluded(module.index.toU32())) continue;
+        if (!module.module_type.isJavaScriptLike() and module.module_type != .json) continue;
+        const module_wrapped = module.wrap_kind == .esm;
+        var live_dynamic = false;
+        if (graph.inline_dynamic_imports) {
+            for (module.import_records, 0..) |record, index| {
+                if (record.kind != .dynamic_import or record.resolved.isNone()) continue;
+                const target = graph.getModule(record.resolved) orelse continue;
+                if (target.wrap_kind != .cjs) continue;
+                if (shaker) |s| if (!try s.isImportRecordLive(module.index.toU32(), @intCast(index))) continue;
+                live_dynamic = true;
+                break;
+            }
+        }
+        const module_needs = module_wrapped or moduleNeedsToEsmInterop(module, graph, linker) or
+            moduleReExportsCjsDefaultNeedsToEsm(module, graph, linker) or live_dynamic;
+        if (!module_needs) continue;
+        needs = true;
+        wrapped = wrapped or module_wrapped;
+        try graph.linkDependency(module.index, provider.module_index);
+    }
+    if (needs) try @import("../runtime_interop_ast.zig").activate(graph, wrapped, shaker);
+}
+
 /// 번들 레벨 런타임 헬퍼 주입 (CJS interop + decorator + async).
 /// emitWithTreeShaking에서 사용.
 pub fn emitBundleRuntimeHelpers(
@@ -46,6 +82,7 @@ pub fn emitBundleRuntimeHelpers(
         if (m.loader == .binary) needs_to_binary = true;
         if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
+    if (graph.interop_ast_provider) |provider| needs_to_esm_runtime = provider.active;
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // Node ESM 출력에서 *external require 호출* (예: `require("fs")`) 이 bundle 에 emit
         // 되면 그 `require` 가 런타임에 미정의 — `createRequire(import.meta.url)` shim 필요.
@@ -71,7 +108,7 @@ pub fn emitBundleRuntimeHelpers(
         }
         // __toCommonJS는 __copyProps/__defProp 에 의존 -> ESM wrap 런타임을 emit 하면
         // 어떤 import site 도 __toESM 을 부르지 않더라도 __toESM 클러스터가 필요.
-        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
+        if ((needs_to_esm_runtime or needs_esm_wrap_runtime) and graph.interop_ast_provider == null) {
             const helper_names = if (linker) |l|
                 try l.esmInteropRuntimeNames()
             else
@@ -81,6 +118,12 @@ pub fn emitBundleRuntimeHelpers(
             else
                 rt_names.EsmInteropRuntimeInternalNames{};
             try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
+        }
+    }
+    if (graph.interop_ast_provider) |provider| {
+        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
+            if (!provider.active) return error.InteropAstProviderNotActivated;
+            try @import("../runtime_interop_ast.zig").emit(output, allocator, graph, linker orelse return error.InteropAstProviderMissingLinker, options);
         }
     }
     if (needs_esm_wrap_runtime) {
@@ -98,11 +141,12 @@ pub fn emitBundleRuntimeHelpers(
             try l.esmFactoryRuntimeInternalNames()
         else
             rt_names.EsmRuntimeInternalNames{};
-        const interop_internal_names = if (linker) |l|
-            try l.esmInteropRuntimeInternalNames()
-        else
-            rt_names.EsmInteropRuntimeInternalNames{};
-        try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
+        if (graph.interop_ast_provider != null) {
+            try rt.appendEsmFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
+        } else {
+            const interop_internal_names = if (linker) |l| try l.esmInteropRuntimeInternalNames() else rt_names.EsmInteropRuntimeInternalNames{};
+            try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
+        }
     }
     // Legacy decorators use the transformer's named virtual-module import.
     // An option-wide preamble would define __decorateClass a second time.
@@ -124,7 +168,7 @@ pub fn emitBundleRuntimeHelpers(
         else
             "__esm";
         const helper_names = if (linker) |l|
-            l.currentEsmInteropRuntimeNames()
+            try l.currentEsmInteropRuntimeNames()
         else
             rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
         const hmr_names = if (linker) |l|
@@ -210,6 +254,9 @@ fn namespaceTargetHasCjsStar(target: *const Module, graph: *const ModuleGraph) b
 fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
     for (module.import_bindings) |ib| {
         if (ib.import_record_index >= module.import_records.len) continue;
+        if (graph.interop_ast_provider != null) {
+            if (linker) |l| if (!l.isInteropImportLive(module, ib)) continue;
+        }
 
         // namespace import: chain follow 가 아니라 importer 의 직접 target 만 확인.
         // (`import * as ns from "./cjs"` 면 항상 __toESM(req()) 로 emit.)
@@ -277,6 +324,9 @@ fn moduleReExportsCjsDefaultNeedsToEsm(m: *const Module, graph: *const ModuleGra
     const l = linker orelse return false;
     for (m.export_bindings) |eb| {
         if (eb.kind != .re_export) continue;
+        if (graph.interop_ast_provider != null) {
+            if (l.tree_shaker) |shaker| if (!shaker.isExportUsed(m.index.toU32(), eb.exported_name)) continue;
+        }
         const canon = l.resolveExportChain(m.index, eb.exported_name, 0) orelse continue;
         if (!std.mem.eql(u8, canon.export_name, "default")) continue;
         const cm = graph.getModule(canon.module_index) orelse continue;

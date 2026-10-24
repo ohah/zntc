@@ -1717,6 +1717,8 @@ pub fn getMtime(io: std.Io, path: []const u8) !i128 {
 pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_store.PersistentModuleStore) void {
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+        // Compiler-owned prelude source receives a fresh initial analysis per build.
+        if (self.interop_ast_provider) |provider| if (provider.module_index == m.index) continue;
         // Disabled modules have no parse payload to reuse. Some receive a
         // parse_arena only to own graph-generated runtime SymbolIds, which must
         // not turn them into cache entries that no discovery path can hit.

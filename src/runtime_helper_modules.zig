@@ -58,6 +58,22 @@ pub const SourceOptions = struct {
     configurable_exports: bool = false,
 };
 
+pub const InteropFlavor = enum { to_esm, wrapped };
+
+pub fn interopId(flavor: InteropFlavor) []const u8 {
+    return switch (flavor) {
+        .to_esm => ID_PREFIX ++ "to-esm",
+        .wrapped => ID_PREFIX ++ "interop-wrap",
+    };
+}
+
+/// The producer owns the complete selected source before initial analysis.
+/// This does not make it a live root; consumers activate the provider later.
+pub fn interopSource(allocator: std.mem.Allocator, flavor: InteropFlavor, options: SourceOptions) ![]const u8 {
+    const id = interopId(flavor);
+    return buildSource(allocator, findModule(id[ID_PREFIX.len..]).?, options);
+}
+
 /// Helper 정의 변형. plain/min 은 필수, es5/configurable 은 해당 helper 가 그 variant
 /// 를 제공할 때만 채워진다. `pickBody` 가 옵션 조합에 따라 적절한 variant 를 선택.
 const BodyVariants = struct {
@@ -344,6 +360,20 @@ const MODULES = [_]HelperModule{
         .helpers = &.{"__wrapRegExp"},
         .body = .{ .plain = rt.WRAP_REGEXP_RUNTIME, .min = rt.WRAP_REGEXP_RUNTIME_MIN },
     },
+    // Self-contained AST provider: unlike the individual export/to-commonjs
+    // modules this group has no implicit cross-helper free references.
+    .{
+        .short = "interop-wrap",
+        .helpers = &.{ "__create", "__getProtoOf", "__defProp", "__getOwnPropNames", "__getOwnPropDesc", "__hasOwn", "__copyProps", "__toESM", "__export", "__toCommonJS" },
+        .body = .{
+            .plain = rt.TOESM_RUNTIME ++ rt.EXPORT_RUNTIME ++ rt.TOCOMMONJS_RUNTIME,
+            .min = rt.TOESM_RUNTIME_MIN ++ rt.EXPORT_RUNTIME_MIN ++ rt.TOCOMMONJS_RUNTIME_MIN,
+            .es5 = rt.TOESM_RUNTIME_ES5 ++ rt.EXPORT_RUNTIME_ES5 ++ rt.TOCOMMONJS_RUNTIME_ES5,
+            .es5_min = rt.TOESM_RUNTIME_ES5_MIN ++ rt.EXPORT_RUNTIME_ES5_MIN ++ rt.TOCOMMONJS_RUNTIME_ES5_MIN,
+            .configurable = rt.TOESM_RUNTIME_CONFIGURABLE ++ rt.EXPORT_RUNTIME_CONFIGURABLE ++ rt.TOCOMMONJS_RUNTIME_CONFIGURABLE,
+            .configurable_min = rt.TOESM_RUNTIME_CONFIGURABLE_MIN ++ rt.EXPORT_RUNTIME_CONFIGURABLE_MIN ++ rt.TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN,
+        },
+    },
 };
 
 comptime {
@@ -557,6 +587,8 @@ test "moduleShortFor: 등록된 helper 매핑" {
     try std.testing.expectEqualStrings("es-decorator", moduleShortFor("__esDecorate").?);
     try std.testing.expectEqualStrings("to-esm", moduleShortFor("__toESM").?);
     try std.testing.expectEqualStrings("to-esm", moduleShortFor("__create").?);
+    try std.testing.expectEqualStrings("export", moduleShortFor("__export").?);
+    try std.testing.expectEqualStrings("to-commonjs", moduleShortFor("__toCommonJS").?);
     try std.testing.expectEqualStrings("commonjs", moduleShortFor("__commonJS").?);
     try std.testing.expectEqualStrings("rest", moduleShortFor("__rest").?);
 }
