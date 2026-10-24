@@ -77,6 +77,8 @@ const HelperModule = struct {
     helpers: []const []const u8,
     /// helper 정의 string 의 variant 모음.
     body: BodyVariants,
+    /// Base exports imported before the initial parse, using their literal template names.
+    dependencies: []const []const u8 = &.{},
 };
 
 const MODULES = [_]HelperModule{
@@ -103,19 +105,21 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "async-values",
+        .dependencies = &.{"__values"},
         .helpers = &.{"__asyncValues"},
         .body = .{ .plain = rt.ASYNC_VALUES_RUNTIME, .min = rt.ASYNC_VALUES_RUNTIME_MIN },
     },
     .{
         .short = "async-generator",
+        .dependencies = &.{"__await"},
         .helpers = &.{"__asyncGenerator"},
         .body = .{ .plain = rt.ASYNC_GENERATOR_RUNTIME, .min = rt.ASYNC_GENERATOR_RUNTIME_MIN },
     },
     .{
         // async generator 안 `yield* X` 위임 (#4628 · #4700). __await 에 의존한다 —
-        // helper 모듈 경로는 각 모듈이 필요한 helper 를 스스로 import 하므로
-        // 여기선 정의만 등록하면 된다.
+        // 최초 parse 전에 dependency import를 포함해 참조 identity를 부여한다.
         .short = "yield-star",
+        .dependencies = &.{"__await"},
         .helpers = &.{"__yieldStar"},
         .body = .{
             .plain = rt.YIELD_STAR_RUNTIME,
@@ -342,6 +346,16 @@ const MODULES = [_]HelperModule{
     },
 };
 
+comptime {
+    for (MODULES) |module| {
+        for (module.dependencies) |base| {
+            const provider = moduleShortFor(base) orelse @compileError("unregistered runtime helper dependency: " ++ base);
+            if (std.mem.eql(u8, provider, module.short))
+                @compileError("runtime helper dependency must use a different provider: " ++ base);
+        }
+    }
+}
+
 // ============================================================
 // Public API
 // ============================================================
@@ -480,7 +494,24 @@ fn pickBody(body: BodyVariants, opts: SourceOptions) []const u8 {
 }
 
 fn buildSource(allocator: std.mem.Allocator, m: *const HelperModule, opts: SourceOptions) ![]const u8 {
-    return buildExports(allocator, pickBody(m.body, opts), m.helpers, opts.minify);
+    const exported = try buildExports(allocator, pickBody(m.body, opts), m.helpers, opts.minify);
+    if (m.dependencies.len == 0) return exported;
+    defer allocator.free(exported);
+
+    var source: std.ArrayList(u8) = .empty;
+    errdefer source.deinit(allocator);
+    for (m.dependencies) |base| {
+        const short = moduleShortFor(base) orelse unreachable; // validated at comptime below
+        // The templates use the base spelling even in their minified variants.
+        // Import the shared provider: __await's instanceof identity must not be cloned.
+        try source.appendSlice(allocator, "import { ");
+        try source.appendSlice(allocator, base);
+        try source.appendSlice(allocator, " } from \"\\x00zntc:runtime/");
+        try source.appendSlice(allocator, short);
+        try source.appendSlice(allocator, "\";\n");
+    }
+    try source.appendSlice(allocator, exported);
+    return try source.toOwnedSlice(allocator);
 }
 
 /// helper 정의 + named export suffix 결합.
@@ -707,4 +738,53 @@ test "makePlugin: hook 호출이 ctx 통해 동작" {
     const loaded = (try p.load.?(p.context, "\x00zntc:runtime/generator", allocator, &hook_ctx)).?;
     defer allocator.free(loaded.contents);
     try std.testing.expect(std.mem.indexOf(u8, loaded.contents, "__generator") != null);
+}
+
+test "helper dependencies have exact import identities at initial analysis" {
+    const Scanner = @import("lexer/scanner.zig").Scanner;
+    const Parser = @import("parser/parser.zig").Parser;
+    const Analyzer = @import("semantic/analyzer.zig").SemanticAnalyzer;
+    const import_scanner = @import("bundler/import_scanner.zig");
+    const inputs = [_]struct { module: []const u8, dependency: []const u8 }{
+        .{ .module = "async-values", .dependency = "__values" },
+        .{ .module = "async-generator", .dependency = "__await" },
+        .{ .module = "yield-star", .dependency = "__await" },
+    };
+    for (inputs) |input| {
+        for ([_]bool{ false, true }) |minify| {
+            for ([_]bool{ false, true }) |es5| {
+                var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+                defer arena.deinit();
+                const allocator = arena.allocator();
+                const source = try buildSource(allocator, findModule(input.module).?, .{ .minify = minify, .es5 = es5 });
+                var scanner = try Scanner.init(allocator, source);
+                var parser = Parser.init(allocator, &scanner);
+                parser.is_module = true;
+                scanner.is_module = true;
+                _ = try parser.parse();
+                try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+                const imports = try import_scanner.extractImports(allocator, &parser.ast);
+                try std.testing.expectEqual(@as(usize, 1), imports.len);
+                const expected_id = (try idForBase(allocator, input.dependency)).?;
+                try std.testing.expectEqualStrings(expected_id, imports[0].specifier);
+                var analyzer = Analyzer.init(allocator, &parser.ast);
+                try analyzer.analyze();
+                try std.testing.expect(!analyzer.unresolved_references.contains(input.dependency));
+                var found: usize = 0;
+                for (analyzer.symbols.items, 0..) |symbol, index| {
+                    if (symbol.kind != .import_binding or !std.mem.eql(u8, parser.ast.getSourceText(symbol.name), input.dependency)) continue;
+                    found += 1;
+                    var reads: usize = 0;
+                    for (analyzer.references.items) |reference| {
+                        if (!reference.flags.read or @backingInt(reference.symbol_id) != index) continue;
+                        reads += 1;
+                        try std.testing.expect(reference.node_index != .none);
+                        try std.testing.expectEqualStrings(input.dependency, parser.ast.identifierNameText(parser.ast.getNode(reference.node_index)));
+                    }
+                    try std.testing.expect(reads > 0);
+                }
+                try std.testing.expectEqual(@as(usize, 1), found);
+            }
+        }
+    }
 }
