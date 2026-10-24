@@ -183,7 +183,7 @@ pub fn materialize(
         }
     }
 
-    const scan_result = import_scanner.ScanResult{
+    var scan_result = import_scanner.ScanResult{
         .records = module.import_records,
         .has_esm_syntax = parser.scan_result.has_esm_syntax or parser.has_module_syntax,
         .has_cjs_require = parser.scan_result.has_cjs_require,
@@ -191,6 +191,20 @@ pub fn materialize(
         .has_exports_dot = parser.scan_result.has_exports_dot,
         .has_esmodule_marker = parser.scan_result.has_esmodule_marker,
     };
+
+    if (module.semantic) |semantic| {
+        scan_result = import_scanner.withSemanticCjsExports(&parser.ast, scan_result, .{
+            .symbol_ids = semantic.symbol_ids,
+            .symbols = semantic.symbols.items,
+            .commonjs_environment = module.def_format.isCommonjs() or (!module.def_format.isEsm() and !scan_result.has_esm_syntax),
+            .module_parameter = if (module.cjs_wrapper_module_parameter_symbol) |id| @backingInt(id) else null,
+            .exports_parameter = if (module.cjs_wrapper_exports_parameter_symbol) |id| @backingInt(id) else null,
+        }) catch {
+            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Missing exact CommonJS export reference identity", null);
+            module.state = .ready;
+            return false;
+        };
+    }
 
     // #3062: JSX automatic synthetic ImportRecord/Binding inject 우회는 transformer 가
     // 정식 import_declaration AST 노드를 추가하는 새 경로로 대체됐다. 다운스트림 (resync

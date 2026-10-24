@@ -228,7 +228,7 @@ pub fn determineExportsKind(
     scan: import_scanner.ScanResult,
     path: []const u8,
 ) types.ExportsKind {
-    const has_cjs = scan.has_cjs_require or scan.has_module_exports or scan.has_exports_dot;
+    const has_cjs = scan.has_cjs_host_parameters or scan.has_cjs_require or scan.has_module_exports or scan.has_exports_dot;
 
     // ESM + CJS 혼용
     if (scan.has_esm_syntax and has_cjs) return .esm_with_dynamic_fallback;
