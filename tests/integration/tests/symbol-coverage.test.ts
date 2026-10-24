@@ -2342,12 +2342,93 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'import still used after dropped call falls back',
+        name: 'named import still used after dropped call',
         source:
           "import { value } from './values.js'; console.log(value + 1); process.stdout.write(String(value));",
-        dependency: 'export const value = 42;',
-        graph: 'reanalyzed',
+        files: { 'values.js': 'export const value = 42;' },
+        graph: 'retained',
         stdout: '42',
+      },
+      {
+        name: 'aliased named import keeps its local declaration anchor',
+        source:
+          "import { original as localValue } from './values.js'; console.log(localValue); process.stdout.write(String(localValue));",
+        files: { 'values.js': 'export const original = 42;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'dropped sole import use preserves module side effects',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'values.js': 'globalThis.loaded = true; export const value = 42;' },
+        graph: 'retained',
+        stdout: 'loaded',
+      },
+      {
+        name: 'default import remains live',
+        source:
+          "import value from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export default 42;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'namespace import remains live',
+        source:
+          "import * as values from './values.js'; console.log(values.value); process.stdout.write(String(values.value));",
+        files: { 'values.js': 'export const value = 42;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'one of multiple named imports survives',
+        source:
+          "import { live, dropped } from './values.js'; console.log(dropped); process.stdout.write(String(live));",
+        files: { 'values.js': 'export const live = 42; export const dropped = 1;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'multiple import records and console calls',
+        source:
+          "import { left } from './left.js'; import { right } from './right.js'; console.log(left); console.warn(right); process.stdout.write(String(left + right));",
+        files: { 'left.js': 'export const left = 20;', 'right.js': 'export const right = 22;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'computed console member with imported argument',
+        source:
+          "import { value } from './values.js'; console['log'](value + 1); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'import referenced through a surviving function',
+        source:
+          "import { value } from './values.js'; function read() { return value; } console.log(read()); process.stdout.write(String(read()));",
+        files: { 'values.js': 'export const value = 42;' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'side-effect-only import with console drop',
+        source:
+          "import './side-effect.js'; console.log('removed'); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'side-effect.js': 'globalThis.loaded = true;' },
+        graph: 'retained',
+        stdout: 'loaded',
+      },
+      {
+        name: 'TypeScript import remains on conservative fallback',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write('ok');",
+        files: { 'values.js': 'export const value = 42;' },
+        extension: 'ts',
+        graph: 'reanalyzed',
+        stdout: 'ok',
       },
       {
         name: 'unresolved global only in removed subtree',
@@ -2412,11 +2493,21 @@ describe('symbol identity coverage gate (#4819)', () => {
     ] as const;
     try {
       for (const item of cases) {
-        const extension = 'format' in item && item.format === 'esm' ? 'mjs' : 'js';
+        const extension =
+          'extension' in item
+            ? item.extension
+            : 'format' in item && item.format === 'esm'
+              ? 'mjs'
+              : 'js';
         const input = join(dir, `${item.name.replaceAll(' ', '-')}.${extension}`);
-        const output = join(dir, `${item.name.replaceAll(' ', '-')}.out.${extension}`);
+        const outputExtension = 'format' in item && item.format === 'esm' ? 'mjs' : 'cjs';
+        const output = join(dir, `${item.name.replaceAll(' ', '-')}.out.${outputExtension}`);
         writeFileSync(input, item.source);
-        if ('dependency' in item) writeFileSync(join(dir, 'values.js'), item.dependency);
+        if ('files' in item) {
+          for (const [name, contents] of Object.entries(item.files)) {
+            writeFileSync(join(dir, name), contents);
+          }
+        }
 
         const bundled = spawnSync(
           ZNTC_BIN,

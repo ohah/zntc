@@ -368,10 +368,13 @@ fn isSupportedPlainExportAll(
 /// Keeping the semantic graph is safe only when the transform leaves each
 /// runtime import's module-graph shape unchanged. Ordinary unused named
 /// imports can be elided, and inline type-only specifiers can be removed, so
-/// this first slice admits runtime imports only under verbatim syntax and
-/// without inline type-only specifiers. Declaration-level type imports have
-/// no runtime import record and are always erased.
-fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+/// runtime imports require verbatim syntax except for the plain-JavaScript
+/// console-drop subset proved below.
+fn hasStableRuntimeImports(
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    allow_nonverbatim_javascript_imports: bool,
+) bool {
     const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
     for (statements) |raw_stmt| {
         if (raw_stmt >= ast.nodes.items.len) return false;
@@ -383,7 +386,7 @@ fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) b
         if (import.is_type_only) continue;
         if (import.phase != .none or import.attrs_len != 0) return false;
         if (import.specs_len == 0) continue;
-        if (!options.verbatim_module_syntax) return false;
+        if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
         if (import.specs_start > ast.extra_data.items.len or
             import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
 
@@ -400,6 +403,33 @@ fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) b
         }
     }
     return true;
+}
+
+/// Plain JavaScript imports are not elided by type-only import handling. A
+/// console-drop edit can therefore refresh their module records from the
+/// transformed AST and keep the same semantic graph, provided this is the only
+/// graph-changing transform in the module. Other modes keep the stricter
+/// verbatim-module-syntax gate.
+fn canRetainPlainJavaScriptImportsForConsoleDrop(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    retained_simple_console_drops: bool,
+) bool {
+    if (!retained_simple_console_drops or module.module_type != .js or
+        self.flow or self.worklet_transform or self.plugins.len != 0 or
+        isFlowPath(module.path) or ast.has_jsx or ast.has_decorator or
+        module.uses_top_level_await or module.self_uses_top_level_await)
+    {
+        return false;
+    }
+    return !options.unsupported.hasAny() and !options.drop_debugger and
+        options.drop_labels.len == 0 and options.define.len == 0 and
+        !options.minify_syntax and !options.minify_whitespace and
+        !options.experimental_decorators and !options.emit_decorator_metadata and
+        !options.react_refresh and !options.styled_components and !options.emotion and
+        !options.jsx_transform and options.plugins.len == 0;
 }
 
 /// A configured label only changes the AST when a labeled statement has that
@@ -6596,7 +6626,14 @@ fn canKeepPrepassSemanticGraph(
     if ((has_dropped_labeled_statement or retained_simple_console_drops) and
         module.self_uses_top_level_await) return false;
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
-    if (!hasStableRuntimeImports(ast, options)) return false;
+    const allow_nonverbatim_javascript_imports = canRetainPlainJavaScriptImportsForConsoleDrop(
+        self,
+        module,
+        ast,
+        options,
+        retained_simple_console_drops,
+    );
+    if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_javascript_imports)) return false;
 
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
@@ -6913,6 +6950,51 @@ fn rejectMinifiedGraphGate(
     return false;
 }
 
+/// Import declarations use their local specifier as the declaration anchor:
+/// default/namespace bindings use the specifier node itself, while named
+/// imports use the local identifier on the right side of the specifier. These
+/// nodes do not have the same AST tags as ordinary binding declarations, so
+/// collect their exact owners once before the retained-graph gate admits them.
+fn collectImportBindingDeclarationNodes(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    declaration_nodes: *std.AutoHashMapUnmanaged(u32, void),
+) !bool {
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    for (statements) |statement_raw| {
+        if (statement_raw >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[statement_raw];
+        if (statement.tag != .import_declaration) continue;
+        const extra = statement.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return false;
+        const import = module_parser.readImportDeclExtras(ast, extra);
+        if (import.is_type_only or import.phase != .none or import.attrs_len != 0) continue;
+        if (import.specs_start > ast.extra_data.items.len or
+            import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
+        for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |spec_raw| {
+            if (spec_raw >= ast.nodes.items.len) return false;
+            const specifier = ast.nodes.items[spec_raw];
+            const local_raw = switch (specifier.tag) {
+                .import_default_specifier, .import_namespace_specifier => @as(?u32, spec_raw),
+                .import_specifier => blk: {
+                    if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) break :blk null;
+                    const local = specifier.data.binary.right;
+                    if (local.isNone() or @backingInt(local) >= ast.nodes.items.len or
+                        ast.getNode(local).tag != .identifier_reference) break :blk null;
+                    break :blk @as(u32, @backingInt(local));
+                },
+                else => null,
+            };
+            if (local_raw) |raw| {
+                const result = try declaration_nodes.getOrPut(allocator, raw);
+                if (result.found_existing) return false;
+                result.value_ptr.* = {};
+            }
+        }
+    }
+    return true;
+}
+
 fn canRetainMinifiedSemanticGraph(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -6973,6 +7055,14 @@ fn canRetainMinifiedSemanticGraph(
     defer allocator.free(write_counts);
     @memset(reference_counts, 0);
     @memset(write_counts, 0);
+    var import_declaration_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer import_declaration_nodes.deinit(allocator);
+    const import_declarations_valid = collectImportBindingDeclarationNodes(
+        allocator,
+        ast,
+        &import_declaration_nodes,
+    ) catch return rejectMinifiedGraphGate(failure, .allocation);
+    if (!import_declarations_valid) return rejectMinifiedGraphGate(failure, .invalid_declaration);
 
     for (references) |reference| {
         const symbol_id = @backingInt(reference.symbol_id);
@@ -6986,9 +7076,12 @@ fn canRetainMinifiedSemanticGraph(
                 return rejectMinifiedGraphGate(failure, .invalid_declaration);
             const raw = @backingInt(reference.declaration_node_index);
             if (!live.contains(raw)) return rejectMinifiedGraphGate(failure, .detached_declaration);
-            if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .binding_identifier or
-                raw >= symbol_ids.len or symbol_ids[raw] != symbol_id or
-                symbols[symbol_id].scope_id != reference.scope_id)
+            if (raw >= ast.nodes.items.len or raw >= symbol_ids.len or
+                symbol_ids[raw] != symbol_id or symbols[symbol_id].scope_id != reference.scope_id)
+                return rejectMinifiedGraphGate(failure, .invalid_declaration);
+            if (ast.nodes.items[raw].tag != .binding_identifier and
+                (symbols[symbol_id].kind != .import_binding or
+                    !import_declaration_nodes.contains(raw)))
                 return rejectMinifiedGraphGate(failure, .invalid_declaration);
             const context = statement_contexts[raw] orelse
                 return rejectMinifiedGraphGate(failure, .invalid_statement_context);
@@ -7036,6 +7129,16 @@ fn canRetainMinifiedSemanticGraph(
         if (symbol_id >= symbols.len or declaration_by_node.get(raw) != symbol_id)
             return rejectMinifiedGraphGate(failure, .missing_binding_identity);
     }
+    var import_declaration_it = import_declaration_nodes.iterator();
+    while (import_declaration_it.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= symbol_ids.len) return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+        const symbol_id = symbol_ids[raw] orelse
+            return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+        if (symbol_id >= symbols.len or symbols[symbol_id].kind != .import_binding or
+            declaration_by_node.get(raw) != symbol_id)
+            return rejectMinifiedGraphGate(failure, .missing_binding_identity);
+    }
 
     for (live_reference_nodes) |reference_node| {
         const raw = @backingInt(reference_node);
@@ -7056,6 +7159,84 @@ fn canRetainMinifiedSemanticGraph(
         }
     }
     return true;
+}
+
+const ImportDeclarationGraphMutation = enum {
+    none,
+    missing_declaration_row,
+    imported_name_as_local_anchor,
+};
+
+fn importDeclarationGraphRetainableForTest(mutation: ImportDeclarationGraphMutation) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { original as local } from './values.js'; function read() { return local; }";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    const symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    var references: std.ArrayListUnmanaged(SemanticReference) = .empty;
+    defer references.deinit(allocator);
+    try references.appendSlice(allocator, analyzer.references.items);
+
+    switch (mutation) {
+        .none => {},
+        .missing_declaration_row => {
+            for (references.items, 0..) |reference, index| {
+                if (!reference.flags.declare) continue;
+                const symbol_id = @backingInt(reference.symbol_id);
+                if (symbol_id >= analyzer.symbols.items.len or
+                    analyzer.symbols.items[symbol_id].kind != .import_binding) continue;
+                _ = references.orderedRemove(index);
+                break;
+            }
+        },
+        .imported_name_as_local_anchor => {
+            var imported_name: ?u32 = null;
+            var local_name: ?u32 = null;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag != .import_specifier) continue;
+                if (node.data.binary.left.isNone() or node.data.binary.right.isNone()) continue;
+                imported_name = @backingInt(node.data.binary.left);
+                local_name = @backingInt(node.data.binary.right);
+                break;
+            }
+            const imported_raw = imported_name orelse return error.MissingImportedName;
+            const local_raw = local_name orelse return error.MissingLocalName;
+            const symbol_id = symbol_ids[local_raw] orelse return error.MissingImportSymbolId;
+            symbol_ids[imported_raw] = symbol_id;
+            for (references.items) |*reference| {
+                if (reference.flags.declare and @backingInt(reference.declaration_node_index) == local_raw) {
+                    reference.declaration_node_index = @fromBackingInt(imported_raw);
+                    break;
+                }
+            }
+        },
+    }
+
+    return canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        references.items,
+        symbol_ids,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        null,
+    );
 }
 
 fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
@@ -7300,11 +7481,22 @@ test "syntax minification retains only an exact semantic graph" {
         .{ .source = "function read(input) { const value = input + 1; return value; }", .retain = true },
         .{ .source = "function read(input) { const one = 1; const two = one; return two; }", .retain = false },
         .{ .source = "function read(input) { if (false) use(input); return 0; }", .retain = false },
+        .{ .source = "import { value } from './values.js'; function read() { return value; }", .retain = true },
+        .{ .source = "import { value as local } from './values.js'; function read() { return local; }", .retain = true },
+        .{ .source = "import value from './values.js'; function read() { return value; }", .retain = true },
+        .{ .source = "import * as values from './values.js'; function read() { return values.value; }", .retain = true },
     };
 
     for (cases) |case| {
         const retained = try syntaxMinifyGraphRetainableForTest(case.source);
         try std.testing.expectEqual(case.retain, retained);
+    }
+}
+
+test "import binding graph gate requires exact local declaration anchors" {
+    inline for (std.meta.tags(ImportDeclarationGraphMutation)) |mutation| {
+        const retained = try importDeclarationGraphRetainableForTest(mutation);
+        try std.testing.expectEqual(mutation == .none, retained);
     }
 }
 
@@ -7967,7 +8159,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "const console = {}; console[\"log\"](\"ok\");";
+    const source = "import { value } from './values.js'; console.log(value);";
 
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
@@ -7984,6 +8176,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
 
     var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
     module.source = source;
+    module.module_type = .js;
     module.ast = parser.ast;
     module.semantic = .{
         .symbols = analyzer.symbols,
@@ -8013,7 +8206,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
     var allow_super_get = false;
     var allow_super_set = false;
     var retained_simple_console_drops = false;
-    try std.testing.expect(canKeepPrepassSemanticGraph(
+    const can_keep = canKeepPrepassSemanticGraph(
         &test_context,
         &module,
         .{ .strip_types = true, .drop_console = true },
@@ -8021,8 +8214,161 @@ test "simple drop-console graph is retained by the full prepass gate" {
         &allow_super_get,
         &allow_super_set,
         &retained_simple_console_drops,
-    ));
+    );
     try std.testing.expect(retained_simple_console_drops);
+    try std.testing.expect(can_keep);
+    const import_ast = &(module.ast orelse unreachable);
+    const import_options: TransformOptions = .{ .strip_types = true, .drop_console = true };
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        import_options,
+        false,
+    ));
+    var typescript_module = module;
+    typescript_module.module_type = .ts;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &typescript_module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    const flow_context = .{
+        .allocator = allocator,
+        .flow = true,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &flow_context,
+        &module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    const worklet_context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = true,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &worklet_context,
+        &module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    var flow_path_module = module;
+    flow_path_module.path = "input.js.flow";
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &flow_path_module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    var unsupported_options = import_options;
+    unsupported_options.unsupported.class = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        unsupported_options,
+        true,
+    ));
+    var minified_options = import_options;
+    minified_options.minify_syntax = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        minified_options,
+        true,
+    ));
+    var jsx_ast = import_ast.*;
+    jsx_ast.has_jsx = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &jsx_ast,
+        import_options,
+        true,
+    ));
+    var decorator_ast = import_ast.*;
+    decorator_ast.has_decorator = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &decorator_ast,
+        import_options,
+        true,
+    ));
+    var tla_module = module;
+    tla_module.uses_top_level_await = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &tla_module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    var debugger_options = import_options;
+    debugger_options.drop_debugger = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        debugger_options,
+        true,
+    ));
+    var whitespace_options = import_options;
+    whitespace_options.minify_whitespace = true;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        whitespace_options,
+        true,
+    ));
+    const custom_plugins = [_]Plugin{.{ .name = "user-plugin" }};
+    const plugin_context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = &custom_plugins,
+        .styled_components = false,
+        .emotion = false,
+    };
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &plugin_context,
+        &module,
+        import_ast,
+        import_options,
+        true,
+    ));
+    var plugin_options = import_options;
+    plugin_options.plugins = &custom_plugins;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        plugin_options,
+        true,
+    ));
 }
 
 const DefinePreflightMutation = enum {
