@@ -2109,6 +2109,9 @@ pub const Linker = struct {
         if (self.cjs_factory_runtime_symbol_id) |factory_id| {
             const owner = self.moduleAtMut(@backingInt(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
             const sem = if (owner.semantic) |*value| value else return error.CjsRuntimeInternalSymbolsMissing;
+            if (sem.runtime_identities) |snapshot| {
+                owner.cjs_runtime_internal_symbols = snapshot.cjs_internal orelse return error.CjsRuntimeInternalSymbolsMissing;
+            }
             var internal_ids_valid = false;
             if (owner.cjs_runtime_internal_symbols) |ids| {
                 const names: rt_names.CjsRuntimeInternalNames = .{};
@@ -2118,35 +2121,18 @@ pub const Linker = struct {
                     isCjsRuntimeInternalSymbol(sem, ids.require_function, names.require_function, .function_decl);
             }
             if (!internal_ids_valid) {
-                const names: rt_names.CjsRuntimeInternalNames = .{};
-                owner.cjs_runtime_internal_symbols = .{
-                    .callback_parameter = findCjsRuntimeInternalSymbol(sem, names.callback_parameter, .parameter) orelse return error.CjsRuntimeInternalSymbolsMissing,
-                    .module_parameter = findCjsRuntimeInternalSymbol(sem, names.module_parameter, .parameter) orelse return error.CjsRuntimeInternalSymbolsMissing,
-                    .catch_parameter = findCjsRuntimeInternalSymbol(sem, names.catch_parameter, .catch_binding) orelse return error.CjsRuntimeInternalSymbolsMissing,
-                    .require_function = findCjsRuntimeInternalSymbol(sem, names.require_function, .function_decl) orelse return error.CjsRuntimeInternalSymbolsMissing,
-                };
+                return error.CjsRuntimeInternalSymbolsMissing;
             }
         }
         try self.restoreCjsRuntimeInternalNames();
     }
 
     fn findCjsRuntimeFactorySymbol(sem: *const ModuleSemanticData) ?semantic_symbol.SymbolId {
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind == .cjs_runtime_factory) return @fromBackingInt(@intCast(index));
-        }
-        return null;
-    }
-
-    fn findCjsRuntimeInternalSymbol(
-        sem: *const ModuleSemanticData,
-        name: []const u8,
-        kind: semantic_symbol.SymbolKind,
-    ) ?semantic_symbol.SymbolId {
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @fromBackingInt(@intCast(index));
-        }
-        return null;
+        const snapshot = sem.runtime_identities orelse return null;
+        const id = snapshot.cjs_factory orelse return null;
+        const raw = @backingInt(id);
+        if (raw >= sem.symbols.items.len or sem.symbols.items[raw].synthetic_kind != .cjs_runtime_factory) return null;
+        return id;
     }
 
     fn isCjsRuntimeInternalSymbol(
@@ -2301,6 +2287,9 @@ pub const Linker = struct {
         };
         const owner = self.moduleAtMut(@backingInt(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.EsmRuntimeInternalSymbolsMissing;
+        if (sem.runtime_identities) |snapshot| {
+            owner.esm_runtime_internal_symbols = snapshot.esm_internal orelse return error.EsmRuntimeInternalSymbolsMissing;
+        }
         var ids_valid = false;
         if (owner.esm_runtime_internal_symbols) |ids| {
             const names: rt_names.EsmRuntimeInternalNames = .{};
@@ -2311,14 +2300,7 @@ pub const Linker = struct {
                 isEsmRuntimeInternalSymbol(sem, ids.factory_local, names.factory_local, .variable_var);
         }
         if (!ids_valid) {
-            const names: rt_names.EsmRuntimeInternalNames = .{};
-            owner.esm_runtime_internal_symbols = .{
-                .factory_parameter = findEsmRuntimeInternalSymbol(sem, names.factory_parameter, .parameter) orelse return error.EsmRuntimeInternalSymbolsMissing,
-                .result_parameter = findEsmRuntimeInternalSymbol(sem, names.result_parameter, .parameter) orelse return error.EsmRuntimeInternalSymbolsMissing,
-                .catch_parameter = findEsmRuntimeInternalSymbol(sem, names.catch_parameter, .catch_binding) orelse return error.EsmRuntimeInternalSymbolsMissing,
-                .init_function = findEsmRuntimeInternalSymbol(sem, names.init_function, .function_decl) orelse return error.EsmRuntimeInternalSymbolsMissing,
-                .factory_local = findEsmRuntimeInternalSymbol(sem, names.factory_local, .variable_var) orelse return error.EsmRuntimeInternalSymbolsMissing,
-            };
+            return error.EsmRuntimeInternalSymbolsMissing;
         }
         try self.restoreEsmRuntimeInternalNames();
     }
@@ -2329,18 +2311,6 @@ pub const Linker = struct {
             if (module.semantic != null) return true;
         }
         return false;
-    }
-
-    fn findEsmRuntimeInternalSymbol(
-        sem: *const ModuleSemanticData,
-        name: []const u8,
-        kind: semantic_symbol.SymbolKind,
-    ) ?semantic_symbol.SymbolId {
-        for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @fromBackingInt(@intCast(index));
-        }
-        return null;
     }
 
     fn isEsmRuntimeInternalSymbol(

@@ -6,6 +6,7 @@ const module_mod = @import("../module.zig");
 const Module = module_mod.Module;
 const ModuleSemanticData = module_mod.ModuleSemanticData;
 const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
+const EsmRuntimeInternalSymbolIds = @import("../module.zig").EsmRuntimeInternalSymbolIds;
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const scope_mod = @import("../../semantic/scope.zig");
 const Scope = scope_mod.Scope;
@@ -210,6 +211,10 @@ pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
 /// 충돌 감지 시 `$<N>` suffix 로 deconflict.
 pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
     self.wrapper_symbols_registered = true;
+    var runtime_owners = self.modules.iterator(0);
+    while (runtime_owners.next()) |owner| {
+        if (owner.semantic) |*sem| try validateRuntimeIdentitySnapshot(sem);
+    }
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
     // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
@@ -476,6 +481,9 @@ fn findWrapperSymbol(
 fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) !void {
     const sem = if (m.semantic) |*value| value else return error.MissingSemantic;
     const arena = if (m.parse_arena) |value| value.allocator() else return error.MissingSemantic;
+    const snapshot = try sem.ensureRuntimeIdentities(arena);
+    const cached = if (std.mem.eql(u8, name, "__esm")) snapshot.esm_factory else snapshot.to_binary;
+    if (cached) |id| identity.* = id;
     if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) {
         identity.* = semantic_symbol.extendSymbol(
             arena,
@@ -487,12 +495,63 @@ fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Sy
         ) catch return error.OutOfMemory;
     }
     if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) return error.MissingRuntimeHelperSymbol;
-    if (std.mem.eql(u8, name, "__esm")) try registerEsmRuntimeInternalSymbols(m, sem, arena);
+    if (std.mem.eql(u8, name, "__esm")) {
+        try registerEsmRuntimeInternalSymbols(m, sem, arena);
+        snapshot.esm_factory = identity.*;
+    } else {
+        snapshot.to_binary = identity.*;
+    }
+}
+
+fn validRuntimeIdentity(
+    sem: *const ModuleSemanticData,
+    id: semantic_symbol.SymbolId,
+    family: semantic_symbol.SyntheticKind,
+    kind: semantic_symbol.SymbolKind,
+    protocol_name: ?[]const u8,
+) bool {
+    const raw = @backingInt(id);
+    if (raw >= sem.symbols.items.len) return false;
+    const symbol = sem.symbols.items[raw];
+    if (symbol.synthetic_kind != family or symbol.kind != kind) return false;
+    return if (protocol_name) |name| std.mem.eql(u8, symbol.synthetic_name, name) else true;
+}
+
+/// Protocol labels validate a known role; they never select a SymbolId. An
+/// invalid cached role must fail instead of allocating a replacement identity.
+fn validateRuntimeIdentitySnapshot(sem: *const ModuleSemanticData) !void {
+    const snapshot = sem.runtime_identities orelse return;
+    if ((snapshot.cjs_factory == null) != (snapshot.cjs_internal == null) or
+        (snapshot.esm_factory == null) != (snapshot.esm_internal == null)) return error.MissingRuntimeHelperSymbol;
+    if (snapshot.cjs_factory) |id| {
+        if (!validRuntimeIdentity(sem, id, .cjs_runtime_factory, .variable_var, null)) return error.MissingRuntimeHelperSymbol;
+    }
+    if (snapshot.esm_factory) |id| {
+        if (!validRuntimeIdentity(sem, id, .bundler_runtime_helper, .variable_var, "__esm")) return error.MissingRuntimeHelperSymbol;
+    }
+    if (snapshot.to_binary) |id| {
+        if (!validRuntimeIdentity(sem, id, .bundler_runtime_helper, .variable_var, "__toBinary")) return error.MissingRuntimeHelperSymbol;
+    }
+    if (snapshot.cjs_internal) |ids| {
+        const names: runtime_helper_names.CjsRuntimeInternalNames = .{};
+        inline for (@typeInfo(CjsRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+            const kind: semantic_symbol.SymbolKind = if (comptime std.mem.eql(u8, field, "catch_parameter")) .catch_binding else if (comptime std.mem.eql(u8, field, "require_function")) .function_decl else .parameter;
+            if (!validRuntimeIdentity(sem, @field(ids, field), .cjs_runtime_internal_local, kind, @field(names, field))) return error.MissingRuntimeHelperSymbol;
+        }
+    }
+    if (snapshot.esm_internal) |ids| {
+        const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+        inline for (@typeInfo(EsmRuntimeInternalSymbolIds).@"struct".field_names) |field| {
+            const kind: semantic_symbol.SymbolKind = if (comptime std.mem.eql(u8, field, "catch_parameter")) .catch_binding else if (comptime std.mem.eql(u8, field, "init_function")) .function_decl else if (comptime std.mem.eql(u8, field, "factory_local")) .variable_var else .parameter;
+            if (!validRuntimeIdentity(sem, @field(ids, field), .esm_runtime_internal_local, kind, @field(names, field))) return error.MissingRuntimeHelperSymbol;
+        }
+    }
 }
 
 fn registerEsmRuntimeInternalSymbols(m: *Module, sem: *ModuleSemanticData, arena: std.mem.Allocator) !void {
     const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
-    const existing = m.esm_runtime_internal_symbols;
+    const snapshot = try sem.ensureRuntimeIdentities(arena);
+    const existing = snapshot.esm_internal orelse m.esm_runtime_internal_symbols;
     m.esm_runtime_internal_symbols = .{
         .factory_parameter = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.factory_parameter else null, names.factory_parameter, .parameter),
         .result_parameter = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.result_parameter else null, names.result_parameter, .parameter),
@@ -500,6 +559,7 @@ fn registerEsmRuntimeInternalSymbols(m: *Module, sem: *ModuleSemanticData, arena
         .init_function = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.init_function else null, names.init_function, .function_decl),
         .factory_local = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.factory_local else null, names.factory_local, .variable_var),
     };
+    snapshot.esm_internal = m.esm_runtime_internal_symbols;
 }
 
 fn ensureEsmRuntimeInternalSymbol(
@@ -516,15 +576,15 @@ fn ensureEsmRuntimeInternalSymbol(
             if (symbol.synthetic_kind == .esm_runtime_internal_local and symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name)) return symbol_id;
         }
     }
-    for (sem.symbols.items, 0..) |symbol, index| {
-        if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        return @fromBackingInt(@intCast(index));
-    }
     return try semantic_symbol.extendSymbol(arena, &sem.symbols, kind, .esm_runtime_internal_local, name, Span.EMPTY);
 }
 
 fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else return null;
+    if (sem.runtime_identities) |snapshot| {
+        const cached = if (std.mem.eql(u8, name, "__esm")) snapshot.esm_factory else snapshot.to_binary;
+        if (cached) |id| identity.* = id;
+    }
     if (identity.*) |existing| {
         const raw: usize = @backingInt(existing);
         if (raw < sem.symbols.items.len) {
@@ -533,12 +593,6 @@ fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Symbol
                 std.mem.eql(u8, symbol.synthetic_name, name)) return existing;
         }
         identity.* = null;
-    }
-    for (sem.symbols.items, 0..) |symbol, index| {
-        if (symbol.synthetic_kind != .bundler_runtime_helper or
-            !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        identity.* = @fromBackingInt(@intCast(index));
-        return identity.*;
     }
     return null;
 }
@@ -550,6 +604,9 @@ fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Symbol
 fn registerCjsRuntimeFactorySymbol(m: *Module) !void {
     const sem = if (m.semantic) |*value| value else return error.MissingSemantic;
     const arena = if (m.parse_arena) |value| value.allocator() else return error.MissingSemantic;
+    const snapshot = try sem.ensureRuntimeIdentities(arena);
+    if (snapshot.cjs_factory) |id| m.cjs_runtime_factory_symbol = id;
+    if (snapshot.cjs_internal) |ids| m.cjs_runtime_internal_symbols = ids;
     if (findCjsRuntimeFactorySymbol(m) == null) {
         m.cjs_runtime_factory_symbol = semantic_symbol.extendSymbol(
             arena,
@@ -597,6 +654,8 @@ fn registerCjsRuntimeFactorySymbol(m: *Module) !void {
         .catch_parameter = catch_parameter,
         .require_function = require_function,
     };
+    snapshot.cjs_factory = m.cjs_runtime_factory_symbol;
+    snapshot.cjs_internal = m.cjs_runtime_internal_symbols;
 }
 
 fn ensureCjsRuntimeInternalSymbol(
@@ -615,10 +674,6 @@ fn ensureCjsRuntimeInternalSymbol(
             }
         }
     }
-    for (sem.symbols.items, 0..) |symbol, index| {
-        if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        return @fromBackingInt(@intCast(index));
-    }
     return try semantic_symbol.extendSymbol(
         arena,
         &sem.symbols,
@@ -631,15 +686,13 @@ fn ensureCjsRuntimeInternalSymbol(
 
 fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else return null;
+    if (sem.runtime_identities) |snapshot| {
+        if (snapshot.cjs_factory) |id| m.cjs_runtime_factory_symbol = id;
+    }
     if (m.cjs_runtime_factory_symbol) |existing| {
         const raw: usize = @backingInt(existing);
         if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory) return existing;
         m.cjs_runtime_factory_symbol = null;
-    }
-    for (sem.symbols.items, 0..) |symbol, index| {
-        if (symbol.synthetic_kind != .cjs_runtime_factory) continue;
-        m.cjs_runtime_factory_symbol = @fromBackingInt(@intCast(index));
-        return m.cjs_runtime_factory_symbol;
     }
     return null;
 }

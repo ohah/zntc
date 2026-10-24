@@ -858,6 +858,96 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
 }
 
+test "runtime identity snapshots survive codec and module-field reset across ten input graphs" {
+    const sources = [_][]const u8{
+        "exports.value = 1;",
+        "module.exports = 2;",
+        "module.exports = function read() { return 3; };",
+        "exports.value = () => 4;",
+        "const cb = 5; exports.value = cb;",
+        "function read(mod) { return mod; } exports.value = read(6);",
+        "class Value {} exports.value = Value;",
+        "exports.value = { get value() { return 8; } };",
+        "exports['value'] = 9;",
+        "Object.defineProperty(exports, 'value', { get() { return 10; } });",
+    };
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "legacy.cjs", source);
+        try writeFile(tmp.dir, "async.mjs", "export const value = 42;");
+        try writeFile(tmp.dir, "payload.bin", "\x00\x01\xff");
+        try writeFile(tmp.dir, "entry.mjs", "import value from './legacy.cjs'; import bytes from './payload.bin'; import('./async.mjs').then(ns => console.log(value, ns.value, bytes.length));");
+        const allocator = std.testing.allocator;
+        const directory = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+        defer allocator.free(directory);
+        const entry = try std.fs.path.resolve(allocator, &.{ directory, "entry.mjs" });
+        defer allocator.free(entry);
+        var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+        const graph = try allocator.create(ModuleGraph);
+        graph.* = ModuleGraph.init(allocator, &cache);
+        graph.loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }};
+        try graph.build(std.testing.io, &.{entry});
+        var linker = Linker.init(allocator, graph, .esm);
+        try linker.link();
+        var result: TestResult = .{ .linker = linker, .graph = graph, .cache = cache };
+        defer result.linker.deinit();
+        defer result.destroyGraph();
+        defer result.cache.deinit();
+        var owners: usize = 0;
+        var binary_owners: usize = 0;
+        var modules = result.graph.modulesIterator();
+        while (modules.next()) |cached_module| {
+            const module = @constCast(cached_module);
+            if (module.cjs_runtime_factory_symbol == null and module.esm_runtime_factory_symbol == null and module.to_binary_runtime_symbol == null) continue;
+            if (module.to_binary_runtime_symbol != null) binary_owners += 1;
+            owners += 1;
+            const expected: @import("module.zig").RuntimeIdentitySnapshot = .{
+                .cjs_factory = module.cjs_runtime_factory_symbol,
+                .cjs_internal = module.cjs_runtime_internal_symbols,
+                .esm_factory = module.esm_runtime_factory_symbol,
+                .esm_internal = module.esm_runtime_internal_symbols,
+                .to_binary = module.to_binary_runtime_symbol,
+            };
+            const sem = &module.semantic.?;
+            const snapshot = sem.runtime_identities orelse return error.MissingRuntimeIdentitySnapshot;
+            try std.testing.expectEqualDeep(expected, snapshot.*);
+            var encoded: std.ArrayList(u8) = .empty;
+            defer encoded.deinit(std.testing.allocator);
+            try @import("semantic_codec.zig").serialize(sem, &encoded, std.testing.allocator);
+            module.semantic = try @import("semantic_codec.zig").deserialize(encoded.items, module.parse_arena.?.allocator());
+            const restored = module.semantic.?.runtime_identities orelse return error.MissingRestoredRuntimeIdentitySnapshot;
+            try std.testing.expectEqualDeep(expected, restored.*);
+            // Corrupt a canonical role to a valid, wrong-kind symbol. The
+            // producer must reject it instead of finding a same-name decoy
+            // or allocating a replacement identity.
+            if (restored.cjs_internal) |ids| {
+                restored.cjs_internal.?.callback_parameter = ids.require_function;
+                try std.testing.expectError(error.MissingRuntimeHelperSymbol, graph_finalize.registerWrapperSymbols(result.graph));
+                restored.* = expected;
+            }
+            if (restored.esm_internal) |ids| {
+                restored.esm_internal.?.factory_parameter = ids.init_function;
+                try std.testing.expectError(error.MissingRuntimeHelperSymbol, graph_finalize.registerWrapperSymbols(result.graph));
+                restored.* = expected;
+            }
+            module.to_binary_runtime_symbol = null;
+            module.cjs_runtime_factory_symbol = null;
+            module.cjs_runtime_internal_symbols = null;
+            module.esm_runtime_factory_symbol = null;
+            module.esm_runtime_internal_symbols = null;
+            try graph_finalize.registerWrapperSymbols(result.graph);
+            try std.testing.expectEqual(expected.to_binary, module.to_binary_runtime_symbol);
+            try std.testing.expectEqual(expected.cjs_factory, module.cjs_runtime_factory_symbol);
+            try std.testing.expectEqualDeep(expected.cjs_internal, module.cjs_runtime_internal_symbols);
+            try std.testing.expectEqual(expected.esm_factory, module.esm_runtime_factory_symbol);
+            try std.testing.expectEqualDeep(expected.esm_internal, module.esm_runtime_internal_symbols);
+        }
+        try std.testing.expect(owners > 0);
+        try std.testing.expectEqual(@as(usize, 1), binary_owners);
+    }
+}
+
 fn expectCjsRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: CjsRuntimeInternalSymbolIds) !void {
     const names = try linker.cjsFactoryRuntimeInternalNames();
     try std.testing.expectEqualStrings("cb", names.callback_parameter);
