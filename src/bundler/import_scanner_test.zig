@@ -1904,3 +1904,185 @@ test "require.context: process.env.EXPO_ROUTER_IMPORT_MODE mode — Phase 1 inva
     const r = findContextRecord(records) orelse return error.TestExpectedRecord;
     try std.testing.expect(r.context_invalid_reason != null);
 }
+
+test "CJS export source kind uses exact reference identities and cached host slots" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const cases = [_][]const u8{
+        "function set(module){module.exports=1;} typeof module;",
+        "function set(exports){exports.value=1;} typeof exports;",
+        "const set=(module)=>{module.exports=1;}; typeof module;",
+        "const set=(exports)=>{exports.value=1;}; typeof exports;",
+        "{let module={};module.exports=1;} typeof module;",
+        "{let exports={};exports.value=1;} typeof exports;",
+        "try{throw {}}catch(module){module.exports=1;} typeof module;",
+        "try{throw {}}catch(exports){exports.value=1;} typeof exports;",
+        "function set(module){Object.defineProperty(module,'exports',{value:1});} typeof module;",
+        "function set(exports){Object.defineProperty(exports,'value',{value:1});} typeof exports;",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        scanner.is_module = true;
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+        try std.testing.expect(syntax.has_module_exports or syntax.has_exports_dot);
+        const result = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items });
+        try std.testing.expect(!result.has_module_exports and !result.has_exports_dot and !result.has_esmodule_marker);
+        // A global reference of the same spelling is also present, so a name
+        // aggregate cannot distinguish the assignment's actual lexical base.
+        try std.testing.expect(analyzer.unresolved_references.contains("module") or analyzer.unresolved_references.contains("exports"));
+        var owned: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, index| {
+            if (node.tag != .identifier_reference) continue;
+            const id = analyzer.symbol_ids.items[index] orelse continue;
+            const name = parser.ast.identifierNameText(node);
+            if (!std.mem.eql(u8, name, "module") and !std.mem.eql(u8, name, "exports")) continue;
+            try std.testing.expect(@backingInt(analyzer.symbols.items[id].scope_id) > 0);
+            owned += 1;
+        }
+        try std.testing.expect(owned > 0);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "module.exports=1;exports.__esModule=true;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    const fresh = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items });
+    try std.testing.expect(fresh.has_module_exports and fresh.has_exports_dot and fresh.has_esmodule_marker);
+    const cached_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag != .identifier_reference) continue;
+        const name = parser.ast.identifierNameText(node);
+        if (std.mem.eql(u8, name, "module")) cached_ids[index] = 7;
+        if (std.mem.eql(u8, name, "exports")) cached_ids[index] = 11;
+    }
+    const cached = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(cached.has_module_exports and cached.has_exports_dot and cached.has_esmodule_marker);
+    const wrong_roles = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .module_parameter = 11, .exports_parameter = 7 });
+    try std.testing.expect(!wrong_roles.has_module_exports and !wrong_roles.has_exports_dot and !wrong_roles.has_esmodule_marker);
+    try std.testing.expectError(error.MissingCjsExportReferenceIdentity, import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = &.{} }));
+    const empty_statements = try parser.ast.addNodeList(&.{});
+    parser.ast.transformed_root = try parser.ast.addNode(.{ .tag = .program, .span = .{ .start = 0, .end = 0 }, .data = .{ .list = empty_statements } });
+    const removed = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items });
+    try std.testing.expect(!removed.has_module_exports and !removed.has_exports_dot and !removed.has_esmodule_marker);
+}
+
+test "CJS export source kind excludes lexical Object defineProperty callees" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function set(Object){Object.defineProperty(exports,'value',{value:1});} typeof Object;";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    try std.testing.expect(syntax.has_exports_dot);
+    const result = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items });
+    try std.testing.expect(!result.has_module_exports and !result.has_exports_dot);
+}
+
+test "CJS export source kind retains explicit TypeScript export assignment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const value=42;export = value;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureForBundler(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    const result = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = &.{} });
+    try std.testing.expect(result.has_module_exports);
+}
+
+test "CJS export source kind preserves root parameter redeclarations only for a CJS source environment" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const cases = [_][]const u8{
+        "var module;module.exports=1;",
+        "var exports;exports.value=1;",
+        "function module(){}module.exports=1;",
+        "function exports(){}exports.value=1;",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        scanner.is_module = true;
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+        const esm = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items });
+        try std.testing.expect(!esm.has_module_exports and !esm.has_exports_dot);
+        const cjs = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items, .commonjs_environment = true });
+        try std.testing.expect(cjs.has_module_exports or cjs.has_exports_dot);
+    }
+}
+
+test "CJS export source kind separates implicit host reads from export value facts" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "(function(exports){exports.value=42;})(exports);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    const result = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items, .commonjs_environment = true });
+    try std.testing.expect(result.has_cjs_host_parameters);
+    try std.testing.expect(!result.has_module_exports and !result.has_exports_dot and !result.has_esmodule_marker);
+    try std.testing.expectEqual(types.ExportsKind.commonjs, @import("graph/parse_helpers.zig").determineExportsKind(result, "dep.js"));
+    const esm = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items });
+    try std.testing.expect(!esm.has_cjs_host_parameters and !esm.has_exports_dot);
+}
+
+test "CJS export source kind recognizes escaped host syntax without searching for an identity" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "(function(exports){exports.value=42;})(exp\\u006frts);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const syntax = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    const result = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = analyzer.symbol_ids.items, .symbols = analyzer.symbols.items, .commonjs_environment = true });
+    try std.testing.expect(result.has_cjs_host_parameters);
+    try std.testing.expect(!result.has_exports_dot and !result.has_module_exports);
+}

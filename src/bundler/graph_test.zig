@@ -2414,3 +2414,95 @@ test "graph: 진단 낸 모듈은 store skip → cache ON 2nd build 도 진단 �
     // 핵심: cache ON 2nd build 도 1st 와 같은 진단 수(ON==OFF). store skip 없으면 0 으로 떨어진다.
     try std.testing.expectEqual(first_count, second_count);
 }
+
+test "CJS export source kind retains its parsed realm after a compiler import is appended" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "void 'compiler:helper';console.log(1);");
+    const path = try dirPath(&tmp);
+    defer std.testing.allocator.free(path);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ path, "entry.cjs" });
+    defer std.testing.allocator.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(ModuleIndex.fromUsize(0)).?);
+    try std.testing.expectEqual(types.ExportsKind.commonjs, module.exports_kind);
+    const strict = module.semantic.?.scopes[0].is_strict;
+    try std.testing.expect(!strict);
+    const module_parameter = module.cjs_wrapper_module_parameter_symbol;
+    const exports_parameter = module.cjs_wrapper_exports_parameter_symbol;
+    try std.testing.expect(module_parameter != null and exports_parameter != null);
+    const arena = module.parse_arena.?.allocator();
+    const ast = &module.ast.?;
+    const root = ast.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    try std.testing.expect(ast.getNode(root).tag == .program);
+    const old_list = ast.getNode(root).data.list;
+    const statements = try arena.dupe(u32, ast.extra_data.items[old_list.start .. old_list.start + old_list.len]);
+    var source_node: @import("../parser/ast.zig").NodeIndex = .none;
+    for (ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .string_literal) {
+            source_node = @fromBackingInt(@as(u32, @intCast(index)));
+            break;
+        }
+    }
+    try std.testing.expect(!source_node.isNone());
+    const import_data = try ast.addExtras(&.{ 0, 0, @backingInt(source_node), 0, 0, 0 });
+    const declaration = try ast.addNode(.{ .tag = .import_declaration, .span = .{ .start = 0, .end = 0 }, .data = .{ .extra = import_data } });
+    const new_statements = try arena.alloc(@import("../parser/ast.zig").NodeIndex, statements.len + 1);
+    new_statements[0] = declaration;
+    for (statements, 1..) |raw, index| new_statements[index] = @fromBackingInt(raw);
+    const new_list = try ast.addNodeList(new_statements);
+    ast.nodes.items[@backingInt(root)].data.list = new_list;
+    ast.transformed_root = root;
+    const ids = try arena.alloc(?u32, ast.nodes.items.len);
+    @memset(ids, null);
+    @memcpy(ids[0..module.semantic.?.symbol_ids.len], module.semantic.?.symbol_ids);
+    module.semantic.?.symbol_ids = ids;
+    try @import("graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(&graph, module, arena);
+    try std.testing.expectEqual(@as(usize, 1), module.import_records.len);
+    try std.testing.expectEqualStrings("compiler:helper", module.import_records[0].specifier);
+    try std.testing.expectEqual(types.ExportsKind.commonjs, module.exports_kind);
+    try std.testing.expectEqual(types.WrapKind.cjs, module.wrap_kind);
+    try std.testing.expectEqual(strict, module.semantic.?.scopes[0].is_strict);
+    try std.testing.expectEqual(module_parameter, module.cjs_wrapper_module_parameter_symbol);
+    try std.testing.expectEqual(exports_parameter, module.cjs_wrapper_exports_parameter_symbol);
+}
+
+test "CJS export source kind refresh uses the retained local receiver after a property edit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "function set(module){module.value=1;}set({});");
+    const path = try dirPath(&tmp);
+    defer std.testing.allocator.free(path);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ path, "entry.mjs" });
+    defer std.testing.allocator.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = @constCast(graph.getModule(ModuleIndex.fromUsize(0)).?);
+    try std.testing.expectEqual(types.ExportsKind.esm, module.exports_kind);
+    const ast = &module.ast.?;
+    var receiver: @import("../parser/ast.zig").NodeIndex = .none;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .assignment_expression) continue;
+        const lhs = ast.getNode(node.data.binary.left);
+        if (lhs.tag != .static_member_expression) continue;
+        receiver = ast.readExtraNode(lhs.data.extra, 0);
+        const property = ast.readExtraNode(lhs.data.extra, 1);
+        const name = try ast.addString("exports");
+        ast.nodes.items[@backingInt(property)].span = name;
+        ast.nodes.items[@backingInt(property)].data.string_ref = name;
+        break;
+    }
+    try std.testing.expect(!receiver.isNone());
+    const id = module.semantic.?.symbol_ids[@backingInt(receiver)].?;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, module.semantic.?.symbols.items[id].kind);
+    try @import("graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(&graph, module, module.parse_arena.?.allocator());
+    try std.testing.expectEqual(types.ExportsKind.esm, module.exports_kind);
+    try std.testing.expectEqual(id, module.semantic.?.symbol_ids[@backingInt(receiver)].?);
+}

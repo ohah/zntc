@@ -60,7 +60,125 @@ pub const ScanResult = struct {
     has_exports_dot: bool,
     /// exports.__esModule / module.exports.__esModule marker 존재 여부
     has_esmodule_marker: bool = false,
+    /// An actual implicit host-parameter read requires the CJS environment,
+    /// without proving any export value or marker assignment.
+    has_cjs_host_parameters: bool = false,
 };
+
+const CjsParameterRole = enum { module, exports, none };
+
+fn cjsParameterRole(raw: []const u8) CjsParameterRole {
+    var scratch: [7]u8 = undefined;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    if (Scanner.identifierTextEqualsAscii(raw, "module", scratch[0..6])) return .module;
+    if (Scanner.identifierTextEqualsAscii(raw, "exports", scratch[0..7])) return .exports;
+    return .none;
+}
+
+/// Exact local reference identities distinguish host CJS objects from lexical
+/// parameters with the same spelling. Cached wrappers may already bind host
+/// references to their authoritative implicit parameter slots.
+pub const CjsExportScope = struct {
+    symbol_ids: []const ?u32,
+    symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
+    commonjs_environment: bool = false,
+    module_parameter: ?u32 = null,
+    exports_parameter: ?u32 = null,
+
+    fn isHostReference(self: CjsExportScope, ast: *const Ast, original: NodeIndex) !bool {
+        var index = original;
+        for (0..ast.nodes.items.len) |_| {
+            if (index.isNone() or @backingInt(index) >= ast.nodes.items.len) return false;
+            const node = ast.getNode(index);
+            switch (node.tag) {
+                .static_member_expression, .computed_member_expression => {
+                    if (!ast.hasExtra(node.data.extra, 0)) return false;
+                    index = ast.readExtraNode(node.data.extra, 0);
+                },
+                .identifier_reference => {
+                    const raw = @backingInt(index);
+                    if (raw >= self.symbol_ids.len) return error.MissingCjsExportReferenceIdentity;
+                    const id = self.symbol_ids[raw] orelse return true;
+                    const role = cjsParameterRole(ast.identifierNameText(node));
+                    const slot = switch (role) {
+                        .module => self.module_parameter,
+                        .exports => self.exports_parameter,
+                        .none => null,
+                    };
+                    if (slot != null and slot.? == id) return true;
+                    // Explicit CJS source already owns implicit host parameters:
+                    // a root var/function redeclaration shares that binding.
+                    // Inspect this reference's existing SID; never search by name.
+                    if (self.commonjs_environment and
+                        role != .none and
+                        id < self.symbols.len)
+                    {
+                        const symbol = self.symbols[id];
+                        return @backingInt(symbol.scope_id) == 0 and
+                            (symbol.kind == .variable_var or symbol.kind.isFunctionLike());
+                    }
+                    return false;
+                },
+                else => return false,
+            }
+        }
+        return false;
+    }
+};
+
+/// Preserve syntactic require/import records while refining only CJS export
+/// signals. A lexical object's property write must not change the module kind.
+pub fn withSemanticCjsExports(ast: *const Ast, scan: ScanResult, scope: CjsExportScope) !ScanResult {
+    if (!scan.has_module_exports and !scan.has_exports_dot and !scan.has_esmodule_marker and !scan.has_cjs_host_parameters and !scope.commonjs_environment) return scan;
+    var result = scan;
+    result.has_cjs_host_parameters = false;
+    result.has_module_exports = false;
+    result.has_exports_dot = false;
+    result.has_esmodule_marker = false;
+    // Transforms retain orphan source nodes. Only the emitted program can
+    // establish an export signal; old nodes may no longer carry live IDs.
+    const reachable = try ast_walk.collectReachableNodeIndices(std.heap.page_allocator, ast);
+    defer std.heap.page_allocator.free(reachable);
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .identifier_reference => {
+                if (!scope.commonjs_environment) continue;
+                if (cjsParameterRole(ast.identifierNameText(node)) == .none) continue;
+                if (try scope.isHostReference(ast, @fromBackingInt(raw))) result.has_cjs_host_parameters = true;
+            },
+            .ts_export_assignment => result.has_module_exports = true,
+            .assignment_expression => {
+                const is_module = isModuleExportsAssign(ast, node);
+                const is_marker = isEsModuleMarkerAssign(ast, node);
+                const is_exports = isExportsDotAssign(ast, node);
+                if (!is_module and !is_marker and !is_exports) continue;
+                if (!try scope.isHostReference(ast, node.data.binary.left)) continue;
+                result.has_module_exports = result.has_module_exports or is_module;
+                result.has_exports_dot = result.has_exports_dot or is_exports or is_marker;
+                result.has_esmodule_marker = result.has_esmodule_marker or is_marker;
+            },
+            .call_expression => {
+                const kind = classifyObjectDefinePropertyExports(ast, node) orelse continue;
+                const callee = ast.readExtraNode(node.data.extra, 0);
+                if (!try scope.isHostReference(ast, callee)) continue;
+                const arguments = ast.readExtra(node.data.extra, 1);
+                const target = ast.readExtraNode(arguments, 0);
+                if (!try scope.isHostReference(ast, target)) continue;
+                switch (kind) {
+                    .module_exports => result.has_module_exports = true,
+                    .exports_member => result.has_exports_dot = true,
+                    .esmodule_marker => {
+                        result.has_exports_dot = true;
+                        result.has_esmodule_marker = true;
+                    },
+                }
+            },
+            else => {},
+        }
+    }
+    return result;
+}
 
 /// AST를 순회하여 import/export/require를 추출하고 CJS 신호를 감지한다.
 /// ESM과 CJS 판별에 필요한 모든 정보를 한 번의 순회로 수집.

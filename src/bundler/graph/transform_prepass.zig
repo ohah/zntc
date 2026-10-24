@@ -13364,18 +13364,25 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
         @import("requested_exports.zig").populateExportIndexByName(module, self.allocator) catch {};
     }
 
-    const has_refreshed_cjs = scan_result.has_cjs_require or
-        scan_result.has_module_exports or
-        scan_result.has_exports_dot;
-    const has_refreshed_esm = if (module.exports_kind == .commonjs and has_refreshed_cjs)
-        false
-    else
-        scan_result.has_esm_syntax;
+    if (module.semantic) |semantic| {
+        scan_result = try import_scanner.withSemanticCjsExports(ast, scan_result, .{
+            .symbol_ids = semantic.symbol_ids,
+            .symbols = semantic.symbols.items,
+            .commonjs_environment = module.exports_kind == .commonjs or module.def_format.isCommonjs() or (!module.def_format.isEsm() and !scan_result.has_esm_syntax),
+            .module_parameter = if (module.cjs_wrapper_module_parameter_symbol) |id| @backingInt(id) else null,
+            .exports_parameter = if (module.cjs_wrapper_exports_parameter_symbol) |id| @backingInt(id) else null,
+        });
+    }
+
+    // A compiler-owned import added after parsing does not change the source
+    // CJS realm, even after all original writes/calls have been lowered away.
+    const has_refreshed_esm = module.exports_kind != .commonjs and scan_result.has_esm_syntax;
 
     const refreshed_scan_result = import_scanner.ScanResult{
         .records = module.import_records,
         .has_esm_syntax = has_refreshed_esm,
         .has_cjs_require = scan_result.has_cjs_require,
+        .has_cjs_host_parameters = scan_result.has_cjs_host_parameters,
         .has_module_exports = scan_result.has_module_exports,
         .has_exports_dot = scan_result.has_exports_dot,
         .has_esmodule_marker = scan_result.has_esmodule_marker,
