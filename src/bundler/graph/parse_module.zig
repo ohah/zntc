@@ -528,7 +528,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
 /// cold 경로(parse→semantic→materialize→pre-pass)와 **동일 최종 module 상태**에 도달:
 ///  - `load`: AST(pre-transform) + semantic 복원
 ///  - `line_offsets`: scanner 없이 source 에서 재계산(Scanner.computeLineOffsets)
-///  - `materializeFromCachedAst`: import_records/bindings/exports_kind/semantic 재분석 등 재구성
+///  - `materializeFromCachedAst`: 복원 semantic graph를 유지하며 import_records/bindings/exports_kind 등 재구성
 ///  - transformer pre-pass: cold(parse_module 286-301)와 동일 분기로 transform_cache + post-transform
 ///    AST 재생성(pre-pass 가 끝에 resync 재호출해 materialize 결과를 덮어쓰는 것도 cold 동일)
 ///

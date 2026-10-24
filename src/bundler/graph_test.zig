@@ -1771,11 +1771,22 @@ test "graph: 디스크 캐시 store — build 시 모듈 영속화 + load round-
 fn expectCachedAstMaterializeEquivalent(graph: *ModuleGraph) !void {
     const m = graph.modules.at(0);
     const arena_alloc = m.parse_arena.?.allocator();
+    const semantic = m.semantic orelse return error.TestExpectedSemantic;
+    const original_ids = try std.testing.allocator.dupe(?u32, semantic.symbol_ids);
+    defer std.testing.allocator.free(original_ids);
+    const original_references = try std.testing.allocator.dupe(@import("../semantic/symbol.zig").Reference, semantic.references);
+    defer std.testing.allocator.free(original_references);
+    const original_scopes = try std.testing.allocator.dupe(@import("../semantic/scope.zig").Scope, semantic.scopes);
+    defer std.testing.allocator.free(original_scopes);
 
     // ground truth (materialize 결과) 캡처.
     const gt_kind = m.exports_kind;
     const gt_wrap = m.wrap_kind;
     const gt_exported = m.exported_names.len;
+    const gt_import_bindings = m.import_bindings;
+    const gt_export_bindings = m.export_bindings;
+    const gt_statements = m.prebuilt_stmt_info;
+    const gt_self_tla = m.self_uses_top_level_await;
     const gt_specs = try std.testing.allocator.alloc([]const u8, m.import_records.len);
     defer {
         for (gt_specs) |s| std.testing.allocator.free(s);
@@ -1786,16 +1797,64 @@ fn expectCachedAstMaterializeEquivalent(graph: *ModuleGraph) !void {
     // 실제 load(fresh module)는 graph-level 필드가 비어있다 — import_records 를 비워
     // resync 의 mergeImportRecords(previous=empty)가 load 와 동일 경로를 타게 한다.
     m.import_records = &.{};
+    m.import_bindings = &.{};
+    m.export_bindings = &.{};
+    m.exported_names = &.{};
+    m.namespace_access_index = null;
+    m.prebuilt_stmt_info = null;
+    m.self_uses_top_level_await = !gt_self_tla;
+    m.uses_top_level_await = !gt_self_tla;
 
     // parser 없이 module.ast 만으로 재구성.
     try graph.materializeFromCachedAst(m, arena_alloc);
+
+    // The cache already restored the parse AST and its semantic graph. Metadata
+    // reconstruction must not replace that graph with a second analysis.
+    try std.testing.expectEqualSlices(?u32, original_ids, m.semantic.?.symbol_ids);
+    try std.testing.expectEqualDeep(original_references, m.semantic.?.references);
+    try std.testing.expectEqualDeep(original_scopes, m.semantic.?.scopes);
 
     // materialize 와 동등해야 한다.
     try std.testing.expectEqual(gt_kind, m.exports_kind);
     try std.testing.expectEqual(gt_wrap, m.wrap_kind);
     try std.testing.expectEqual(gt_exported, m.exported_names.len);
+    try std.testing.expectEqual(gt_self_tla, m.self_uses_top_level_await);
+    try std.testing.expectEqual(gt_self_tla, m.uses_top_level_await);
     try std.testing.expectEqual(gt_specs.len, m.import_records.len);
     for (gt_specs, m.import_records) |g, r| try std.testing.expectEqualStrings(g, r.specifier);
+    try std.testing.expectEqual(gt_import_bindings.len, m.import_bindings.len);
+    for (gt_import_bindings, m.import_bindings) |old, new| {
+        try std.testing.expectEqual(old.kind, new.kind);
+        try std.testing.expectEqualStrings(old.local_name, new.local_name);
+        try std.testing.expectEqualStrings(old.imported_name, new.imported_name);
+        try std.testing.expectEqual(old.local_symbol_node, new.local_symbol_node);
+        if (old.local_symbol_node) |node| {
+            try std.testing.expectEqual(semantic.symbol_ids[@backingInt(node)], new.local_symbol.semanticIndex());
+            try std.testing.expectEqual(m.index, new.local_symbol.moduleIndex());
+        }
+    }
+    try std.testing.expectEqual(gt_export_bindings.len, m.export_bindings.len);
+    for (gt_export_bindings, m.export_bindings) |old, new| {
+        try std.testing.expectEqual(old.kind, new.kind);
+        try std.testing.expectEqualStrings(old.local_name, new.local_name);
+        try std.testing.expectEqualStrings(old.exported_name, new.exported_name);
+        try std.testing.expectEqual(old.local_symbol_node, new.local_symbol_node);
+        if (old.local_symbol_node) |node| {
+            try std.testing.expectEqual(semantic.symbol_ids[@backingInt(node)], new.symbol.semanticIndex());
+            try std.testing.expectEqual(m.index, new.symbol.moduleIndex());
+        }
+    }
+    if (gt_statements) |old| {
+        const new = m.prebuilt_stmt_info orelse return error.TestExpectedStatements;
+        try std.testing.expectEqual(old.stmts.len, new.stmts.len);
+        for (old.stmts, new.stmts) |a, b| {
+            try std.testing.expectEqual(a.node_idx, b.node_idx);
+            try std.testing.expectEqual(a.has_side_effects, b.has_side_effects);
+            try std.testing.expectEqualSlices(u32, a.declared_symbols, b.declared_symbols);
+            try std.testing.expectEqualSlices(u32, a.referenced_symbols, b.referenced_symbols);
+        }
+    }
+    if (gt_import_bindings.len > 0) try std.testing.expect(m.namespace_access_index != null);
 }
 
 test "graph: materializeFromCachedAst — ESM 동등 재구성 (#4438 통합3 PR1)" {
@@ -1839,6 +1898,83 @@ test "graph: materializeFromCachedAst — CJS 동등 재구성 (#4438 통합3 PR
     try graph.build(std.testing.io, &.{entry});
 
     try expectCachedAstMaterializeEquivalent(&graph);
+}
+
+test "graph: materializeFromCachedAst preserves non-parser-order cached SymbolIds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.mjs", "export const first = 1; export const second = first + 1;");
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const m = graph.modules.at(0);
+    const sem = &m.semantic.?;
+    try std.testing.expectEqual(@as(usize, 2), sem.symbols.items.len);
+    // Valid cached graphs need not enumerate symbols in parser declaration
+    // order. Swap both symbols and every semantic edge so a fresh analyzer
+    // cannot silently replace this snapshot with its own numbering.
+    std.mem.swap(@import("../semantic/symbol.zig").Symbol, &sem.symbols.items[0], &sem.symbols.items[1]);
+    for (@constCast(sem.symbol_ids)) |*id| {
+        if (id.*) |value| id.* = 1 - value;
+    }
+    for (@constCast(sem.references)) |*reference| reference.symbol_id = @fromBackingInt(1 - @backingInt(reference.symbol_id));
+    var bindings = sem.scope_maps[0].valueIterator();
+    while (bindings.next()) |id| id.* = 1 - id.*;
+    var remapped_numeric_texts: @TypeOf(sem.numeric_const_texts) = .empty;
+    var numeric_texts = sem.numeric_const_texts.iterator();
+    while (numeric_texts.next()) |item| try remapped_numeric_texts.put(m.parse_arena.?.allocator(), 1 - item.key_ptr.*, item.value_ptr.*);
+    sem.numeric_const_texts = remapped_numeric_texts;
+    const module_codec = @import("module_codec.zig");
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(std.testing.allocator);
+    try module_codec.serialize(&m.ast.?, sem, &encoded, std.testing.allocator);
+    const restored = try module_codec.deserialize(encoded.items, m.parse_arena.?.allocator());
+    m.ast = restored.ast;
+    m.semantic = restored.semantic;
+    m.prebuilt_stmt_info = null;
+    try expectCachedAstMaterializeEquivalent(&graph);
+    try std.testing.expectEqual(@as(?usize, 1), m.semantic.?.scope_maps[0].get("first"));
+    try std.testing.expectEqual(@as(?usize, 0), m.semantic.?.scope_maps[0].get("second"));
+}
+
+test "graph: materializeFromCachedAst preserves exact cached graph across module forms" {
+    const cases = [_]struct { path: []const u8, source: []const u8, tla: bool = false }{
+        .{ .path = "index.mjs", .source = "export const value = 1;" },
+        .{ .path = "index.mjs", .source = "export default function value() { return 1; }" },
+        .{ .path = "index.mjs", .source = "export default class Value { read() { return Value; } }" },
+        .{ .path = "index.mjs", .source = "const value = 1; export function read(value) { return () => value; } console.log(value);" },
+        .{ .path = "index.mjs", .source = "import * as ns from './a.mjs'; export const value = ns.a;" },
+        .{ .path = "index.mjs", .source = "export { a as answer } from './a.mjs';" },
+        .{ .path = "index.mjs", .source = "await Promise.resolve(1); export const value = 1;", .tla = true },
+        .{ .path = "index.mjs", .source = "export async function read() { return await Promise.resolve(1); }" },
+        .{ .path = "index.cjs", .source = "with ({ value: 1 }) { console.log(value); } module.exports = 1;" },
+        .{ .path = "index.cjs", .source = "const value = require('./a.cjs'); exports.value = value.a;" },
+    };
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, case.path, case.source);
+        try writeFile(tmp.dir, "a.mjs", "export const a = 1;");
+        try writeFile(tmp.dir, "a.cjs", "exports.a = 1;");
+        const dp = try dirPath(&tmp);
+        defer std.testing.allocator.free(dp);
+        const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, case.path });
+        defer std.testing.allocator.free(entry);
+        var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{entry});
+        try expectCachedAstMaterializeEquivalent(&graph);
+        const m = graph.modules.at(0);
+        try std.testing.expectEqual(case.tla, m.self_uses_top_level_await);
+    }
 }
 
 test "graph: load hit — 복원 module 이 cold parse 와 동등 + parse 스킵 (#4438 통합3 PR2)" {
