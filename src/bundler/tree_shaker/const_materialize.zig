@@ -341,6 +341,46 @@ fn markConstMaterializedRetainingMinifiedGraph(
     return true;
 }
 
+/// Folding an imported numeric seed can create a new exported literal.
+/// Retaining the graph also retains its old constant facts, so publish the
+/// new value through the surviving declaration's exact identity.
+fn refreshFoldedNumericExportFacts(self: *TreeShaker, m: *Module, ast: *Ast) !void {
+    const sem = if (m.semantic) |*value| value else return;
+    const allocator = if (m.parse_arena) |arena| arena.allocator() else return;
+    var scratch = std.heap.ArenaAllocator.init(self.allocator);
+    defer scratch.deinit();
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(scratch.allocator(), ast, root);
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .variable_declarator) continue;
+        const extra = node.data.extra;
+        if (extra + 2 >= ast.extra_data.items.len) continue;
+        const binding = ast.extra_data.items[extra];
+        const initializer = ast.extra_data.items[extra + 2];
+        if (binding >= sem.symbol_ids.len or initializer >= ast.nodes.items.len) continue;
+        const id = sem.symbol_ids[binding] orelse continue;
+        if (id >= sem.symbols.items.len) continue;
+        const symbol = &sem.symbols.items[id];
+        if (!symbol.isExported() or (symbol.kind != .variable_const and symbol.kind != .variable_let) or symbol.write_count != 0) continue;
+        const literal = ast.nodes.items[initializer];
+        // A parenthesized numeric subtree can survive the ordinary minifier.
+        // This existing folder accepts only literal arithmetic, so replacing
+        // it removes no semantic reference, declaration, or scope owner.
+        const span = if (literal.tag == .numeric_literal)
+            literal.span
+        else
+            @import("../../transformer/minify.zig").foldNumericLiteralExpression(ast, @fromBackingInt(initializer)) orelse continue;
+        const text = ast.getText(span);
+        if (text.len == 0) continue;
+        if (symbol.const_kind == .number and std.mem.eql(u8, sem.numericConstText(id), text)) continue;
+        const owned_text = try allocator.dupe(u8, text);
+        try sem.numeric_const_texts.put(allocator, id, owned_text);
+        symbol.const_kind = .number;
+    }
+}
+
 fn minifyAndResyncModule(
     self: *TreeShaker,
     m: *Module,
@@ -350,7 +390,7 @@ fn minifyAndResyncModule(
     materialized: constant_facts.MaterializeResult,
     materialized_nodes: []const NodeIndex,
     skip_minify: bool,
-) void {
+) !void {
     var scope = profile.beginMaybe(const_profile.minify_resync);
     defer scope.end();
 
@@ -388,6 +428,7 @@ fn minifyAndResyncModule(
             }
         }
     }
+    try refreshFoldedNumericExportFacts(self, m, ast);
 }
 
 fn shouldMaterializeConstFacts(
@@ -501,7 +542,7 @@ fn materializeCrossModuleConstFactsForIndex(
     }
 
     const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
-    minifyAndResyncModule(
+    try minifyAndResyncModule(
         self,
         m,
         sem,
