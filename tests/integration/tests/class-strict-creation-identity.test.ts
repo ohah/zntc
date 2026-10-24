@@ -148,6 +148,15 @@ const cases = [
     source:
       'function outside(){return arguments.callee===outside;}class Box{static read=outside;}console.log(Box.read());',
   },
+  {
+    name: 'anonymous inferred class reads mutable outer binding',
+    source:
+      'var Box=class{static read=()=>Box;};const old=Box;Box={};console.log(old.read()===Box);',
+  },
+  {
+    name: 'explicit named class reads immutable class self',
+    source: 'class Box{static read=()=>Box;}const old=Box;Box={};console.log(old.read()===old);',
+  },
 ];
 
 describe('moved class code keeps strict creation and readonly identity (#4819)', () => {

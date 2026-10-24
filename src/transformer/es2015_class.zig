@@ -824,8 +824,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // A simple named class needs a private alias for the generated
             // class-call check when a constructor parameter shadows its name.
             const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
-            const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(@backingInt(source_idx)) orelse self.class_self_symbol_map.get(source_origin) else null;
-            const has_source_self = inner != null;
+            // An inferred spelling does not create the source semantics of an
+            // explicitly named class. A copied explicit self still selects its
+            // exact output-node identity before the original source identity.
+            const source_inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
+            const inner = if (source_inner != null) self.class_self_symbol_map.get(@backingInt(source_idx)) orelse source_inner else null;
+            const has_source_self = source_inner != null;
             const wrap_self_alias = !has_extra and has_source_self;
             const iife_self_alias = if (has_extra and inner != null)
                 try constructorShadowsClassSelf(self, cm.constructor_idx, name_span, inner.?)
@@ -934,7 +938,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // A simple anonymous class becomes a named function expression.
             // Its name environment sits outside the parameter/function scopes;
             // reserve that exact owner before __classCallCheck creates a read.
-            if (self.semantic_edit_enabled and name_idx.isNone() and !has_extra and !class_self_storage_bound) {
+            if (self.semantic_edit_enabled and !has_source_self and !has_extra and !class_self_storage_bound) {
                 const name_scope = try self.reserveGeneratedNameScope(iife_parent);
                 var constructor_root = ctor_scope;
                 if (source_ctor) |original| {
@@ -944,8 +948,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                 }
                 try self.reparentGeneratedScope(constructor_root, name_scope);
-                const id = try self.declareSyntheticInScope(func_name, span, .function_decl, name_scope) orelse
-                    std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
+                const id = if (try self.bindClassSelfStorage(source_idx, func_name, name_scope))
+                    @as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(self.getSymbolIdAt(func_name).?))
+                else
+                    try self.declareSyntheticInScope(func_name, span, .function_decl, name_scope) orelse
+                        std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
                 self.current_class_self_symbol_id = @backingInt(id);
                 if (generated_class_output_name) |output_name| {
                     if (output_name.late)
