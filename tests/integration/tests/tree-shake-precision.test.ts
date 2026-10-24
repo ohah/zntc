@@ -37,7 +37,12 @@ function bundleIn(benchmarkDir: string, entryContent: string, name: string): str
   }
 }
 
-function bundleFiles(files: Record<string, string>, entry: string, name: string): string {
+function bundleFiles(
+  files: Record<string, string>,
+  entry: string,
+  name: string,
+  args: string[] = [],
+): string {
   const dir = mkdtempSync(join(tmpdir(), `zntc-tsprec-${name}-`));
   const outFile = join(dir, 'out.js');
   for (const [file, content] of Object.entries(files)) {
@@ -46,7 +51,7 @@ function bundleFiles(files: Record<string, string>, entry: string, name: string)
   try {
     const r = spawnSync(
       ZNTC_BIN,
-      ['--bundle', join(dir, entry), '-o', outFile, '--platform=node'],
+      ['--bundle', join(dir, entry), '-o', outFile, '--platform=node', ...args],
       {
         stdio: 'pipe',
         timeout: 30000,
@@ -434,6 +439,26 @@ describe('CJS static export fact 기반 DCE', () => {
     ]) {
       expect(bundle).toContain(marker);
     }
+  });
+});
+
+describe('cross-module constant prepass', () => {
+  test('minify-syntax folds an imported primitive constant without changing runtime output', () => {
+    const bundle = bundleFiles(
+      {
+        'entry.ts':
+          `import { enabled } from "./flags.js";\n` +
+          `if (enabled) console.log("CONST_PREPASS_MATCH");\n` +
+          `else console.log("CONST_PREPASS_MISS");\n`,
+        'flags.js': `export const enabled = true;\n`,
+      },
+      'entry.ts',
+      'cross-module-const-prepass',
+      ['--minify-syntax'],
+    );
+
+    expect(runBundleSource(bundle)).toContain('CONST_PREPASS_MATCH');
+    expect(bundle).not.toContain('CONST_PREPASS_MISS');
   });
 });
 

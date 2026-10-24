@@ -326,12 +326,14 @@ fn markConstMaterializedRetainingMinifiedGraph(
     self: *TreeShaker,
     m: *Module,
     materialized_nodes: []const NodeIndex,
+    refresh_module_metadata: bool,
 ) bool {
     std.debug.assert(m.parse_arena != null);
     const retained = self.graph.resyncModuleMetadataAfterConstMaterializationRetainingMinifiedGraph(
         m,
         m.parse_arena.?.allocator(),
         materialized_nodes,
+        refresh_module_metadata,
     ) catch false;
     if (!retained) return false;
     m.namespace_access_index = null;
@@ -369,14 +371,21 @@ fn minifyAndResyncModule(
         var resync_scope = profile.beginMaybe(const_profile.resync);
         defer resync_scope.end();
 
-        if (const_profile.policy.stableImportExportSyntax()) {
-            const retained = if (m.semantic != null and materialized.tracked_nodes_complete) blk: {
-                if (skip_minify) break :blk markConstMaterializedRetainingGraph(self, m, materialized_nodes);
-                break :blk markConstMaterializedRetainingMinifiedGraph(self, m, materialized_nodes);
-            } else false;
-            if (!retained) markConstMaterializedAndResync(self, m);
-        } else {
-            self.markAstMutatedAndResync(m);
+        const retained = if (m.semantic != null and materialized.tracked_nodes_complete) blk: {
+            if (skip_minify) break :blk markConstMaterializedRetainingGraph(self, m, materialized_nodes);
+            break :blk markConstMaterializedRetainingMinifiedGraph(
+                self,
+                m,
+                materialized_nodes,
+                !const_profile.policy.stableImportExportSyntax(),
+            );
+        } else false;
+        if (!retained) {
+            if (const_profile.policy.stableImportExportSyntax()) {
+                markConstMaterializedAndResync(self, m);
+            } else {
+                self.markAstMutatedAndResync(m);
+            }
         }
     }
 }
@@ -453,7 +462,7 @@ fn materializeCrossModuleConstFactsForIndex(
             const_profile.inner,
             const_profile.policy.skipMinifyIfSafe(),
             &eligible_reference_nodes,
-            if (const_profile.policy.skipMinifyIfSafe()) &materialized_nodes else null,
+            &materialized_nodes,
         );
     };
     const_values.deinit(self.allocator);
@@ -687,11 +696,13 @@ pub fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !vo
 const MinifiedConstInputMutation = enum {
     none,
     stale_sidecar,
+    incomplete_tracking,
     empty_targets,
     none_target,
     duplicate_target,
     out_of_bounds_target,
     missing_target_identity,
+    surviving_reference_node,
     wrong_target_identity,
     missing_read_row,
     wrong_read_symbol,
@@ -699,9 +710,17 @@ const MinifiedConstInputMutation = enum {
     write_target,
     type_context,
     value_as_type,
+    invalid_binding_scope,
+    invalid_reference_scope,
+    missing_scope_owner,
+    wrong_scope_owner,
 };
 
-fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstInputMutation) !void {
+fn expectConstMaterializeGraphHandoff(
+    skip_minify: bool,
+    mutation: MinifiedConstInputMutation,
+    policy: ConstPassPolicy,
+) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -771,7 +790,6 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
     if (mutation == .stale_sidecar) {
         module.transform_cache.?.explicit_global_ref_nodes = &.{std.math.maxInt(u32)};
     }
-
     var prepass_minify_ctx = minify_mod.MinifyCtx.fromSemantic(
         &module.semantic.?,
         module.semantic.?.symbol_ids,
@@ -787,13 +805,36 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
     const reachable_nodes = try ast_walk.collectReachableNodeIndices(allocator, &module.ast.?);
     defer allocator.free(reachable_nodes);
     var materialized_nodes: std.ArrayList(NodeIndex) = .empty;
-    for (reachable_nodes) |raw| {
-        if (raw >= module.semantic.?.symbol_ids.len) continue;
-        if (module.ast.?.nodes.items[raw].tag != .identifier_reference) continue;
-        if (module.semantic.?.symbol_ids[raw] != value_id) continue;
-        const node_index: NodeIndex = @fromBackingInt(@intCast(raw));
-        try materialized_nodes.append(arena_alloc, node_index);
-        if (skip_minify) break;
+    var materialized: constant_facts.MaterializeResult = .{
+        .changed = true,
+        .tracked_nodes_complete = true,
+    };
+    if (policy == .pre_pass) {
+        var const_values: std.AutoHashMapUnmanaged(u32, ConstValue) = .empty;
+        defer const_values.deinit(arena_alloc);
+        try const_values.put(arena_alloc, value_id, .{ .kind = .number, .number_text = "7" });
+        materialized = constant_facts.materializeWithScratchDetailed(
+            arena_alloc,
+            &module.ast.?,
+            module.semantic.?.symbol_ids,
+            &const_values,
+            null,
+            0,
+            .{},
+            false,
+            null,
+            &materialized_nodes,
+        );
+        if (!materialized.changed or !materialized.tracked_nodes_complete) return error.MaterializationNotTracked;
+    } else {
+        for (reachable_nodes) |raw| {
+            if (raw >= module.semantic.?.symbol_ids.len) continue;
+            if (module.ast.?.nodes.items[raw].tag != .identifier_reference) continue;
+            if (module.semantic.?.symbol_ids[raw] != value_id) continue;
+            const node_index: NodeIndex = @fromBackingInt(@intCast(raw));
+            try materialized_nodes.append(arena_alloc, node_index);
+            if (skip_minify) break;
+        }
     }
     if (materialized_nodes.items.len == 0) return error.MissingReachableValueReference;
     const valid_materialized_nodes = try arena_alloc.dupe(NodeIndex, materialized_nodes.items);
@@ -808,10 +849,25 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
             }
         }
         const reference_row = target_reference_row orelse return error.MissingTargetReferenceRow;
+        var untouched_reference_row: ?usize = null;
+        for (analyzer.references.items, 0..) |reference, index| {
+            if (reference.flags.declare or reference.node_index.isNone()) continue;
+            var materialized_reference = false;
+            for (valid_materialized_nodes) |materialized_node| {
+                if (reference.node_index == materialized_node) {
+                    materialized_reference = true;
+                    break;
+                }
+            }
+            if (!materialized_reference) {
+                untouched_reference_row = index;
+                break;
+            }
+        }
         const other_symbol = if (value_id == 0) @as(u32, 1) else @as(u32, 0);
         if (other_symbol >= analyzer.symbols.items.len) return error.MissingDistinctTargetSymbol;
         switch (mutation) {
-            .none, .stale_sidecar => {},
+            .none, .stale_sidecar, .incomplete_tracking => {},
             .empty_targets => materialized_nodes.clearRetainingCapacity(),
             .none_target => materialized_nodes.items[0] = .none,
             .duplicate_target => try materialized_nodes.append(arena_alloc, target_node),
@@ -829,6 +885,14 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
                 }
                 materialized_nodes.items[0] = unbound_literal orelse return error.MissingUnboundNumericLiteral;
             },
+            .surviving_reference_node => {
+                const span = try module.ast.?.addString("value");
+                module.ast.?.nodes.items[target_raw] = .{
+                    .tag = .identifier_reference,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                };
+            },
             .wrong_target_identity => analyzer.symbol_ids.items[target_raw] = other_symbol,
             .missing_read_row => analyzer.references.items[reference_row].node_index = .none,
             .wrong_read_symbol => analyzer.references.items[reference_row].symbol_id = @fromBackingInt(other_symbol),
@@ -836,38 +900,71 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
             .write_target => analyzer.references.items[reference_row].flags.write = true,
             .type_context => analyzer.references.items[reference_row].flags.type_context = true,
             .value_as_type => analyzer.references.items[reference_row].flags.value_as_type = true,
+            .invalid_binding_scope => analyzer.symbols.items[value_id].scope_id = .none,
+            .invalid_reference_scope => {
+                const untouched_index = untouched_reference_row orelse return error.MissingUntouchedReference;
+                analyzer.references.items[untouched_index].scope_id = .none;
+            },
+            .missing_scope_owner, .wrong_scope_owner => {
+                var program_owner: ?u32 = null;
+                for (module.ast.?.nodes.items, 0..) |node, raw| {
+                    if (node.tag == .program) {
+                        program_owner = @intCast(raw);
+                        break;
+                    }
+                }
+                const owner = program_owner orelse return error.MissingProgramScopeOwner;
+                if (mutation == .missing_scope_owner) {
+                    _ = analyzer.scope_owner_map.remove(owner);
+                } else {
+                    try analyzer.scope_owner_map.put(
+                        arena_alloc,
+                        owner,
+                        @intCast(analyzer.scopes.items.len + 1),
+                    );
+                }
+            },
         }
     }
-    for (valid_materialized_nodes) |materialized_index| {
-        const literal_span = try module.ast.?.addString("7");
-        module.ast.?.nodes.items[@backingInt(materialized_index)] = .{
-            .tag = .numeric_literal,
-            .span = literal_span,
-            .data = .{ .none = 0 },
-        };
+    if (policy != .pre_pass and mutation != .surviving_reference_node) {
+        for (valid_materialized_nodes) |materialized_index| {
+            const literal_span = try module.ast.?.addString("7");
+            module.ast.?.nodes.items[@backingInt(materialized_index)] = .{
+                .tag = .numeric_literal,
+                .span = literal_span,
+                .data = .{ .none = 0 },
+            };
+        }
     }
 
-    var resolve_cache = ResolveCache.init(allocator, .{});
+    var graph_arena = std.heap.ArenaAllocator.init(allocator);
+    defer graph_arena.deinit();
+    const graph_allocator = graph_arena.allocator();
+    var resolve_cache = ResolveCache.init(graph_allocator, .{});
     defer resolve_cache.deinit();
-    var graph = ModuleGraph.init(allocator, &resolve_cache);
+    var graph = ModuleGraph.init(graph_allocator, &resolve_cache);
     defer graph.deinit();
     graph.transform_options_base.minify_syntax = !skip_minify;
-    var linker = Linker.init(allocator, &graph, .esm);
+    var linker = Linker.init(graph_allocator, &graph, .esm);
     defer linker.deinit();
-    var shaker = try TreeShaker.init(allocator, &graph, &linker);
+    var shaker = try TreeShaker.init(graph_allocator, &graph, &linker);
     defer shaker.deinit();
+    if (mutation == .incomplete_tracking) materialized.tracked_nodes_complete = false;
 
     minifyAndResyncModule(
         &shaker,
         &module,
         module.semantic.?,
         &module.ast.?,
-        .{ .policy = .numeric_post_pass },
-        .{ .changed = true, .tracked_nodes_complete = true },
+        .{ .policy = policy },
+        materialized,
         materialized_nodes.items,
         skip_minify,
     );
 
+    if (policy == .pre_pass and mutation == .none) {
+        try std.testing.expectEqual(@as(usize, 2), module.export_bindings.len);
+    }
     const semantic = &module.semantic.?;
     if (mutation != .none) {
         try std.testing.expectEqualStrings("", semantic.symbols.items[value_id].output_name_hint);
@@ -920,22 +1017,35 @@ fn expectNumericPostPassGraphHandoff(skip_minify: bool, mutation: MinifiedConstI
 }
 
 test "numeric post-pass retains graph when prepass ref deltas exist" {
-    try expectNumericPostPassGraphHandoff(true, .none);
+    try expectConstMaterializeGraphHandoff(true, .none, .numeric_post_pass);
 }
 
 test "numeric post-pass retains exact graph through syntax folding" {
-    try expectNumericPostPassGraphHandoff(false, .none);
+    try expectConstMaterializeGraphHandoff(false, .none, .numeric_post_pass);
 }
 
 test "numeric post-pass falls back when minification strands a graph sidecar" {
-    try expectNumericPostPassGraphHandoff(false, .stale_sidecar);
+    try expectConstMaterializeGraphHandoff(false, .stale_sidecar, .numeric_post_pass);
 }
 
 test "numeric post-pass rejects malformed materialized read handoffs" {
     inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
         switch (mutation) {
             .none, .stale_sidecar => {},
-            else => try expectNumericPostPassGraphHandoff(false, mutation),
+            else => try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass),
+        }
+    }
+}
+
+test "full const pre-pass retains the exact graph when syntax minification preserves it" {
+    try expectConstMaterializeGraphHandoff(false, .none, .pre_pass);
+}
+
+test "full const pre-pass rejects malformed materialized read handoffs" {
+    inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
+        switch (mutation) {
+            .none => {},
+            else => try expectConstMaterializeGraphHandoff(false, mutation, .pre_pass),
         }
     }
 }
