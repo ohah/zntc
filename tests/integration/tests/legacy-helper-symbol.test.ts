@@ -758,9 +758,8 @@ console.log(${sourceName}, new Service().method(7));
     });
   }
 
-  test('standalone JavaScript metadata references keep shadowed Object and Function identities', async () => {
-    const fixture = await createFixture({
-      'input.js': `
+  test('standalone strict and lenient JavaScript metadata keep shadowed Object and Function identities', async () => {
+    const source = `
 const events = [];
 function identity(value) { return value; }
 function ObjectSentinel() {}
@@ -786,30 +785,35 @@ function build(Object, Function) {
 const Service = build(ObjectSentinel, FunctionSentinel);
 new Service(1).method();
 console.log(events.join('|'));
-`,
+`;
+    const fixture = await createFixture({
+      'input.js': source,
+      'input.unknown': source,
       'tsconfig.json': JSON.stringify({
         compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
       }),
     });
     cleanup = fixture.cleanup;
-    const output = join(fixture.dir, 'out.js');
-    const result = spawnSync(
-      ZNTC_BIN,
-      ['input.js', '--target=es2020', '--minify-identifiers', '--minify-syntax', '-o', output],
-      {
-        cwd: fixture.dir,
-        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-        encoding: 'utf8',
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
+    for (const input of ['input.js', 'input.unknown']) {
+      const output = join(fixture.dir, `${input}.out.js`);
+      const result = spawnSync(
+        ZNTC_BIN,
+        [input, '--target=es2020', '--minify-identifiers', '--minify-syntax', '-o', output],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, `${input}: ${result.stderr}`).toBe(0);
 
-    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
-    expect(runtime.status, runtime.stderr).toBe(0);
-    expect(runtime.stdout).toBe('method:exact|class:exact\n');
-    expect(result.stderr).toMatch(
-      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
-    );
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, `${input}: ${runtime.stderr}`).toBe(0);
+      expect(runtime.stdout, input).toBe('method:exact|class:exact\n');
+      expect(result.stderr, input).toMatch(
+        /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
+      );
+    }
   });
 
   for (const target of ['es5', 'es2022'] as const) {

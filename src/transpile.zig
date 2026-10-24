@@ -600,19 +600,22 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     if (!options.minify_identifiers) return false;
 
-    // emitDecoratorMetadata currently has a complete exact graph for TypeScript
-    // and strict JavaScript legacy decorators. Flow and lenient/unknown parser
-    // modes stay on the established analyzer until their metadata type semantics
-    // and generated references are covered together.
+    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
+    // emitDecoratorMetadata has a complete exact graph for TypeScript and
+    // JavaScript legacy decorators. Lenient/unknown files qualify only when
+    // AST facts prove there is no TypeScript syntax; Flow and other modes stay
+    // on the established analyzer until their metadata semantics are covered.
+    const metadata_mode_supported = options.experimental_decorators and !parser.is_flow and switch (parser.source_mode) {
+        .ts, .js_strict => true,
+        .js_lenient => !facts.has_typescript_syntax,
+    };
     if (options.emit_decorator_metadata and parser.ast.has_decorator and
-        (parser.is_flow or !options.experimental_decorators or
-            (parser.source_mode != .ts and parser.source_mode != .js_strict))) return false;
+        !metadata_mode_supported) return false;
 
     // Flow's type-only syntax does not change the exact graph edits made by
     // legacy decorator lowering. Keep Flow runtime constructs without complete
     // graph support behind the facts gate below.
 
-    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     if (parser.is_flow) return !facts.has_flow_runtime_syntax_without_complete_graph;
     if (parser.source_mode == .ts) {
         return !facts.has_unhandled_runtime_syntax and
@@ -2576,8 +2579,10 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     unknown_parser.configureFromExtension(".unknown");
     _ = try unknown_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), unknown_parser.errors.items.len);
+    try std.testing.expect(unknown_parser.source_mode == .js_lenient);
+    try std.testing.expect(!unknown_parser.is_flow);
     try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_parser));
-    try std.testing.expect(!canMangleWithTransformSemantic(.{
+    try std.testing.expect(canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
         .emit_decorator_metadata = true,
