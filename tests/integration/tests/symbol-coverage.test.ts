@@ -2233,6 +2233,62 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('lenient TypeScript computed auto-accessors retain exact graph through ES5 lowering', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-auto-accessor-graph-'));
+    const input = join(dir, 'computed-accessor.unknown');
+    const reference = join(dir, 'reference.js');
+    const output = join(dir, 'out.js');
+    const source = [
+      'const _acc_key_0 = "source";',
+      'let keyEvaluations = 0;',
+      'function makeInstanceKey() { keyEvaluations++; return "instanceValue"; }',
+      'function makeStaticKey() { keyEvaluations++; return "staticValue"; }',
+      'class ComputedAccessor {',
+      '  accessor [makeInstanceKey()]: number = 5;',
+      '  static accessor [makeStaticKey()]: number = 7;',
+      '  write(value: number) { this["instanceValue"] = value; return this["instanceValue"]; }',
+      '  static increment() { return ++ComputedAccessor["staticValue"]; }',
+      '}',
+      'const instance = new ComputedAccessor();',
+      'console.log(instance.write(11), ComputedAccessor.increment(), keyEvaluations, _acc_key_0);',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      writeFileSync(
+        reference,
+        ts.transpileModule(source, {
+          compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES5,
+          },
+        }).outputText,
+      );
+      const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+      expect(baseline.stdout).toBe('11 8 2 source\n');
+
+      const result = runCoverage(input, TARGETS[0], dir, true);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(transpileGraphModeProblems(result.stderr, true, 'retained'), result.stderr).toEqual(
+        [],
+      );
+      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(
+        exactIdentityObservationProblems(
+          result.stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity ')) ??
+            '',
+        ),
+      ).toEqual([]);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('standalone transpile mode report is required and exact for identifier minification', () => {
     const retained =
       'zntc: symbol-identity-transpile-mode /tmp/case.unknown: semantic_graph=retained';

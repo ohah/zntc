@@ -180,10 +180,10 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_runtime_sensitive_syntax = true;
             },
 
-            .accessor_property => {
-                facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
-            },
+            // Auto-accessor lowering records backing fields, generated getter/setter
+            // scopes, and computed-key temporaries in the edited graph. Decorated
+            // accessors remain gated by the separate decorator fact below.
+            .accessor_property => facts.has_runtime_sensitive_syntax = true,
 
             // Stage 3 decorator lowering records generated bindings, references,
             // and class/decorator scopes in the edited semantic graph for Flow too.
@@ -2427,7 +2427,7 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "declare module 'ambient' { export const value: number; }",
         "namespace Mixed { export class Box { amount: number = 1; } } console.log(new Mixed.Box().amount);",
         "import type { Value } from './types'; const value: Value = {} as Value;",
-        "class Counter { accessor amount: number = 1; }",
+        "function seal(value: any): any { return value; } @seal class Counter { accessor amount: number = 1; }",
         "function seal(value: any): any { return value; } @seal class Box { amount: number = 1; }",
     };
     for (reanalyzed_sources) |source| {
@@ -2511,7 +2511,6 @@ test "#4819 extensionless TypeScript classes retain supported class graphs" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
     const unsupported_sources = [_][]const u8{
-        "class Counter { accessor value: number = 1; }",
         "function seal(value: any): any { return value; } @seal class Box { value: number = 1; }",
         "namespace Mixed { export class Box { value: number = 1; } }",
         "declare class External { value: number; }",
@@ -2531,6 +2530,20 @@ test "#4819 extensionless TypeScript private fields retain their graph" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const source = "class Vault { #value: number; constructor(value: number) { this.#value = value; } #read(step: number): number { const value = 1000; return this.#value + step + value; } read(step: number): number { return this.#read(step); } }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    try std.testing.expect(canMangleWithTransformSemantic(.{ .minify_identifiers = true }, &parser));
+}
+
+test "#4819 extensionless TypeScript auto-accessors retain their graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const seed: number = 40; class Counter { accessor value: number = seed; static accessor count: number = 1; add(step: number): number { this.value += step; return this.value; } }";
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".unknown");
