@@ -179,15 +179,16 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             },
 
             // Auto-accessor lowering records backing fields, generated getter/setter
-            // scopes, and computed-key temporaries in the edited graph. Decorated
-            // accessors remain gated by the separate decorator fact below.
+            // scopes, and computed-key temporaries in the edited graph. Decorator
+            // lowering also carries its generated identities in that same graph.
             .accessor_property => facts.has_runtime_sensitive_syntax = true,
 
-            // Stage 3 decorator lowering records generated bindings, references,
-            // and class/decorator scopes in the edited semantic graph for Flow too.
+            // Stage 3 and legacy decorator lowering record generated bindings,
+            // references, and class/decorator scopes in the edited semantic graph.
+            // Lenient TypeScript input can retain that graph when it has no other
+            // graph-changing syntax such as erased ambient/type-only bindings.
             .decorator => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // TypeScript enum lowering now records the emitted IIFE parameter
@@ -2401,6 +2402,9 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "function read<T>(value: T): T { return value; }",
         "class Value { amount: number = 1; }",
         "namespace Mixed { export class Box { amount: number = 1; } } console.log(new Mixed.Box().amount);",
+        "function seal(value: any): any { return value; } @seal class Counter { accessor amount: number = 1; }",
+        "function seal(value: any): any { return value; } @seal class Box { amount: number = 1; }",
+        "type Alias = number; function seal(value: any): any { return value; } @seal class Box { amount: Alias = 1; }",
     };
     for (retained_sources) |source| {
         var typed_scanner = try Scanner.init(allocator, source);
@@ -2419,8 +2423,7 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "declare namespace Ambient { export const value: number; }",
         "declare module 'ambient' { export const value: number; }",
         "import type { Value } from './types'; const value: Value = {} as Value;",
-        "function seal(value: any): any { return value; } @seal class Counter { accessor amount: number = 1; }",
-        "function seal(value: any): any { return value; } @seal class Box { amount: number = 1; }",
+        "declare const externalValue: number; function seal(value: any): any { return value; } @seal class Box { amount: number = externalValue; }",
     };
     for (reanalyzed_sources) |source| {
         var typed_scanner = try Scanner.init(allocator, source);
@@ -2503,7 +2506,7 @@ test "#4819 extensionless TypeScript classes retain supported class graphs" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
 
     const unsupported_sources = [_][]const u8{
-        "function seal(value: any): any { return value; } @seal class Box { value: number = 1; }",
+        "declare const externalValue: number; function seal(value: any): any { return value; } @seal class Box { value: number = externalValue; }",
         "declare class External { value: number; }",
     };
     for (unsupported_sources) |unsupported_source| {
@@ -2787,7 +2790,7 @@ test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic g
     unknown_ts_parser.configureFromExtension(".unknown");
     _ = try unknown_ts_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), unknown_ts_parser.errors.items.len);
-    try std.testing.expect(!canMangleWithTransformSemantic(legacy, &unknown_ts_parser));
+    try std.testing.expect(canMangleWithTransformSemantic(legacy, &unknown_ts_parser));
     try std.testing.expect(!canMangleWithTransformSemantic(.{
         .minify_identifiers = true,
         .experimental_decorators = true,
