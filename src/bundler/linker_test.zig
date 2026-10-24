@@ -875,7 +875,7 @@ test "runtime identity snapshots survive codec and module-field reset across ten
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         try writeFile(tmp.dir, "legacy.cjs", source);
-        try writeFile(tmp.dir, "async.mjs", "export const value = 42;");
+        try writeFile(tmp.dir, "async.mjs", "await Promise.resolve(); export const value = 42;");
         try writeFile(tmp.dir, "payload.bin", "\x00\x01\xff");
         try writeFile(tmp.dir, "entry.mjs", "import value from './legacy.cjs'; import bytes from './payload.bin'; import('./async.mjs').then(ns => console.log(value, ns.value, bytes.length));");
         const allocator = std.testing.allocator;
@@ -887,6 +887,7 @@ test "runtime identity snapshots survive codec and module-field reset across ten
         const graph = try allocator.create(ModuleGraph);
         graph.* = ModuleGraph.init(allocator, &cache);
         graph.loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }};
+        graph.inline_dynamic_imports = true;
         try graph.build(std.testing.io, &.{entry});
         var linker = Linker.init(allocator, graph, .esm);
         try linker.link();
@@ -896,11 +897,13 @@ test "runtime identity snapshots survive codec and module-field reset across ten
         defer result.cache.deinit();
         var owners: usize = 0;
         var binary_owners: usize = 0;
+        var esm_owners: usize = 0;
         var modules = result.graph.modulesIterator();
         while (modules.next()) |cached_module| {
             const module = @constCast(cached_module);
             if (module.cjs_runtime_factory_symbol == null and module.esm_runtime_factory_symbol == null and module.to_binary_runtime_symbol == null) continue;
             if (module.to_binary_runtime_symbol != null) binary_owners += 1;
+            if (module.esm_runtime_factory_symbol != null) esm_owners += 1;
             owners += 1;
             const expected: @import("module.zig").RuntimeIdentitySnapshot = .{
                 .cjs_factory = module.cjs_runtime_factory_symbol,
@@ -956,6 +959,7 @@ test "runtime identity snapshots survive codec and module-field reset across ten
         }
         try std.testing.expect(owners > 0);
         try std.testing.expectEqual(@as(usize, 1), binary_owners);
+        try std.testing.expect(esm_owners > 0);
     }
 }
 
