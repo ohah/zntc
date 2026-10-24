@@ -9,13 +9,64 @@
 // (`ZNTC_DEBUG_SYMBOL_COVERAGE`) 와 합성 변수까지 포함한 exact identity 감사가 깨끗한지 본다.
 // transform 직후 exact 검사와 minify 후 최종 AST 재분석 identity 검사를 함께 확인한다.
 import { describe, test, expect } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawnSync as spawnSyncRaw } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
 import { ZNTC_BIN, ZNTC_JS_CLI } from './helpers';
+
+type SpawnSyncOptions = NonNullable<Parameters<typeof spawnSyncRaw>[2]>;
+
+// Bun 1.3.11's Node-compatible spawnSync returns empty child stdio from this
+// TypeScript test module. Capture stdout to a file and relay stderr through a
+// pipe so Zig's concurrent diagnostics remain intact.
+function spawnSync(command: string, args: string[], options: SpawnSyncOptions = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-child-output-'));
+  const stdoutPath = join(dir, 'stdout.log');
+  const stderrPath = join(dir, 'stderr.log');
+  const stderrPipePath = join(dir, 'stderr.pipe');
+  writeFileSync(stdoutPath, '');
+  writeFileSync(stderrPath, '');
+  try {
+    const proc = spawnSyncRaw(
+      '/bin/sh',
+      [
+        '-c',
+        'stdout_path=$1; stderr_path=$2; stderr_pipe_path=$3; shift 3; mkfifo "$stderr_pipe_path" || exit 125; tee "$stderr_path" <"$stderr_pipe_path" >/dev/null & tee_pid=$!; "$@" >"$stdout_path" 2>"$stderr_pipe_path"; command_status=$?; wait "$tee_pid"; exit "$command_status"',
+        'zntc-child-output',
+        stdoutPath,
+        stderrPath,
+        stderrPipePath,
+        command,
+        ...args,
+      ],
+      {
+        cwd: options.cwd,
+        env: options.env,
+        input: options.input,
+        timeout: options.timeout,
+        maxBuffer: options.maxBuffer,
+        encoding: 'utf8',
+      },
+    );
+    const stdout = readFileSync(stdoutPath);
+    const stderr = readFileSync(stderrPath);
+    const decode = (buffer: Buffer) =>
+      options.encoding === undefined || options.encoding === null || options.encoding === 'buffer'
+        ? buffer
+        : buffer.toString(options.encoding);
+    return {
+      ...proc,
+      stdout: decode(stdout),
+      stderr: decode(stderr),
+      output: [null, decode(stdout), decode(stderr)],
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const FIXTURE_DIR = join(import.meta.dir, '../fixtures/downlevel-oracle');
 const TARGETS = [
@@ -65,6 +116,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 1 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -75,6 +127,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 1 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -204,6 +257,7 @@ const STRICT_REPORT_FIELDS = [
 const EXACT_SINGLETON_FIELDS = [
   ['generated_bindings', '\\d+'],
   ['generated_references', '\\d+'],
+  ['generated_scope_owners_checked', '\\d+'],
   ['external', '\\d+'],
   ['declaration_anchors_checked', '\\d+'],
   ['namespace_iife_params', '\\d+'],
@@ -212,9 +266,9 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
   ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
-const EXACT_REPORT_SCHEMA_FINGERPRINT = 'eb9b778e9933c134';
+const EXACT_REPORT_SCHEMA_FINGERPRINT = '8eaf0a0ac174e20b';
 const EXACT_NO_DEBT_FINGERPRINT = 'cbf29ce484222325';
-const EXACT_OBSERVATION_FIELD_COUNT = 7;
+const EXACT_OBSERVATION_FIELD_COUNT = 8;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 16;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
@@ -359,6 +413,7 @@ function exactIdentityObservationProblems(identity: string): string[] {
   const observationFields = [
     'generated_bindings',
     'generated_references',
+    'generated_scope_owners_checked',
     'external',
     'declaration_anchors_checked',
     'namespace_iife_params',
@@ -371,7 +426,7 @@ function exactIdentityObservationProblems(identity: string): string[] {
     const count = Number(value);
     if (!Number.isSafeInteger(count))
       return [`malformed exact identity observation ${field}=${value}`];
-    if (count > 0) hasObservation = true;
+    if (count > 0 && field !== 'generated_scope_owners_checked') hasObservation = true;
   }
   return hasObservation
     ? []
@@ -613,6 +668,10 @@ function fixtureContentFingerprint(files: string[], directory: string): string {
   return fingerprint.digest('hex');
 }
 
+function runNode(args: string[]) {
+  return spawnSync('node', args, { encoding: 'utf8' });
+}
+
 function runFixtureReference(file: string, outDir: string) {
   let referenceFile = file;
   if (file.endsWith('.ts')) {
@@ -627,7 +686,7 @@ function runFixtureReference(file: string, outDir: string) {
       }).outputText,
     );
   }
-  return spawnSync('node', [referenceFile], { encoding: 'utf8' });
+  return runNode([referenceFile]);
 }
 
 function runCoverage(
@@ -635,30 +694,32 @@ function runCoverage(
   target: (typeof TARGETS)[number],
   outDir: string,
   minifyIdentifiers = false,
+  extraArgs: string[] = [],
 ): { stderr: string; exitCode: number } {
   const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
-  const stderrPath = join(outDir, 'stderr.log');
-  // Capture CLI diagnostics through the shell because Bun's Node-compatible
-  // child stdio is empty in this TypeScript-importing test module.
   const proc = spawnSync(
-    '/bin/sh',
+    ZNTC_BIN,
     [
-      '-c',
-      'export ZNTC_DEBUG_SYMBOL_COVERAGE=1 ZNTC_DEBUG_SYNTHETIC_COVERAGE=1; stderr_path=$1; shift; "$@" 2>"$stderr_path"',
-      'zntc-symbol-coverage',
-      stderrPath,
-      ZNTC_BIN,
       file,
       target.arg,
       ...(isFlow ? ['--flow'] : []),
       ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+      ...extraArgs,
       '-o',
       join(outDir, 'out.js'),
     ],
-    { encoding: 'utf8' },
+    {
+      env: {
+        ...process.env,
+        ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+        ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+      },
+      encoding: 'utf8',
+    },
   );
   return {
-    stderr: readFileSync(stderrPath, 'utf8') + (proc.stderr ?? ''),
+    stderr: proc.stderr ?? '',
     exitCode: proc.status ?? -1,
   };
 }
@@ -895,8 +956,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           `${entry.file}:${entry.target.name}:${entry.observations.map(({ report, field, minimum }) => `${report}.${field}>=${minimum}`).join(',')}`,
       ),
     ).toEqual([
-      '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
-      '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=1,strict.marked_synthetic>=1',
+      '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=1,strict.marked_synthetic>=1',
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
@@ -947,6 +1008,15 @@ describe('symbol identity coverage gate (#4819)', () => {
               new RegExp(`(?:^| )${requirement.field}=(\\d+)(?=\\s|$)`),
             )?.[1];
             expect(value, `${label}: ${requirement.report}.${requirement.field}`).toBeDefined();
+            const missingReport = report.replace(`${requirement.field}=${value}`, '');
+            expect(
+              requiredProducerObservationProblems(
+                { ...reports, [requirement.report]: missingReport },
+                [requirement],
+              ),
+              `${label}: ${requirement.field} missing-field negative control`,
+            ).toContain(`${requirement.report}.${requirement.field} observations=0, expected 1`);
+
             const corruptedReport = report.replace(
               `${requirement.field}=${value}`,
               `${requirement.field}=0`,
@@ -990,7 +1060,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           if (minifyIdentifiers) {
             expect(postMinifyAuditProblems(stderr), `${label}: post-minify audit`).toEqual([]);
           }
-          const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+          const actual = runNode([join(outDir, 'out.js')]);
           expect(actual.status, label + ': ' + actual.stderr).toBe(0);
           expect(actual.stdout, label + ' runtime output').toBe(reference.stdout);
           runs += 1;
@@ -1027,6 +1097,29 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('exact scope observations exclude live scopes that came from source analysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-source-scope-observation-'));
+    const input = join(dir, 'source-scopes.js');
+    writeFileSync(
+      input,
+      'function sourceScope() { const value = 1; return value; } console.log(sourceScope());\n',
+    );
+    try {
+      const { stderr, exitCode } = runCoverage(input, TARGETS[4], dir);
+      expect(exitCode, stderr).toBe(0);
+      expect(transformIdentityAuditProblems(stderr), stderr).toEqual([]);
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(exact).toMatch(/generated_scope_owners_checked=0(?:\s|$)/);
+
+      const actual = runNode([join(dir, 'out.js')]);
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('필수 `_loop` 바인딩 목록은 exact 심볼·스코프와 실행 결과를 유지한다', () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-loop-identity-'));
     try {
@@ -1057,7 +1150,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           ...entry.emittedBindings,
         ]);
 
-        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        const actual = runNode([output]);
         expect(actual.status, actual.stderr).toBe(0);
         expect(actual.stdout).toBe(entry.stdout);
       }
@@ -1424,6 +1517,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       `diagnostic_field_count=${EXACT_DIAGNOSTIC_FIELD_COUNT}`,
       'generated_bindings=1',
       'generated_references=2',
+      'generated_scope_owners_checked=3',
       'external=3',
       'declaration_anchors_checked=4',
       'namespace_iife_params=4',
@@ -1532,9 +1626,29 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(exactSchemaProblems(complete.replace(' namespace_iife_params=4', ''))).toContain(
       'namespace_iife_params occurrences=0, expected 1',
     );
+    expect(
+      exactSchemaProblems(complete.replace(' generated_scope_owners_checked=3', '')),
+    ).toContain('generated_scope_owners_checked occurrences=0, expected 1');
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          ' generated_scope_owners_checked=3',
+          ' generated_scope_owners_checked=3 generated_scope_owners_checked=4',
+        ),
+      ),
+    ).toContain('generated_scope_owners_checked occurrences=2, expected 1');
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          ' generated_scope_owners_checked=3',
+          ' generated_scope_owners_checked=invalid',
+        ),
+      ),
+    ).toContain('malformed exact report value generated_scope_owners_checked=invalid');
     const emptyIdentityObservations = complete
       .replace('generated_bindings=1', 'generated_bindings=0')
       .replace('generated_references=2', 'generated_references=0')
+      .replace('generated_scope_owners_checked=3', 'generated_scope_owners_checked=0')
       .replace('external=3', 'external=0')
       .replace('declaration_anchors_checked=4', 'declaration_anchors_checked=0')
       .replace('namespace_iife_params=4', 'namespace_iife_params=0')
@@ -1549,6 +1663,16 @@ describe('symbol identity coverage gate (#4819)', () => {
         complete.replace('external=3', `external=${oversizedObservation}`),
       ),
     ).toContain(`malformed exact identity observation external=${oversizedObservation}`);
+    expect(
+      exactIdentityObservationProblems(
+        complete.replace(
+          'generated_scope_owners_checked=3',
+          `generated_scope_owners_checked=${oversizedObservation}`,
+        ),
+      ),
+    ).toContain(
+      `malformed exact identity observation generated_scope_owners_checked=${oversizedObservation}`,
+    );
     expect(
       exactSchemaProblems(
         complete.replace(' generated_bindings=1', ' generated_bindings=1 generated_bindings=0'),
@@ -25360,28 +25484,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       let runs = 0;
       let generatedBindings = 0;
       let generatedReferences = 0;
+      let generatedScopeOwnersChecked = 0;
       let declarationAnchorsChecked = 0;
       let markedSynthetic = 0;
       for (const file of fixtures) {
-        const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
         for (const target of MINIFY_TARGETS) {
           for (const mode of MINIFY_MODES) {
-            const output = join(dir, `${runs}.js`);
-            const proc = spawnSync(
-              ZNTC_BIN,
-              [file, target.arg, ...(isFlow ? ['--flow'] : []), ...mode, '-o', output],
-              {
-                env: {
-                  ...process.env,
-                  ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
-                  ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
-                  PATH: process.env.PATH ?? '/usr/bin:/bin',
-                },
-                encoding: 'utf8',
-              },
-            );
-            const stderr = proc.stderr ?? '';
-            if (proc.status !== 0) {
+            const { stderr, exitCode } = runCoverage(file, target, dir, false, [...mode]);
+            if (exitCode !== 0) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
               );
@@ -25400,6 +25510,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               );
               generatedReferences += Number(
                 exact.match(/(?:^| )generated_references=(\d+)(?: |$)/)?.[1] ?? 0,
+              );
+              generatedScopeOwnersChecked += Number(
+                exact.match(/(?:^| )generated_scope_owners_checked=(\d+)(?: |$)/)?.[1] ?? 0,
               );
               declarationAnchorsChecked += Number(
                 exact.match(/(?:^| )declaration_anchors_checked=(\d+)(?: |$)/)?.[1] ?? 0,
@@ -25425,6 +25538,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(runs).toBe(fixtures.length * MINIFY_TARGETS.length * MINIFY_MODES.length);
       expect(generatedBindings).toBeGreaterThan(0);
       expect(generatedReferences).toBeGreaterThan(0);
+      expect(generatedScopeOwnersChecked).toBeGreaterThan(0);
       expect(declarationAnchorsChecked).toBeGreaterThan(0);
       expect(markedSynthetic).toBeGreaterThan(0);
       expect(problems).toEqual([]);
