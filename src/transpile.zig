@@ -193,8 +193,15 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 const extra = node.data.extra;
-                if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3 or
-                    ast.extra_data.items[extra + 3] != 0)
+                // A non-const ambient enum is erased by the transformer and
+                // contributes no runtime binding to the emitted graph. Keep
+                // const enums and every other nonzero/unknown flag on fallback.
+                const is_plain_ambient_enum = extra < ast.extra_data.items.len and
+                    ast.extra_data.items.len - extra > 3 and
+                    ast.extra_data.items[extra + 3] == 2;
+                if (!is_plain_ambient_enum and (extra >= ast.extra_data.items.len or
+                    ast.extra_data.items.len - extra <= 3 or
+                    ast.extra_data.items[extra + 3] != 0))
                 {
                     facts.has_lenient_unhandled_runtime_syntax = true;
                 }
@@ -2423,6 +2430,7 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
         "declare const first: number, second: string; console.log(first, second);",
         "declare const { value, nested: { child } }: { value: number; nested: { child: number } }; console.log(value, child);",
         "declare const [first, second]: [number, number]; console.log(first, second);",
+        "declare enum Ambient { A = 1 } console.log(Ambient.A);",
         "declare interface Shape { amount: number; } const value: Shape = { amount: 1 }; console.log(value.amount);",
         "declare type Amount = number; const value: Amount = 1; console.log(value);",
     };
@@ -2436,7 +2444,7 @@ test "#4819 extensionless JavaScript uses the transform semantic graph without T
     }
 
     const reanalyzed_sources = [_][]const u8{
-        "declare enum Ambient { A } console.log(typeof Ambient);",
+        "declare const enum Ambient { A } console.log(typeof Ambient);",
         "declare namespace Ambient { export const amount: number; } console.log(typeof Ambient);",
         "const enum Value { A } console.log(Value.A);",
         "declare module 'ambient' { export const value: number; }",
