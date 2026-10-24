@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
+import { transpile as transpileNapi } from '@zntc/core';
 import { ZNTC_BIN, ZNTC_JS_CLI } from './helpers';
 
 type SpawnSyncOptions = NonNullable<Parameters<typeof spawnSyncRaw>[2]>;
@@ -258,7 +259,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace',
     source:
       'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
 ] as const;
 const EXACT_ZERO_COUNTERS = [
@@ -2299,7 +2300,6 @@ describe('symbol identity coverage gate (#4819)', () => {
       const reanalyzedSources = [
         'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);',
         'const enum Color { Red = 1 } console.log(Color.Red);',
-        'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
@@ -2453,7 +2453,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           'declare namespace AmbientNamespace { export const value: number; } console.log(AmbientNamespace.value);',
         setup: 'globalThis.AmbientNamespace = { value: 13 };',
-        graph: 'reanalyzed',
+        graph: 'retained',
       },
       {
         name: 'ambient-destructuring',
@@ -2665,6 +2665,82 @@ describe('symbol identity coverage gate (#4819)', () => {
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, actual.stderr).toBe(0);
         expect(actual.stdout).toBe(baseline.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient ambient namespaces retain exact graph and keep global references external', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-ambient-namespace-graph-'));
+    const input = join(dir, 'ambient-namespace.unknown');
+    const source = [
+      '(globalThis as any).Ambient = { amount: 7, Nested: { nestedAmount: 11 } };',
+      'declare namespace Ambient { export const amount: number; }',
+      'declare namespace Ambient.Nested { export const nestedAmount: number; }',
+      'function read(Ambient: { amount: number }) { return Ambient.amount; }',
+      'function readGlobal() { return Ambient.amount; }',
+      'console.log(typeof Ambient, Ambient.amount, Ambient.Nested.nestedAmount, read({ amount: 41 }), readGlobal());',
+    ].join('\n');
+
+    try {
+      writeFileSync(input, source);
+      for (const target of TARGETS) {
+        const reference = join(dir, `reference-${target.name}.js`);
+        const output = join(dir, 'out.js');
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.CommonJS,
+              target: target.name === 'es5' ? ts.ScriptTarget.ES5 : ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const baseline = spawnSync('node', [reference], { encoding: 'utf8' });
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe('object 7 11 41 7\n');
+
+        const napi = transpileNapi(source, {
+          filename: input,
+          ...(target.name === 'hermes'
+            ? { platform: 'react-native' as const }
+            : { target: target.name }),
+          format: 'cjs',
+          minifyIdentifiers: true,
+        });
+        const napiOutput = join(dir, `napi-${target.name}.js`);
+        writeFileSync(napiOutput, napi.code);
+        const napiActual = spawnSync('node', [napiOutput], { encoding: 'utf8' });
+        expect(napiActual.status, `${target.name} NAPI: ${napiActual.stderr}`).toBe(0);
+        expect(napiActual.stdout, `${target.name} NAPI differs from TypeScript output`).toBe(
+          baseline.stdout,
+        );
+
+        const result = runCoverage(input, target, dir, true, ['--format=cjs']);
+        expect(result.exitCode, `${target.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(
+          exactIdentityObservationProblems(
+            result.stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity ')) ?? '',
+          ),
+          `${target.name}: ${result.stderr}`,
+        ).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: differs from TypeScript output`).toBe(
+          baseline.stdout,
+        );
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
