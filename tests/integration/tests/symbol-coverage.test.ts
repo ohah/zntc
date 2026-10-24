@@ -1861,7 +1861,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('dropping debugger retains the exact graph while console dropping reanalyzes', () => {
+  test('dropping debugger and console retains the exact post-edit graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-drop-debugger-retained-graph-'));
     const input = join(dir, 'entry.ts');
     const retainedOutput = join(dir, 'retained.cjs');
@@ -1928,7 +1928,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       const reanalyzedMode = reanalyzedLines.find((line) =>
         line.startsWith('zntc: symbol-identity-prepass-mode '),
       );
-      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=reanalyzed');
+      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=retained');
       const reanalyzedCode = readFileSync(reanalyzedOutput, 'utf8');
       expect(reanalyzedCode).not.toContain('debugger;');
       const reanalyzedRun = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
@@ -2248,7 +2248,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('drop-console skips the pre-pass without a console call and reanalyzes when one is removed', () => {
+  test('drop-console skips the pre-pass without a console call and retains an exact graph after removal', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-no-console-drop-retained-graph-'));
     const input = join(dir, 'entry.ts');
     const retainedOutput = join(dir, 'retained.cjs');
@@ -2308,10 +2308,150 @@ describe('symbol identity coverage gate (#4819)', () => {
       writeFileSync(input, [...source, 'console.log(addTwo(base));'].join('\n'));
       const reanalyzed = bundle(reanalyzedOutput);
       expect(reanalyzed.status, reanalyzed.stderr).toBe(0);
-      expectPrepass(reanalyzed.stderr ?? '', 'reanalyzed');
+      expectPrepass(reanalyzed.stderr ?? '', 'retained');
       const reanalyzedRun = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
       expect(reanalyzedRun.status, reanalyzedRun.stderr).toBe(0);
       expect(reanalyzedRun.stdout).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('drop-console retains only exact post-edit graphs for compound arguments', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-drop-console-compound-graph-'));
+    const cases = [
+      {
+        name: 'binary local references',
+        source:
+          'const left = 20; const right = 22; console.log(left + right); process.stdout.write(String(left + right));',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'function call argument',
+        source:
+          'function read(value) { return value + 2; } console.log(read(40)); process.stdout.write(String(read(40)));',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'property reads in dropped and surviving calls',
+        source:
+          'const record = { value: 42 }; console.log(record.value); process.stdout.write(String(record.value));',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'import still used after dropped call falls back',
+        source:
+          "import { value } from './values.js'; console.log(value + 1); process.stdout.write(String(value));",
+        dependency: 'export const value = 42;',
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'unresolved global only in removed subtree',
+        source: "console.log(missingGlobal + readMissing()); process.stdout.write('ok');",
+        graph: 'retained',
+        stdout: 'ok',
+      },
+      {
+        name: 'assignment side effect is removed with call',
+        source: 'let value = 0; console.log(value = 2); process.stdout.write(String(value));',
+        graph: 'retained',
+        stdout: '0',
+      },
+      {
+        name: 'static computed console member',
+        source:
+          "const left = 40; const right = 2; console['log'](left + right); process.stdout.write(String(left + right));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'multiple calls and arguments',
+        source:
+          'const value = 42; console.log(value, value + 1); console.warn(read(value)); process.stdout.write(String(value)); function read(input) { return input; }',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'template interpolation',
+        source:
+          'const value = 42; console.log(`value=${read(value)}`); process.stdout.write(String(value)); function read(input) { return input; }',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'removed function expression scope falls back',
+        source:
+          "console.log((function detached() { const local = 1; return local; })()); process.stdout.write('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'removed arrow scope falls back',
+        source:
+          "console.log((() => { const local = 1; return local; })()); process.stdout.write('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'removed direct eval forces fallback',
+        source: "console.log(eval('42')); process.stdout.write('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'removed top-level await forces fallback',
+        source: "console.log(await Promise.resolve(42)); process.stdout.write('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok',
+        format: 'esm',
+      },
+    ] as const;
+    try {
+      for (const item of cases) {
+        const extension = 'format' in item && item.format === 'esm' ? 'mjs' : 'js';
+        const input = join(dir, `${item.name.replaceAll(' ', '-')}.${extension}`);
+        const output = join(dir, `${item.name.replaceAll(' ', '-')}.out.${extension}`);
+        writeFileSync(input, item.source);
+        if ('dependency' in item) writeFileSync(join(dir, 'values.js'), item.dependency);
+
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--platform=node',
+            `--format=${'format' in item ? item.format : 'cjs'}`,
+            '--drop=console',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(bundled.status, `${item.name}: ${bundled.stderr}`).toBe(0);
+        const lines = (bundled.stderr ?? '').split(/\r?\n/);
+        const scopeAudits = lines.filter((line) =>
+          line.startsWith('zntc: symbol-source-scope-owner '),
+        );
+        expect(scopeAudits, item.name).toHaveLength(1);
+        expect(scopeOwnerAuditProblems(scopeAudits[0]), item.name).toEqual([]);
+        const reports = lines.filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(reports, item.name).toHaveLength(1);
+        expect(exactSchemaProblems(reports[0]), item.name).toEqual([]);
+        const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, item.name).toContain(`semantic_graph=${item.graph}`);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(item.stdout);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
