@@ -486,6 +486,13 @@ function postMinifySchemaProblems(report: string): string[] {
       problems.push('unexpected post-minify report field ' + field);
     } else if (!/^\d+$/.test(value)) {
       problems.push('malformed post-minify report value ' + field + '=' + value);
+    } else if (
+      POST_MINIFY_OBSERVATION_FIELDS.includes(
+        field as (typeof POST_MINIFY_OBSERVATION_FIELDS)[number],
+      ) &&
+      !Number.isSafeInteger(Number(value))
+    ) {
+      problems.push(`post-minify observation ${field}=${value} is not a safe integer`);
     }
   }
 
@@ -505,8 +512,8 @@ function postMinifySchemaProblems(report: string): string[] {
   const checkedBindings = Number(values.get('bindings'));
   const checkedReferences = Number(values.get('references'));
   if (
-    Number.isFinite(checkedBindings) &&
-    Number.isFinite(checkedReferences) &&
+    Number.isSafeInteger(checkedBindings) &&
+    Number.isSafeInteger(checkedReferences) &&
     checkedBindings + checkedReferences === 0
   ) {
     problems.push('post-minify audit checked no binding or reference nodes');
@@ -1921,6 +1928,19 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(postMinifySchemaProblems(report.replace(' helpers=1', ' helpers=bad'))).toContain(
       'malformed post-minify report value helpers=bad',
     );
+    for (const field of POST_MINIFY_OBSERVATION_FIELDS) {
+      const unsafeIntegerReport = report.replace(`${field}=1`, `${field}=9007199254740992`);
+      expect(
+        postMinifySchemaProblems(unsafeIntegerReport),
+        `post-minify observation ${field} must reject an unsafe integer`,
+      ).toContain(`post-minify observation ${field}=9007199254740992 is not a safe integer`);
+
+      const largestSafeIntegerReport = report.replace(`${field}=1`, `${field}=9007199254740991`);
+      expect(
+        postMinifySchemaProblems(largestSafeIntegerReport),
+        `post-minify observation ${field} must accept the largest safe integer`,
+      ).toEqual([]);
+    }
     expect(postMinifySchemaProblems(report + ' future_counter=0')).toContain(
       'unexpected post-minify report field future_counter',
     );
