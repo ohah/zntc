@@ -8831,7 +8831,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         if (module.semantic) |*sem| {
             const coverage = @import("../../transformer/symbol_coverage.zig");
             const source_root: ast_mod.NodeIndex = @fromBackingInt(@intCast(parser_node_count - 1));
-            const source_scope_owner_audit = coverage.checkExactWithDeclarationAnchors(
+            const source_scope_owner_audit = coverage.checkExactWithCompleteSourceScopeOwners(
                 arena_alloc,
                 ast_ptr,
                 source_root,

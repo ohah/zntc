@@ -1654,7 +1654,7 @@ fn transpileWithCallbackInternal(
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            const source_scope_owner_audit = coverage.checkExactWithDeclarationAnchors(
+            const source_scope_owner_audit = coverage.checkExactWithCompleteSourceScopeOwners(
                 arena_alloc,
                 transformer.ast,
                 source_root,
