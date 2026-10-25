@@ -1795,7 +1795,7 @@ pub const Bundler = struct {
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepare(graph, io);
             if (self.options.code_splitting and self.options.preserve_modules and !self.options.dev_mode and
-                self.options.entry_error_guard and self.options.format == .esm)
+                self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepareProvider(graph, io);
 
             // perf/hmr-link-rename-reuse: HMR-incremental 경로에서 가드 통과 시

@@ -56,7 +56,7 @@ fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, bind
 }
 
 fn preservedEagerTarget(graph: anytype, linker: anytype, module: *const Module, target: *const Module) bool {
-    return graph.preserve_modules and linker.format == .esm and module.wrap_kind == .esm and
+    return graph.preserve_modules and (linker.format == .esm or linker.format == .cjs) and module.wrap_kind == .esm and
         target.wrap_kind == .esm and target.shouldGuard(true) and !target.in_async_cone;
 }
 
@@ -150,7 +150,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
         if (record.resolved.isNone()) return &.{};
         const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
         if (linker.tree_shaker_active and !target.is_included) continue;
-        if (target.wrap_kind == .none and !(graph.preserve_modules and linker.format == .esm and module.wrap_kind == .esm and record.kind == .static_import)) continue;
+        if (target.wrap_kind == .none and !(graph.preserve_modules and (linker.format == .esm or linker.format == .cjs) and module.wrap_kind == .esm and record.kind == .static_import)) continue;
         if (record.kind == .re_export) {
             if (module.wrap_kind != .esm or target.wrap_kind != .esm or !target.shouldGuard(true) or target.in_async_cone) return &.{};
             try validateReExportSource(&module.ast.?, root, record.source_node);
@@ -182,7 +182,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
                 try helpers.append(a, index);
             } else {
                 if (module.wrap_kind != .esm) return &.{};
-                if (graph.preserve_modules and linker.format == .esm) {
+                if (graph.preserve_modules and (linker.format == .esm or linker.format == .cjs)) {
                     if (source_owner == null) source_owner = try importSourceOwner(&module.ast.?, root, record.source_node, false);
                     try validateBindingSource(&module.ast.?, source_owner.?, binding);
                 }

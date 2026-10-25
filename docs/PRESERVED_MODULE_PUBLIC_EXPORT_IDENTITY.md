@@ -71,3 +71,23 @@ and Scope0 statement coordinates. Reporter getter counts independently detect a
 raw guard call left behind by another emitter. Mutable namespace barrels have
 separate expression/member snapshot, named function/class, anonymous class and
 multi-edge re-export controls.
+
+The wrapped preserve-modules CJS `output.exports = "named"` writer publishes the
+final-export public-key ledger through the module's validated namespace storage
+identity. It does not snapshot `FinalExportEntry.local`: a re-export entry may
+still contain a legacy materialization expression while the real namespace
+already owns the live provider getter. Namespace getters preserve named default
+declaration updates and expression/member default snapshot storage separately.
+Quoted ModuleExportName aliases remain JS literals; unquoted identifier strings
+are escaped for a property key. Transport aliases are deduplicated against the
+same public ledger. Guarded source import evaluation uses the same actual local
+import references and foreign guard/initializer roles as ESM output.
+
+The additional named-mode tests include namespace call/tag receivers, nested
+same-name decoys, wrapper-name/public-alias conflicts, string public keys, direct
+public re-export getters and renderer allocation failures. The exact source
+SID/Scope/reference/declaration-owner comparison runs before output for CJS too.
+This named-mode slice does not change `auto`, `default` or `none` mode policy.
+Separate baseline/candidate artifacts preserve existing failures in `auto` and
+`default`, including missing mixed/default-mode diagnostics; those public API
+paths remain mandatory follow-up work.

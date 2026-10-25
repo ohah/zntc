@@ -1844,7 +1844,94 @@ test "preserved eager imports retain source values and namespace receivers" {
     };
 }
 
+const preservedCjsPublicCases = preservedEagerValidationCases ++ [_]@TypeOf(preservedEagerCases[0]){
+    .{ .name = "public-init-alias", .entry = "import{value}from'./dep.mjs';export{value as init_entry};export default()=>value()", .dep = "export function value(){return 42}", .read = "[ns.init_entry(),ns.default()]", .expected = "[42,42]\n" },
+    .{ .name = "public-namespace-alias", .entry = "import{value}from'./dep.mjs';export{value as exports_entry};export default()=>value()", .dep = "export function value(){return 42}", .read = "[ns.exports_entry(),ns.default()]", .expected = "[42,42]\n" },
+    .{ .name = "public-string-key", .entry = "import{value}from'./dep.mjs';export{value as \"x-y\"};export default()=>value()", .dep = "export function value(){return 42}", .read = "[ns['x-y'](),ns.default()]", .expected = "[42,42]\n" },
+    .{ .name = "nested-namespace-decoy", .entry = "import*as all from'./dep.mjs';export default function(exports_dep){return all.value()+exports_dep}", .dep = "export function value(){return 42}", .read = "ns.default(1)", .expected = "43\n" },
+    .{ .name = "namespace-tag-receiver", .entry = "import*as all from'./dep.mjs';export default()=>all.tag`x`", .dep = "export const marker=42;export function tag(){return this.marker}", .read = "ns.default()", .expected = "42\n" },
+};
+
+test "preserved CJS named exports retain exact source values and namespace receivers" {
+    for (preservedCjsPublicCases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved CJS named case {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        if (case.extra_name) |name| try writeFile(tmp.dir, name, case.extra_source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        const semantic = module.semantic.?;
+        var eager_calls: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target) |target| {
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                if (target.role != .entry_guard) continue;
+                const local = binding.local_symbol.semanticIndex().?;
+                for (semantic.references) |reference| {
+                    if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+                    try std.testing.expectEqual(@as(?u32, local), semantic.symbol_ids[@backingInt(reference.node_index)]);
+                    if (reference.scope_id.toIndex() == 0) eager_calls += 1;
+                }
+            } else if (!binding.is_helper) {
+                const sid = binding.local_symbol.semanticIndex().?;
+                try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
+                try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, semantic.symbols.items[sid].kind);
+                try std.testing.expect(binding.guarded_eager_init_lowered or binding.guarded_lazy_calls_lowered);
+                try std.testing.expect(!module.import_records[binding.import_record_index].callsite_lowered);
+                if (binding.kind == .namespace) {
+                    const namespace = (try @import("../binding_scanner.zig").eagerNamespaceSymbol(&graph, module, binding)).?;
+                    try std.testing.expect(namespace.module == module.import_records[binding.import_record_index].resolved);
+                    try std.testing.expect(namespace.eql(try graph.getModule(namespace.module).?.esmNamespaceSymbol()));
+                }
+            }
+        }
+        try std.testing.expect(eager_calls > 0);
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        var guard_calls: usize = 0;
+        var modules = graph.modules.iterator(0);
+        while (modules.next()) |candidate| {
+            const sem = candidate.semantic orelse continue;
+            for (candidate.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (target.role != .entry_guard) continue;
+                for (sem.references) |reference| {
+                    if (reference.flags.read and binding.local_symbol.semanticIndex() == @as(?u32, @backingInt(reference.symbol_id))) guard_calls += 1;
+                }
+            }
+        }
+        const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{configurable:true,get(){{reads++;return undefined}}}});const ns=(await import('node:module')).createRequire(import.meta.url)('{s}');const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');console.log(JSON.stringify({s}));console.log(reads);", .{ emitted, case.read });
+        defer std.testing.allocator.free(script);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}{d}\n", .{ case.expected, guard_calls });
+        defer std.testing.allocator.free(expected);
+        try expectDefaultRuntimeOutput(script, expected);
+    };
+}
+
 test "preserved eager producer keeps original identities before any output walk" {
+    try expectPreservedEagerBeforewalk(.esm);
+}
+
+test "preserved CJS producer keeps original identities before any output walk" {
+    try expectPreservedEagerBeforewalk(.cjs);
+}
+
+fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.Format) !void {
     const Reference = @import("../../semantic/symbol.zig").Reference;
     for (preservedEagerValidationCases) |case| {
         errdefer std.debug.print("preserved eager beforewalk {s}\n", .{case.name});
@@ -1857,7 +1944,7 @@ test "preserved eager producer keeps original identities before any output walk"
         defer std.testing.allocator.free(entry);
         // Guard-off build preserves the same parsed/prepass graph without
         // invoking this producer. The direct call below runs before output.
-        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = true, .entry_error_guard = false, .tree_shaking = false };
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .entry_error_guard = false, .tree_shaking = false };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = ModuleGraph.init(std.testing.allocator, &cache);
@@ -1867,9 +1954,9 @@ test "preserved eager producer keeps original identities before any output walk"
         const initial = try bundler.bundle(std.testing.io);
         defer initial.deinit(std.testing.allocator);
         try std.testing.expect(!initial.hasErrors());
-        var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
+        var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, format);
         defer linker.deinit();
-        linker.setEmitFormat(.esm, .{ .inline_requires = true, .entry_error_guard = true });
+        linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = true });
         try linker.link();
         const module_index = graph.path_to_module.get(entry).?;
         const before_module = graph.moduleAtMut(module_index).?;
@@ -2044,6 +2131,75 @@ test "preserved namespace reexports keep live declarations and snapshot expressi
         const emitted = try absPath(&tmp, "entry.js");
         defer std.testing.allocator.free(emitted);
         const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(ns.default());", .{emitted});
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, case.expected);
+    };
+}
+
+test "preserved CJS namespace reexports keep live declarations and snapshot expressions" {
+    for (preservedNamespaceBarrels) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved namespace barrel {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import*as values from'./dep.mjs';import{{helper}}from'./other.mjs';export default function(){{values.change();return {s}+helper()}}", .{case.use});
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, "entry.mjs", source);
+        try writeFile(tmp.dir, "leaf.mjs", case.leaf);
+        try writeFile(tmp.dir, "other.mjs", "export function helper(){return 0}");
+        try writeFile(tmp.dir, "dep.mjs", if (case.chain) "export{default,change}from'./bridge.mjs'" else "export{default,change}from'./leaf.mjs'");
+        if (case.chain) try writeFile(tmp.dir, "bridge.mjs", "export{default,change}from'./leaf.mjs'");
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(ns.default());", .{entry});
+        defer std.testing.allocator.free(native);
+        try expectDefaultRuntimeOutput(native, case.expected);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=(await import('node:module')).createRequire(import.meta.url)('{s}');console.log(ns.default());", .{emitted});
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, case.expected);
+    };
+}
+
+test "preserved CJS public getters preserve named defaults and expression snapshots" {
+    for (preservedNamespaceBarrels) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved namespace barrel {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+        try writeFile(tmp.dir, "entry.mjs", if (case.chain) "export{default,change}from'./leaf.mjs'" else case.leaf);
+        if (case.chain) try writeFile(tmp.dir, "leaf.mjs", case.leaf);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.fmt.allocPrint(std.testing.allocator, "const values=await import('file://{s}');values.change();console.log({s});", .{ entry, case.use });
+        defer std.testing.allocator.free(native);
+        try expectDefaultRuntimeOutput(native, case.expected);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const values=(await import('node:module')).createRequire(import.meta.url)('{s}');values.change();console.log({s});", .{ emitted, case.use });
         defer std.testing.allocator.free(script);
         try expectDefaultRuntimeOutput(script, case.expected);
     };

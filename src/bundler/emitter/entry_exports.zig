@@ -64,6 +64,36 @@ pub fn appendWrappedEsmEntryExports(
     return try std.mem.concat(allocator, u8, &.{ module_code, suffix });
 }
 
+/// Final-export aliases preserve ModuleExportName syntax: a quoted alias is
+/// already a JS string literal. Other aliases are semantic identifier strings.
+fn appendPublicKeyLiteral(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, alias: []const u8) !void {
+    if (alias.len >= 2 and (alias[0] == '\'' or alias[0] == '"') and alias[alias.len - 1] == alias[0]) {
+        try out.appendSlice(allocator, alias);
+    } else try @import("../emitter.zig").appendJsonString(out, allocator, alias);
+}
+
+/// Publish the public namespace without snapshotting wrapper-owned values.
+/// The public-key ledger reads the exact wrapper namespace storage; its
+/// source getters own live declarations and fixed expression-default facades.
+pub fn appendWrappedCjsNamedEntryExports(
+    allocator: std.mem.Allocator,
+    module_code: []const u8,
+    namespace_name: []const u8,
+    entries: []const FinalExportEntry,
+) !?[]const u8 {
+    if (entries.len == 0) return null;
+    var suffix: std.ArrayListUnmanaged(u8) = .empty;
+    defer suffix.deinit(allocator);
+    for (entries) |entry| {
+        try suffix.appendSlice(allocator, "Object.defineProperty(exports,");
+        try appendPublicKeyLiteral(&suffix, allocator, entry.exported);
+        try suffix.print(allocator, ",{{enumerable:true,get:function(){{return {s}[", .{namespace_name});
+        try appendPublicKeyLiteral(&suffix, allocator, entry.exported);
+        try suffix.appendSlice(allocator, "];}});\n");
+    }
+    return try std.mem.concat(allocator, u8, &.{ module_code, suffix.items });
+}
+
 /// Entry export struct를 ESM `export { ... }` 구문으로 출력.
 /// #3096: minify_whitespace 시 brace 안 공백 / 항목 사이 공백 제거 (`export{a,b as c};`).
 /// 후행 `\n` 은 유지 — bundle 끝의 `//# sourceMappingURL=` 주석이 같은 줄로 붙어
@@ -381,4 +411,22 @@ fn checkWrappedExportAllocation(allocator: std.mem.Allocator) !void {
 test "wrapped entry export concatenation frees allocation failures without consuming the body" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWrappedExportAllocation, .{});
     try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedEsmEntryExports(std.testing.allocator, "var local=42;", &.{}, false));
+}
+
+fn checkWrappedCjsExportAllocation(allocator: std.mem.Allocator) !void {
+    const body = "var namespace={};";
+    const entries = [_]FinalExportEntry{
+        .{ .local = "must_not_be_evaluated", .exported = "default" },
+        .{ .local = "must_not_be_evaluated", .exported = "'x-y'" },
+    };
+    const combined = (try appendWrappedCjsNamedEntryExports(allocator, body, "namespace", &entries)).?;
+    defer allocator.free(combined);
+    try std.testing.expectEqualStrings("var namespace={};Object.defineProperty(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\nObject.defineProperty(exports,'x-y',{enumerable:true,get:function(){return namespace['x-y'];}});\n", combined);
+    try std.testing.expectEqualStrings("var namespace={};", body);
+    try std.testing.expect(std.mem.indexOf(u8, combined, "must_not_be_evaluated") == null);
+}
+
+test "preserved CJS public renderer borrows typed namespace and frees allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWrappedCjsExportAllocation, .{});
+    try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedCjsNamedEntryExports(std.testing.allocator, "body;", "namespace", &.{}));
 }

@@ -2191,7 +2191,7 @@ fn emitChunksImpl(
             // entry 모듈 export 가 아닌 cross-chunk 심볼(예: 호이스팅된 다른
             // 모듈 심볼)만 남겨 합집합을 정확히 1회 emit. 전부 제거 시 블록 생략.
             // cross-chunk 소비자는 codegen 이 낸 동일 `export {}` 로 바인딩.
-            if (!cjs_x) {
+            if (!cjs_x or (pm_wrapped_esm_provider and options.output_exports == .named)) {
                 if (entry_mod_idx) |ei| {
                     if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| if (!em.wrap_kind.isWrapped() or (options.preserve_modules and em.wrap_kind == .esm)) {
                         var public_owned: std.ArrayListUnmanaged([]const u8) = .empty;
