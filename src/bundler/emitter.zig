@@ -2447,6 +2447,27 @@ pub fn emitModule(
             linker,
             options,
         );
+        var wrapped_code = esm_result.code;
+        // Finish fallible public-export rendering before publishing any owned
+        // mapping/name/entry-chain buffers to the caller.
+        errdefer {
+            allocator.free(wrapped_code);
+            if (esm_result.mappings) |maps| allocator.free(maps);
+            if (esm_result.names.len > 0) {
+                for (esm_result.names) |name| allocator.free(name);
+                allocator.free(esm_result.names);
+            }
+            if (esm_result.entry_chain) |chain| allocator.free(chain);
+        }
+        // Preserve-modules has its own public wrapper export writer in chunks.
+        if (is_entry and options.format == .esm and !options.preserve_modules) {
+            if (metadata) |md| if (md.final_export_entries) |entries| {
+                if (try entry_exports.appendWrappedEsmEntryExports(allocator, wrapped_code, entries, options.minify_whitespace)) |combined| {
+                    allocator.free(wrapped_code);
+                    wrapped_code = combined;
+                }
+            };
+        }
         // ESM 모듈의 소스맵 매핑을 결과에 반영
         if (mappings_out) |mout| {
             mout.* = esm_result.mappings;
@@ -2468,7 +2489,7 @@ pub fn emitModule(
             // out 을 받지 않으면 owned chain 을 누수 — 안전하게 free.
             allocator.free(c);
         }
-        return esm_result.code;
+        return wrapped_code;
     }
 
     // Codegen: AST → JS 문자열. Wrapper parameter spelling comes from each
