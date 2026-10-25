@@ -3361,3 +3361,141 @@ test "#4819 named function expression self binding never aliases sloppy outer va
         }
     }
 }
+
+const ImportSourceExpectation = struct {
+    declaration: []const u8,
+    use: []const u8,
+};
+
+fn importMarkerNode(ast: *const @import("../parser/ast.zig").Ast, marker: []const u8, binding: bool) !NodeIndex {
+    var start = (std.mem.indexOf(u8, ast.source, marker) orelse return error.ImportMarkerMissing) + marker.len;
+    while (start < ast.source.len and std.ascii.isWhitespace(ast.source[start])) : (start += 1) {}
+    for (ast.nodes.items, 0..) |node, index| {
+        if (node.span.start != start) continue;
+        if (binding and node.tag == .binding_identifier) return @fromBackingInt(@intCast(index));
+        if (!binding and node.tag == .identifier_reference) return @fromBackingInt(@intCast(index));
+    }
+    return error.ImportMarkerNodeMissing;
+}
+
+const ImportSourceRead = struct { node: NodeIndex, symbol: u32 };
+
+const ImportSourceScopeWalker = struct {
+    analyzer: *SemanticAnalyzer,
+    expected: []const ImportSourceRead,
+    checked: usize = 0,
+    imports: usize = 0,
+
+    fn walk(self: *@This(), owner: NodeIndex, expected_scope: ScopeId) anyerror!void {
+        if (owner.isNone()) return;
+        const ast = self.analyzer.ast;
+        const node = ast.getNode(owner);
+        for (self.expected) |entry| if (owner == entry.node) {
+            try std.testing.expectEqual(@as(?u32, entry.symbol), self.analyzer.symbol_ids.items[@backingInt(owner)]);
+            var found = false;
+            for (self.analyzer.references.items) |reference| if (reference.node_index == owner) {
+                try std.testing.expect(!found);
+                found = true;
+                try std.testing.expectEqual(entry.symbol, @backingInt(reference.symbol_id));
+                try std.testing.expectEqual(expected_scope, reference.scope_id);
+                try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+            };
+            try std.testing.expect(found);
+            self.checked += 1;
+        };
+        if (node.tag == .import_expression) {
+            const provenance = self.analyzer.node_scope_provenance.get(owner) orelse return error.ImportSourceProvenanceMissing;
+            try std.testing.expectEqual(expected_scope, provenance.scope);
+            try std.testing.expectEqual(owner, provenance.source_node);
+            self.imports += 1;
+        }
+        switch (node.tag) {
+            .function, .function_declaration, .function_expression, .arrow_function_expression, .method_definition => {
+                const scope: ScopeId = @fromBackingInt(self.analyzer.scope_owner_map.get(@backingInt(owner)) orelse return error.ImportSourceFunctionScopeMissing);
+                const arrow = node.tag == .arrow_function_expression;
+                const parameters = ast.readExtraNode(node.data.extra, if (arrow) 0 else 1);
+                const body = ast.readExtraNode(node.data.extra, if (arrow) 1 else 2);
+                const parameter_scope: ScopeId = if (self.analyzer.scope_owner_map.get(@backingInt(parameters))) |raw| @fromBackingInt(raw) else scope;
+                try self.walk(parameters, parameter_scope);
+                try self.walk(body, scope);
+                return;
+            },
+            else => {},
+        }
+        const scope: ScopeId = if (self.analyzer.scope_owner_map.get(@backingInt(owner))) |raw| @fromBackingInt(raw) else expected_scope;
+        var children = @import("../parser/ast_walk.zig").children(ast, node);
+        while (children.next()) |child| try self.walk(child, scope);
+    }
+};
+
+fn checkInitialImportSourceReferences(source: []const u8, expectations: []const ImportSourceExpectation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    var expected: std.ArrayList(ImportSourceRead) = .empty;
+    for (expectations) |entry| {
+        const binding = try importMarkerNode(&parser.ast, entry.declaration, true);
+        const id = analyzer.symbol_ids.items[@backingInt(binding)] orelse return error.ImportSourceDeclarationIdMissing;
+        try expected.append(alloc, .{ .node = try importMarkerNode(&parser.ast, entry.use, false), .symbol = id });
+    }
+    var walker: ImportSourceScopeWalker = .{ .analyzer = &analyzer, .expected = expected.items };
+    try walker.walk(@fromBackingInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1))), @fromBackingInt(0));
+    try std.testing.expectEqual(expectations.len, walker.checked);
+    try std.testing.expect(walker.imports > 0);
+}
+
+test "initial import source reference IDs and scopes exist before any transform" {
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';import(/*use*/longName);", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/attrs={};import('node:os',{with:/*use*/attrs});", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const longName='node:path';function load(/*decl*/longName){return import(/*use*/longName)}", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';import((()=>/*use*/longName)());", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/attrs={};import('node:os',{with:(()=>/*use*/attrs)()});", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/attrs={};import('node:os',{with:{/*use*/attrs}});", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("function /*decl*/getPath(){return'node:os'}import(/*use*/getPath());", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';function run(value=import(/*use*/longName)){return value}", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';class Box{value=import(/*use*/longName)}", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';import((class{static read(){return /*use*/longName}}).read());", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+}
+
+test "initial import source visits awaited operands and callable options" {
+    try checkInitialImportSourceReferences("const /*decl*/longName='node:os';import(await /*use*/longName);", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/attrs={};import('node:os',await /*use*/attrs);", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const /*decl*/attrs={};import('node:os',(()=>({with:/*use*/attrs}))());", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+    try checkInitialImportSourceReferences("const attrs={};function load(/*decl*/attrs){return import('node:os',{with:/*use*/attrs})}", &.{.{ .declaration = "/*decl*/", .use = "/*use*/" }});
+}
+
+test "initial import source propagates await and eval metadata from both operands" {
+    const cases = [_]struct { source: []const u8, await_top: bool, eval_direct: bool }{
+        .{ .source = "const pathSource='node:os';import(await pathSource);", .await_top = true, .eval_direct = false },
+        .{ .source = "const attrs={};import('node:os',await attrs);", .await_top = true, .eval_direct = false },
+        .{ .source = "const pathSource='node:os';import(eval('pathSource'));", .await_top = false, .eval_direct = true },
+        .{ .source = "const attrs={};import('node:os',eval('attrs'));", .await_top = false, .eval_direct = true },
+        .{ .source = "import((0,eval)('\"node:os\"'));", .await_top = false, .eval_direct = false },
+        .{ .source = "import(async()=>await 'node:os');", .await_top = false, .eval_direct = false },
+    };
+    for (cases) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        var scanner = try Scanner.init(alloc, fixture.source);
+        var parser = Parser.init(alloc, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+        try std.testing.expectEqual(fixture.await_top, analyzer.has_top_level_await);
+        try std.testing.expectEqual(fixture.eval_direct, analyzer.scopes.items[0].subtree_has_direct_eval);
+    }
+}

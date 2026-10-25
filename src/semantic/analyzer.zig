@@ -2272,6 +2272,12 @@ pub const SemanticAnalyzer = struct {
                 }
                 try self.visitNode(node.data.unary.operand);
             },
+            // Both import() operands evaluate in the current source scope.
+            // Analyze their references and nested owners before any lowering.
+            .import_expression => {
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
+            },
             .call_expression,
             .new_expression,
             => {
