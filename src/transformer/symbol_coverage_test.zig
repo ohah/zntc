@@ -6090,6 +6090,10 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, editor.scopes.items[catch_scope.toIndex()].kind);
     try std.testing.expectEqual(@as(?u32, @backingInt(catch_scope)), editor.scope_owner_map.get(catch_clause_raw.?));
     try std.testing.expectEqual(@as(?usize, catch_id), editor.scope_maps.items[catch_scope.toIndex()].get(catch_name));
+    const actual_catch_body = transformer.ast.getNode(@fromBackingInt(catch_clause_raw.?)).data.binary.right;
+    const catch_body_scope = transformer.outputOwnedScope(actual_catch_body) orelse return error.MissingGeneratedCatchBodyScope;
+    try std.testing.expectEqual(catch_scope, editor.scopes.items[catch_body_scope.toIndex()].parent);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, editor.scopes.items[catch_body_scope.toIndex()].kind);
     var catch_reads: usize = 0;
     var outer_reads: usize = 0;
     for (editor.references.items) |reference| {
@@ -6098,7 +6102,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
         const reference_raw = @backingInt(reference.node_index);
         if (symbol_id == catch_id) {
             catch_reads += 1;
-            try std.testing.expectEqual(catch_scope, reference.scope_id);
+            try std.testing.expectEqual(catch_body_scope, reference.scope_id);
             try std.testing.expectEqual(@as(?u32, catch_id), transformer.symbol_ids.items[reference_raw]);
         }
         if (symbol_id == outer_err_id) {
