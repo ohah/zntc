@@ -690,6 +690,13 @@ pub fn buildMetadataForAst(
             // 지점으로 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
             for (m.import_records, 0..) |rec, rec_index| {
                 if (!rec.kind.isEagerEvalDependency() or rec.callsite_lowered) continue;
+                var owned_helpers: usize = 0;
+                var other_bindings: usize = 0;
+                for (m.import_bindings) |binding| {
+                    if (binding.import_record_index != rec_index) continue;
+                    if (binding.guarded_eager_init_lowered) owned_helpers += 1 else other_bindings += 1;
+                }
+                if (owned_helpers != 0 and other_bindings == 0) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_mod = self.graph.getModule(rec.resolved) orelse continue;
                 if (self.tree_shaker_active and !target_mod.is_included) continue;
@@ -1086,11 +1093,11 @@ pub fn buildMetadataForAst(
                 if (lazy_esm_import) {
                     lazy_esm_import_mod = value_init_mod;
                 }
-                if (!lazy_esm_import and !esm_init_set.contains(@intCast(canonical_mod))) {
+                if (!lazy_esm_import and !ib.guarded_eager_init_lowered and !esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(self.allocator, @intCast(canonical_mod), {});
                     try appendEsmInitCall(self, &preamble, target_mod, &m);
                 }
-                if (!lazy_esm_import and value_init_mod_idx != canonical_mod and !esm_init_set.contains(@intCast(value_init_mod_idx))) {
+                if (!lazy_esm_import and !ib.guarded_eager_init_lowered and value_init_mod_idx != canonical_mod and !esm_init_set.contains(@intCast(value_init_mod_idx))) {
                     try esm_init_set.put(self.allocator, @intCast(value_init_mod_idx), {});
                     try appendEsmInitCall(self, &preamble, value_init_mod, &m);
                 }
@@ -1389,18 +1396,19 @@ pub fn buildMetadataForAst(
                     // default export 객체의 member 참조로 치환. owned(allocPrint)라 lazy 와 같은
                     // 소유권 경로(owned_nested_renames)로 등록.
                     const synth_member: ?[]const u8 = if (resolved) |rb| rb.canonical.synthetic_member else null;
+                    const lazy_prefix = lazy_esm_import and !ib.guarded_lazy_calls_lowered;
                     const rename_value = if (live_cjs_target) |live|
-                        if (lazy_esm_import)
+                        if (lazy_prefix)
                             try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, live)
                         else
                             try self.allocator.dupe(u8, live)
                     else if (synth_member) |member|
                         try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ target_name, member })
-                    else if (lazy_esm_import)
+                    else if (lazy_prefix)
                         try allocLazyEsmImportExpr(self, canonical_m_opt.?, lazy_esm_import_mod orelse canonical_m_opt.?, effective_target)
                     else
                         effective_target;
-                    if (live_cjs_target != null or synth_member != null or lazy_esm_import) {
+                    if (live_cjs_target != null or synth_member != null or lazy_prefix) {
                         var rename_owned_by_list = false;
                         errdefer if (!rename_owned_by_list) self.allocator.free(rename_value);
                         try owned_nested_renames.append(self.allocator, rename_value);
