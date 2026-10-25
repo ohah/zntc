@@ -201,6 +201,185 @@ test "native parameter cells exist with exact identities before output finalizat
     try checkCells("function run({a=7,...rest}={},get=()=>a){var a=9;return[get,a];}");
 }
 
+fn checkNativeParameterArrowScope(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var outer_arrow: ?ast.NodeIndex = null;
+    var capture_arrow: ?ast.NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .arrow_function_expression) continue;
+        const params = parser.ast.functionParamsList(node);
+        if (params.len == 2) {
+            try std.testing.expect(outer_arrow == null);
+            outer_arrow = @fromBackingInt(@intCast(raw));
+        } else if (params.len == 0) {
+            try std.testing.expect(capture_arrow == null);
+            capture_arrow = @fromBackingInt(@intCast(raw));
+        }
+    }
+    const outer = outer_arrow orelse return error.MissingOuterArrow;
+    const capture = capture_arrow orelse return error.MissingDefaultArrow;
+    const outer_params = parser.ast.functionParamsList(parser.ast.getNode(outer));
+    const rest_default: ast.NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[outer_params.start + 1]));
+    try std.testing.expectEqual(ast.Node.Tag.assignment_pattern, parser.ast.getNode(rest_default).tag);
+    const rest_pattern = parser.ast.getNode(rest_default).data.binary.left;
+    var bindings = try walk.bindingIdentifiers(allocator, &parser.ast, rest_pattern, .{});
+    defer bindings.deinit();
+    var value_binding: ?ast.NodeIndex = null;
+    while (try bindings.next()) |binding| {
+        if (!std.mem.eql(u8, parser.ast.identifierNameText(parser.ast.getNode(binding)), "value")) continue;
+        try std.testing.expect(value_binding == null);
+        value_binding = binding;
+    }
+    const binding = value_binding orelse return error.MissingRestBinding;
+    const value_id = analyzer.symbol_ids.items[@backingInt(binding)] orelse return error.MissingRestBindingSymbol;
+
+    var capture_reference_nodes: std.ArrayList(ast.NodeIndex) = .empty;
+    const capture_nodes = try walk.collectReachableNodeIndicesFrom(allocator, &parser.ast, capture);
+    defer allocator.free(capture_nodes);
+    for (capture_nodes) |raw| {
+        const node = parser.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.identifierNameText(node), "value")) continue;
+        try capture_reference_nodes.append(allocator, @fromBackingInt(@intCast(raw)));
+    }
+    try std.testing.expect(capture_reference_nodes.items.len > 0);
+    const source_capture_scope: u32 = @intCast(analyzer.scope_owner_map.get(@backingInt(capture)) orelse return error.MissingSourceCaptureScope);
+    for (capture_reference_nodes.items) |capture_ref_node| {
+        var source_reference_found = false;
+        for (analyzer.references.items) |reference| {
+            if (reference.node_index != capture_ref_node) continue;
+            try std.testing.expectEqual(value_id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(source_capture_scope, @backingInt(reference.scope_id));
+            source_reference_found = true;
+        }
+        try std.testing.expect(source_reference_found);
+    }
+
+    const parameter_node = parser.ast.readExtraNode(parser.ast.getNode(outer).data.extra, 0);
+    const parameter_scope: u32 = @intCast(analyzer.scope_owner_map.get(@backingInt(parameter_node)) orelse return error.MissingSourceParameterScope);
+    const expected_body_scope: u32 = @intCast(analyzer.scope_owner_map.get(@backingInt(outer)) orelse return error.MissingSourceBodyScope);
+    try std.testing.expectEqual(parameter_scope, @backingInt(analyzer.scopes.items[source_capture_scope].parent));
+    try std.testing.expect(expected_body_scope != parameter_scope);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = Options.compat.fromESTarget(.es2015),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+
+    const output_root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const output_scope = @backingInt(edited.symbols.items[value_id].scope_id);
+    const capture_scope = source_capture_scope;
+    // The lowered destructuring binding is initialized in the function body;
+    // default closures move with that initialization and must retain their exact
+    // scope edge to the output body binding.
+    try std.testing.expectEqual(expected_body_scope, output_scope);
+    try std.testing.expectEqual(output_scope, @backingInt(edited.scopes[capture_scope].parent));
+    try std.testing.expectEqual(@as(?u32, value_id), edited.symbol_ids[@backingInt(binding)]);
+
+    for (capture_reference_nodes.items) |capture_ref_node| {
+        var capture_reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index != capture_ref_node) continue;
+            try std.testing.expectEqual(value_id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(capture_scope, @backingInt(reference.scope_id));
+            try std.testing.expectEqual(@as(?u32, value_id), edited.symbol_ids[@backingInt(reference.node_index)]);
+            capture_reference_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), capture_reference_count);
+    }
+
+    for (capture_reference_nodes.items) |capture_ref_node| {
+        var reference_scope: @import("../semantic/scope.zig").ScopeId = undefined;
+        for (edited.references) |reference| {
+            if (reference.node_index == capture_ref_node) {
+                reference_scope = reference.scope_id;
+                break;
+            }
+        }
+        var resolves_to_cell = false;
+        var remaining = edited.scopes.len;
+        while (!reference_scope.isNone() and reference_scope.toIndex() < edited.scopes.len and remaining > 0) : (remaining -= 1) {
+            if (@backingInt(reference_scope) == output_scope) {
+                resolves_to_cell = true;
+                break;
+            }
+            reference_scope = edited.scopes[reference_scope.toIndex()].parent;
+        }
+        try std.testing.expect(resolves_to_cell);
+    }
+
+    const exact = try @import("symbol_coverage.zig").checkExactWithNamespaceMetadataAndDeclarationAnchors(
+        allocator,
+        transformer.ast,
+        output_root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        edited.scope_maps,
+        &edited.scope_owner_map,
+        edited.references,
+        transformer.helper_ref_nodes.items,
+        &edited.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.reference_origin_map,
+        &analyzer.namespace_member_owners,
+        &analyzer.namespace_declaration_owners,
+        analyzer.scopes.items.len,
+    );
+    try std.testing.expect(exact.isClean());
+}
+
+test "native parameter arrow references keep their exact output scopes and binding" {
+    const cases = [_][]const u8{
+        "const run=(capture=()=>value,{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const value=99;const run=(capture=()=>value,{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>value.n,{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>value[\"n\"],{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>({captured:value}),{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>{let marker=1;return value;},{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>{value.n++;return value;},{...value}={n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>value,{first,...value}={first:1,n:7,ignored:9})=>[capture(),value];",
+        "const run=(capture=()=>value,{nested:{...value}}={nested:{n:7,ignored:9}})=>[capture(),value];",
+        "const run=(capture=()=>value,{nested:{...value}={n:7,ignored:9}}={nested:undefined})=>[capture(),value];",
+        "const run=(capture=()=>value,[{...value}]=[{n:7,ignored:9}])=>[capture(),value];",
+        "const run=(capture=()=>value,[...{...value}]=[{n:7,ignored:9}])=>[capture(),value];",
+        "const run=(capture=()=>value,{outer:{inner:{...value}}}={outer:{inner:{n:7,ignored:9}}})=>[capture(),value];",
+        "const run=(capture=()=>value,{nested:[{...value}]}={nested:[{n:7,ignored:9}]})=>[capture(),value];",
+        "const run=(capture=()=>value,{...value}={n:7,ignored:9})=>{var other=value;return[capture(),other,value];};",
+    };
+    for (cases) |source| try checkNativeParameterArrowScope(source);
+}
+
 test "native class parameter cells exist before class visitation" {
     try checkCells("class Box{constructor(get=()=>value,{...value}={n:7}){this.get=get;}}");
     try checkCells("class Box{method(get=()=>value,{...value}={n:7}){return get;}}");
