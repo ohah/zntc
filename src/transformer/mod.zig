@@ -94,6 +94,7 @@ test {
     _ = @import("private_field_temp_identity_semantic_test.zig");
     _ = @import("arrow_body_temp_semantic_test.zig");
     _ = @import("lexical_capture_semantic_test.zig");
+    _ = @import("class_computed_key_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
     _ = @import("object_super_semantic_test.zig");
