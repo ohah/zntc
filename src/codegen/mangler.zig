@@ -105,7 +105,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     const symbols = input.symbols;
     const scope_maps = input.scope_maps;
     const source = input.source;
-    var native_symbols = try @import("../semantic/annex_b_function.zig").nativeBindingMask(allocator, symbols);
+    var native_symbols = try @import("../semantic/native_name_affinity.zig").bindingMask(allocator, symbols);
     defer native_symbols.deinit();
     if (input.skip_symbols) |existing| {
         var it = existing.iterator(.{});

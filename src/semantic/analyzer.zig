@@ -242,6 +242,7 @@ pub const SemanticAnalyzer = struct {
     /// The lexical pass consumes this target into Symbol.annex_b_alias.
     annex_b_variable_targets: std.AutoHashMapUnmanaged(NodeIndex, AnnexBVariableTarget) = .empty,
     parameter_environments: std.AutoHashMapUnmanaged(ScopeId, ScopeId) = .empty,
+    function_parameter_names: std.AutoHashMapUnmanaged(ScopeId, std.StringHashMapUnmanaged(SymbolId)) = .empty,
     annex_b_barriers: std.StringHashMapUnmanaged(u32) = .empty,
 
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
@@ -361,7 +362,6 @@ pub const SemanticAnalyzer = struct {
 
     const AnnexBVariableTarget = struct {
         variable: SymbolId,
-        parameter_source: SymbolId = .none,
     };
 
     pub fn init(allocator: std.mem.Allocator, ast: *Ast) SemanticAnalyzer {
@@ -431,6 +431,9 @@ pub const SemanticAnalyzer = struct {
         self.scope_owner_map.deinit(self.allocator);
         self.annex_b_variable_targets.deinit(self.allocator);
         self.parameter_environments.deinit(self.allocator);
+        var parameter_maps = self.function_parameter_names.valueIterator();
+        while (parameter_maps.next()) |map| map.deinit(self.allocator);
+        self.function_parameter_names.deinit(self.allocator);
         self.annex_b_barriers.deinit(self.allocator);
         self.node_scope_provenance.deinit(self.allocator);
         self.class_self_symbol_map.deinit(self.allocator);
@@ -916,6 +919,15 @@ pub const SemanticAnalyzer = struct {
             if (try self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
+        var parameter_copy: symbol_mod.ParameterBodyVarCopy = .{};
+        if (kind == .variable_var) {
+            if (self.parameter_environments.get(target_scope)) |parameter_scope| {
+                if (self.findSymbolIndexInScope(parameter_scope, name_text)) |parameter| {
+                    if (self.symbols.items[parameter].kind == .parameter)
+                        parameter_copy.parameter_source = @fromBackingInt(@as(u32, @intCast(parameter)));
+                }
+            }
+        }
         const sym_index = self.symbols.items.len;
         var decl_flags = kind.declFlags();
         if (is_annex_b_fn) decl_flags.is_annex_b_function = true;
@@ -927,6 +939,7 @@ pub const SemanticAnalyzer = struct {
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
             .synthetic_name = if (is_synthetic_name) name_text else "",
+            .parameter_copy = parameter_copy,
         });
 
         // symbol_ids에 선언 노드 기록
@@ -3638,10 +3651,9 @@ pub const SemanticAnalyzer = struct {
                         if (!name_idx.isNone()) if (self.symbol_ids.items[@backingInt(name_idx)]) |lexical| {
                             if (@as(u32, @backingInt(target.variable)) == lexical) std.debug.panic("Annex B lexical and variable identities must differ", .{});
                             const alias = &self.symbols.items[lexical].annex_b_alias;
-                            if (!alias.variable.isNone() and (alias.variable != target.variable or alias.parameter_source != target.parameter_source))
+                            if (!alias.variable.isNone() and alias.variable != target.variable)
                                 std.debug.panic("one lexical function has conflicting Annex B targets", .{});
                             alias.variable = target.variable;
-                            alias.parameter_source = target.parameter_source;
                             alias.source_assignment_count += 1;
                             // The native declaration executes V=L at its source
                             // statement. Its existing exact declare anchor owns
@@ -5475,6 +5487,17 @@ pub const SemanticAnalyzer = struct {
         return saved;
     }
 
+    fn captureFunctionParameterNames(self: *SemanticAnalyzer, body_scope: ScopeId, parameter_scope: ScopeId) AllocError!void {
+        var names: std.StringHashMapUnmanaged(SymbolId) = .empty;
+        errdefer names.deinit(self.allocator);
+        var parameters = self.scope_maps.items[parameter_scope.toIndex()].iterator();
+        while (parameters.next()) |entry| {
+            if (self.symbols.items[entry.value_ptr.*].kind == .parameter)
+                try names.put(self.allocator, entry.key_ptr.*, @fromBackingInt(@as(u32, @intCast(entry.value_ptr.*))));
+        }
+        try self.function_parameter_names.put(self.allocator, body_scope, names);
+    }
+
     fn enterFunctionScopesWithParams(
         self: *SemanticAnalyzer,
         params_root: NodeIndex,
@@ -5487,12 +5510,14 @@ pub const SemanticAnalyzer = struct {
         if (parameter_scope_saved == null) {
             const body_scope_saved = try self.enterScope(.function, function_strict);
             try self.registerParams(params);
+            try self.captureFunctionParameterNames(self.current_scope, self.current_scope);
             return .{ .body_scope_saved = body_scope_saved };
         }
         try self.registerParams(params);
         const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
         try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);
+        try self.captureFunctionParameterNames(self.current_scope, parameter_scope);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
@@ -5509,6 +5534,7 @@ pub const SemanticAnalyzer = struct {
             try self.declareArrowParams(params_root);
             try self.checkArrowParameterDuplicates(params_root);
             try self.visitArrowParameterExpressions(params_root);
+            try self.captureFunctionParameterNames(self.current_scope, self.current_scope);
             return .{ .body_scope_saved = body_scope_saved };
         }
         try self.declareArrowParams(params_root);
@@ -5517,6 +5543,7 @@ pub const SemanticAnalyzer = struct {
         const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
         try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);
+        try self.captureFunctionParameterNames(self.current_scope, parameter_scope);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
@@ -5758,18 +5785,13 @@ pub const SemanticAnalyzer = struct {
                     const var_scope = self.findVarScope();
                     if (self.annex_b_barriers.contains(name_text)) return;
                     if (self.findSymbolInScope(var_scope, name_text)) |existing| if (existing.kind.isBlockScoped()) return;
-                    var parameter_source: SymbolId = .none;
-                    if (self.parameter_environments.get(var_scope)) |parameter_scope| {
-                        if (self.findSymbolIndexInScope(parameter_scope, name_text)) |parameter| {
-                            if (self.symbols.items[parameter].kind == .parameter)
-                                parameter_source = @fromBackingInt(@as(u32, @intCast(parameter)));
-                        }
+                    if (self.function_parameter_names.get(var_scope)) |parameters| {
+                        if (parameters.contains(name_text)) return;
                     }
                     try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, null);
                     if (self.findSymbolIndexInScope(var_scope, name_text)) |variable| {
                         try self.annex_b_variable_targets.put(self.allocator, idx, .{
                             .variable = @fromBackingInt(@as(u32, @intCast(variable))),
-                            .parameter_source = if (self.symbols.items[variable].kind == .variable_var) parameter_source else .none,
                         });
                     }
                     return;

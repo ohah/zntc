@@ -171,7 +171,6 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.runtime_helper_import_bindings.deinit(self.allocator);
     self.runtime_helper_symbol_ids.deinit(self.allocator);
     self.parameter_capture_statements.deinit(self.allocator);
-    for (self.parameter_body_var_copies.items) |copy| self.allocator.free(copy.annex_b_lexical_symbols);
     self.parameter_body_var_copies.deinit(self.allocator);
     self.destructuring_temp_bindings.deinit(self.allocator);
     self.synthetic_temp_symbol_ids.deinit(self.allocator);

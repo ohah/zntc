@@ -29,11 +29,19 @@ pub const SymbolId = enum(u32) {
 /// assignment with an exact variable = lexical assignment at the source statement.
 pub const AnnexBFunctionAlias = struct {
     variable: SymbolId = .none,
-    parameter_source: SymbolId = .none,
     state: State = .native,
     source_assignment_count: u32 = 0,
 
-    pub const State = enum(u32) { native, parameter_lowered, lowered };
+    pub const State = enum(u32) { native, lowered };
+};
+
+/// A distinct body var is initialized from this formal parameter by native
+/// FunctionDeclarationInstantiation. Lowering must emit the copy at entry.
+pub const ParameterBodyVarCopy = struct {
+    parameter_source: SymbolId = .none,
+    state: State = .native,
+
+    pub const State = enum(u32) { native, lowered };
 };
 
 /// 심볼 종류. 재선언 규칙이 kind별로 다르다.
@@ -440,6 +448,8 @@ pub const Symbol = struct {
     /// Created by initial block-function binding instantiation. This is never
     /// inferred from equal names after transformation or cache reconstruction.
     annex_b_alias: AnnexBFunctionAlias = .{},
+
+    parameter_copy: ParameterBodyVarCopy = .{},
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
