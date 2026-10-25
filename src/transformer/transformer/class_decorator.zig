@@ -439,7 +439,13 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // 옵션이 assign 의미론이거나, 타겟이 class field 를 모르거나 (#4629).
     const lowers_static_fields = !self.options.use_define_for_class_fields or self.options.unsupported.class_field;
     const lowers_static_blocks = self.options.unsupported.class_static_block;
+    const initializer_class_scope = if (self.semantic_edit_enabled)
+        self.outputOwnedScope(source_idx) orelse @panic("field initializer class has no exact scope")
+    else
+        self.current_scope;
+    const initializer_plan = try class_member_helpers.prepareFieldInitializerPlan(self, body_idx, initializer_class_scope);
     var ctx = ClassMemberContext{
+        .field_initializer_plan = initializer_plan,
         .class_members = &class_members,
         .field_assignments = &field_assignments,
         .member_decorators = &member_decorators,
@@ -553,6 +559,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 self.outputOwnedScope(source_idx) orelse @panic("class field lowering has no source scope")
             else
                 self.current_scope,
+            initializer_plan,
         );
     }
 

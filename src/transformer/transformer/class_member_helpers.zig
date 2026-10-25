@@ -126,7 +126,48 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
 /// - 기타: class_members에 그대로 추가
 /// visitClassWithAssignSemantics에서 멤버 분류에 사용되는 컨텍스트.
 /// 6개 포인터 파라미터를 하나로 묶어 함수 시그니처를 단순화.
+pub const FieldInitializerPlan = struct {
+    scope: ScopeId = .none,
+    constructor_shell: NodeIndex = .none,
+};
+
+/// Allocate the actual constructor owner before any moved initializer is
+/// visited. Existing source constructors retain their original exact scope.
+pub fn prepareFieldInitializerPlan(self: anytype, body: NodeIndex, class_scope: ScopeId) Error!FieldInitializerPlan {
+    if (!self.semantic_edit_enabled or (self.options.use_define_for_class_fields and !self.options.unsupported.class_field)) return .{};
+    const list = self.ast.getNode(body).data.list;
+    var needs_constructor = false;
+    var constructor: NodeIndex = .none;
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const member = self.ast.nodes.items[raw];
+        if (member.tag == .method_definition) {
+            if (self.ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static == 0 and
+                es_helpers.isConstructorKey(self, self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key))) constructor = @fromBackingInt(raw);
+        } else if (member.tag == .property_definition) {
+            const flags = self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags);
+            if (flags & (ast_mod.PropertyFlags.is_static | ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare) != 0) continue;
+            if (self.options.strip_types and flags & ast_mod.PropertyFlags.flow_variance != 0) continue;
+            const key = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key);
+            const init = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.init);
+            if (!init.isNone() or (self.options.use_define_for_class_fields and self.ast.getNode(key).tag != .private_identifier)) needs_constructor = true;
+        }
+    }
+    if (!needs_constructor) return .{};
+    if (!constructor.isNone()) {
+        const scope = self.outputOwnedScope(constructor) orelse
+            @panic("field initializer source constructor has no exact scope");
+        return .{ .scope = scope };
+    }
+    const zero = Span{ .start = 0, .end = 0 };
+    const key = try es_helpers.makePropertyName(self, "constructor");
+    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), zero);
+    const empty_body = try self.ast.addNode(.{ .tag = .block_statement, .span = zero, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+    const shell = try self.addExtraNode(.method_definition, zero, &.{ @backingInt(key), @backingInt(params), @backingInt(empty_body), 0, 0, 0 });
+    return .{ .constructor_shell = shell, .scope = try self.addGeneratedFunctionScope(class_scope, shell) };
+}
+
 pub const ClassMemberContext = struct {
+    field_initializer_plan: FieldInitializerPlan = .{},
     class_members: *std.ArrayList(NodeIndex),
     field_assignments: *std.ArrayList(FieldAssignment),
     member_decorators: *std.ArrayList(MemberDecoratorInfo),
@@ -252,6 +293,13 @@ pub fn classifyPropertyDefinition(
             // 나온다 (#4629 에서 이 경로를 그 타겟들이 타게 되며 드러났다).
             if (ctx.has_super and self.options.unsupported.class) self.super_call_this_alias = true;
             defer self.super_call_this_alias = saved_super_alias;
+            const saved_initializer_scope = self.current_scope;
+            defer self.current_scope = saved_initializer_scope;
+            if (!ctx.field_initializer_plan.scope.isNone()) {
+                try self.reparentGeneratedBodyScopes(saved_initializer_scope, ctx.field_initializer_plan.scope, init_idx);
+                try @import("../class_strict_context.zig").moveSourceReferences(self, init_idx, saved_initializer_scope, saved_initializer_scope, ctx.field_initializer_plan.scope);
+                self.current_scope = ctx.field_initializer_plan.scope;
+            }
             const saved_new_target_ctx = self.new_target_ctx;
             self.new_target_ctx = .field_initializer;
             const pe = @import("../parameter_environment.zig");
@@ -391,15 +439,7 @@ pub fn classifyMethodDefinition(
     const params_list_m = self.ast.functionParamsList(member);
 
     // constructor 감지
-    const is_ctor = if (!is_static) blk: {
-        const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
-        const key_node = self.ast.getNode(key_idx);
-        if (key_node.tag == .identifier_reference) {
-            const name = self.ast.getText(key_node.span);
-            break :blk std.mem.eql(u8, name, "constructor");
-        }
-        break :blk false;
-    } else false;
+    const is_ctor = !is_static and es_helpers.isConstructorKey(self, self.readNodeIdx(me, ast_mod.MethodExtra.key));
 
     if (is_ctor) {
         // constructor parameter decorator → class-level __decorateClass에 포함
@@ -458,7 +498,11 @@ pub fn applyFieldAssignments(
     existing_constructor_pos: ?usize,
     has_super: bool,
     class_scope: ScopeId,
+    plan: FieldInitializerPlan,
 ) Error!void {
+    const saved_scope = self.current_scope;
+    defer self.current_scope = saved_scope;
+    if (!plan.scope.isNone()) self.current_scope = plan.scope;
     if (existing_constructor) |ctor_idx| {
         // 기존 constructor의 body에 field assignments 삽입
         const updated_ctor = try insertFieldAssignmentsIntoConstructor(self, ctor_idx, fields, has_super);
@@ -468,7 +512,7 @@ pub fn applyFieldAssignments(
         }
     } else {
         // constructor가 없으면 새로 생성
-        const new_ctor = try buildConstructorWithFieldAssignments(self, fields, has_super, class_scope);
+        const new_ctor = try buildConstructorWithFieldAssignments(self, fields, has_super, class_scope, plan);
         // class body 맨 앞에 삽입
         try class_members.insert(self.allocator, 0, new_ctor);
     }
@@ -749,6 +793,10 @@ pub const SuperSpreadArgsShell = struct {
 /// derived class 합성 constructor 의 기본 shell `(...args)` 과 `super(...args);` 를 생성.
 /// has_super=true 경로에서만 호출. 두 노드는 독립 반환 — caller 가 scratch/body 조립에 배치.
 pub fn buildSuperSpreadArgsShell(self: anytype, class_scope: ScopeId) Error!SuperSpreadArgsShell {
+    return buildSuperSpreadArgsShellInScope(self, class_scope, .none);
+}
+
+fn buildSuperSpreadArgsShellInScope(self: anytype, class_scope: ScopeId, constructor_scope: ScopeId) Error!SuperSpreadArgsShell {
     const zero_span = Span{ .start = 0, .end = 0 };
     const args_name = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "args", class_scope);
     const args_span = try self.ast.addString(args_name);
@@ -769,7 +817,10 @@ pub fn buildSuperSpreadArgsShell(self: anytype, class_scope: ScopeId) Error!Supe
         .span = zero_span,
         .data = .{ .none = 0 },
     });
-    const args_ref = try es_helpers.makeSyntheticRefFromSpan(self, args_span);
+    const args_ref = if (!constructor_scope.isNone()) blk: {
+        const id = try self.declareSyntheticInScope(args_id, zero_span, .parameter, constructor_scope);
+        break :blk try es_helpers.makeTempRefFromIdentity(self, .{ .span = args_span, .symbol_id = id, .owner_scope = constructor_scope, .reference_scope = constructor_scope }, zero_span, .{ .read = true });
+    } else try es_helpers.makeSyntheticRefFromSpan(self, args_span);
     const spread_args = try self.ast.addNode(.{
         .tag = .spread_element,
         .span = zero_span,
@@ -860,6 +911,7 @@ pub fn buildConstructorWithFieldAssignments(
     fields: []const FieldAssignment,
     has_super: bool,
     class_scope: ScopeId,
+    plan: FieldInitializerPlan,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -869,7 +921,7 @@ pub fn buildConstructorWithFieldAssignments(
     // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
     var super_shell: ?SuperSpreadArgsShell = null;
     const params_node: NodeIndex = if (has_super) blk: {
-        const shell = try buildSuperSpreadArgsShell(self, class_scope);
+        const shell = try buildSuperSpreadArgsShellInScope(self, class_scope, plan.scope);
         super_shell = shell;
         try self.scratch.append(self.allocator, shell.super_stmt);
         break :blk shell.params_node;
@@ -895,12 +947,16 @@ pub fn buildConstructorWithFieldAssignments(
     const ctor_key = try es_helpers.makePropertyName(self, "constructor");
 
     const empty_decos = try self.ast.addNodeList(&.{});
-    const constructor = try self.addExtraNode(.method_definition, zero_span, &.{
+    const ctor_extra = try self.ast.addExtras(&.{
         @backingInt(ctor_key), @backingInt(params_node),
         @backingInt(body), 0, // flags=0 (non-static, normal method)
         empty_decos.start, empty_decos.len,
     });
-    if (super_shell) |shell| try bindSuperSpreadArgs(self, constructor, class_scope, shell.args_binding, shell.args_ref);
+    const constructor = if (!plan.constructor_shell.isNone()) blk: {
+        self.ast.nodes.items[@backingInt(plan.constructor_shell)].data.extra = ctor_extra;
+        break :blk plan.constructor_shell;
+    } else try self.ast.addNode(.{ .tag = .method_definition, .span = zero_span, .data = .{ .extra = ctor_extra } });
+    if (plan.scope.isNone()) if (super_shell) |shell| try bindSuperSpreadArgs(self, constructor, class_scope, shell.args_binding, shell.args_ref);
     return constructor;
 }
 
