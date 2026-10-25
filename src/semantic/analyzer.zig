@@ -802,12 +802,7 @@ pub const SemanticAnalyzer = struct {
         const raw_name_text = try self.ast.getTextStable(self.allocator, name_span);
         var name_text = raw_name_text;
         if (!is_synthetic_name) {
-            var decode_buffer: [256]u8 = undefined;
-            if (Scanner.decodeIdentifierEscapesInto(raw_name_text, &decode_buffer)) |decoded_name| {
-                if (!std.mem.eql(u8, raw_name_text, decoded_name)) {
-                    name_text = try self.allocator.dupe(u8, decoded_name);
-                }
-            }
+            name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name_text);
         }
 
         // function-like 선언의 스코핑 규칙:
@@ -1012,7 +1007,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 특정 스코프에서 이름으로 심볼 인덱스를 찾는다. 경계/.none/empty 매핑은 null.
-    fn findSymbolIndexInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?usize {
+    fn findSymbolIndexInScope(self: *SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?usize {
         if (scope_id.isNone()) return null;
         const idx = scope_id.toIndex();
         if (idx >= self.scope_maps.items.len) return null;
@@ -1021,8 +1016,11 @@ pub const SemanticAnalyzer = struct {
             if (sym_idx < self.symbols.items.len) return sym_idx;
             return null;
         }
-        var decode_buffer: [256]u8 = undefined;
-        const decoded_name = Scanner.decodeIdentifierEscapesInto(name, &decode_buffer) orelse return null;
+        const decoded_name = Scanner.decodeIdentifierEscapesAlloc(self.allocator, name) catch {
+            self.alloc_failed = true;
+            return null;
+        };
+        defer if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
         if (std.mem.eql(u8, decoded_name, name)) return null;
         const sym_idx = scope_map.get(decoded_name) orelse return null;
         if (sym_idx >= self.symbols.items.len) return null;
@@ -1031,7 +1029,7 @@ pub const SemanticAnalyzer = struct {
 
     /// 특정 스코프에서 이름으로 심볼을 찾는다.
     /// per-scope HashMap으로 O(1) 조회 (이전: O(N) 선형 스캔).
-    fn findSymbolInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
+    fn findSymbolInScope(self: *SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
         const sym_idx = self.findSymbolIndexInScope(scope_id, name) orelse return null;
         return self.symbols.items[sym_idx];
     }
@@ -1432,15 +1430,16 @@ pub const SemanticAnalyzer = struct {
             self.alloc_failed = true;
         };
 
-        var decoded_name_buffer: [256]u8 = undefined;
-        const decoded_name = Scanner.decodeIdentifierEscapesInto(name, &decoded_name_buffer) orelse return;
-        if (std.mem.eql(u8, decoded_name, name) or self.unresolved_references.contains(decoded_name)) return;
-        const stable_decoded_name = self.allocator.dupe(u8, decoded_name) catch {
+        const decoded_name = Scanner.decodeIdentifierEscapesAlloc(self.allocator, name) catch {
             self.alloc_failed = true;
             return;
         };
-        self.unresolved_references.put(self.allocator, stable_decoded_name, {}) catch {
-            self.allocator.free(stable_decoded_name);
+        if (decoded_name.ptr == name.ptr or self.unresolved_references.contains(decoded_name)) {
+            if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
+            return;
+        }
+        self.unresolved_references.put(self.allocator, decoded_name, {}) catch {
+            self.allocator.free(decoded_name);
             self.alloc_failed = true;
         };
     }
@@ -1450,7 +1449,7 @@ pub const SemanticAnalyzer = struct {
     /// 식별자가 아니면 false를 반환하여 호출자가 일반 순회를 수행하도록 한다.
     /// 현재 스코프에서 이름으로 symbol을 찾아 no_side_effects 플래그를 설정.
     /// 현재 스코프에서 이름으로 심볼 인덱스를 찾는다.
-    fn findSymbolInCurrentScope(self: *const SemanticAnalyzer, name_span: Span) ?usize {
+    fn findSymbolInCurrentScope(self: *SemanticAnalyzer, name_span: Span) ?usize {
         return self.findSymbolIndexInScope(self.current_scope, self.ast.getText(name_span));
     }
 
@@ -1752,7 +1751,7 @@ pub const SemanticAnalyzer = struct {
 
     /// 현재 스코프 체인을 따라 name 의 바인딩 DeclFlags 를 순수 조회(reference 미기록).
     /// shadowing 존중 — 가장 가까운(안쪽) 선언 반환. import 변형 검출용.
-    fn lookupBindingFlags(self: *const SemanticAnalyzer, name: []const u8) ?symbol_mod.DeclFlags {
+    fn lookupBindingFlags(self: *SemanticAnalyzer, name: []const u8) ?symbol_mod.DeclFlags {
         var scope_id = self.current_scope;
         while (!scope_id.isNone()) {
             if (self.findSymbolInScope(scope_id, name)) |sym| return sym.decl_flags;

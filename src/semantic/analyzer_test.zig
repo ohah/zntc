@@ -543,6 +543,66 @@ test "SemanticAnalyzer: sloppy if-body duplicate function allowed (Annex B, #441
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
+test "Annex B block function with long escaped name aliases the var binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const long_name = repeat.bytes("a", 8192);
+    var other_long_name = repeat.bytes("a", 8192);
+    other_long_name[other_long_name.len - 1] = 'b';
+    const unresolved_name = repeat.bytes("c", 8192);
+    const escaped_name = try std.fmt.allocPrint(allocator, "\\u0061{s}", .{long_name[1..]});
+    const escaped_other_name = try std.fmt.allocPrint(allocator, "\\u0061{s}", .{other_long_name[1..]});
+    const escaped_unresolved_name = try std.fmt.allocPrint(allocator, "\\u0063{s}", .{unresolved_name[1..]});
+    const source = try std.fmt.allocPrint(
+        allocator,
+        "var {s}=1; var {s}=2; if(true){{function {s}(){{return {s}+{s};}}}}",
+        .{ long_name[0..], other_long_name[0..], escaped_name, escaped_other_name, escaped_unresolved_name },
+    );
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var var_binding_id: ?u32 = null;
+    var other_var_binding_id: ?u32 = null;
+    var block_function_id: ?u32 = null;
+    var function_reference_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        const spelling = parser.ast.identifierNameText(node);
+        if (node.tag == .binding_identifier) {
+            if (std.mem.eql(u8, spelling, long_name[0..])) {
+                var_binding_id = analyzer.symbol_ids.items[raw] orelse return error.MissingVarBindingSymbol;
+            } else if (std.mem.eql(u8, spelling, other_long_name[0..])) {
+                other_var_binding_id = analyzer.symbol_ids.items[raw] orelse return error.MissingOtherVarBindingSymbol;
+            } else if (std.mem.eql(u8, spelling, escaped_name)) {
+                block_function_id = analyzer.symbol_ids.items[raw] orelse return error.MissingBlockFunctionSymbol;
+            }
+        } else if (node.tag == .identifier_reference and std.mem.eql(u8, spelling, escaped_other_name)) {
+            function_reference_id = analyzer.symbol_ids.items[raw] orelse return error.MissingFunctionReferenceSymbol;
+        }
+    }
+
+    const expected_id = var_binding_id orelse return error.MissingVarBinding;
+    const other_id = other_var_binding_id orelse return error.MissingOtherVarBinding;
+    const actual_id = block_function_id orelse return error.MissingBlockFunction;
+    const reference_id = function_reference_id orelse return error.MissingFunctionReference;
+    try std.testing.expect(expected_id != other_id);
+    try std.testing.expectEqual(expected_id, actual_id);
+    try std.testing.expectEqual(other_id, reference_id);
+    try std.testing.expect(analyzer.unresolved_references.contains(unresolved_name[0..]));
+    const scope_id = analyzer.symbols.items[expected_id].scope_id;
+    try std.testing.expect(!scope_id.isNone());
+    try std.testing.expectEqual(SemanticScopeKind.global, analyzer.scopes.items[scope_id.toIndex()].kind);
+}
+
 test "SemanticAnalyzer: function declaration creates symbol" {
     var scanner = try Scanner.init(std.testing.allocator, "function foo() {}");
     defer scanner.deinit();
