@@ -835,6 +835,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         std.debug.panic("extracted generator loop parameter has no generated SymbolId", .{});
                     try header_symbol_ids.append(self.allocator, source_id);
                     try parameter_symbol_ids.append(self.allocator, parameter_id);
+                    // References are rebound before their ordinary visit. Carry
+                    // this exact parameter's already-selected spelling through
+                    // that visit, including the existing shorthand-key protocol.
+                    if (self.block_rename_map) |*renames| {
+                        const emitted = try self.stableName(self.ast.getText(self.ast.getNode(parameter_binding).data.string_ref));
+                        try renames.put(self.allocator, parameter_id, emitted);
+                    }
                 }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
                 try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
