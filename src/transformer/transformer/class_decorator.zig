@@ -237,6 +237,52 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // 가 class 정의 앞에 emit 한다. (lowerPrivateMembers 가 current_private 를 set 후 new_body 를
     // 통째 visit 하므로 this.# 가 그 안에서 rewrite 된다.)
     var body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+    const legacy_default_class_inferred_name: ?Span = if (legacy_decorator_class_expression) blk: {
+        const parameter_environment = @import("../parameter_environment.zig");
+        const inferred = parameter_environment.takeAnonymousClassName(self, source_idx);
+        const name = if (inferred) |span|
+            (if (span.end > span.start) span else try self.ast.addString("default"))
+        else
+            try self.ast.addString("default");
+        break :blk if (try parameter_environment.definesStaticName(self, source_idx)) null else name;
+    } else null;
+    // The generated outer binding used for an anonymous default export is an
+    // implementation detail. Restore the source-level name before any static
+    // element runs, so both static initializers and decorators observe
+    // `default`, even when the target can otherwise keep the class native.
+    if (legacy_default_class_inferred_name) |name| {
+        if (!self.options.unsupported.class_static_block) {
+            const parameter_environment = @import("../parameter_environment.zig");
+            const class_scope = if (self.semantic_edit_enabled)
+                self.outputOwnedScope(source_idx) orelse @panic("anonymous decorated default class has no class scope")
+            else
+                self.current_scope;
+            const block_body = try self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = node.span,
+                .data = .{ .list = try self.ast.addNodeList(&.{}) },
+            });
+            const block_scope = if (self.semantic_edit_enabled)
+                try self.addGeneratedScope(class_scope, block_body, .block)
+            else
+                class_scope;
+            const this_ref = try es_helpers.makeThisExpr(self, node.span);
+            const name_statement = try parameter_environment.classNameStatement(self, this_ref, name, block_scope, node.span);
+            self.ast.nodes.items[@backingInt(block_body)].data.list = try self.ast.addNodeList(&.{name_statement});
+            const name_block = try self.ast.addNode(.{
+                .tag = .static_block,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = block_body, .flags = 0 } },
+            });
+            const old_members = self.ast.getNode(body_idx).data.list;
+            var members: std.ArrayList(NodeIndex) = .empty;
+            defer members.deinit(self.allocator);
+            try members.append(self.allocator, name_block);
+            for (self.ast.extra_data.items[old_members.start .. old_members.start + old_members.len]) |raw|
+                try members.append(self.allocator, @fromBackingInt(@intCast(raw)));
+            self.ast.nodes.items[@backingInt(body_idx)].data.list = try self.ast.addNodeList(members.items);
+        }
+    }
     const lower_pm = self.options.unsupported.class_private_method;
     const lower_pf = self.options.unsupported.class_private_field;
     var priv_pre_stmts: std.ArrayList(NodeIndex) = .empty;
