@@ -5401,6 +5401,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_arrow = false;
     var found_native_await = false;
     var found_native_generator = false;
+    var found_native_async_generator = false;
     var found_lowered_generator = false;
     var found_native_tagged_template = false;
     var found_lowered_tagged_template = false;
@@ -5455,7 +5456,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const flags = ast.extra_data.items[flags_at];
                 const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
                 const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
-                if (is_generator and is_async) return false;
+                const is_native_async_generator = is_generator and is_async and
+                    !options.unsupported.async_generator and !options.unsupported.async_await and
+                    !options.unsupported.generator;
+                // Native async generators do not edit the runtime AST, so the
+                // parser's exact graph remains valid. Keep downlevel async
+                // generators on the resync path; their combined await/yield
+                // state machine still moves scopes and abrupt-flow edges.
+                if (is_generator and is_async and
+                    (options.unsupported.async_generator or options.unsupported.async_await or
+                        options.unsupported.generator)) return false;
+                if (is_native_async_generator) found_native_async_generator = true;
                 if (is_generator and options.unsupported.generator) {
                     // The state-machine visitor binds its generated state and
                     // temp symbols into the edited graph. Async generators
@@ -5871,6 +5882,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     (is_async and options.unsupported.async_await and
                         !retained_async_functions.contains(raw_idx)) or
                     (is_generator and options.unsupported.generator)) return false;
+                if (is_async and is_generator) found_native_async_generator = true;
                 if (is_async and options.unsupported.async_await) found_lowered_async_function = true;
                 const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                 if (options.unsupported.object_extensions and !is_accessor) {
@@ -5996,7 +6008,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    const safe_graph = found_arrow or found_native_await or found_native_generator or found_lowered_generator or
+    const safe_graph = found_arrow or found_native_await or found_native_generator or found_native_async_generator or
+        found_lowered_generator or
         found_lowered_async_function or
         found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or

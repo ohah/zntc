@@ -15458,23 +15458,186 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(generatorMethodOutput.status, generatorMethodOutput.stderr).toBe(0);
       expect(generatorMethodOutput.stdout).toBe('42\n');
 
-      // Async generators remain conservative even for a native-capable target.
+      // Native async generators do not edit runtime syntax, so the transform
+      // graph can remain authoritative just like it does for native sync generators.
+      const nativeAsyncGeneratorPrefix = 'type Count = number;\n';
       writeFileSync(
         input,
-        [
-          'type Count = number;',
-          'async function* numbers(start: Count) { yield start; }',
+        nativeAsyncGeneratorPrefix +
+          'async function* numbers(start: Count) { yield start; }\n' +
           'numbers(42).next().then(result => console.log(result.value, result.done));',
-        ].join('\n'),
       );
       const asyncGenerator = run('--target=es2022');
       expect(asyncGenerator.status, asyncGenerator.stderr).toBe(0);
       expect(graphMode(asyncGenerator.stderr), asyncGenerator.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
+      const asyncGeneratorReport = (asyncGenerator.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(asyncGeneratorReport, asyncGenerator.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(asyncGeneratorReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${asyncGeneratorReport}`,
+        ).toBe(0);
+      }
+      expect(asyncGeneratorReport).toMatch(/clean=1(?:\s|$)/);
       const asyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(asyncOutput.status, asyncOutput.stderr).toBe(0);
       expect(asyncOutput.stdout).toBe('42 false\n');
+
+      const assertRetainedAsyncGenerator = (source: string, expectedOutput: string) => {
+        writeFileSync(input, nativeAsyncGeneratorPrefix + source);
+        const proc = run('--target=es2022');
+        expect(proc.status, proc.stderr).toBe(0);
+        expect(graphMode(proc.stderr), proc.stderr).toContain('semantic_graph=retained');
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        const execution = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(execution.status, execution.stderr).toBe(0);
+        expect(execution.stdout).toBe(expectedOutput);
+      };
+
+      const hostileAsyncGeneratorCases = [
+        {
+          source:
+            'async function* empty(start: Count) { return start; } empty(42).next().then(result => console.log(result.value, result.done));',
+          output: '42 true\n',
+        },
+        {
+          source:
+            'async function* values() { yield 1; yield 2; } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(",")); })();',
+          output: '1,2\n',
+        },
+        {
+          source:
+            'async function* values() { yield await Promise.resolve(5); yield 6; } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(",")); })();',
+          output: '5,6\n',
+        },
+        {
+          source:
+            'const events = []; const source = { [Symbol.asyncIterator]() { let value = 0; return { async next() { return { value: ++value, done: false }; }, async return() { events.push("source-close"); return { value: undefined, done: true }; } }; } }; async function* relay() { try { for await (const value of source) { if (value === 2) break; yield value; } } finally { events.push("gen-finally"); } } (async () => { const out = []; for await (const value of relay()) out.push(value); console.log(out.join(","), events.join(",")); })();',
+          output: '1 source-close,gen-finally\n',
+        },
+        {
+          source:
+            'async function* values() { for await (const value of [1, 2, 3]) { if (value === 2) continue; yield value; } } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(",")); })();',
+          output: '1,3\n',
+        },
+        {
+          source:
+            'const events = []; async function* values() { try { for await (const value of [1, 2, 3]) { yield value; if (value === 2) return; } } finally { events.push("finally"); } } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(","), events.join(",")); })();',
+          output: '1,2 finally\n',
+        },
+        {
+          source:
+            'async function* values() { try { for await (const value of [1, 2]) { if (value === 2) throw new Error("boom"); yield value; } } catch (error) { yield error.message; } } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(",")); })();',
+          output: '1,boom\n',
+        },
+        {
+          source:
+            'const reads = []; async function* values() { for await (let value of [10, 20]) { reads.push(() => value); yield value; } } (async () => { for await (const ignored of values()) {} console.log(reads.map(read => read()).join(",")); })();',
+          output: '10,20\n',
+        },
+        {
+          source:
+            'async function* values() { for await (const row of [[1, 2], [3]]) for await (const value of row) yield value; } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(",")); })();',
+          output: '1,2,3\n',
+        },
+        {
+          source:
+            'async function* inner() { yield await Promise.resolve(5); } async function* outer() { yield 4; yield* inner(); yield await Promise.resolve(6); } (async () => { const out = []; for await (const value of outer()) out.push(value); console.log(out.join(",")); })();',
+          output: '4,5,6\n',
+        },
+        {
+          source:
+            'const values = { async *items(start) { return start; } }; values.items(7).next().then(result => console.log(result.value, result.done));',
+          output: '7 true\n',
+        },
+        {
+          source:
+            'class Values { constructor(start) { this.start = start; } async *items() { return this.start; } } new Values(11).items().next().then(result => console.log(result.value, result.done));',
+          output: '11 true\n',
+        },
+        {
+          source:
+            'const events = []; async function* values() { outer: for await (const row of [[1, 2], [3]]) { try { for await (const value of row) { yield value; if (value === 1) continue outer; if (value === 3) break outer; } } finally { events.push("row"); } } } (async () => { const out = []; for await (const value of values()) out.push(value); console.log(out.join(","), events.join(",")); })();',
+          output: '1,3 row,row\n',
+        },
+      ];
+      expect(hostileAsyncGeneratorCases).toHaveLength(13);
+      for (const hostileCase of hostileAsyncGeneratorCases) {
+        assertRetainedAsyncGenerator(hostileCase.source, hostileCase.output);
+      }
+
+      // ES2017 supports async functions but predates async generators. The
+      // generator transform must still take the established resync path.
+      writeFileSync(
+        input,
+        nativeAsyncGeneratorPrefix +
+          'async function* numbers(start: Count) { yield start; }\n' +
+          'numbers(42).next().then(result => console.log(result.value, result.done));',
+      );
+      const es2017AsyncGenerator = run('--target=es2017');
+      expect(es2017AsyncGenerator.status, es2017AsyncGenerator.stderr).toBe(0);
+      expect(graphMode(es2017AsyncGenerator.stderr), es2017AsyncGenerator.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const es2017AsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(es2017AsyncOutput.status, es2017AsyncOutput.stderr).toBe(0);
+      expect(es2017AsyncOutput.stdout).toBe('42 false\n');
+
+      const downlevelAsyncGeneratorMethods = [
+        {
+          source:
+            'const values = { async *items(start: Count) { yield start; } }; values.items(42).next().then(result => console.log(result.value, result.done));',
+          output: '42 false\n',
+        },
+        {
+          source:
+            'class Values { async *items(start: Count) { yield start; } } new Values().items(42).next().then(result => console.log(result.value, result.done));',
+          output: '42 false\n',
+        },
+      ];
+      for (const methodCase of downlevelAsyncGeneratorMethods) {
+        writeFileSync(input, nativeAsyncGeneratorPrefix + methodCase.source);
+        const downlevelMethod = run('--target=es2017');
+        expect(downlevelMethod.status, downlevelMethod.stderr).toBe(0);
+        expect(graphMode(downlevelMethod.stderr), downlevelMethod.stderr).toContain(
+          'semantic_graph=reanalyzed',
+        );
+        const methodOutput = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(methodOutput.status, methodOutput.stderr).toBe(0);
+        expect(methodOutput.stdout).toBe(methodCase.output);
+      }
+
+      // Async-generator downleveling still needs the conservative resync path.
+      writeFileSync(
+        input,
+        nativeAsyncGeneratorPrefix +
+          'async function* numbers(start: Count) { yield start; }\n' +
+          'numbers(42).next().then(result => console.log(result.value, result.done));',
+      );
+      const downlevelAsyncGenerator = run('--target=es5');
+      expect(downlevelAsyncGenerator.status, downlevelAsyncGenerator.stderr).toBe(0);
+      expect(graphMode(downlevelAsyncGenerator.stderr), downlevelAsyncGenerator.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const downlevelAsyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevelAsyncOutput.status, downlevelAsyncOutput.stderr).toBe(0);
+      expect(downlevelAsyncOutput.stdout).toBe('42 false\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
