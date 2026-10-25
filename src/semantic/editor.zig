@@ -259,6 +259,8 @@ pub const SemanticEditor = struct {
         if (!self.validScope(source)) return error.InvalidScope;
         const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         if (source == target and std.mem.eql(u8, name, target_name)) return;
+        const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        defer if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
         const source_map = &self.scope_maps.items[source.toIndex()];
         if (source_map.get(name) != @as(?usize, @backingInt(id))) return error.InvalidSymbol;
         const target_map = &self.scope_maps.items[target.toIndex()];
@@ -273,7 +275,7 @@ pub const SemanticEditor = struct {
         // emitted binding was string-table backed.
         try target_map.put(self.allocator, stable_output_name orelse target_name, @backingInt(id));
         _ = source_map.remove(name);
-        if (self.takeDecodedAlias(source, name, @backingInt(id))) |alias| {
+        if (self.takeDecodedAlias(source, name, decoded_name, @backingInt(id))) |alias| {
             // 같은 표기로 옮길 때만 디코딩 별칭도 따라간다. 새 이름으로 바뀌면 별칭은 더 이상 맞지 않는다.
             if (std.mem.eql(u8, target_name, name) and target_map.get(alias) == null) {
                 try target_map.put(self.allocator, alias, @backingInt(id));
@@ -367,10 +369,12 @@ pub const SemanticEditor = struct {
             }
         }
         if (map.contains(output_name)) return error.DuplicateBinding;
+        const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, old_name);
+        defer if (decoded_name.ptr != old_name.ptr) self.allocator.free(decoded_name);
         const stable_name = try self.allocator.dupe(u8, output_name);
         try map.put(self.allocator, stable_name, @backingInt(id));
         if (old_id == @backingInt(id)) _ = map.remove(old_name);
-        _ = self.takeDecodedAlias(symbol.scope_id, old_name, @backingInt(id));
+        _ = self.takeDecodedAlias(symbol.scope_id, old_name, decoded_name, @backingInt(id));
         symbol.synthetic_name = stable_name;
         const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
         try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
@@ -505,6 +509,12 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         const binding = self.ast.getNode(node);
         if (binding.tag != .binding_identifier) return error.InvalidNode;
+        const old_span = binding.data.string_ref;
+        // 출력 바인딩은 디코딩한 이름으로 선언한다 — `\u0078` 원문 키만 두면 `x` 로 쓴 참조가
+        // 이 심볼을 scope map 에서 찾지 못한다 (#5667). 같은 식별자라 출력 의미는 같다.
+        const raw_name = self.ast.getText(old_span);
+        const name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+        defer if (name.ptr != raw_name.ptr) self.allocator.free(name);
         // A copied output binding can already carry the exact ID in the
         // Transformer's side table while this editor's lazy copy still has an
         // empty slot. Attach that caller-verified identity before splitting.
@@ -513,12 +523,6 @@ pub const SemanticEditor = struct {
         } else {
             self.symbol_ids.items[slot] = @backingInt(expected);
         }
-        const old_span = binding.data.string_ref;
-        // 출력 바인딩은 디코딩한 이름으로 선언한다 — `\u0078` 원문 키만 두면 `x` 로 쓴 참조가
-        // 이 심볼을 scope map 에서 찾지 못한다 (#5667). 같은 식별자라 출력 의미는 같다.
-        var decode_buf: [256]u8 = undefined;
-        const raw_name = self.ast.getText(old_span);
-        const name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buf) orelse raw_name;
         const target = try self.bindingScope(lexical_scope, kind);
         if (self.scope_maps.items[target.toIndex()].get(name)) |existing_raw| {
             if (existing_raw >= self.symbols.items.len) return error.InvalidSymbol;
@@ -761,13 +765,11 @@ pub const SemanticEditor = struct {
     /// analyzer 는 escape 로 쓴 이름(`\u0078`)을 원문 키와 디코딩 키(`x`) 둘 다로 넣는다.
     /// 원문 키를 옮기거나 지울 때 디코딩 키가 옛 스코프에 남으면 `x` 참조가 이 심볼로
     /// 잘못 풀린다 (#5667). 디코딩 키가 같은 심볼을 가리키면 떼어내 그 키를 돌려준다.
-    fn takeDecodedAlias(self: *SemanticEditor, scope: ScopeId, name: []const u8, symbol_index: usize) ?[]const u8 {
-        var decode_buf: [256]u8 = undefined;
-        const decoded = Scanner.decodeIdentifierEscapesInto(name, &decode_buf) orelse return null;
-        if (std.mem.eql(u8, decoded, name)) return null;
+    fn takeDecodedAlias(self: *SemanticEditor, scope: ScopeId, name: []const u8, decoded_name: []const u8, symbol_index: usize) ?[]const u8 {
+        if (std.mem.eql(u8, decoded_name, name)) return null;
         const map = &self.scope_maps.items[scope.toIndex()];
-        if (map.get(decoded) != symbol_index) return null;
-        return (map.fetchRemove(decoded) orelse return null).key;
+        if (map.get(decoded_name) != symbol_index) return null;
+        return (map.fetchRemove(decoded_name) orelse return null).key;
     }
 
     /// Move one exact binding when lowering replaces its lexical boundary with
@@ -785,13 +787,15 @@ pub const SemanticEditor = struct {
         else
             try self.ast.getTextStable(self.allocator, self.symbols.items[symbol_index].name);
         if (self.scope_maps.items[old_scope.toIndex()].get(name) != symbol_index) return error.InvalidScope;
+        const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        defer if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
         if (self.scope_maps.items[new_scope.toIndex()].get(name)) |existing| {
             if (existing != symbol_index) return error.DuplicateBinding;
         } else {
             try self.scope_maps.items[new_scope.toIndex()].put(self.allocator, name, symbol_index);
         }
         _ = self.scope_maps.items[old_scope.toIndex()].remove(name);
-        if (self.takeDecodedAlias(old_scope, name, symbol_index)) |alias| {
+        if (self.takeDecodedAlias(old_scope, name, decoded_name, symbol_index)) |alias| {
             if (self.scope_maps.items[new_scope.toIndex()].get(alias) == null) {
                 try self.scope_maps.items[new_scope.toIndex()].put(self.allocator, alias, symbol_index);
             }
@@ -1366,7 +1370,9 @@ pub const SemanticEditor = struct {
 
         // Analyzer maps keep both escaped and decoded keys for source names.
         // Remove only aliases that point to this exact SymbolId.
-        _ = self.takeDecodedAlias(symbol.scope_id, name, symbol_raw);
+        const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        defer if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
+        _ = self.takeDecodedAlias(symbol.scope_id, name, decoded_name, symbol_raw);
         _ = scope_map.remove(name);
         self.scopes.items[scope_raw].symbol_count -= 1;
         _ = self.references.orderedRemove(declaration);
@@ -1816,6 +1822,281 @@ test "relocateSymbolAs rejects invalid emitted name spans without changing bindi
     try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[source_scope.toIndex()].get("original"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[target_scope.toIndex()].get("x"));
     _ = try editor.finish();
+}
+
+fn makeLongEscapedIdentifier(
+    allocator: std.mem.Allocator,
+    len: usize,
+    escaped_index: usize,
+    braced_escape: bool,
+) !struct { plain: []u8, escaped: []u8, other: []u8 } {
+    const plain = try allocator.alloc(u8, len);
+    @memset(plain, 'a');
+    const other = try allocator.dupe(u8, plain);
+    other[len - 1] = 'b';
+    const escaped = if (braced_escape)
+        try std.fmt.allocPrint(allocator, "{s}\\u{{61}}{s}", .{ plain[0..escaped_index], plain[escaped_index + 1 ..] })
+    else
+        try std.fmt.allocPrint(allocator, "{s}\\u0061{s}", .{ plain[0..escaped_index], plain[escaped_index + 1 ..] });
+    return .{ .plain = plain, .escaped = escaped, .other = other };
+}
+
+fn longEscapedCaseLength(case_index: usize) usize {
+    const lengths = [_]usize{ 255, 256, 257, 258, 263, 311, 511, 1024, 4096, 8192 };
+    return lengths[case_index];
+}
+
+fn longEscapedCaseIndex(case_index: usize, len: usize) usize {
+    return switch (case_index) {
+        0 => 0,
+        1 => len - 1,
+        2 => len / 2,
+        3 => 1,
+        4 => len - 2,
+        5 => 127,
+        6 => 255,
+        7 => 512,
+        8 => 2048,
+        else => len - 1,
+    };
+}
+
+test "SemanticEditor moves ten long escaped decoded aliases with the same SymbolId" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var failures: usize = 0;
+    for (0..10) |case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const len = longEscapedCaseLength(case_index);
+        const identifier = try makeLongEscapedIdentifier(allocator, len, longEscapedCaseIndex(case_index, len), case_index % 2 == 1);
+        const source = try std.fmt.allocPrint(allocator, "let {s}=1; let {s}=2;", .{ identifier.escaped, identifier.other });
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var editor = try SemanticEditor.init(
+            allocator,
+            &parser.ast,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.symbol_ids.items,
+            analyzer.helper_scope_map,
+        );
+
+        var escaped_id: ?SymbolId = null;
+        var other_id: ?SymbolId = null;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier) continue;
+            const spelling = parser.ast.getText(node.span);
+            if (std.mem.eql(u8, spelling, identifier.escaped)) {
+                escaped_id = @fromBackingInt(editor.symbol_ids.items[raw] orelse return error.MissingEscapedBindingId);
+            } else if (std.mem.eql(u8, spelling, identifier.other)) {
+                other_id = @fromBackingInt(editor.symbol_ids.items[raw] orelse return error.MissingOtherBindingId);
+            }
+        }
+        const moved = escaped_id orelse return error.MissingEscapedBinding;
+        const untouched = other_id orelse return error.MissingOtherBinding;
+        if (moved == untouched) failures += 1;
+        const old_scope = editor.symbols.items[@backingInt(moved)].scope_id;
+        const target_scope = try editor.addScope(old_scope, .none, .function, false);
+        if (editor.scope_maps.items[old_scope.toIndex()].get(identifier.plain) != @as(?usize, @backingInt(moved))) failures += 1;
+        try editor.moveSymbolToScope(moved, target_scope);
+        if (editor.scope_maps.items[old_scope.toIndex()].get(identifier.plain) != null) failures += 1;
+        if (editor.scope_maps.items[target_scope.toIndex()].get(identifier.plain) != @as(?usize, @backingInt(moved))) failures += 1;
+        if (editor.scope_maps.items[old_scope.toIndex()].get(identifier.other) != @as(?usize, @backingInt(untouched))) failures += 1;
+        if (editor.scope_maps.items[target_scope.toIndex()].get(identifier.other) != null) failures += 1;
+        if (editor.symbols.items[@backingInt(moved)].scope_id != target_scope) failures += 1;
+        _ = try editor.finish();
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "SemanticEditor does not move a long escaped alias owned by another SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const identifier = try makeLongEscapedIdentifier(allocator, 311, 203, true);
+    var ast = Ast.init(allocator, "");
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    const root = try editor.addScope(.none, .none, .module, true);
+    const source_scope = try editor.addScope(root, .none, .block, false);
+    const foreign_scope = try editor.addScope(root, .none, .block, false);
+    const target_scope = try editor.addScope(root, .none, .function, false);
+    const escaped_name = try ast.addString(identifier.escaped);
+    const escaped_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = escaped_name, .data = .{ .string_ref = escaped_name } });
+    const moved_id = try editor.declare(escaped_binding, escaped_name, Span.EMPTY, source_scope, .variable_let, 0, 0);
+    const foreign_name = try ast.addString("foreign");
+    const foreign_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = foreign_name, .data = .{ .string_ref = foreign_name } });
+    const foreign_id = try editor.declare(foreign_binding, foreign_name, Span.EMPTY, foreign_scope, .variable_let, 1, 0);
+    try editor.scope_maps.items[source_scope.toIndex()].put(allocator, identifier.plain, @backingInt(foreign_id));
+
+    try editor.moveSymbolToScope(moved_id, target_scope);
+
+    try std.testing.expectEqual(@as(?usize, @backingInt(foreign_id)), editor.scope_maps.items[source_scope.toIndex()].get(identifier.plain));
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[target_scope.toIndex()].get(identifier.plain));
+    try std.testing.expectEqual(@as(?usize, @backingInt(moved_id)), editor.scope_maps.items[target_scope.toIndex()].get(identifier.escaped));
+}
+
+test "relocateSymbolAs transfers ten long escaped decoded aliases with the same SymbolId" {
+    var failures: usize = 0;
+    for (0..10) |case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const len = longEscapedCaseLength(case_index);
+        const identifier = try makeLongEscapedIdentifier(allocator, len, longEscapedCaseIndex(case_index, len), case_index % 2 == 1);
+        var ast = Ast.init(allocator, "");
+        var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+        const root = try editor.addScope(.none, .none, .module, true);
+        const source_scope = try editor.addScope(root, .none, .block, false);
+        const target_scope = try editor.addScope(root, .none, .function, false);
+        const source_name = try ast.addString(identifier.escaped);
+        const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = source_name, .data = .{ .string_ref = source_name } });
+        const id = try editor.declare(source_binding, source_name, Span.EMPTY, source_scope, .variable_let, 0, 0);
+        try editor.scope_maps.items[source_scope.toIndex()].put(allocator, identifier.plain, @backingInt(id));
+        const output_name = try ast.addString(identifier.escaped);
+        const output_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = output_name, .data = .{ .string_ref = output_name } });
+
+        try editor.relocateSymbolAs(id, target_scope, output_binding);
+
+        if (editor.scope_maps.items[source_scope.toIndex()].get(identifier.escaped) != null) failures += 1;
+        if (editor.scope_maps.items[source_scope.toIndex()].get(identifier.plain) != null) failures += 1;
+        if (editor.scope_maps.items[target_scope.toIndex()].get(identifier.escaped) != @as(?usize, @backingInt(id))) failures += 1;
+        if (editor.scope_maps.items[target_scope.toIndex()].get(identifier.plain) != @as(?usize, @backingInt(id))) failures += 1;
+        if (editor.symbols.items[@backingInt(id)].scope_id != target_scope) failures += 1;
+        _ = try editor.finish();
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "parameter rename removes ten long escaped decoded aliases with the same SymbolId" {
+    var failures: usize = 0;
+    for (0..10) |case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const len = longEscapedCaseLength(case_index);
+        const identifier = try makeLongEscapedIdentifier(allocator, len, longEscapedCaseIndex(case_index, len), case_index % 2 == 1);
+        var ast = Ast.init(allocator, "");
+        var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+        const root = try editor.addScope(.none, .none, .module, true);
+        const function_scope = try editor.addScope(root, .none, .function, false);
+        const name = try ast.addString(identifier.escaped);
+        const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+        const id = try editor.declare(binding, name, Span.EMPTY, function_scope, .parameter, 0, 0);
+        try editor.scope_maps.items[function_scope.toIndex()].put(allocator, identifier.plain, @backingInt(id));
+        const output_name = try std.fmt.allocPrint(allocator, "parameter{d}", .{case_index});
+
+        try editor.renameParameterEnvironmentBinding(id, output_name);
+
+        if (editor.scope_maps.items[function_scope.toIndex()].get(identifier.escaped) != null) failures += 1;
+        if (editor.scope_maps.items[function_scope.toIndex()].get(identifier.plain) != null) failures += 1;
+        if (editor.scope_maps.items[function_scope.toIndex()].get(output_name) != @as(?usize, @backingInt(id))) failures += 1;
+        if (!std.mem.eql(u8, editor.symbols.items[@backingInt(id)].synthetic_name, output_name)) failures += 1;
+        _ = try editor.finish();
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "dead const removal clears ten long escaped decoded aliases with the same SymbolId" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var failures: usize = 0;
+    for (0..10) |case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const len = longEscapedCaseLength(case_index);
+        const identifier = try makeLongEscapedIdentifier(allocator, len, longEscapedCaseIndex(case_index, len), case_index % 2 == 1);
+        const source = try std.fmt.allocPrint(allocator, "const {s}=1;", .{identifier.escaped});
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        parser.is_module = true;
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var editor = try SemanticEditor.init(
+            allocator,
+            &parser.ast,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.symbol_ids.items,
+            analyzer.helper_scope_map,
+        );
+        const binding = for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), identifier.escaped))
+                break @as(NodeIndex, @fromBackingInt(@intCast(raw)));
+        } else return error.MissingLongEscapedBinding;
+        const symbol_raw = editor.symbol_ids.items[@backingInt(binding)] orelse return error.MissingLongEscapedBindingId;
+        const id: SymbolId = @fromBackingInt(symbol_raw);
+        const scope = editor.symbols.items[symbol_raw].scope_id;
+        if (editor.scope_maps.items[scope.toIndex()].get(identifier.plain) != @as(?usize, symbol_raw)) failures += 1;
+        parser.ast.nodes.items[@backingInt(root)].data.list.len = 0;
+        var reachable = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len);
+
+        const removed = try editor.removeUnreachableLocalConstDeclaration(binding, &reachable);
+
+        if (removed != id) failures += 1;
+        if (editor.scope_maps.items[scope.toIndex()].get(identifier.escaped) != null) failures += 1;
+        if (editor.scope_maps.items[scope.toIndex()].get(identifier.plain) != null) failures += 1;
+        if (editor.symbol_ids.items[@backingInt(binding)] != null) failures += 1;
+        if (editor.scopes.items[scope.toIndex()].symbol_count != 0) failures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "splitBindingIdentity reuses a same-scope var for ten long escaped spellings" {
+    var failures: usize = 0;
+    for (0..10) |case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const len = longEscapedCaseLength(case_index);
+        const identifier = try makeLongEscapedIdentifier(allocator, len, longEscapedCaseIndex(case_index, len), case_index % 2 == 1);
+        var ast = Ast.init(allocator, "");
+        var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+        const root = try editor.addScope(.none, .none, .module, true);
+        const function_scope = try editor.addScope(root, .none, .function, false);
+        const block_scope = try editor.addScope(function_scope, .none, .block, false);
+        const name = try ast.addString(identifier.plain);
+        const existing_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+        const other_name = try ast.addString(identifier.other);
+        const other_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = other_name, .data = .{ .string_ref = other_name } });
+        const source_name = try ast.addString("source");
+        const source_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = source_name, .data = .{ .string_ref = source_name } });
+        const output_name = try ast.addString(identifier.escaped);
+        const output_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = output_name, .data = .{ .string_ref = output_name } });
+        const existing_id = try editor.declare(existing_binding, name, Span.EMPTY, function_scope, .variable_var, 0, 0);
+        const other_id = try editor.declare(other_binding, other_name, Span.EMPTY, function_scope, .variable_var, 1, 0);
+        const source_id = try editor.declare(source_binding, source_name, Span.EMPTY, block_scope, .variable_const, 1, 0);
+
+        const split_id = try editor.splitBindingIdentity(output_binding, source_id, block_scope, .variable_var, Span.EMPTY);
+
+        if (existing_id != split_id) failures += 1;
+        if (editor.symbol_ids.items[@backingInt(output_binding)] != @as(?u32, @backingInt(existing_id))) failures += 1;
+        if (editor.scope_maps.items[function_scope.toIndex()].get(identifier.plain) != @as(?usize, @backingInt(existing_id))) failures += 1;
+        if (editor.scope_maps.items[function_scope.toIndex()].get(identifier.other) != @as(?usize, @backingInt(other_id))) failures += 1;
+        if (editor.scope_maps.items[function_scope.toIndex()].get(identifier.escaped) != null) failures += 1;
+        if (split_id == other_id) failures += 1;
+        if (editor.symbols.items.len != 3) failures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
 }
 
 test "splitBindingIdentity reuses a same-scope var declaration" {
