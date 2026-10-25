@@ -762,6 +762,8 @@ fn expectConstMaterializeGraphHandoff(
     const arena_alloc = arena.allocator();
     const source = if (skip_minify)
         "const value=7; if(false) console.log(value); console.log(value); function read(){return value;}"
+    else if (policy == .pre_pass)
+        "export const value=7; console.log(value + 2, readAlias()); export function read(input){return value + input;} function readAlias(){const local=value;return local;}"
     else
         "export const value=7; console.log(value + 2); export function read(input){return value + input;}";
 
@@ -795,6 +797,27 @@ fn expectConstMaterializeGraphHandoff(
     // This field is graph-owned naming metadata. A full analyzer rebuild drops
     // it, so preserving it proves this call took the same-graph path.
     analyzer.symbols.items[value_id].output_name_hint = "retained-graph-marker";
+    if (policy == .pre_pass) analyzer.symbols.items[value_id].const_kind = .none;
+    var local_alias_id: ?u32 = null;
+    var local_alias_binding: ?NodeIndex = null;
+    if (policy == .pre_pass) {
+        for (analyzer.symbols.items, 0..) |symbol, index| {
+            if (symbol.kind == .variable_const and std.mem.eql(u8, parser.ast.getText(symbol.name), "local")) {
+                local_alias_id = @intCast(index);
+                break;
+            }
+        }
+        const alias_id = local_alias_id orelse return error.MissingLocalAliasSymbol;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and raw < analyzer.symbol_ids.items.len and
+                analyzer.symbol_ids.items[raw] == alias_id)
+            {
+                local_alias_binding = @fromBackingInt(@intCast(raw));
+                break;
+            }
+        }
+        if (local_alias_binding == null) return error.MissingLocalAliasBinding;
+    }
     var module = Module.init(@fromBackingInt(@as(u32, 0)), "test.js");
     module.source = source;
     module.ast = parser.ast;
@@ -1048,6 +1071,22 @@ fn expectConstMaterializeGraphHandoff(
         }
         try std.testing.expect(folded_nine);
     }
+    if (local_alias_id) |local_id| {
+        try std.testing.expectEqual(@as(u32, 0), semantic.symbols.items[local_id].reference_count);
+        const alias_binding = local_alias_binding orelse return error.MissingLocalAliasBinding;
+        try std.testing.expectEqual(@as(?u32, null), semantic.symbol_ids[@backingInt(alias_binding)]);
+        for (semantic.references) |reference| try std.testing.expect(@backingInt(reference.symbol_id) != local_id);
+        var local_binding_is_reachable = false;
+        const reachable_after = try ast_walk.collectReachableNodeIndices(allocator, &module.ast.?);
+        defer allocator.free(reachable_after);
+        for (reachable_after) |raw| {
+            const node = module.ast.?.nodes.items[raw];
+            if (node.tag != .binding_identifier) continue;
+            if (std.mem.eql(u8, module.ast.?.getText(node.span), "local")) local_binding_is_reachable = true;
+        }
+        try std.testing.expect(!local_binding_is_reachable);
+        for (semantic.scope_maps) |scope_map| try std.testing.expect(!scope_map.contains("local"));
+    }
     try std.testing.expect(module.prebuilt_stmt_info != null);
     try std.testing.expect(shaker.ast_mutated_after_link);
 }
@@ -1073,7 +1112,7 @@ test "numeric post-pass rejects malformed materialized read handoffs" {
     }
 }
 
-test "full const pre-pass retains the exact graph when syntax minification preserves it" {
+test "full const pre-pass retains the exact graph when minification drops a local const alias" {
     try expectConstMaterializeGraphHandoff(false, .none, .pre_pass);
 }
 

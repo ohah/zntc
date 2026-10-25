@@ -13178,7 +13178,73 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     }
 
     var editor = try semantic.beginEdit(arena_alloc, ast);
-    editor.removeReferences(materialized_nodes) catch return false;
+    var obsolete_reference_nodes: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    var obsolete_reference_set = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    for (materialized_nodes) |node_index| {
+        const raw = @backingInt(node_index);
+        obsolete_reference_set.set(raw);
+        try obsolete_reference_nodes.append(scratch_alloc, node_index);
+    }
+
+    var unreachable_local_const_declarations: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    var unreachable_declaration_set = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    for (semantic.references) |reference| {
+        if (reference.flags.declare) {
+            const declaration = reference.declaration_node_index;
+            if (declaration.isNone()) return false;
+            const raw = @backingInt(declaration);
+            if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
+            if (reachable.isSet(raw)) continue;
+            if (unreachable_declaration_set.isSet(raw)) return false;
+            unreachable_declaration_set.set(raw);
+            try unreachable_local_const_declarations.append(scratch_alloc, declaration);
+            continue;
+        }
+
+        const node = reference.node_index;
+        if (node.isNone()) return false;
+        const raw = @backingInt(node);
+        if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
+        if (obsolete_reference_set.isSet(raw)) continue;
+        if (reachable.isSet(raw)) {
+            // Syntax minification can replace a bound read with a primitive
+            // literal while keeping the NodeIndex. Treat that exact old edge
+            // like the materializer's tracked replacement; other rewrites
+            // remain outside this handoff.
+            if (!isMaterializedPrimitiveLiteral(ast.nodes.items[raw].tag)) continue;
+            if (!reference.flags.read or reference.flags.write or reference.flags.type_context or
+                reference.flags.value_as_type or
+                semantic.symbol_ids[raw] != @backingInt(reference.symbol_id)) return false;
+        }
+        obsolete_reference_set.set(raw);
+        try obsolete_reference_nodes.append(scratch_alloc, node);
+    }
+
+    // A declaration can be pruned only after every read/write with that exact
+    // SymbolId has disappeared from the live AST or was one of the tracked
+    // materialized reads. Other surviving uses keep the conservative fallback.
+    for (unreachable_local_const_declarations.items) |declaration| {
+        const symbol_id = semantic.symbol_ids[@backingInt(declaration)] orelse return false;
+        if (symbol_id >= semantic.symbols.items.len) return false;
+        for (semantic.references) |reference| {
+            if (reference.flags.declare or @backingInt(reference.symbol_id) != symbol_id) continue;
+            const node = reference.node_index;
+            if (node.isNone() or @backingInt(node) >= ast.nodes.items.len) return false;
+            const raw = @backingInt(node);
+            if (reachable.isSet(raw) and !obsolete_reference_set.isSet(raw)) {
+                return false;
+            }
+        }
+    }
+
+    editor.removeReferences(obsolete_reference_nodes.items) catch return false;
+    var removed_local_const_ids: std.ArrayList(u32) = .empty;
+    for (unreachable_local_const_declarations.items) |declaration| {
+        const removed_symbol = editor.removeUnreachableLocalConstDeclaration(declaration, &reachable) catch return false;
+        const symbol_raw = @backingInt(removed_symbol);
+        editor.symbols.items[symbol_raw].const_kind = .none;
+        try removed_local_const_ids.append(scratch_alloc, symbol_raw);
+    }
     const updated_references = (try reindexMinifiedSemanticReferences(
         scratch_alloc,
         ast,
@@ -13201,6 +13267,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     try editor.references.appendSlice(arena_alloc, updated_references);
 
     semantic.applyEdit(try editor.finish());
+    for (removed_local_const_ids.items) |symbol_id| _ = semantic.numeric_const_texts.remove(symbol_id);
     if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
     if (refresh_module_metadata) {
         try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);

@@ -44,16 +44,33 @@ describe('ESM factory helper keeps its name after a semantic refresh (#5629)', (
           const created = await createFixture(files);
           cleanup = created.cleanup;
           const out = join(created.dir, 'out.mjs');
+          const assertConstResyncIsRetained =
+            name === 'dropped local alias of an imported constant' && target === 'es2019' && minify;
           const result = await runZntc([
             '--bundle',
             join(created.dir, 'entry.mjs'),
             '--format=esm',
             `--target=${target}`,
             ...(minify ? ['--minify'] : []),
+            ...(assertConstResyncIsRetained
+              ? [
+                  '--profile=graph.resync.semantic',
+                  '--profile-level=detailed',
+                  '--profile-format=json',
+                ]
+              : []),
             '-o',
             out,
           ]);
           expect(result.exitCode, result.stderr).toBe(0);
+          if (assertConstResyncIsRetained) {
+            const jsonStart = result.stderr.indexOf('{');
+            expect(jsonStart).toBeGreaterThanOrEqual(0);
+            const profile = JSON.parse(result.stderr.slice(jsonStart));
+            // Other transforms still resync this fixture; const materialization
+            // used to add one more SemanticAnalyzer pass (count 3).
+            expect(profile.phases['graph.resync.semantic']?.count ?? 0).toBe(2);
+          }
           const run = spawnSync('node', [out], { encoding: 'utf8' });
           expect(run.status, run.stderr).toBe(0);
           expect(run.stdout).toBe(expected);
