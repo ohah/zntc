@@ -98,6 +98,7 @@ fn importSourceOwner(ast: *const ast_mod.Ast, root: NodeIndex, source: NodeIndex
 }
 
 fn validateBindingSource(ast: *const ast_mod.Ast, owner: NodeIndex, binding: Binding) !void {
+    if (binding.local_declaration_node != @as(?NodeIndex, owner)) return error.InvalidGuardedImportSource;
     const anchor = binding.local_symbol_node orelse return error.InvalidGuardedImportSource;
     const declaration = @import("../parser/module.zig").readImportDeclExtras(ast, ast.getNode(owner).data.extra);
     var count: usize = 0;

@@ -175,3 +175,101 @@ describe('preserved eager imports use actual source Scope0 callers', () => {
       });
     }
 });
+
+const namespaceBarrels = [
+  {
+    name: 'named-function-live',
+    leaf: 'export default function value(){return 42}export function change(){value=()=>43}',
+    use: 'values.default()',
+    expected: '43\n',
+  },
+  {
+    name: 'expression-snapshot',
+    leaf: 'let value=()=>42;export default value;export function change(){value=()=>43}',
+    use: 'values.default()',
+    expected: '42\n',
+  },
+  {
+    name: 'member-snapshot',
+    leaf: 'let value={member:()=>42};export default value.member;export function change(){value.member=()=>43}',
+    use: 'values.default()',
+    expected: '42\n',
+  },
+  {
+    name: 'named-class-live',
+    leaf: 'export default class Value{run(){return 42}}export function change(){Value=class{run(){return 43}}}',
+    use: 'new values.default().run()',
+    expected: '43\n',
+  },
+  {
+    name: 'anonymous-class-snapshot',
+    leaf: 'let value=class{run(){return 42}};export default class{run(){return 42}}export function change(){value=class{run(){return 43}}}',
+    use: 'new values.default().run()',
+    expected: '42\n',
+  },
+  {
+    name: 'two-reexport-edges-live',
+    leaf: 'export default function value(){return 42}export function change(){value=()=>43}',
+    use: 'values.default()',
+    expected: '43\n',
+    chain: true,
+  },
+] as const;
+
+describe('owned namespace reexports preserve source default roles', () => {
+  for (const entry of namespaceBarrels)
+    for (const minify of [false, true]) {
+      test(`${entry.name} minify=${minify}`, async () => {
+        const chain = 'chain' in entry && entry.chain;
+        const { dir, cleanup } = await createFixture({
+          'package.json': '{"type":"module"}',
+          'entry.mjs': `import*as values from'./dep.mjs';import{helper}from'./other.mjs';export default function(){values.change();return ${entry.use}+helper()}`,
+          'dep.mjs': chain
+            ? "export{default,change}from'./bridge.mjs'"
+            : "export{default,change}from'./leaf.mjs'",
+          'bridge.mjs': "export{default,change}from'./leaf.mjs'",
+          'leaf.mjs': entry.leaf,
+          'other.mjs': 'export function helper(){return 0}',
+        });
+        try {
+          const execute = (file: string) =>
+            spawnSync(
+              'node',
+              [
+                '--input-type=module',
+                '-e',
+                `const ns=await import(${JSON.stringify(pathToFileURL(file).href)});console.log(ns.default());`,
+              ],
+              { encoding: 'utf8' },
+            );
+          const native = execute(join(dir, 'entry.mjs'));
+          expect(native.status).toBe(0);
+          expect(native.stderr).toBe('');
+          expect(native.stdout).toBe(entry.expected);
+          await init();
+          try {
+            const result = await build({
+              entryPoints: [join(dir, 'entry.mjs')],
+              rootDir: dir,
+              outdir: join(dir, 'out'),
+              write: true,
+              platform: 'react-native',
+              format: 'esm',
+              splitting: true,
+              preserveModules: true,
+              minify,
+            });
+            expect(result.errors).toEqual([]);
+          } finally {
+            close();
+          }
+          const actual = execute(join(dir, 'out/entry.js'));
+          expect(actual.status).toBe(0);
+          expect(actual.stderr).toBe('');
+          expect(actual.stdout).toBe(native.stdout);
+        } finally {
+          await cleanup();
+        }
+      });
+    }
+});

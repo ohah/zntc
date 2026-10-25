@@ -768,7 +768,10 @@ pub fn emitEsmWrappedModule(
                                 const access = try @import("../linker/preamble_writer.zig").allocMemberAccess(allocator, live.name);
                                 defer allocator.free(access);
                                 const value = try std.fmt.allocPrint(allocator, "{s}{s}", .{ namespace, access });
-                                try star_owned.append(allocator, value);
+                                star_owned.append(allocator, value) catch |err| {
+                                    allocator.free(value);
+                                    return err;
+                                };
                                 break :blk value;
                             };
                             if (isSyntheticDefault(eb.symbol, module)) {

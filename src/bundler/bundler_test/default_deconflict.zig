@@ -1815,6 +1815,7 @@ test "preserved eager imports retain source values and namespace receivers" {
                 try std.testing.expect(!module.import_records[binding.import_record_index].callsite_lowered);
                 if (binding.kind == .namespace) {
                     const namespace = (try @import("../binding_scanner.zig").eagerNamespaceSymbol(&graph, module, binding)).?;
+                    try std.testing.expect(namespace.module == module.import_records[binding.import_record_index].resolved);
                     try std.testing.expect(namespace.eql(try graph.getModule(namespace.module).?.esmNamespaceSymbol()));
                 }
             }
@@ -1908,6 +1909,8 @@ test "preserved eager producer keeps original identities before any output walk"
             const current = module.import_bindings[i];
             try std.testing.expect(original.local_symbol.eql(current.local_symbol));
             try std.testing.expectEqual(original.local_symbol_node, current.local_symbol_node);
+            try std.testing.expect(original.local_declaration_node != null);
+            try std.testing.expectEqual(original.local_declaration_node, current.local_declaration_node);
             try std.testing.expectEqual(original.kind, current.kind);
             const sid = original.local_symbol.semanticIndex().?;
             try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(original.local_symbol_node.?)]);
@@ -1925,7 +1928,9 @@ test "preserved eager producer keeps original identities before any output walk"
             }
             if (current.kind == .namespace) {
                 const scanner = @import("../binding_scanner.zig");
-                const namespace = (try scanner.eagerNamespaceSymbol(&graph, module, current)).?;
+                const namespace_target = try scanner.eagerNamespaceSymbol(&graph, module, current);
+                try std.testing.expect(namespace_target != null);
+                const namespace = namespace_target.?;
                 const target = graph.moduleAtMut(namespace.module).?;
                 const original_slot = target.exports_symbol;
                 const original_kind = target.semantic.?.symbols.items[@backingInt(namespace.inner)].kind;
@@ -1996,4 +2001,50 @@ test "preserved eager producer keeps original identities before any output walk"
         }
         try std.testing.expect(generated > 0);
     }
+}
+
+const preservedNamespaceBarrels = [_]struct { name: []const u8, leaf: []const u8, use: []const u8, expected: []const u8, chain: bool = false }{
+    .{ .name = "named-function-live", .leaf = "export default function value(){return 42}export function change(){value=()=>43}", .use = "values.default()", .expected = "43\n" },
+    .{ .name = "expression-snapshot", .leaf = "let value=()=>42;export default value;export function change(){value=()=>43}", .use = "values.default()", .expected = "42\n" },
+    .{ .name = "member-snapshot", .leaf = "let value={member:()=>42};export default value.member;export function change(){value.member=()=>43}", .use = "values.default()", .expected = "42\n" },
+    .{ .name = "named-class-live", .leaf = "export default class Value{run(){return 42}}export function change(){Value=class{run(){return 43}}}", .use = "new values.default().run()", .expected = "43\n" },
+    .{ .name = "anonymous-class-snapshot", .leaf = "let value=class{run(){return 42}};export default class{run(){return 42}}export function change(){value=class{run(){return 43}}}", .use = "new values.default().run()", .expected = "42\n" },
+    .{ .name = "two-reexport-edges-live", .leaf = "export default function value(){return 42}export function change(){value=()=>43}", .use = "values.default()", .expected = "43\n", .chain = true },
+};
+
+test "preserved namespace reexports keep live declarations and snapshot expressions" {
+    for (preservedNamespaceBarrels) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved namespace barrel {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import*as values from'./dep.mjs';import{{helper}}from'./other.mjs';export default function(){{values.change();return {s}+helper()}}", .{case.use});
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, "entry.mjs", source);
+        try writeFile(tmp.dir, "leaf.mjs", case.leaf);
+        try writeFile(tmp.dir, "other.mjs", "export function helper(){return 0}");
+        try writeFile(tmp.dir, "dep.mjs", if (case.chain) "export{default,change}from'./bridge.mjs'" else "export{default,change}from'./leaf.mjs'");
+        if (case.chain) try writeFile(tmp.dir, "bridge.mjs", "export{default,change}from'./leaf.mjs'");
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(ns.default());", .{entry});
+        defer std.testing.allocator.free(native);
+        try expectDefaultRuntimeOutput(native, case.expected);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(ns.default());", .{emitted});
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, case.expected);
+    };
 }
