@@ -1600,7 +1600,7 @@ test "#4819 unresolved direct default identifier receives an exact facade Symbol
     try std.testing.expectEqualStrings("_default", facade.synthetic_name);
 }
 
-test "#4819 direct local default identifier keeps its source SymbolId" {
+test "#4819 direct local default identifier keeps source and facade SymbolIds distinct" {
     var r = try analyzeModule("const snapshot = 7; export default snapshot;");
     defer r.deinit();
 
@@ -1620,7 +1620,9 @@ test "#4819 direct local default identifier keeps its source SymbolId" {
 
     const local_id = binding_id orelse return error.MissingLocalBinding;
     try std.testing.expectEqual(local_id, reference_id orelse return error.MissingLocalReference);
-    try std.testing.expectEqual(@as(?u32, null), default_export_id);
+    const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
+    try std.testing.expect(facade_id != local_id);
+    try std.testing.expectEqualStrings("_default", r.analyzer.symbols.items[facade_id].synthetic_name);
 }
 
 test "#4819 escaped unresolved default identifier does not bind to its facade" {
@@ -1673,7 +1675,7 @@ test "#4819 unresolved `_default` stays external to its facade binding" {
     try std.testing.expect(r.analyzer.unresolved_references.contains("_default"));
 }
 
-test "#4819 local `_default` default export keeps its binding identity" {
+test "#4819 local `_default` default expression keeps a distinct facade identity" {
     var r = try analyzeModule("const _default = 7; export default _default;");
     defer r.deinit();
 
@@ -1693,7 +1695,9 @@ test "#4819 local `_default` default export keeps its binding identity" {
 
     const local_id = binding_id orelse return error.MissingLocalBinding;
     try std.testing.expectEqual(local_id, reference_id orelse return error.MissingLocalReference);
-    try std.testing.expectEqual(@as(?u32, null), default_export_id);
+    const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
+    try std.testing.expect(facade_id != local_id);
+    try std.testing.expectEqualStrings("_default", r.analyzer.symbols.items[facade_id].synthetic_name);
 }
 
 test "Enum: mixed re-export with class and var" {

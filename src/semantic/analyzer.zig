@@ -4996,15 +4996,14 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// export default 시 "default" 이름을 등록한다.
-    /// inner가 named function/class/identifier가 아니면 `_default` facade 심볼을 생성하여
-    /// scope_maps[0]에 등록 — StmtInfo가 심볼 기반으로 도달성을 추적할 수 있게 한다.
+    /// inner가 named function/class 선언이 아니면 `_default` facade 심볼을 생성하여
+    /// scope_maps[0]에 등록 — identifier expression도 값 snapshot용 별도 SID를 가진다.
     fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node, node_idx: NodeIndex) AllocError!void {
         try self.registerExportedName("default", node.span);
 
         const inner_idx = node.data.unary.operand;
-        const unresolved_identifier_needs_facade = self.unresolvedDefaultIdentifierNeedsFacade(inner_idx);
-        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx) or
-            unresolved_identifier_needs_facade;
+        const unresolved_default_identifier = self.isUnresolvedDefaultIdentifier(inner_idx);
+        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx);
 
         if (needs_facade) {
             // _default facade 심볼 생성 — declareSymbolWithNode 우회 (재선언 검증 불필요)
@@ -5030,7 +5029,7 @@ pub const SemanticAnalyzer = struct {
                 // The facade is only a reachability token. Preserve a user's
                 // real `_default` binding in lexical lookup when one exists.
                 const facade_would_capture_source_reference = blk: {
-                    if (!unresolved_identifier_needs_facade or inner_idx.isNone()) break :blk false;
+                    if (!unresolved_default_identifier or inner_idx.isNone()) break :blk false;
                     const source_reference_name = self.ast.getText(self.ast.getNode(inner_idx).span);
                     if (std.mem.eql(u8, source_reference_name, "_default")) break :blk true;
                     var decoded_name_buffer: [64]u8 = undefined;
@@ -5063,8 +5062,8 @@ pub const SemanticAnalyzer = struct {
         // 내부 선언 순회
         try self.visitNode(inner_idx);
 
-        // needs_facade=false 경로: inner 가 named function/class/identifier 이므로 원본 이름이
-        // public default export 로 노출된다. 해당 심볼의 mangle 을 막기 위해 플래그 세팅.
+        // needs_facade=false 경로는 named function/class declaration뿐이다.
+        // Identifier expressions keep their own source identity but export a snapshot facade.
         if (!needs_facade and !inner_idx.isNone() and @backingInt(inner_idx) < self.ast.nodes.items.len) {
             const inner = self.ast.getNode(inner_idx);
             switch (inner.tag) {
@@ -5090,7 +5089,7 @@ pub const SemanticAnalyzer = struct {
     /// lexical binding (for example a global installed on `globalThis`). Such
     /// an `export default` still captures its value at module evaluation time,
     /// so give it the same exact facade identity as an anonymous expression.
-    fn unresolvedDefaultIdentifierNeedsFacade(self: *SemanticAnalyzer, inner_idx: NodeIndex) bool {
+    fn isUnresolvedDefaultIdentifier(self: *SemanticAnalyzer, inner_idx: NodeIndex) bool {
         if (inner_idx.isNone() or @backingInt(inner_idx) >= self.ast.nodes.items.len) return false;
         const inner = self.ast.getNode(inner_idx);
         if (inner.tag != .identifier_reference) return false;

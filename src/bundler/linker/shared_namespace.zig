@@ -1245,7 +1245,7 @@ pub fn writeEsmInitExprBody(
     target_mod: *const Module,
     guard: bool,
 ) !void {
-    if (guard) try writer.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
+    if (guard) try writer.write(rt.guardLambdaOpen(self.minify_whitespace, self.code_splitting));
     if (self.dev_mode) {
         try writer.write(self.currentHmrRuntimeInternalNames().modules);
         try writer.write("[\"");

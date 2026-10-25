@@ -220,15 +220,15 @@ pub const ExportBinding = struct {
             std.mem.eql(u8, self.local_name, "default");
     }
 
-    /// `export default <named-local>` (예: `var lib={}; export default lib`,
-    /// lodash-es lodash.default.js) — default 가 이름 있는 로컬 바인딩.
-    /// 표현식 default 는 synthetic facade 로 구분한다. 실제 `_default` 로컬도
-    /// default export 대상일 수 있으므로 이름 sentinel 을 사용하지 않는다.
+    /// Default가 이름 있는 source 식별자를 읽는 경우인지 확인한다.
+    /// `export default lib`은 값 snapshot용 synthetic facade를 가지지만, 그 값이
+    /// object이면 member-use 분석에 source 식별자도 필요하다. 실제 `_default`
+    /// 로컬도 대상일 수 있으므로 이름 sentinel 대신 exact source node를 본다.
     /// `isDefaultDirectReExport`(re-export 형) 와 상보적.
     pub fn isNamedLocalDefault(self: ExportBinding) bool {
         return self.kind == .local and
             std.mem.eql(u8, self.exported_name, "default") and
-            !self.has_default_export_facade;
+            self.local_symbol_node != null;
     }
 
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
@@ -518,12 +518,11 @@ pub fn extractExportBindings(
                 }
             },
             .export_default_declaration => {
-                // rolldown 방식: export default의 inner가 선언/식별자이면 해당 이름을 재사용.
-                // export default function greet() → local_name = "greet"
-                // export default class Foo → local_name = "Foo"
-                // export default someVar → local_name = "someVar" (rolldown: 심볼 재사용)
-                // export default 42 → local_name = "_default"
+                // Named declarations reuse their declaration binding. Expressions
+                // get a separate default facade; identifier expressions retain their
+                // source node only for value/member-use analysis.
                 const inner_idx = node.data.unary.operand;
+                const has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx);
                 var local_name: []const u8 = "_default";
                 var local_symbol_node: ?NodeIndex = null;
                 if (!inner_idx.isNone()) {
@@ -539,7 +538,8 @@ pub fn extractExportBindings(
                             }
                         }
                     } else if (inner.tag == .identifier_reference) {
-                        // export default someVar → 해당 변수의 심볼을 default export로 재사용
+                        // The source value is still useful to scope-aware member analysis,
+                        // but the default export itself is a snapshot facade.
                         const name = try stableIdentifierText(allocator, ast, inner);
                         if (name.len > 0) {
                             local_name = name;
@@ -547,18 +547,19 @@ pub fn extractExportBindings(
                         }
                     }
                 }
-                // export { X }와 동일: local_name이 import binding이면 re_export로 분류
-                // (export default EventEmitter where EventEmitter is imported)
+                // Only declaration defaults can be re-exported by name here.
+                // Identifier expressions (including imported identifiers) evaluate
+                // once and must remain local facade exports.
                 var kind: ExportBinding.Kind = .local;
                 var final_rec_idx: ?u32 = null;
                 var final_local_name = local_name;
-                if (import_by_name.get(local_name)) |ib| {
+                if (!has_default_export_facade) if (import_by_name.get(local_name)) |ib| {
                     if (ib.kind != .namespace) {
                         kind = .re_export;
                         final_rec_idx = ib.import_record_index;
                         final_local_name = ib.imported_name;
                     }
-                }
+                };
                 try bindings.append(allocator, .{
                     .exported_name = "default",
                     .local_name = final_local_name,
@@ -567,7 +568,7 @@ pub fn extractExportBindings(
                     .kind = kind,
                     .import_record_index = final_rec_idx,
                     .default_export_node = @fromBackingInt(@intCast(ni)),
-                    .has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx),
+                    .has_default_export_facade = has_default_export_facade,
                 });
             },
             .export_all_declaration => {

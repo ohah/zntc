@@ -1582,6 +1582,26 @@ pub const GUARD_LAMBDA_OPEN_MIN = "$zg(function(){return ";
 pub const GUARD_LAMBDA_CLOSE = ";});\n";
 pub const GUARD_FN_NAME = "__zntc_guarded";
 pub const GUARD_FN_NAME_MIN = "$zg";
+
+/// Split chunks exchange the guard helper through its stable exported binding;
+/// raw preamble strings cannot follow an identifier rename across that boundary.
+pub fn guardFunctionName(minify_whitespace: bool, code_splitting: bool) []const u8 {
+    return if (minify_whitespace and !code_splitting) GUARD_FN_NAME_MIN else GUARD_FN_NAME;
+}
+
+pub fn guardLambdaOpen(minify_whitespace: bool, code_splitting: bool) []const u8 {
+    return if (std.mem.eql(u8, guardFunctionName(minify_whitespace, code_splitting), GUARD_FN_NAME_MIN))
+        GUARD_LAMBDA_OPEN_MIN
+    else
+        GUARD_LAMBDA_OPEN;
+}
+
+pub fn guardedRuntime(minify_whitespace: bool, code_splitting: bool) []const u8 {
+    return if (std.mem.eql(u8, guardFunctionName(minify_whitespace, code_splitting), GUARD_FN_NAME_MIN))
+        GUARDED_RUNTIME_MIN
+    else
+        GUARDED_RUNTIME;
+}
 pub const INIT_CALL_END = ";\n";
 
 // ============================================================
@@ -2929,4 +2949,11 @@ fn appendHmrTemplateNamed(
     // HMR_RUNTIME_MIN is an expression without a terminal semicolon. Keep the
     // helper safe to concatenate with the next minified preamble/module token.
     try buf.append(allocator, ';');
+}
+
+test "guard name selection keeps split raw callsites on the public binding" {
+    try std.testing.expectEqualStrings("$zg", guardFunctionName(true, false));
+    try std.testing.expectEqualStrings(GUARD_FN_NAME, guardFunctionName(true, true));
+    try std.testing.expectEqualStrings(GUARD_LAMBDA_OPEN, guardLambdaOpen(true, true));
+    try std.testing.expect(std.mem.indexOf(u8, guardedRuntime(true, true), "function __zntc_guarded") != null);
 }

@@ -480,7 +480,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
 }
 
-test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미등록" {
+test "populateSyntheticSymbols: `export default x` registers a distinct _default facade" {
     const alloc = std.testing.allocator;
     var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
     defer r.arena.deinit();
@@ -494,7 +494,9 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     defer sem_syms.deinit(alloc);
 
     try binding_scanner.populateSyntheticSymbols(&table, @fromBackingInt(@intCast(0)), r.export_bindings, &sem_syms, alloc, null, null);
-    try std.testing.expectEqual(@as(?usize, null), findDefaultSymbol(sem_syms.items));
+    const idx = findDefaultSymbol(sem_syms.items) orelse return error.MissingDefaultFacade;
+    try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
+    try std.testing.expect(r.export_bindings[0].has_default_export_facade);
 }
 
 test "populateSyntheticSymbols: default 없으면 빈 테이블" {
@@ -620,11 +622,16 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool, parser_
 
     var export_node_index: ?usize = null;
     var export_node_id: ?u32 = null;
+    var source_expression_id: ?u32 = null;
     var source_binding_id: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
         if (node.tag == .export_default_declaration) {
             export_node_index = index;
             export_node_id = analyzer.symbol_ids.items[index];
+            const inner_idx = node.data.unary.operand;
+            if (!inner_idx.isNone() and @backingInt(inner_idx) < analyzer.symbol_ids.items.len) {
+                source_expression_id = analyzer.symbol_ids.items[@backingInt(inner_idx)];
+            }
         } else if (node.tag == .binding_identifier and
             std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "_default"))
         {
@@ -638,6 +645,13 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool, parser_
         scan_export.default_export_node_index,
     );
     try std.testing.expectEqual(parser_expects_facade, scan_export.has_default_export_facade);
+    const default_inner = parser.ast.nodes.items[export_node_index.?].data.unary.operand;
+    if (!default_inner.isNone() and parser.ast.getNode(default_inner).tag == .identifier_reference) {
+        try std.testing.expectEqual(scan_results_mod.ExportBindingKind.local, scan_export.kind);
+        try std.testing.expectEqual(@as(?u32, @intCast(@backingInt(default_inner))), scan_export.local_symbol_node_index);
+        try std.testing.expectEqual(ExportBinding.Kind.local, export_bindings[0].kind);
+        try std.testing.expectEqual(default_inner, export_bindings[0].local_symbol_node orelse return error.MissingDefaultExpressionNode);
+    }
     binding_scanner.markDefaultExportFacadesFromSemantic(
         export_bindings,
         analyzer.symbol_ids.items,
@@ -713,6 +727,11 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool, parser_
     if (expects_facade) {
         const facade_id = export_node_id orelse return error.MissingExpectedFacade;
         try std.testing.expectEqual(facade_id, actual_id);
+        if (source_expression_id) |source_id| try std.testing.expect(facade_id != source_id);
+        const facade = analyzer.symbols.items[facade_id];
+        try std.testing.expectEqual(@as(?semantic_symbol.SyntheticKind, .default_export), facade.synthetic_kind);
+        try std.testing.expect(!facade.scope_id.isNone());
+        try std.testing.expectEqual(@as(u32, 0), facade.scope_id.toIndex());
         if (source_binding_id) |source_id| {
             try std.testing.expect(facade_id != source_id);
             try std.testing.expect(analyzer.symbols.items[source_id].synthetic_kind == null);
@@ -729,15 +748,19 @@ test "#4819 default export facade uses its exact analyzer SymbolId despite `_def
     try expectDefaultExportIdentity("const _default = 7; export default 42;", true, true);
 }
 
-test "#4819 default export of source `_default` stays a regular local binding" {
-    try expectDefaultExportIdentity("const _default = 42; export default _default;", false, false);
+test "#4819 local identifier default expression gets a distinct facade SymbolId" {
+    try expectDefaultExportIdentity("const value = 42; export default value;", true, true);
+}
+
+test "#4819 imported identifier default expression stays local and gets a facade" {
+    try expectDefaultExportIdentity("import { value } from './dep'; export default value;", true, true);
 }
 
 test "#4819 unresolved default identifier facade comes from its exact analyzer node" {
     try expectDefaultExportIdentity(
         "globalThis.snapshot = 7; export default snapshot; globalThis.snapshot = 9;",
         true,
-        false,
+        true,
     );
 }
 
@@ -747,7 +770,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    const source = "const source = 1; const decoy = 2; export const declared = 3; export { source as publicSource }; export default source;";
+    const source = "const source = 1; const decoy = 2; export const declared = 3; export { source as publicSource };";
     var scanner = try Scanner.init(arena_allocator, source);
     scanner.is_module = true;
     var parser = Parser.init(arena_allocator, &scanner);
@@ -766,8 +789,8 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
     defer allocator.free(import_bindings);
     const export_bindings = try extractExportBindings(allocator, &parser.ast, import_records, import_bindings);
     defer allocator.free(export_bindings);
-    try std.testing.expectEqual(@as(usize, 3), export_bindings.len);
-    try std.testing.expectEqual(@as(usize, 3), parser.scan_export_bindings.items.len);
+    try std.testing.expectEqual(@as(usize, 2), export_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), parser.scan_export_bindings.items.len);
 
     var source_symbol: ?u32 = null;
     var decoy_symbol: ?u32 = null;
@@ -789,23 +812,18 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
     try std.testing.expect(expected_source != wrong_symbol);
 
     var alias_export_index: ?usize = null;
-    var default_export_index: ?usize = null;
     var declaration_export_index: ?usize = null;
     for (export_bindings, 0..) |eb, i| {
         if (std.mem.eql(u8, eb.exported_name, "publicSource")) alias_export_index = i;
-        if (std.mem.eql(u8, eb.exported_name, "default")) default_export_index = i;
         if (std.mem.eql(u8, eb.exported_name, "declared")) declaration_export_index = i;
     }
     const alias_index = alias_export_index orelse return error.MissingAliasExport;
-    const default_index = default_export_index orelse return error.MissingDefaultExport;
     const declaration_index = declaration_export_index orelse return error.MissingDeclarationExport;
 
     // The parser's lightweight scan retains the same exact local node; AST
     // rescan supplies that node again after graph transforms.
     for (parser.scan_export_bindings.items) |scan_export| {
         const expected = if (std.mem.eql(u8, scan_export.exported_name, "publicSource"))
-            expected_source
-        else if (std.mem.eql(u8, scan_export.exported_name, "default"))
             expected_source
         else if (std.mem.eql(u8, scan_export.exported_name, "declared"))
             expected_declared
@@ -815,7 +833,6 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
         try std.testing.expectEqual(expected, analyzer.symbol_ids.items[node_index] orelse return error.MissingScannedLocalSymbol);
     }
     try std.testing.expect(export_bindings[alias_index].local_symbol_node != null);
-    try std.testing.expect(export_bindings[default_index].local_symbol_node != null);
     try std.testing.expect(export_bindings[declaration_index].local_symbol_node != null);
 
     // Hostile name-map corruption: old code follows this wrong mapping. Exact
@@ -836,7 +853,6 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
         analyzer.symbol_ids.items,
     );
     try expectSemanticExportSymbol(export_bindings[alias_index], expected_source);
-    try expectSemanticExportSymbol(export_bindings[default_index], expected_source);
     try expectSemanticExportSymbol(export_bindings[declaration_index], expected_declared);
 
     // Missing exact node or ID must fail closed instead of reverting to the

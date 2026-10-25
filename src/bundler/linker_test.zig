@@ -3083,10 +3083,10 @@ test "re-export alias: export { default as groupBy } — function declaration" {
     try std.testing.expectEqualStrings("hello", local);
 }
 
-test "re-export alias: export { default as X } — identifier reuses original name" {
+test "re-export alias: export { default as X } — identifier default uses snapshot facade" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // export default <identifier> → rolldown 방식: identifier 이름 재사용
+    // export default <identifier> → snapshot facade, separate from source binding.
     try writeFile(tmp.dir, "entry.ts", "import { groupBy } from './barrel'; console.log(groupBy);");
     try writeFile(tmp.dir, "barrel.ts", "export { default as groupBy } from './groupBy';");
     try writeFile(tmp.dir, "groupBy.ts", "function groupBy(arr: any) { return arr; }\nexport default groupBy;");
@@ -3099,19 +3099,19 @@ test "re-export alias: export { default as X } — identifier reuses original na
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
-    // export default groupBy → local_name = "groupBy" (identifier 이름 재사용)
+    // The canonical default value is the synthetic facade, not the source local.
     const local = r.linker.resolveToLocalName(binding.?.canonical);
-    try std.testing.expectEqualStrings("groupBy", local);
+    try std.testing.expectEqualStrings("_default", local);
 }
 
 // ============================================================
 // Issue #284: _default 이름 충돌 해결
 // ============================================================
 
-test "rename: multiple export default identifiers use original names — no collision" {
+test "rename: multiple export default identifiers use separate facades without collision" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // rolldown 방식: export default identifier → 각각 x, y, z로 별도 이름 → 충돌 없음
+    // Every identifier expression has its own default facade in the merged scope.
     try writeFile(tmp.dir, "entry.ts", "import './a';\nimport './b';\nimport './c';");
     try writeFile(tmp.dir, "a.ts", "const x = 1;\nexport default x;");
     try writeFile(tmp.dir, "b.ts", "const y = 2;\nexport default y;");
@@ -3122,12 +3122,12 @@ test "rename: multiple export default identifiers use original names — no coll
     defer r.destroyGraph();
     defer r.cache.deinit();
 
-    // x, y, z는 각각 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
+    // Three facades share a base name, so two require unique canonical names.
     var rename_count: u32 = 0;
     for (r.linker.canonical_strings.items) |val| {
         if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
-    try std.testing.expectEqual(@as(u32, 0), rename_count);
+    try std.testing.expectEqual(@as(u32, 2), rename_count);
 }
 
 // ============================================================
@@ -3285,10 +3285,10 @@ test "rename: mixed function + expression defaults — identifier collision" {
     try std.testing.expectEqual(@as(u32, 1), val_rename_count);
 }
 
-test "rename: default identifier reuses name — no _default collision" {
+test "rename: default identifier snapshots use unique _default facades" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // rolldown 방식: export default x → local_name="x", export default y → local_name="y" → 충돌 없음
+    // Source bindings remain independent from each module's default snapshot.
     try writeFile(tmp.dir, "entry.ts", "import a from './a';\nimport b from './b';\nconsole.log(a, b);");
     try writeFile(tmp.dir, "a.ts", "const x = 10;\nexport default x;");
     try writeFile(tmp.dir, "b.ts", "const y = 20;\nexport default y;");
@@ -3298,12 +3298,12 @@ test "rename: default identifier reuses name — no _default collision" {
     defer r.destroyGraph();
     defer r.cache.deinit();
 
-    // x, y는 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
+    // Two synthetic default facades merge into one top-level scope.
     var rename_count: u32 = 0;
     for (r.linker.canonical_strings.items) |val| {
         if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
-    try std.testing.expectEqual(@as(u32, 0), rename_count);
+    try std.testing.expectEqual(@as(u32, 1), rename_count);
 }
 
 // ============================================================
