@@ -2078,6 +2078,7 @@ pub const SemanticAnalyzer = struct {
                         functionParamsNode(self, node),
                         params_list,
                         has_parameter_expressions,
+                        body_idx,
                     );
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
                     try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
@@ -3814,6 +3815,7 @@ pub const SemanticAnalyzer = struct {
             functionParamsNode(self, node),
             params_list,
             has_parameter_expressions,
+            body_idx,
         );
         const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
 
@@ -3853,6 +3855,7 @@ pub const SemanticAnalyzer = struct {
             functionParamsNode(self, func_node),
             params_list,
             has_parameter_expressions,
+            body_idx,
         );
         try self.visitFunctionBodyInner(body_idx);
         self.exitFunctionScopes(function_scopes);
@@ -4019,6 +4022,7 @@ pub const SemanticAnalyzer = struct {
             functionParamsNode(self, node),
             params_list,
             has_parameter_expressions,
+            body_idx,
         );
         const saved_labels = self.saveLabelLen();
 
@@ -4048,7 +4052,7 @@ pub const SemanticAnalyzer = struct {
             false
         else
             try parameterHasExpressions(self, param_idx);
-        const function_scopes = try self.enterArrowFunctionScopes(param_idx, has_parameter_expressions);
+        const function_scopes = try self.enterArrowFunctionScopes(param_idx, has_parameter_expressions, body_idx);
         const saved_labels = self.saveLabelLen();
 
         if (!body_idx.isNone()) {
@@ -5424,17 +5428,38 @@ pub const SemanticAnalyzer = struct {
         parameter_scope_saved: ?ScopeId = null,
     };
 
+    /// Function strictness belongs to its own Directive Prologue. It must be
+    /// known before parameter/body scopes and their bindings are created;
+    /// changing an enclosing sloppy declaration environment would alter Annex B.
+    fn functionBodyHasUseStrict(self: *const SemanticAnalyzer, body_idx: NodeIndex) bool {
+        if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return false;
+        const body = self.ast.getNode(body_idx);
+        if (body.tag != .block_statement) return false;
+        const list = body.data.list;
+        if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return false;
+        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            const index: NodeIndex = @fromBackingInt(raw);
+            if (index.isNone() or raw >= self.ast.nodes.items.len) return false;
+            const node = self.ast.getNode(index);
+            if (node.tag != .directive) return false;
+            const text = self.ast.getText(node.span);
+            if (std.mem.eql(u8, text, "\"use strict\"") or std.mem.eql(u8, text, "'use strict'")) return true;
+        }
+        return false;
+    }
+
     fn enterParameterScope(
         self: *SemanticAnalyzer,
         params_root: NodeIndex,
         has_parameter_expressions: bool,
+        function_strict: bool,
     ) AllocError!?ScopeId {
         if (!has_parameter_expressions) return null;
         if (params_root.isNone() or @backingInt(params_root) >= self.ast.nodes.items.len)
             std.debug.panic("parameter expressions require a parameter AST owner", .{});
         const saved_visit_node = self.current_visit_node;
         self.current_visit_node = params_root;
-        const saved = try self.enterScope(.function, self.is_strict_mode);
+        const saved = try self.enterScope(.function, function_strict);
         self.current_visit_node = saved_visit_node;
         return saved;
     }
@@ -5444,15 +5469,17 @@ pub const SemanticAnalyzer = struct {
         params_root: NodeIndex,
         params: ast_mod.NodeList,
         has_parameter_expressions: bool,
+        body_idx: NodeIndex,
     ) AllocError!FunctionScopeState {
-        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions);
+        const function_strict = self.is_strict_mode or self.functionBodyHasUseStrict(body_idx);
+        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions, function_strict);
         if (parameter_scope_saved == null) {
-            const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+            const body_scope_saved = try self.enterScope(.function, function_strict);
             try self.registerParams(params);
             return .{ .body_scope_saved = body_scope_saved };
         }
         try self.registerParams(params);
-        const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+        const body_scope_saved = try self.enterScope(.function, function_strict);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
@@ -5460,10 +5487,12 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         params_root: NodeIndex,
         has_parameter_expressions: bool,
+        body_idx: NodeIndex,
     ) AllocError!FunctionScopeState {
-        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions);
+        const function_strict = self.is_strict_mode or self.functionBodyHasUseStrict(body_idx);
+        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions, function_strict);
         if (parameter_scope_saved == null) {
-            const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+            const body_scope_saved = try self.enterScope(.function, function_strict);
             try self.declareArrowParams(params_root);
             try self.checkArrowParameterDuplicates(params_root);
             try self.visitArrowParameterExpressions(params_root);
@@ -5472,7 +5501,7 @@ pub const SemanticAnalyzer = struct {
         try self.declareArrowParams(params_root);
         try self.checkArrowParameterDuplicates(params_root);
         try self.visitArrowParameterExpressions(params_root);
-        const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+        const body_scope_saved = try self.enterScope(.function, function_strict);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
