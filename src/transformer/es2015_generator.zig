@@ -184,6 +184,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             } else .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
             try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
+            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
             const gen_call = gen.call;
 
             // return __generator(...) 문
@@ -715,6 +716,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try recordGeneratorStateBinding(self, binding, temp_span, wrapper_scope, span);
                             break;
                         }
+                    }
+                }
+                if (self.semantic_edit_enabled) {
+                    const id = self.getSymbolIdAt(binding) orelse std.debug.panic("hoisted source storage has no SymbolId", .{});
+                    const symbol = self.semantic_editor.?.symbols.items[id];
+                    if (symbol.kind != .variable_var and symbol.kind != .parameter) {
+                        try state_temps.append(self.allocator, .{
+                            .binding = binding,
+                            .name_span = bnode.data.string_ref,
+                            .symbol_id = id,
+                            .owner_scope = wrapper_scope,
+                        });
                     }
                 }
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
@@ -3107,6 +3120,56 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
         }
 
+        fn moveCaseReferences(self: *Transformer, root: NodeIndex, target: ScopeId) Transformer.Error!void {
+            const editor = &self.semantic_editor.?;
+            const Work = struct { node: NodeIndex, scope: ScopeId };
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = target });
+            while (stack.pop()) |work| {
+                if (work.node.isNone()) continue;
+                const raw = @backingInt(work.node);
+                const slot = try seen.getOrPut(self.allocator, raw);
+                if (slot.found_existing) continue;
+                const node = self.ast.getNode(work.node);
+                const scope = self.outputOwnedScope(work.node) orelse work.scope;
+                const block_owner = switch (node.tag) {
+                    .block_statement, .for_statement, .for_in_statement, .for_of_statement, .while_statement, .do_while_statement, .switch_statement, .catch_clause => true,
+                    else => false,
+                };
+                if (block_owner and scope != work.scope and editor.scopes.items[scope.toIndex()].parent != work.scope)
+                    try self.reparentGeneratedScope(scope, work.scope);
+                if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
+                    const reference = editor.referenceForNode(work.node) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("generator case lost its reference row: {s}", .{@errorName(err)}),
+                    };
+                    if (reference) |ref| {
+                        if (!ref.flags.declare and ref.scope_id != scope)
+                            editor.moveReference(work.node, scope, ref.stmt_idx, ref.scope_stmt_idx) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => {
+                                    std.debug.panic("generator case cannot move exact reference: {s} node={d} name={s} sid={d} oldscope={d} target={d} declscope={d} targetparent={d} declkind={s} rootScope={d}", .{ @errorName(err), raw, self.ast.identifierNameText(node), @backingInt(ref.symbol_id), ref.scope_id.toIndex(), scope.toIndex(), editor.symbols.items[@backingInt(ref.symbol_id)].scope_id.toIndex(), editor.scopes.items[scope.toIndex()].parent.toIndex(), @tagName(editor.scopes.items[editor.symbols.items[@backingInt(ref.symbol_id)].scope_id.toIndex()].kind), target.toIndex() });
+                                },
+                            };
+                        if (self.tracked_runtime_helper_ref_index.get(raw)) |index| {
+                            const tracked = &self.tracked_runtime_helper_refs.items[index];
+                            if (tracked.node != work.node or tracked.symbol_id != @backingInt(ref.symbol_id))
+                                std.debug.panic("generator helper tracker changed its exact reference identity", .{});
+                            tracked.scope = scope;
+                        }
+                    }
+                }
+                var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| {
+                    const skips = @import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, raw, @backingInt(child));
+                    try stack.append(self.allocator, .{ .node = child, .scope = if (skips) work.scope else scope });
+                }
+            }
+        }
+
         /// 연산 리스트를 switch case로 변환.
         /// `ops[from]` 이후 처음 나오는 실행 op 가 **재개 라벨에 민감한지**.
         ///
@@ -3557,11 +3620,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const parent = self.stateMachineOwnerScope(source_owner);
             if (parent.isNone()) {
                 try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
+                if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
                 return;
             }
             const wrapper_scope = try self.addGeneratedFunctionScope(parent, wrapper);
             try self.relocateRuntimeHelperRef(gen.helper_ref, wrapper_scope);
             try self.bindGeneratedState(wrapper_scope, parent, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
+            if (self.semantic_edit_enabled) try moveCaseReferences(self, gen.callback, self.outputOwnedScope(gen.callback) orelse @panic("generator callback has no actual ScopeId"));
         }
 
         /// __generator(function(_state) { ... }) 호출 생성.
@@ -3902,7 +3967,8 @@ fn checkGeneratorHoistProducerUsesExactBindingHandle(
     for (0..prefix_count) |slot| {
         if (slot == producer_slot) continue;
         const decoy_span = Span{ .start = name_start, .end = (raw_start + @as(u32, @intCast(prefix_len))) | ast_mod.Ast.STRING_TABLE_BIT };
-        hoisted_bindings[slot] = try es_helpers.makeExactSyntheticBindingFromSpan(&transformer, decoy_span);
+        const decoy_symbol = (try transformer.reserveSyntheticTempSymbolForProducerInScope(@intCast(slot + 100), decoy_span, .EMPTY, owner_scope)).?;
+        hoisted_bindings[slot] = (try transformer.createSyntheticTempBindingWithIdentity(decoy_span, owner_scope, decoy_symbol)).node;
         prefix_len += 1;
     }
 
