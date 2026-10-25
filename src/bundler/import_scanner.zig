@@ -126,7 +126,7 @@ pub const CjsExportScope = struct {
                         id < self.symbols.len)
                     {
                         const symbol = self.symbols[id];
-                        return @backingInt(symbol.scope_id) == 0 and
+                        return symbol.synthetic_kind == null and @backingInt(symbol.scope_id) == 0 and
                             (symbol.kind == .variable_var or symbol.kind.isFunctionLike());
                     }
                     return false;

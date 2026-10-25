@@ -1998,6 +1998,10 @@ test "CJS export source kind uses exact reference identities and cached host slo
     symbols[11].scope_id = @fromBackingInt(0);
     const root_slots = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
     try std.testing.expect(root_slots.has_module_exports and root_slots.has_exports_dot);
+    symbols[7].synthetic_kind = .cjs_wrapper_exports_parameter;
+    symbols[11].synthetic_kind = .cjs_wrapper_module_parameter;
+    const synthetic_root_vars = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .commonjs_environment = true, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(!synthetic_root_vars.has_module_exports and !synthetic_root_vars.has_exports_dot and !synthetic_root_vars.has_esmodule_marker);
 
     try std.testing.expectError(error.MissingCjsExportReferenceIdentity, import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = &.{} }));
     const empty_statements = try parser.ast.addNodeList(&.{});
