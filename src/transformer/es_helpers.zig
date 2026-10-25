@@ -2640,6 +2640,16 @@ pub const NativeParameterThisCapture = struct {
     needs_this_before: bool,
 };
 
+/// A direct anonymous arrow value in a native parameter's object property.
+/// If the arrow needs a capture factory, the factory call would otherwise
+/// erase the property's NamedEvaluation name.
+pub const NativeParameterPropertyCaptureContext = struct {
+    source: NodeIndex,
+    static_name: ?Span,
+    computed_key: bool,
+    capture_created: bool = false,
+};
+
 pub const TempIdentityCapture = struct {
     span: Span,
     symbol_id: ?symbol_mod.SymbolId = null,
@@ -3715,6 +3725,7 @@ pub const CaptureFrameSnapshot = struct {
     native_parameter_arrow_capture: ?TempIdentityCapture,
     native_parameter_arrow_this_capture: ?NativeParameterThisCapture,
     native_parameter_this_snapshot_allowed: bool,
+    native_parameter_property_capture_context: ?NativeParameterPropertyCaptureContext,
 };
 
 pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
@@ -3726,6 +3737,7 @@ pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
         .native_parameter_arrow_capture = self.native_parameter_arrow_capture,
         .native_parameter_arrow_this_capture = self.native_parameter_arrow_this_capture,
         .native_parameter_this_snapshot_allowed = self.native_parameter_this_snapshot_allowed,
+        .native_parameter_property_capture_context = self.native_parameter_property_capture_context,
     };
     self.capture_frame = self.next_capture_frame;
     self.next_capture_frame += 1;
@@ -3734,6 +3746,7 @@ pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
     self.native_parameter_arrow_capture = null;
     self.native_parameter_arrow_this_capture = null;
     self.native_parameter_this_snapshot_allowed = true;
+    self.native_parameter_property_capture_context = null;
     return snap;
 }
 
@@ -3744,6 +3757,7 @@ pub fn popCaptureFrame(self: anytype, snap: CaptureFrameSnapshot) void {
     self.native_parameter_arrow_capture = snap.native_parameter_arrow_capture;
     self.native_parameter_arrow_this_capture = snap.native_parameter_arrow_this_capture;
     self.native_parameter_this_snapshot_allowed = snap.native_parameter_this_snapshot_allowed;
+    self.native_parameter_property_capture_context = snap.native_parameter_property_capture_context;
 }
 
 pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {

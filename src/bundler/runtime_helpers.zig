@@ -49,6 +49,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     read: ?[]const u8 = null,
     public_field: ?[]const u8 = null,
     to_property_key: ?[]const u8 = null,
+    native_parameter_named_property: ?[]const u8 = null,
     wrap_regex: ?[]const u8 = null,
     yield_star: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
@@ -934,27 +935,45 @@ pub const ASYNC_GENERATOR_RUNTIME =
 /// 초기값 없는 `u;` 도 `'u' in c === true` 여야 한다. `useDefineForClassFields=false`
 /// 일 때는 이 헬퍼를 쓰지 않고 기존 assign 경로를 그대로 탄다.
 pub const PUBLIC_FIELD_RUNTIME =
-    \\var __publicField = function(obj, key, value) {
-    \\  return Object.defineProperty(obj, typeof key === "symbol" ? key : key + "", { enumerable: true, configurable: true, writable: true, value: value }), value;
-    \\};
+    \\var __publicField = (function(ObjectConstructor) {
+    \\  var defineProperty = ObjectConstructor.defineProperty;
+    \\  var create = ObjectConstructor.create;
+    \\  return function(obj, key, value) {
+    \\    var descriptor = create(null);
+    \\    descriptor.enumerable = true;
+    \\    descriptor.configurable = true;
+    \\    descriptor.writable = true;
+    \\    descriptor.value = value;
+    \\    defineProperty(obj, typeof key === "symbol" ? key : key + "", descriptor);
+    \\    return value;
+    \\  };
+    \\})(({}).constructor);
     \\
 ;
-/// __toPropertyKey: 낮춘 class 의 computed key 를 **정의 시점에 한 번** ToPropertyKey 한다 (#5553).
-/// 필드 key 는 생성자 안 `__publicField(this, _a, …)` 로 옮겨져, temp 에 원래 값을 담아 두면
-/// 인스턴스마다 다시 변환된다(`toString` 이 여러 번 불리고 함수 이름도 빠진다). 스펙은 클래스
-/// 정의 때 각 key 를 평가한 직후 한 번 변환한다. 객체 key 는 `Object.defineProperty` 에
-/// 맡겨 엔진의 ToPropertyKey 를 그대로 쓴다 — `Symbol.toPrimitive` 가 symbol 을 돌려줘도
-/// 되고(`String()` 은 그때 throw), 사용자가 전역 `String` 을 가려도 영향이 없다.
+/// __toPropertyKey: lowered class/object computed keys are converted once at
+/// their original evaluation point. Null-prototype scratch objects prevent
+/// inherited Object.prototype accessors (for example `get`) from being read
+/// as descriptor fields during the native ToPropertyKey operation.
 pub const TO_PROPERTY_KEY_RUNTIME =
-    \\var __toPropertyKey = function(key) {
+    \\var __toPropertyKey = (function(ObjectConstructor) {
+    \\  var defineProperty = ObjectConstructor.defineProperty;
+    \\  var create = ObjectConstructor.create;
+    \\  var keys = ObjectConstructor.keys;
+    \\  var symbols = ObjectConstructor.getOwnPropertySymbols;
+    \\  return function(key) {
     \\  if (typeof key !== "object" && typeof key !== "function" || key === null) return typeof key === "symbol" ? key : key + "";
-    \\  var o = Object.defineProperty({}, key, { enumerable: true, value: 0 }), k = Object.keys(o);
-    \\  return k.length ? k[0] : Object.getOwnPropertySymbols(o)[0];
-    \\};
+    \\  var o = create(null), descriptor = create(null);
+    \\  descriptor.enumerable = true;
+    \\  descriptor.value = 0;
+    \\  defineProperty(o, key, descriptor);
+    \\  var k = keys(o);
+    \\  return k.length ? k[0] : symbols(o)[0];
+    \\  };
+    \\})(({}).constructor);
     \\
 ;
-pub const TO_PROPERTY_KEY_RUNTIME_MIN = "var " ++ NAMES.TO_PROPERTY_KEY_MIN ++ "=function(key){if(typeof key!==\"object\"&&typeof key!==\"function\"||key===null)return typeof key===\"symbol\"?key:key+\"\";var o=Object.defineProperty({},key,{enumerable:true,value:0}),k=Object.keys(o);return k.length?k[0]:Object.getOwnPropertySymbols(o)[0]};";
-pub const PUBLIC_FIELD_RUNTIME_MIN = "var " ++ NAMES.PUBLIC_FIELD_MIN ++ "=function(obj,key,value){return Object.defineProperty(obj,typeof key===\"symbol\"?key:key+\"\",{enumerable:true,configurable:true,writable:true,value:value}),value};";
+pub const TO_PROPERTY_KEY_RUNTIME_MIN = "var " ++ NAMES.TO_PROPERTY_KEY_MIN ++ "=(function(O){var d=O.defineProperty,c=O.create,k=O.keys,s=O.getOwnPropertySymbols;return function(x){if(typeof x!==\"object\"&&typeof x!==\"function\"||x===null)return typeof x===\"symbol\"?x:x+\"\";var o=c(null),p=c(null);p.enumerable=true;p.value=0;d(o,x,p);var y=k(o);return y.length?y[0]:s(o)[0]}})(({}).constructor);";
+pub const PUBLIC_FIELD_RUNTIME_MIN = "var " ++ NAMES.PUBLIC_FIELD_MIN ++ "=(function(O){var d=O.defineProperty,c=O.create;return function(o,k,v){var p=c(null);p.enumerable=true;p.configurable=true;p.writable=true;p.value=v;d(o,typeof k===\"symbol\"?k:k+\"\",p);return v}})(({}).constructor);";
 
 /// __yieldStar: async generator 안의 `yield* X` 를 위임한다 (esbuild 호환).
 ///
@@ -1092,8 +1111,28 @@ pub fn appendToBinaryRuntimeNamed(
 /// `__name(fn, name[, prefix])`. A runtime computed key (#5527) may be a
 /// symbol (SetFunctionName: "[description]") or a primitive; an object key is
 /// left unnamed so its toString is not called a second time.
-pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty) { return function(target, value, prefix) { var type = typeof value; if (type === \"symbol\") { var description = value.description; value = description === void 0 ? \"\" : \"[\" + description + \"]\"; } else if (value !== null && (type === \"object\" || type === \"function\")) return target; return defineProperty(target, \"name\", { value: prefix ? prefix + \" \" + value : \"\" + value, configurable: true }); }; })(({}).constructor.defineProperty);\n";
-pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d){return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;return d(t,\"name\",{value:p?p+\" \"+v:\"\"+v,configurable:true})}})(({}).constructor.defineProperty);";
+pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty, create) { return function(target, value, prefix) { var type = typeof value; if (type === \"symbol\") { var description = value.description; value = description === void 0 ? \"\" : \"[\" + description + \"]\"; } else if (value !== null && (type === \"object\" || type === \"function\")) return target; var descriptor = create(null); descriptor.value = prefix ? prefix + \" \" + value : \"\" + value; descriptor.configurable = true; return defineProperty(target, \"name\", descriptor); }; })(({}).constructor.defineProperty, ({}).constructor.create);\n";
+pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d,c){return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor.defineProperty,({}).constructor.create);";
+
+/// Carry a converted computed key across its property's value evaluation so an
+/// immediately created captured arrow can receive the name inferred by the
+/// original object-literal property without introducing object spread syntax.
+pub const NAMED_PROPERTY_RUNTIME =
+    \\var __namedProperty = (function() {
+    \\  var keys = [];
+    \\  return function(begin, value) {
+    \\    if (begin) {
+    \\      keys.push(value);
+    \\      return value;
+    \\    }
+    \\    var key = keys.pop();
+    \\    __name(value, key);
+    \\    return value;
+    \\  };
+    \\})();
+    \\
+;
+pub const NAMED_PROPERTY_RUNTIME_MIN = "var " ++ NAMES.NAMED_PROPERTY_MIN ++ "=(function(){var k=[];return function(b,v){if(b){k.push(v);return v}var n=k.pop();" ++ NAMES.NAME_MIN ++ "(v,n);return v}})();";
 
 // ============================================================
 // Private Method (ES2022 downlevel)
@@ -2062,6 +2101,19 @@ fn appendRuntimeHelpersInternal(
             if (minify) KEEP_NAMES_RUNTIME_MIN else KEEP_NAMES_RUNTIME,
             default_name,
             local_names.keep_names orelse default_name,
+        );
+    }
+    if (helpers.native_parameter_named_property) {
+        const default_name = helperName("__namedProperty", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = default_name, .local_name = local_names.native_parameter_named_property orelse default_name },
+            .{ .default_name = helperName("__name", minify), .local_name = local_names.keep_names orelse helperName("__name", minify) },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) NAMED_PROPERTY_RUNTIME_MIN else NAMED_PROPERTY_RUNTIME,
+            &replacements,
         );
     }
     if (helpers.class_private_method_init) {

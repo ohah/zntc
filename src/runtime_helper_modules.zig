@@ -312,8 +312,11 @@ const MODULES = [_]HelperModule{
     // --keep-names + binary loader
     .{
         .short = "keep-names",
-        .helpers = &.{"__name"},
-        .body = .{ .plain = rt.KEEP_NAMES_RUNTIME, .min = rt.KEEP_NAMES_RUNTIME_MIN },
+        .helpers = &.{ "__name", "__namedProperty" },
+        .body = .{
+            .plain = rt.KEEP_NAMES_RUNTIME ++ rt.NAMED_PROPERTY_RUNTIME,
+            .min = rt.KEEP_NAMES_RUNTIME_MIN ++ rt.NAMED_PROPERTY_RUNTIME_MIN,
+        },
     },
     .{
         .short = "to-binary",

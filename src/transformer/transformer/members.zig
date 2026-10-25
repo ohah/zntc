@@ -538,8 +538,66 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
             captured.temp.temp_producer_id,
         );
     }
-    var new_value = try self.visitNode(node.data.binary.right);
+    var property_capture_context: ?es_helpers.NativeParameterPropertyCaptureContext = null;
+    if (self.native_parameter_initializer_frame != 0 and
+        self.native_parameter_initializer_frame == self.capture_frame)
+    {
+        if (pe.functionRoot(self, node.data.binary.right)) |raw| {
+            const source: NodeIndex = @fromBackingInt(raw);
+            if (self.ast.getNode(source).tag == .arrow_function_expression) {
+                property_capture_context = .{
+                    .source = source,
+                    .static_name = try pe.keyName(self, key_idx, true),
+                    .computed_key = !key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key,
+                };
+            }
+        }
+    }
+    var captured_property_arrow: ?es_helpers.NativeParameterPropertyCaptureContext = null;
+    var new_value = blk: {
+        const saved_property_capture_context = self.native_parameter_property_capture_context;
+        defer self.native_parameter_property_capture_context = saved_property_capture_context;
+        self.native_parameter_property_capture_context = property_capture_context;
+        const value = try self.visitNode(node.data.binary.right);
+        if (self.native_parameter_property_capture_context) |context| {
+            if (context.capture_created and property_capture_context != null and
+                context.source == property_capture_context.?.source)
+            {
+                captured_property_arrow = context;
+            }
+        }
+        break :blk value;
+    };
     new_value = try pe.finishRuntimeKeyClass(self, bound, node.data.binary.right, new_value, true, self.current_scope, node.span);
+    if (captured_property_arrow) |context| {
+        if (context.static_name) |name| {
+            self.runtime_helpers.keep_names = true;
+            const name_ref = try es_helpers.makeRuntimeHelperRef(self, "__name");
+            const name_value = try es_helpers.buildQuotedKeyLiteral(self, name);
+            new_value = try es_helpers.makeCallExpr(self, name_ref, &.{ new_value, name_value }, node.span);
+        } else if (context.computed_key) {
+            const key = if (!new_key.isNone() and self.ast.getNode(new_key).tag == .computed_property_key)
+                self.ast.getNode(new_key).data.unary.operand
+            else
+                @panic("computed native-parameter property lost its key node");
+            self.runtime_helpers.to_property_key = true;
+            const to_property_key_ref = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
+            const converted_key = try es_helpers.makeCallExpr(self, to_property_key_ref, &.{key}, node.span);
+            self.runtime_helpers.keep_names = true;
+            self.runtime_helpers.native_parameter_named_property = true;
+            const begin_ref = try es_helpers.makeRuntimeHelperRef(self, "__namedProperty");
+            const begin = try es_helpers.makeBoolLiteral(self, true);
+            const named_key = try es_helpers.makeCallExpr(self, begin_ref, &.{ begin, converted_key }, node.span);
+            keyed = try self.ast.addNode(.{
+                .tag = .computed_property_key,
+                .span = self.ast.getNode(new_key).span,
+                .data = .{ .unary = .{ .operand = named_key, .flags = 0 } },
+            });
+            const finish_ref = try es_helpers.makeRuntimeHelperRef(self, "__namedProperty");
+            const finish = try es_helpers.makeBoolLiteral(self, false);
+            new_value = try es_helpers.makeCallExpr(self, finish_ref, &.{ finish, new_value }, node.span);
+        }
+    }
     // styled-components: { One: styled.div`...` } 의 value 가 styled tagged template 이면
     // property key 이름을 displayName 으로 사용해 wrap. variable_declarator 와 동일 패턴.
     if (!new_key.isNone() and styled_components_mod.shouldAttemptWrap(self, new_value)) {

@@ -1738,13 +1738,13 @@ test "ES2015: shorthand no transform on esnext" {
 test "ES2015: computed property lowering" {
     var r = try e2eTarget(std.testing.allocator, "var o={a:1,[k]:v,b:2};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var o=(_a={a:1},_a[k]=v,_a.b=2,_a);", r.output);
+    try std.testing.expectEqualStrings("var _a;var o=(_a={a:1},__publicField(_a,__toPropertyKey(k),v),_a.b=2,_a);", r.output);
 }
 
 test "ES2015: computed property only" {
     var r = try e2eTarget(std.testing.allocator, "var o={[k]:v};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[k]=v,_a);", r.output);
+    try std.testing.expectEqualStrings("var _a;var o=(_a={},__publicField(_a,__toPropertyKey(k),v),_a);", r.output);
 }
 
 test "ES2015: no computed - no transform" {
@@ -1779,16 +1779,16 @@ test "ES2015: object getter/setter preserved (ES5 supports)" {
     try std.testing.expectEqualStrings("var o={get x(){return 1;},set x(v){},m:function(){return 2;}};", r.output);
 }
 
-test "ES2015: object computed method → bracket assignment with function" {
+test "ES2015: object computed method defines a named data property" {
     var r = try e2eTarget(std.testing.allocator, "var o={[k](){return 1;}};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},_a[_b=k]=__name(function(){return 1;},_b),_a);", r.output);
+    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},__publicField(_a,_b=__toPropertyKey(k),__name(function(){return 1;},_b)),_a);", r.output);
 }
 
 test "ES2015: object Symbol.dispose computed method" {
     var r = try e2eTarget(std.testing.allocator, "var o={[Symbol.dispose](){}};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},_a[_b=Symbol.dispose]=__name(function(){},_b),_a);", r.output);
+    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},__publicField(_a,_b=__toPropertyKey(Symbol.dispose),__name(function(){},_b)),_a);", r.output);
 }
 
 test "ES2015: object method no transform on esnext" {

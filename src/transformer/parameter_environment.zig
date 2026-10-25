@@ -691,7 +691,7 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
 }
 
 /// An anonymous function or arrow (through parentheses).
-fn functionRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
+pub fn functionRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
     var current = value;
     while (!current.isNone() and @backingInt(current) < self.ast.nodes.items.len) {
         const node = self.ast.getNode(current);
@@ -1019,10 +1019,16 @@ pub const CapturedKey = struct { key: ast_mod.NodeIndex, temp: es_helpers.TempId
 pub fn captureRuntimeKey(self: anytype, key_expr: ast_mod.NodeIndex, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!CapturedKey {
     const temp = try es_helpers.reserveTrackedTempIdentity(self, span);
     const target = try es_helpers.makeTempRefFromIdentity(self, temp, temp.span, .{ .write = true });
+    // Object-literal key evaluation performs ToPropertyKey before evaluating
+    // the value. Store that primitive in the temp so both the later property
+    // write and inferred function name reuse the same conversion result.
+    self.runtime_helpers.to_property_key = true;
+    const to_property_key = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
+    const converted_key = try es_helpers.makeCallExpr(self, to_property_key, &.{key_expr}, span);
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
-        .data = .{ .binary = .{ .left = target, .right = key_expr, .flags = 0 } },
+        .data = .{ .binary = .{ .left = target, .right = converted_key, .flags = 0 } },
     });
     return .{ .key = assign, .temp = temp };
 }

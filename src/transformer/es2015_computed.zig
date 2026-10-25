@@ -169,13 +169,13 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     else
                         try pe.nameByTemp(self, value, captured.temp, null, span);
                     const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
-                    const member_expr = try es_helpers.makeComputedMember(self, obj_ref, captured.key, span);
-                    const assign = try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = span,
-                        .data = .{ .binary = .{ .left = member_expr, .right = value, .flags = 0 } },
-                    });
-                    try self.scratch.append(self.allocator, assign);
+                    // Object-literal properties create own data properties;
+                    // assignment would invoke an inherited setter. The key
+                    // temp is already ToPropertyKey-converted before the value.
+                    self.runtime_helpers.public_field = true;
+                    const public_field = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+                    const define = try es_helpers.makeCallExpr(self, public_field, &.{ obj_ref, captured.key, value }, span);
+                    try self.scratch.append(self.allocator, define);
                     continue;
                 }
                 const new_val = if (val_idx.isNone())
@@ -183,6 +183,21 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     try self.visitNode(key_idx)
                 else
                     try pe.nameLoweredProperty(self, try self.visitNode(val_idx), key_idx, val_idx, span);
+
+                if (self.ast.getNode(key_idx).tag == .computed_property_key) {
+                    var property_key = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                    if ((try pe.keyName(self, key_idx, false)) == null) {
+                        self.runtime_helpers.to_property_key = true;
+                        const to_property_key = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
+                        property_key = try es_helpers.makeCallExpr(self, to_property_key, &.{property_key}, span);
+                    }
+                    const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
+                    self.runtime_helpers.public_field = true;
+                    const public_field = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+                    const define = try es_helpers.makeCallExpr(self, public_field, &.{ obj_ref, property_key, new_val }, span);
+                    try self.scratch.append(self.allocator, define);
+                    continue;
+                }
 
                 // _a[key] = val. #4249: key 종류별 dot(identifier) vs computed
                 // (string/numeric/bigint/computed) 분기를 makeMemberFromKeyIdx 로

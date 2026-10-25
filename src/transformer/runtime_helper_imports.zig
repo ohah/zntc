@@ -69,6 +69,7 @@ const HelperBit = enum {
     yield_star,
     public_field,
     to_property_key,
+    native_parameter_named_property,
 };
 
 const BitDef = struct {
@@ -118,6 +119,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .yield_star, .bases = &.{"__yieldStar"} },
     .{ .bit = .public_field, .bases = &.{"__publicField"} },
     .{ .bit = .to_property_key, .bases = &.{"__toPropertyKey"} },
+    .{ .bit = .native_parameter_named_property, .bases = &.{"__namedProperty"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },
     .{ .bit = .read, .bases = &.{"__read"} },
