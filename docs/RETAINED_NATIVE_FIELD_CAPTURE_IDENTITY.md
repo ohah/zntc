@@ -21,7 +21,9 @@ class sites. The proof also covers nested blocks, catch and switch regions.
 
 Loop bodies publish their lexical key cells before closure analysis. This
 includes an explicit block/scope producer for an unbraced body. The existing
-per-iteration function then owns the storage. Await-bearing bodies use a
+per-iteration function then owns the storage when block scoping is lowered.
+When native block scoping is retained, the actual loop body owns the lexical
+cells directly. Await-bearing extracted bodies use a
 synchronous generator and an outer driver that awaits only source suspensions;
 finishing an iteration adds no Promise wait. Rejections return through the
 iterator's throw method, preserving source catch/finally and control-flow signals.
@@ -50,10 +52,14 @@ The native-derived constructor fix is merged separately and still needs composed
 validation here. Engine-retained fields that call an earlier body closure inside
 `super()` have a separate earlier-initialization requirement.
 
-The current runtime matrix has sixty-two inputs, each checked in plain/minified
-output. It covers source await ordering, rejection/finally, abrupt loop flow,
+The current runtime matrix has seventy-three inputs, each checked in plain/minified
+output. The complete matrix is not passing: mutable arguments reads differ from
+native output, and the loop function-declaration identity case aborts during
+exact reference relocation. These failures remain required work. It covers source await ordering, rejection/finally, abrupt loop flow,
 nested/unbraced loops and a native-generator partial profile. A separate probe
-checks function-hoisted key storage before the final output walk. A loop-specific probe also checks storage and references before the final walk.
+checks function-hoisted key storage before the final output walk. A loop-specific probe checks storage and references before the final walk
+across eight source/profile combinations, including retained block scoping and
+native generator capability combinations.
 The callback producer moves exact reference rows only after its hoisted storage
 is bound; source lexical storage is handed to the actual wrapper declaration.
 Driver storage still needs its own complete producer-boundary probes.

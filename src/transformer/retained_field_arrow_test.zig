@@ -322,6 +322,20 @@ test "retained loop key cells retain exact owners before final output walk" {
                         try std.testing.expectEqual(t.nearestVarScope(scope), editor.symbols.items[binding_sid].scope_id);
                 }
             }
+            if (t.getSymbolIdAt(work.node)) |generated_sid| {
+                if (generated_sid >= source_symbols) {
+                    const generated = editor.symbols.items[generated_sid];
+                    if (node.tag == .binding_identifier and
+                        (generated.kind == .parameter or generated.kind == .catch_binding or generated.kind == .variable_let))
+                        try std.testing.expectEqual(scope, generated.scope_id);
+                    if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                        const reference = (try editor.referenceForNode(work.node)) orelse return error.MissingDriverReferenceAtBirth;
+                        try std.testing.expectEqual(generated_sid, @backingInt(reference.symbol_id));
+                        if (scope != reference.scope_id) std.debug.print("driver owner profile={d} node={d} name={s} sid={d} kind={s} physical={d} ref={d}\n", .{ profile, @backingInt(work.node), t.ast.getText(node.span), generated_sid, @tagName(generated.kind), scope.toIndex(), reference.scope_id.toIndex() });
+                        try std.testing.expectEqual(scope, reference.scope_id);
+                    }
+                }
+            }
             if (t.getSymbolIdAt(work.node) == sid) {
                 if (node.tag == .binding_identifier) {
                     try std.testing.expectEqual(if (editor.symbols.items[sid].kind == .variable_let) scope else t.nearestVarScope(scope), editor.symbols.items[sid].scope_id);
@@ -335,7 +349,10 @@ test "retained loop key cells retain exact owners before final output walk" {
                 }
             }
             var children = @import("../parser/ast_walk.zig").children(t.ast, node);
-            while (children.next()) |child| try stack.append(a, .{ .node = child, .scope = scope });
+            while (children.next()) |child| {
+                const skips = @import("transformer/semantic_edit.zig").childSkipsOutputScope(t.ast, @backingInt(work.node), @backingInt(child));
+                try stack.append(a, .{ .node = child, .scope = if (skips) work.scope else scope });
+            }
         }
         try std.testing.expectEqual(@as(usize, 1), bindings);
         try std.testing.expect(reads > 0);

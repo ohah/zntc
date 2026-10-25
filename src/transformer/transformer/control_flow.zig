@@ -538,7 +538,8 @@ fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: 
     return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
 }
 
-pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
     const e = node.data.extra;
     const init_idx = self.readNodeIdx(e, 0);
     if (!self.options.unsupported.block_scoping)
@@ -637,6 +638,10 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     @backingInt(new_init),   @backingInt(new_test),
                     @backingInt(new_update), @backingInt(result.call_and_check),
                 });
+
+                // The helper declaration is outside the source loop; the
+                // actual replacement loop retains its source lexical owner.
+                try self.remapCopiedScopeOwner(idx, for_node);
 
                 // 두 문을 블록으로 반환 (호이스팅 불필요 — for 문 바로 앞에 삽입)
                 const stmts = try self.ast.addNodeList(&.{ result.loop_fn, for_node });

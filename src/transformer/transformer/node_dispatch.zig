@@ -763,7 +763,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },
-        .for_statement => self.visitForStatement(node),
+        .for_statement => self.visitForStatement(idx),
         .switch_statement => self.visitSwitchStatement(node),
         .switch_case => self.visitSwitchCase(node),
         .call_expression => {
