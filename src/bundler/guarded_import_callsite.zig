@@ -82,11 +82,23 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.m
     return result.items;
 }
 
-fn projectStatementOwners(editor: anytype, root: NodeIndex, a: std.mem.Allocator) !void {
+fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: anytype, a: std.mem.Allocator) !void {
     var wanted: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
     for (editor.references.items) |reference| {
         const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
         if (!anchor.isNone()) try wanted.put(a, anchor, {});
+    }
+    // Native class-self declarations have no leaf anchor. The initial typed
+    // role selects the SID; its existing ScopeId selects the current class owner.
+    var class_self_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var self_symbols = class_self_symbols.valueIterator();
+    while (self_symbols.next()) |sid| try class_self_ids.put(a, sid.*, {});
+    var scope_owners = editor.scope_owner_map.iterator();
+    while (scope_owners.next()) |entry| {
+        const node: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        if (entry.key_ptr.* >= editor.ast.nodes.items.len) continue;
+        const tag = editor.ast.getNode(node).tag;
+        if (tag == .class_declaration or tag == .class_expression) try wanted.put(a, node, {});
     }
     var owners: std.AutoHashMapUnmanaged(NodeIndex, u32) = .empty;
     const list = editor.ast.getNode(root).data.list;
@@ -101,9 +113,33 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, a: std.mem.Allocator
             found.value_ptr.* = index;
         }
     }
+    const ClassContext = struct { node: NodeIndex, statement: u32 };
+    var class_contexts: std.AutoHashMapUnmanaged(u32, ClassContext) = .empty;
+    scope_owners = editor.scope_owner_map.iterator();
+    while (scope_owners.next()) |entry| {
+        const node: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const statement = owners.get(node) orelse continue;
+        const tag = editor.ast.getNode(node).tag;
+        if (tag != .class_declaration and tag != .class_expression) continue;
+        const slot = try class_contexts.getOrPut(a, entry.value_ptr.*);
+        if (slot.found_existing and slot.value_ptr.node != node) return error.AmbiguousGuardedClassOwner;
+        slot.value_ptr.* = .{ .node = node, .statement = statement };
+    }
     for (editor.references.items) |*reference| {
         const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
         reference.stmt_idx = owners.get(anchor) orelse Reference.NO_STMT;
+        if (anchor.isNone() and reference.flags.declare and class_self_ids.contains(@backingInt(reference.symbol_id))) {
+            const symbol = editor.symbols.items[@backingInt(reference.symbol_id)];
+            const scope = symbol.scope_id;
+            if (symbol.kind != .class_decl or scope.isNone() or scope.toIndex() >= editor.scopes.items.len or
+                scope != reference.scope_id or editor.scopes.items[scope.toIndex()].kind != .class_body) return error.InvalidGuardedClassSelf;
+            if (class_contexts.get(@backingInt(scope))) |context| {
+                reference.stmt_idx = context.statement;
+                // Only the program statement list changes. Existing nested
+                // statement lists retain their original per-scope coordinates.
+                if (editor.scopes.items[scope.toIndex()].parent.toIndex() == 0) reference.scope_stmt_idx = context.statement;
+            }
+        }
         if (reference.scope_id.toIndex() == 0) reference.scope_stmt_idx = reference.stmt_idx;
     }
 }
@@ -254,7 +290,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         const replacement = try ast.addNode(.{ .tag = .program, .span = ast.getNode(root).span, .data = .{ .list = try ast.addNodeList(statements.items) } });
         try editor.remapScopeOwner(root, replacement);
         ast.transformed_root = replacement;
-        try projectStatementOwners(&editor, replacement, a);
+        try projectStatementOwners(&editor, replacement, &sem.class_self_symbol_map, a);
         try builder.validate();
         sem.applyEdit(try editor.finish());
         var added: std.ArrayList(NodeIndex) = .empty;
@@ -274,8 +310,12 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         "function run(__zntc_guarded){const offset=1;return value()+offset-1;}globalThis.actual=run(null);",
         "class Box{run(__zntc_guarded){const offset=1;return value()+offset-1;}}globalThis.actual=new Box().run(null);",
         "function* run(__zntc_guarded){yield value();}globalThis.actual=run(null).next().value;",
+        "const Box=class Inner{static self(){return Inner;}run(){return value();}};globalThis.actual=new Box().run();",
+        "class Box{static self(){return Box;}run(){return value();}}globalThis.actual=new Box().run();",
+        "function* source(){yield 0;}class Box{static self(){return Box;}run(){return value()+source().next().value;}}globalThis.actual=new Box().run();",
+        "function* source(){yield 0;}function run(){const Box=class Inner{static self(){return Inner;}run(){return value()+source().next().value;}};return new Box().run();}globalThis.actual=run();",
         "function run(__zntc_guarded){for(let n=0;n<1;n++){const call=()=>{let offset=1;return value()+offset-1;};return call();}}globalThis.actual=run(null);",
-    }) |body| for ([_]bool{ true, false }) |tree_shaking| {
+    }) |body| for ([_]bool{ true, false }) |tree_shaking| for ([_]bool{ false, true }) |native_classes| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         const source = try std.fmt.allocPrint(std.testing.allocator, "import {{value}} from './dep.mjs';{s}", .{body});
@@ -287,7 +327,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         defer std.testing.allocator.free(entry);
         const second = try helpers.absPath(&tmp, "second.mjs");
         defer std.testing.allocator.free(second);
-        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true, .tree_shaking = tree_shaking, .minify_whitespace = true };
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .rn_version_matrix = if (native_classes) .{ .generator = true } else null, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true, .tree_shaking = tree_shaking, .minify_whitespace = true };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
@@ -346,6 +386,19 @@ test "guarded lazy source calls preserve original callee identity and actual nes
                 for (sem.references) |reference| {
                     const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
                     if (!anchor.isNone() and @backingInt(anchor) == raw) try std.testing.expectEqual(top_index, reference.stmt_idx);
+                    if (!reference.flags.declare or !anchor.isNone()) continue;
+                    const scope = sem.symbols.items[@backingInt(reference.symbol_id)].scope_id;
+                    const owner_scope = sem.scope_owner_map.get(raw) orelse continue;
+                    const tag = ast.nodes.items[raw].tag;
+                    if (owner_scope != scope.toIndex() or (tag != .class_declaration and tag != .class_expression)) continue;
+                    var known_self = false;
+                    var self_symbols = sem.class_self_symbol_map.valueIterator();
+                    while (self_symbols.next()) |sid| if (sid.* == @backingInt(reference.symbol_id)) {
+                        known_self = true;
+                    };
+                    if (!known_self) continue;
+                    try std.testing.expectEqual(top_index, reference.stmt_idx);
+                    if (sem.scopes[scope.toIndex()].parent.toIndex() == 0) try std.testing.expectEqual(top_index, reference.scope_stmt_idx);
                 }
             }
         }
