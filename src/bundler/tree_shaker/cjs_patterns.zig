@@ -46,12 +46,13 @@ pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool
     return changed;
 }
 
-/// Remove the dead alternate from expression-statement or block branch shapes
-/// and return the complete pre-edit node set that becomes unreachable. Keep
-/// the if and consequent nodes in place so their graph identities and the
-/// surrounding module's CJS statement shape remain stable. If any matching
-/// fold has a different statement shape, leave the AST untouched for full
-/// reanalysis.
+/// Remove the dead alternate from supported branch shapes and return the
+/// complete pre-edit node set that becomes unreachable. Keep the if and
+/// consequent nodes in place so their graph identities and the surrounding
+/// module's CJS statement shape remain stable. A direct `var` consequent does
+/// not create a lexical scope, so its binding stays in the same function or
+/// module scope. Lexical declarations and other statement shapes still use
+/// full reanalysis.
 pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     allocator: std.mem.Allocator,
     ast: *Ast,
@@ -82,8 +83,13 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
 
         const kept = node.data.ternary.b;
         if (kept.isNone() or @backingInt(kept) >= ast.nodes.items.len) return false;
-        const kept_tag = ast.nodes.items[@backingInt(kept)].tag;
-        if (kept_tag != .expression_statement and kept_tag != .block_statement) return false;
+        const kept_node = ast.nodes.items[@backingInt(kept)];
+        const kept_variable_kind: ?u32 = if (kept_node.tag == .variable_declaration) blk: {
+            const kind_index = kept_node.data.extra;
+            if (kind_index >= ast.extra_data.items.len) return false;
+            break :blk ast.extra_data.items[kind_index];
+        } else null;
+        if (!isRetainableNodeBufferCapabilityBranch(kept_node.tag, kept_variable_kind)) return false;
         const alternate = node.data.ternary.c;
         if (!alternate.isNone()) {
             if (@backingInt(alternate) >= ast.nodes.items.len) return false;
@@ -135,6 +141,40 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
         };
     }
     return true;
+}
+
+fn isRetainableNodeBufferCapabilityBranch(tag: Node.Tag, variable_kind: ?u32) bool {
+    return switch (tag) {
+        .expression_statement, .block_statement => true,
+        .variable_declaration => variable_kind != null and
+            variable_kind.? == @backingInt(ast_mod.VariableDeclarationKind.@"var"),
+        else => false,
+    };
+}
+
+test "retained Node Buffer capability branch accepts only var declarations" {
+    const var_kind: u32 = @backingInt(ast_mod.VariableDeclarationKind.@"var");
+    try std.testing.expect(isRetainableNodeBufferCapabilityBranch(.expression_statement, null));
+    try std.testing.expect(isRetainableNodeBufferCapabilityBranch(.block_statement, null));
+    try std.testing.expect(isRetainableNodeBufferCapabilityBranch(.variable_declaration, var_kind));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(.variable_declaration, null));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(
+        .variable_declaration,
+        @backingInt(ast_mod.VariableDeclarationKind.let),
+    ));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(
+        .variable_declaration,
+        @backingInt(ast_mod.VariableDeclarationKind.@"const"),
+    ));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(
+        .variable_declaration,
+        @backingInt(ast_mod.VariableDeclarationKind.using),
+    ));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(
+        .variable_declaration,
+        @backingInt(ast_mod.VariableDeclarationKind.await_using),
+    ));
+    try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(.if_statement, null));
 }
 
 const BufferCapabilityFoldBranch = struct {

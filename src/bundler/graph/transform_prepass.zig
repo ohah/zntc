@@ -13298,6 +13298,75 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
 /// the complete pre-mutation node set removed by the fold. Dead block scopes
 /// are only elided when removing their exact references leaves them empty;
 /// other graph owners remain ineligible and use the full analyzer fallback.
+const NodeBufferCapabilityWrapperReference = enum { exports, module };
+
+fn nodeBufferCapabilityWrapperReference(
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
+    ast: *const ast_mod.Ast,
+    node_raw: usize,
+    symbol_raw: u32,
+) ?NodeBufferCapabilityWrapperReference {
+    if (node_raw >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[node_raw];
+    if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) return null;
+    const text = ast.getText(node.data.string_ref);
+    const role: NodeBufferCapabilityWrapperReference = if (std.mem.eql(u8, text, "exports"))
+        .exports
+    else if (std.mem.eql(u8, text, "module"))
+        .module
+    else
+        return null;
+    const expected_id = switch (role) {
+        .exports => module.cjs_wrapper_exports_parameter_symbol orelse return null,
+        .module => module.cjs_wrapper_module_parameter_symbol orelse return null,
+    };
+    const expected_kind: SemanticSyntheticKind = switch (role) {
+        .exports => .cjs_wrapper_exports_parameter,
+        .module => .cjs_wrapper_module_parameter,
+    };
+    const expected_name = switch (role) {
+        .exports => "exports",
+        .module => "module",
+    };
+    if (symbol_raw != @backingInt(expected_id) or symbol_raw >= semantic.symbols.items.len) return null;
+    const symbol = semantic.symbols.items[symbol_raw];
+    if (symbol.kind != .parameter or symbol.synthetic_kind != expected_kind or
+        !std.mem.eql(u8, symbol.synthetic_name, expected_name) or symbol.scope_id.isNone() or
+        @backingInt(symbol.scope_id) >= semantic.scopes.len) return null;
+    return role;
+}
+
+fn hasEnoughExactWrapperReferenceCount(
+    module: *const Module,
+    semantic: *const ModuleSemanticData,
+    role: NodeBufferCapabilityWrapperReference,
+    removed_count: u32,
+) bool {
+    if (removed_count == 0) return true;
+    const symbol_id = switch (role) {
+        .exports => module.cjs_wrapper_exports_parameter_symbol orelse return false,
+        .module => module.cjs_wrapper_module_parameter_symbol orelse return false,
+    };
+    const expected_kind: SemanticSyntheticKind = switch (role) {
+        .exports => .cjs_wrapper_exports_parameter,
+        .module => .cjs_wrapper_module_parameter,
+    };
+    const expected_name = switch (role) {
+        .exports => "exports",
+        .module => "module",
+    };
+    const raw = @backingInt(symbol_id);
+    if (raw >= semantic.symbols.items.len) return false;
+    const symbol = semantic.symbols.items[raw];
+    if (symbol.kind != .parameter or symbol.synthetic_kind != expected_kind or
+        !std.mem.eql(u8, symbol.synthetic_name, expected_name) or symbol.scope_id.isNone() or
+        @backingInt(symbol.scope_id) >= semantic.scopes.len) return false;
+    // Wrapper registration uses saturating increments. A saturated value no
+    // longer proves an exact subtraction is safe, so preserve the analyzer path.
+    return symbol.reference_count != std.math.maxInt(u32) and symbol.reference_count >= removed_count;
+}
+
 pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     self: anytype,
     module: *Module,
@@ -13355,8 +13424,12 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
 
     var references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer references_to_remove.deinit(arena_alloc);
+    var wrapper_references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer wrapper_references_to_remove.deinit(arena_alloc);
     var removed_scope_owners: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer removed_scope_owners.deinit(arena_alloc);
+    var removed_exports_wrapper_references: u32 = 0;
+    var removed_module_wrapper_references: u32 = 0;
     for (semantic.references) |reference| {
         if (!reference.declaration_node_index.isNone()) {
             const declaration_raw = @backingInt(reference.declaration_node_index);
@@ -13374,7 +13447,35 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     }
     for (removed_nodes) |node_index| {
         const raw = @backingInt(node_index);
-        if (semantic.symbol_ids[raw] != null and !reference_nodes.isSet(raw)) return false;
+        if (semantic.symbol_ids[raw]) |symbol_raw| {
+            if (!reference_nodes.isSet(raw)) {
+                const wrapper_reference = nodeBufferCapabilityWrapperReference(
+                    module,
+                    semantic,
+                    ast,
+                    raw,
+                    symbol_raw,
+                ) orelse return false;
+                if (module.transform_cache) |cache| {
+                    // Wrapper registration writes this same exact edge to both
+                    // graph snapshots. A stale or partial cache cannot be
+                    // repaired by guessing which identity it meant.
+                    if (raw >= cache.symbol_ids.len or cache.symbol_ids[raw] != symbol_raw) return false;
+                }
+                switch (wrapper_reference) {
+                    .exports => {
+                        if (removed_exports_wrapper_references == std.math.maxInt(u32)) return false;
+                        removed_exports_wrapper_references += 1;
+                    },
+                    .module => {
+                        if (removed_module_wrapper_references == std.math.maxInt(u32)) return false;
+                        removed_module_wrapper_references += 1;
+                    },
+                }
+                try wrapper_references_to_remove.append(arena_alloc, node_index);
+                reference_nodes.set(raw);
+            }
+        }
         if (semantic.node_scope_provenance.contains(node_index)) return false;
         if (semantic.scope_owner_map.contains(raw)) {
             const tag = ast.nodes.items[raw].tag;
@@ -13383,9 +13484,33 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         }
     }
 
+    if (!hasEnoughExactWrapperReferenceCount(
+        module,
+        semantic,
+        .exports,
+        removed_exports_wrapper_references,
+    ) or !hasEnoughExactWrapperReferenceCount(
+        module,
+        semantic,
+        .module,
+        removed_module_wrapper_references,
+    )) return false;
+
     var editor = try semantic.beginEdit(arena_alloc, ast);
     defer editor.deinit();
     try editor.removeReferences(references_to_remove.items);
+    for (wrapper_references_to_remove.items) |node_index| {
+        const raw = @backingInt(node_index);
+        const symbol_raw = editor.symbol_ids.items[raw] orelse return false;
+        const symbol = &editor.symbols.items[symbol_raw];
+        // `bindCjsWrapperReferences` accounts these unresolved source uses in
+        // reference_count without adding ordinary Semantic.Reference rows.
+        // Drop that separate count and identity together with the removed AST
+        // edge; the emitter's ref_deltas remain independent minifier history.
+        if (symbol.reference_count == 0) return false;
+        symbol.reference_count -= 1;
+        editor.symbol_ids.items[raw] = null;
+    }
     for (removed_scope_owners.items) |owner| {
         if (!try editor.elideEmptyGeneratedScopeOwner(owner)) return false;
     }
@@ -14019,6 +14144,64 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     try std.testing.expect(buffer_refs_before >= 4);
     try std.testing.expect(fallback_refs_before > 0);
 
+    // Model graph finalization: unresolved CJS wrapper parameters receive
+    // exact identities and reference counts, but no Semantic.Reference rows.
+    const wrapper_scope_id: ScopeId = @fromBackingInt(@intCast(analyzer.scopes.items.len));
+    try analyzer.scopes.append(allocator, .{
+        .parent = @fromBackingInt(0),
+        .kind = .function,
+        .is_strict = false,
+        .symbol_count = 2,
+    });
+    try analyzer.scope_maps.append(allocator, .empty);
+    const exports_wrapper_symbol = try semantic_symbol.extendSymbol(
+        allocator,
+        &analyzer.symbols,
+        .parameter,
+        .cjs_wrapper_exports_parameter,
+        "exports",
+        Span.EMPTY,
+    );
+    const module_wrapper_symbol = try semantic_symbol.extendSymbol(
+        allocator,
+        &analyzer.symbols,
+        .parameter,
+        .cjs_wrapper_module_parameter,
+        "module",
+        Span.EMPTY,
+    );
+    for ([_]SemanticSymbolId{ exports_wrapper_symbol, module_wrapper_symbol }) |symbol_id| {
+        const symbol = &analyzer.symbols.items[@backingInt(symbol_id)];
+        symbol.scope_id = wrapper_scope_id;
+        symbol.origin_scope = wrapper_scope_id;
+    }
+    try analyzer.scope_maps.items[0].put(allocator, "exports", @backingInt(exports_wrapper_symbol));
+    try analyzer.scope_maps.items[0].put(allocator, "module", @backingInt(module_wrapper_symbol));
+    try analyzer.scope_maps.items[wrapper_scope_id.toIndex()].put(
+        allocator,
+        "exports",
+        @backingInt(exports_wrapper_symbol),
+    );
+    try analyzer.scope_maps.items[wrapper_scope_id.toIndex()].put(
+        allocator,
+        "module",
+        @backingInt(module_wrapper_symbol),
+    );
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        const text = parser.ast.getText(node.data.string_ref);
+        const symbol_id = if (std.mem.eql(u8, text, "exports"))
+            exports_wrapper_symbol
+        else if (std.mem.eql(u8, text, "module"))
+            module_wrapper_symbol
+        else
+            continue;
+        analyzer.symbol_ids.items[raw] = @backingInt(symbol_id);
+        analyzer.symbols.items[@backingInt(symbol_id)].reference_count += 1;
+    }
+    const exports_wrapper_reference_count_before = analyzer.symbols.items[@backingInt(exports_wrapper_symbol)].reference_count;
+    const module_wrapper_reference_count_before = analyzer.symbols.items[@backingInt(module_wrapper_symbol)].reference_count;
+
     var module = Module.init(@fromBackingInt(@intCast(0)), "test.cjs");
     module.source = source;
     module.ast = parser.ast;
@@ -14041,9 +14224,12 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
+    module.cjs_wrapper_exports_parameter_symbol = exports_wrapper_symbol;
+    module.cjs_wrapper_module_parameter_symbol = module_wrapper_symbol;
+    const cache_symbol_ids = try allocator.dupe(?u32, module.semantic.?.symbol_ids);
     module.transform_cache = .{
         .runtime_helpers = .{},
-        .symbol_ids = module.semantic.?.symbol_ids,
+        .symbol_ids = cache_symbol_ids,
     };
 
     var removed_nodes: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
@@ -14066,6 +14252,18 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     const kept_raw = @backingInt(kept_block.?);
     const alternate_raw = @backingInt(alternate_block.?);
     const before_semantic = &module.semantic.?;
+    const exports_wrapper_raw = @backingInt(exports_wrapper_symbol);
+    const module_wrapper_raw = @backingInt(module_wrapper_symbol);
+    var removed_exports_wrapper_references: u32 = 0;
+    var removed_module_wrapper_references: u32 = 0;
+    for (removed_nodes.items) |node_index| {
+        const raw = @backingInt(node_index);
+        if (before_semantic.symbol_ids[raw]) |symbol_id| {
+            if (symbol_id == exports_wrapper_raw) removed_exports_wrapper_references += 1;
+            if (symbol_id == module_wrapper_raw) removed_module_wrapper_references += 1;
+        }
+    }
+    try std.testing.expect(removed_exports_wrapper_references > 0);
     const alternate_scope_id = before_semantic.scope_owner_map.get(alternate_raw).?;
     try before_semantic.scope_owner_map.put(allocator, if_raw, alternate_scope_id);
     try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
@@ -14097,6 +14295,117 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         removed_nodes.items,
     ));
     mutable_scopes[alternate_scope_id].symbol_count = original_symbol_count;
+
+    const original_wrapper_kind = before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind;
+    before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind = .cjs_wrapper_module_parameter;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].synthetic_kind = original_wrapper_kind;
+
+    const original_wrapper_name = before_semantic.symbols.items[exports_wrapper_raw].synthetic_name;
+    before_semantic.symbols.items[exports_wrapper_raw].synthetic_name = "module";
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].synthetic_name = original_wrapper_name;
+
+    const original_wrapper_symbol_kind = before_semantic.symbols.items[exports_wrapper_raw].kind;
+    before_semantic.symbols.items[exports_wrapper_raw].kind = .variable_var;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].kind = original_wrapper_symbol_kind;
+
+    const original_wrapper_scope = before_semantic.symbols.items[exports_wrapper_raw].scope_id;
+    before_semantic.symbols.items[exports_wrapper_raw].scope_id = .none;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].scope_id = original_wrapper_scope;
+
+    const original_wrapper_count = before_semantic.symbols.items[exports_wrapper_raw].reference_count;
+    before_semantic.symbols.items[exports_wrapper_raw].reference_count = 0;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].reference_count = original_wrapper_count;
+
+    before_semantic.symbols.items[exports_wrapper_raw].reference_count = std.math.maxInt(u32);
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    before_semantic.symbols.items[exports_wrapper_raw].reference_count = original_wrapper_count;
+
+    const original_exports_wrapper_id = module.cjs_wrapper_exports_parameter_symbol;
+    module.cjs_wrapper_exports_parameter_symbol = module_wrapper_symbol;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    module.cjs_wrapper_exports_parameter_symbol = original_exports_wrapper_id;
+
+    module.cjs_wrapper_exports_parameter_symbol = @as(
+        ?SemanticSymbolId,
+        @fromBackingInt(@intCast(before_semantic.symbols.items.len + 1)),
+    );
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    module.cjs_wrapper_exports_parameter_symbol = original_exports_wrapper_id;
+
+    var wrapper_reference_raw: ?usize = null;
+    for (removed_nodes.items) |node_index| {
+        const raw = @backingInt(node_index);
+        if (before_semantic.symbol_ids[raw] == exports_wrapper_raw) {
+            wrapper_reference_raw = raw;
+            break;
+        }
+    }
+    const exports_reference_raw = wrapper_reference_raw orelse return error.MissingExportsWrapperReference;
+    const original_cached_wrapper_id = cache_symbol_ids[exports_reference_raw];
+    cache_symbol_ids[exports_reference_raw] = null;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    cache_symbol_ids[exports_reference_raw] = original_cached_wrapper_id;
+
+    cache_symbol_ids[exports_reference_raw] = module_wrapper_raw;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    cache_symbol_ids[exports_reference_raw] = original_cached_wrapper_id;
+
+    try std.testing.expectEqual(exports_wrapper_raw, before_semantic.symbol_ids[exports_reference_raw].?);
 
     try std.testing.expect(try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         &test_context,
@@ -14133,6 +14442,15 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         buffer_reference_count_before,
         semantic.symbols.items[buffer_symbol.?].reference_count,
     );
+    try std.testing.expectEqual(
+        exports_wrapper_reference_count_before - removed_exports_wrapper_references,
+        semantic.symbols.items[exports_wrapper_raw].reference_count,
+    );
+    try std.testing.expectEqual(
+        module_wrapper_reference_count_before - removed_module_wrapper_references,
+        semantic.symbols.items[module_wrapper_raw].reference_count,
+    );
+    try std.testing.expectEqual(semantic.symbol_ids.ptr, module.transform_cache.?.symbol_ids.ptr);
     for (removed_nodes.items) |node_index| {
         const raw = @backingInt(node_index);
         try std.testing.expect(semantic.symbol_ids[raw] == null);
