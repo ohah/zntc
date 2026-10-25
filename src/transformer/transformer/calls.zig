@@ -40,11 +40,12 @@ pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
     const new_extra = try self.ast.addExtras(&.{
         @backingInt(new_callee), new_args.start, new_args.len, flags,
     });
-    return self.ast.addNode(.{
+    const call = try self.ast.addNode(.{
         .tag = .call_expression,
         .span = node.span,
         .data = .{ .extra = new_extra },
     });
+    return @import("../native_derived_this.zig").initializeAfterSuper(self, callee_idx, call, node.span);
 }
 
 /// new_expression: extra = [callee, args_start, args_len, flags]

@@ -560,29 +560,33 @@ pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
 /// A key's StringValue does not distinguish a class constructor from an
 /// ordinary object method. Preserve the actual class-member edge, including
 /// exact scope-owner aliases produced by copying a source method.
-pub fn isClassConstructorMethod(self: anytype, owner: NodeIndex, node: Node) bool {
+pub fn classConstructorOwner(self: anytype, owner: NodeIndex, node: Node) ?NodeIndex {
     if (node.tag != .method_definition or
         self.ast.readExtra(node.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static != 0 or
-        !isConstructorKey(self, self.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.key))) return false;
+        !isConstructorKey(self, self.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.key))) return null;
     const scope = if (self.semantic_edit_enabled) self.outputOwnedScope(owner) else null;
-    for (self.ast.nodes.items) |class| {
+    for (self.ast.nodes.items, 0..) |class, class_raw| {
         if (class.tag != .class_declaration and class.tag != .class_expression) continue;
         const body_idx = self.ast.readExtraNode(class.data.extra, ast_mod.ClassExtra.body);
         if (body_idx.isNone()) continue;
         const body = self.ast.getNode(body_idx);
         for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
-            if (raw == @backingInt(owner)) return true;
+            if (raw == @backingInt(owner)) return @fromBackingInt(@intCast(class_raw));
             if (scope) |method_scope| {
                 const member: NodeIndex = @fromBackingInt(raw);
                 const candidate = self.ast.getNode(member);
                 if (candidate.tag != .method_definition or
                     self.ast.readExtra(candidate.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static != 0 or
                     !isConstructorKey(self, self.ast.readExtraNode(candidate.data.extra, ast_mod.MethodExtra.key))) continue;
-                if (self.outputOwnedScope(member) == method_scope) return true;
+                if (self.outputOwnedScope(member) == method_scope) return @fromBackingInt(@intCast(class_raw));
             }
         }
     }
-    return false;
+    return null;
+}
+
+pub fn isClassConstructorMethod(self: anytype, owner: NodeIndex, node: Node) bool {
+    return classConstructorOwner(self, owner, node) != null;
 }
 
 /// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...

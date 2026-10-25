@@ -56,6 +56,7 @@ pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_va
 /// even when traversal opens different capture frames for them.
 pub const NativeFieldCapturePlan = struct {
     derived: bool = false,
+    initialize_on_super: bool = false,
     frame: u32 = 0,
     scope: ScopeId = .none,
     this_declaration: NodeIndex = .none,

@@ -785,7 +785,9 @@ pub fn isSuperCallStatement(self: anytype, idx: NodeIndex) bool {
     if (stmt.tag != .expression_statement) return false;
     const expr_idx = stmt.data.unary.operand;
     if (expr_idx.isNone()) return false;
-    const expr = self.ast.getNode(expr_idx);
+    var expr = self.ast.getNode(expr_idx);
+    // Native constructor capture cells store the successful super result.
+    if (expr.tag == .assignment_expression) expr = self.ast.getNode(expr.data.binary.right);
     if (expr.tag != .call_expression) return false;
     // call_expression: extra = [callee, args_start, args_len, flags]
     const ce = expr.data.extra;
