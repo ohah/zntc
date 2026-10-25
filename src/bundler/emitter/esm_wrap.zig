@@ -1095,6 +1095,7 @@ pub fn emitEsmWrappedModule(
             if (!eb.kind.isReExportAll() and eb.kind != .re_export) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= module.import_records.len) continue;
+            if (module.import_records[rec_idx].callsite_lowered) continue;
             const source_mod_idx = module.import_records[rec_idx].resolved;
             if (source_mod_idx.isNone()) continue;
             const src_i = @backingInt(source_mod_idx);
