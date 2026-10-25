@@ -1971,10 +1971,21 @@ test "CJS export source kind uses exact reference identities and cached host slo
         if (std.mem.eql(u8, name, "module")) cached_ids[index] = 7;
         if (std.mem.eql(u8, name, "exports")) cached_ids[index] = 11;
     }
-    const cached = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .module_parameter = 7, .exports_parameter = 11 });
+    const Symbol = @import("../semantic/symbol.zig").Symbol;
+    var symbols: [12]Symbol = undefined;
+    @memset(&symbols, .{ .name = .EMPTY, .scope_id = .none, .kind = .variable_const, .declaration_span = .EMPTY });
+    symbols[7] = .{ .name = .EMPTY, .scope_id = .none, .kind = .parameter, .decl_flags = .{ .is_parameter = true }, .declaration_span = .EMPTY, .synthetic_kind = .cjs_wrapper_module_parameter };
+    symbols[11] = .{ .name = .EMPTY, .scope_id = .none, .kind = .parameter, .decl_flags = .{ .is_parameter = true }, .declaration_span = .EMPTY, .synthetic_kind = .cjs_wrapper_exports_parameter };
+    const cached = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
     try std.testing.expect(cached.has_module_exports and cached.has_exports_dot and cached.has_esmodule_marker);
-    const wrong_roles = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .module_parameter = 11, .exports_parameter = 7 });
+    const wrong_roles = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 11, .exports_parameter = 7 });
     try std.testing.expect(!wrong_roles.has_module_exports and !wrong_roles.has_exports_dot and !wrong_roles.has_esmodule_marker);
+    const dangling = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(!dangling.has_module_exports and !dangling.has_exports_dot);
+    symbols[7].kind = .variable_const;
+    symbols[11].synthetic_kind = .cjs_wrapper_module_parameter;
+    const invalid_rows = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(!invalid_rows.has_module_exports and !invalid_rows.has_exports_dot and !invalid_rows.has_esmodule_marker);
     try std.testing.expectError(error.MissingCjsExportReferenceIdentity, import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = &.{} }));
     const empty_statements = try parser.ast.addNodeList(&.{});
     parser.ast.transformed_root = try parser.ast.addNode(.{ .tag = .program, .span = .{ .start = 0, .end = 0 }, .data = .{ .list = empty_statements } });
