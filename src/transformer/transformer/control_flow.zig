@@ -262,7 +262,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     try self.label_scope.append(self.allocator, null);
     const body_temp_start = self.temp_var_counter;
     self.pending_loop_extraction_depth += 1;
-    const raw_body = visitSuspendingLoopBody(self, orig_body, capture.retained_key_cells and is_async) catch |err| {
+    const raw_body = visitSuspendingLoopBody(self, orig_body, is_async) catch |err| {
         self.pending_loop_extraction_depth -= 1;
         return err;
     };
@@ -286,7 +286,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         capture.var_bindings.items,
         self.current_scope,
         .none,
-        capture.retained_key_cells and is_async,
+        is_async,
     );
     const loop_node = try self.ast.addNode(.{
         .tag = node.tag,
@@ -341,7 +341,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
             if (has_capture) self.pending_loop_extraction_depth += 1;
-            const raw_c = visitSuspendingLoopBody(self, orig_body_idx, capture.retained_key_cells and is_async) catch |err| {
+            const raw_c = visitSuspendingLoopBody(self, orig_body_idx, is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -370,7 +370,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     .none,
-                    capture.retained_key_cells and is_async,
+                    is_async,
                 );
                 try splitCapturedLoopHeaderSymbols(
                     self,
@@ -584,7 +584,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                 self.in_extracted_fn_body = true;
                 defer self.in_extracted_fn_body = saved_extracted;
                 break :native_generator_body try self.visitNode(orig_body_idx);
-            } else visitSuspendingLoopBody(self, orig_body_idx, capture.retained_key_cells and is_async) catch |err| {
+            } else visitSuspendingLoopBody(self, orig_body_idx, is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -613,7 +613,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     if (yield_closure) self.outputScopeParent(self.current_scope) else .none,
-                    capture.retained_key_cells and is_async and !yield_closure,
+                    is_async and !yield_closure,
                 );
 
                 try splitCapturedLoopHeaderSymbols(
