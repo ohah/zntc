@@ -6281,7 +6281,7 @@ pub const Linker = struct {
         const sem = module.semantic orelse return error.InvalidCallsiteTarget;
         const raw = @backingInt(target.symbol.inner);
         if (target.owner == .unassigned or target.owner != sem.owner_token or raw >= sem.symbols.items.len) return error.InvalidCallsiteTarget;
-        try @import("interop_callsite.zig").validateTargetRole(self.graph, target);
+        try @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target);
         return self.rename_table.get(target.symbol) orelse module.symbolName(target.symbol.inner) orelse error.InvalidCallsiteTarget;
     }
 
