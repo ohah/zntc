@@ -886,8 +886,15 @@ pub const SemanticAnalyzer = struct {
                     (existing.kind.isFunctionLike() or existing.kind == .variable_var) and
                     (kind.isFunctionLike() or existing.kind.isFunctionLike()) and
                     !target_scope.isNone() and self.scopes.items[target_scope.toIndex()].kind.isVarScope();
+                // A simple-parameter function declaration initializes that same
+                // function-environment binding (including mapped arguments).
+                // Non-simple parameters live in a different scope and cannot
+                // enter this exact current-scope reuse path.
+                const same_parameter_function = !is_function_expression_name and kind == .function_decl and
+                    existing.kind == .parameter and !target_scope.isNone() and
+                    self.scopes.items[target_scope.toIndex()].kind.isVarScope();
                 if ((kind == .variable_var and (existing.kind == .parameter or existing.kind == .variable_var)) or
-                    same_var_scope_function)
+                    same_var_scope_function or same_parameter_function)
                 {
                     if (self.findSymbolIndexInScope(target_scope, name_text)) |existing_sym_idx| {
                         if (node_idx) |ni| {
@@ -898,7 +905,7 @@ pub const SemanticAnalyzer = struct {
                         // 함수 선언 문장은 쓰기 참조가 없으므로 선언 행을 남겨야 번들 tree shaker 가
                         // 그 문장을 이 심볼의 선언으로 보고 지우지 않는다(마지막 선언이 값).
                         // 노드 없는 1st pass 병합은 행을 남기지 않는다 — 방문 때 노드와 함께 남긴다.
-                        if (same_var_scope_function and kind.isFunctionLike() and node_idx != null)
+                        if ((same_var_scope_function or same_parameter_function) and kind.isFunctionLike() and node_idx != null)
                             self.recordDeclareRef(@intCast(existing_sym_idx), target_scope, node_idx);
                         return;
                     }
@@ -2992,6 +2999,7 @@ pub const SemanticAnalyzer = struct {
                     }
                 },
                 .export_default_declaration => continue,
+                .labeled_statement => try self.predeclareVarDeclsRecursive(idx, true),
                 else => try self.predeclareVarDeclsRecursive(idx, false),
             }
         }
@@ -3624,6 +3632,17 @@ pub const SemanticAnalyzer = struct {
 
     /// Block 스코프의 lexical 선언을 statement 순회 전에 등록한다.
     /// strict block function도 lexical 선언이며, sloppy function은 기존 Annex B 경로를 유지한다.
+    fn labelledFunctionDeclaration(self: *SemanticAnalyzer, index: NodeIndex) ?NodeIndex {
+        var current = index;
+        while (!current.isNone() and @backingInt(current) < self.ast.nodes.items.len) {
+            const node = self.ast.getNode(current);
+            if (node.tag == .function_declaration) return current;
+            if (node.tag != .labeled_statement) return null;
+            current = node.data.binary.right;
+        }
+        return null;
+    }
+
     fn predeclareLexicalDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
@@ -3634,7 +3653,8 @@ pub const SemanticAnalyzer = struct {
             if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
             const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
-            const stmt = self.ast.getNode(idx);
+            const declaration_idx = self.labelledFunctionDeclaration(idx) orelse idx;
+            const stmt = self.ast.getNode(declaration_idx);
             switch (stmt.tag) {
                 .variable_declaration => {
                     const kind = self.ast.variableDeclarationKind(stmt);
@@ -3649,7 +3669,7 @@ pub const SemanticAnalyzer = struct {
                     if (self.current_scope.isNone() or
                         self.scopes.items[self.current_scope.toIndex()].kind.isVarScope()) continue;
                     try self.predeclareFuncDecl(stmt);
-                    if (self.annex_b_variable_targets.get(idx)) |target| {
+                    if (self.annex_b_variable_targets.get(declaration_idx)) |target| {
                         const name_idx = self.ast.readExtraNode(stmt.data.extra, ast_mod.FunctionExtra.name);
                         if (!name_idx.isNone()) if (self.symbol_ids.items[@backingInt(name_idx)]) |lexical| {
                             if (@as(u32, @backingInt(target.variable)) == lexical) std.debug.panic("Annex B lexical and variable identities must differ", .{});
@@ -5676,7 +5696,7 @@ pub const SemanticAnalyzer = struct {
         for ([_]bool{ true, false }) |function_pass| {
             for (indices, 0..) |raw_idx, i| {
                 const index: NodeIndex = @fromBackingInt(raw_idx);
-                if ((self.ast.getNode(index).tag == .function_declaration) != function_pass) continue;
+                if ((self.labelledFunctionDeclaration(index) != null) != function_pass) continue;
                 if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
                 try self.predeclareVarDeclsRecursive(index, true);
             }
@@ -5738,6 +5758,7 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .function_declaration, .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
+            .labeled_statement => try self.addAnnexBLexicalBarriers(self.ast.getNode(statement.data.binary.right), added),
             else => {},
         }
     }
@@ -5748,7 +5769,7 @@ pub const SemanticAnalyzer = struct {
         for (lists) |list| {
             for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
                 const index: NodeIndex = @fromBackingInt(raw);
-                if (self.ast.getNode(index).tag == .function_declaration)
+                if (self.labelledFunctionDeclaration(index) != null)
                     try self.predeclareVarDeclsRecursive(index, false);
             }
         }
@@ -5762,7 +5783,7 @@ pub const SemanticAnalyzer = struct {
         for (lists) |list| {
             for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
                 const index: NodeIndex = @fromBackingInt(raw);
-                if (self.ast.getNode(index).tag != .function_declaration)
+                if (self.labelledFunctionDeclaration(index) == null)
                     try self.predeclareVarDeclsRecursive(index, false);
             }
         }
@@ -5869,7 +5890,10 @@ pub const SemanticAnalyzer = struct {
             .while_statement, .do_while_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.binary.right, false);
             },
-            .labeled_statement, .with_statement => {
+            .labeled_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.binary.right, is_direct_function_body_statement);
+            },
+            .with_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.binary.right, false);
             },
             .try_statement => {

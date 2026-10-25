@@ -670,6 +670,21 @@ fn rescanStatementBodyLeadingSlash(self: *Parser) void {
     }
 }
 
+// Annex B.3.3 gives an unbraced if function an actual implicit block.
+// Create that syntax before initial binding; labelled declarations retain their
+// surrounding declaration-list environment and must not use this wrapper.
+fn parseIfBranch(self: *Parser) ParseError2!NodeIndex {
+    const statement = try parseStatementChecked(self, false);
+    const node = self.ast.getNode(statement);
+    if (node.tag != .function_declaration) return statement;
+    const body = try self.ast.addNodeList(&.{statement});
+    return try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = node.span,
+        .data = .{ .list = body },
+    });
+}
+
 fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'if'
@@ -682,13 +697,13 @@ fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     const saved_labelled = self.in_labelled_fn_check;
     self.in_labelled_fn_check = true;
     if (known_scan_condition == false) self.scan_dead_depth += 1;
-    const consequent = try parseStatementChecked(self, false);
+    const consequent = try parseIfBranch(self);
     if (known_scan_condition == false) self.scan_dead_depth -= 1;
 
     var alternate = NodeIndex.none;
     if (try self.eat(.kw_else)) {
         if (known_scan_condition == true) self.scan_dead_depth += 1;
-        alternate = try parseStatementChecked(self, false);
+        alternate = try parseIfBranch(self);
         if (known_scan_condition == true) self.scan_dead_depth -= 1;
     }
     self.in_labelled_fn_check = saved_labelled;
