@@ -7244,11 +7244,17 @@ fn reindexMappedImportReferences(
             try anchorless_contexts.put(allocator, @backingInt(reference.symbol_id), null);
     }
     if (anchorless_contexts.count() != 0) {
+        var facade_owners: std.AutoHashMapUnmanaged(u32, ast_mod.NodeIndex) = .empty;
+        defer facade_owners.deinit(allocator);
         for (ast.nodes.items, 0..) |node, raw| {
             if (node.tag != .export_default_declaration) continue;
             const context = contexts[raw] orelse continue;
             const sid = (try @import("../default_facade_identity.zig").symbolAt(ast, @fromBackingInt(@as(u32, @intCast(raw))), semantic.symbol_ids, semantic.symbols.items)) orelse continue;
             const slot = anchorless_contexts.getPtr(sid) orelse continue;
+            const owner = try facade_owners.getOrPut(allocator, sid);
+            const owner_node: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(raw)));
+            if (owner.found_existing and owner.value_ptr.* != owner_node) return null;
+            owner.value_ptr.* = owner_node;
             if (slot.*) |previous| if (!std.meta.eql(previous, context)) return null;
             slot.* = context;
         }
@@ -14106,4 +14112,44 @@ test "interop reanalysis preserves simultaneous ESM binary and helper-only roles
     try @import("../semantic_codec.zig").serialize(&module.semantic.?, &bytes, allocator);
     const decoded = try @import("../semantic_codec.zig").deserialize(bytes.items, allocator);
     try std.testing.expectEqualDeep(new_roles.*, decoded.runtime_identities.?.*);
+}
+
+test "module map rejects duplicate default facade nodes in the same statement context" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export default 42;");
+    scanner.is_module = true;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 1), analyzer.references.items.len);
+    var semantic: ModuleSemanticData = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+    };
+    try std.testing.expect((try reindexMappedImportReferences(allocator, &parser.ast, root, &semantic)) != null);
+    const list = parser.ast.getNode(root).data.list;
+    const first: ast_mod.NodeIndex = @fromBackingInt(parser.ast.extra_data.items[list.start]);
+    const second = try parser.ast.addNode(parser.ast.getNode(first));
+    // Deliberately corrupt the current AST with two live role owners inside
+    // the same top-level bucket. Equal coordinates cannot establish ownership.
+    parser.ast.nodes.items[@backingInt(first)].data.unary.operand = second;
+    const ids = try allocator.alloc(?u32, parser.ast.nodes.items.len);
+    @memset(ids, null);
+    @memcpy(ids[0..semantic.symbol_ids.len], semantic.symbol_ids);
+    ids[@backingInt(second)] = ids[@backingInt(first)];
+    semantic.symbol_ids = ids;
+    const contexts = try collectMinifiedStatementContexts(allocator, &parser.ast, root);
+    try std.testing.expectEqualDeep(contexts[@backingInt(first)], contexts[@backingInt(second)]);
+    try std.testing.expectEqual(@as(?[]SemanticReference, null), try reindexMappedImportReferences(allocator, &parser.ast, root, &semantic));
 }
