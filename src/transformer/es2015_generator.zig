@@ -1103,7 +1103,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .for_statement => {
                     const extra = node.data.extra;
                     const head = self.readNodeIdx(extra, 0);
-                    if (isNativeSourceVar(self, head)) self.ast.extra_data.items[extra] = @backingInt(try nativeDeclarationExpression(self, head, nativeWriteScope(self, scope)));
+                    if (isNativeSourceVar(self, head)) {
+                        const expression = try nativeDeclarationExpression(self, head, nativeWriteScope(self, scope));
+                        self.ast.extra_data.items[extra] = @backingInt(expression);
+                    }
                     const body = try rewriteNativeStateVars(self, self.readNodeIdx(extra, 3), scope);
                     self.ast.extra_data.items[extra + 3] = @backingInt(body);
                 },
@@ -5222,5 +5225,76 @@ test "native generator var writes retain their wrapper SID and exact producer sc
             while (children.next()) |child| if (!child.isNone()) try pending.append(a, .{ .node = child, .scope = scope });
         }
         if (fixture.native_write) try std.testing.expect(writes > 0) else try std.testing.expectEqual(@as(usize, 0), writes);
+    }
+}
+
+test "native generator var header store follows forced extra data relocation" {
+    const Moving = struct {
+        parent: std.mem.Allocator,
+        fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.parent.rawAlloc(len, alignment, address);
+        }
+        fn allocator(self: *@This()) std.mem.Allocator {
+            return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = std.mem.Allocator.noResize, .remap = std.mem.Allocator.noRemap, .free = std.mem.Allocator.noFree } };
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var moving: Moving = .{ .parent = arena.allocator() };
+    const a = moving.allocator();
+    const source = "function* run(){for(var first=1,shared=42;first<2;first++){}yield 0;return shared;}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const Transformer = @import("transformer.zig").Transformer;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.references = analyzer.references.items;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    var loop: NodeIndex = .none;
+    var wrapper_scope: ScopeId = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .for_statement) loop = @fromBackingInt(@as(u32, @intCast(raw)));
+        if (node.tag == .function_declaration) wrapper_scope = @fromBackingInt(analyzer.scope_owner_map.get(@intCast(raw)).?);
+    }
+    try std.testing.expect(!loop.isNone() and !wrapper_scope.isNone());
+    transformer.current_scope = wrapper_scope;
+    transformer.generator_state_machine_scope = wrapper_scope;
+    transformer.generator_native_var_scope = wrapper_scope;
+    const use_scope = transformer.outputOwnedScope(loop) orelse wrapper_scope;
+    const slot = transformer.ast.getNode(loop).data.extra;
+    const old_head = transformer.readNodeIdx(slot, 0);
+    const ids = [_]u32{ @intCast(analyzer.scope_maps.items[wrapper_scope.toIndex()].get("first").?), @intCast(analyzer.scope_maps.items[wrapper_scope.toIndex()].get("shared").?) };
+    try transformer.ast.extra_data.shrinkAndFreePrecise(a, transformer.ast.extra_data.items.len);
+    const before = transformer.ast.extra_data.items.ptr;
+    _ = try ES2015Generator(Transformer).rewriteNativeStateVars(&transformer, loop, wrapper_scope);
+    try std.testing.expect(before != transformer.ast.extra_data.items.ptr);
+    const head = transformer.readNodeIdx(slot, 0);
+    try std.testing.expect(head != old_head);
+    const sequence = transformer.ast.getNode(head);
+    try std.testing.expectEqual(Tag.sequence_expression, sequence.tag);
+    try std.testing.expectEqual(@as(u32, 2), sequence.data.list.len);
+    const editor = &transformer.semantic_editor.?;
+    for (ids, 0..) |id, i| {
+        const assignment = transformer.ast.getNode(@fromBackingInt(transformer.ast.extra_data.items[sequence.data.list.start + i]));
+        const lhs = assignment.data.binary.left;
+        try std.testing.expectEqual(@as(?u32, id), transformer.getSymbolIdAt(lhs));
+        const reference = try editor.referenceForNode(lhs) orelse return error.MissingRelocatedHeaderReference;
+        try std.testing.expect(reference.flags.write and !reference.flags.read);
+        try std.testing.expectEqual(use_scope, reference.scope_id);
+        try std.testing.expectEqual(wrapper_scope, editor.symbols.items[id].scope_id);
     }
 }
