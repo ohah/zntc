@@ -70,9 +70,10 @@ final public API oracles, compileable implementation mutants and normal push
 checks remain due. In particular, a capture snapshot cannot establish mutable
 arguments-binding semantics across a suspension.
 
-The separate constructor callback regression now has ten native inputs in
-plain/minified output. Ten of those twenty comparisons fail: callbacks run by
+The separate constructor callback regression now has eleven native inputs in
+plain/minified output. Ten of those twenty-two comparisons fail: callbacks run by
 native fields, replacement super objects, fields that throw, reentrant
 construction, and a failed construction followed by a successful one. The
-before/after-super and inferred function/class-name controls pass. The test
+before/after-super, inferred function/class-name, and native-parameter
+super-call reentrancy controls pass. The test
 remains failing until the native-field timing producer is implemented.
