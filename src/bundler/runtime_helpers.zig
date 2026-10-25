@@ -1110,15 +1110,25 @@ pub fn appendToBinaryRuntimeNamed(
 // before this module starts. The factory itself uses ES5 syntax.
 /// `__name(fn, name[, prefix])`. A runtime computed key (#5527) may be a
 /// symbol (SetFunctionName: "[description]") or a primitive; an object key is
-/// left unnamed so its toString is not called a second time.
+/// left unnamed so its toString is not called a second time. Discover the
+/// intrinsic Symbol prototype through RegExp's well-known symbol keys instead
+/// of reading `globalThis.Symbol`, which may be an observable accessor.
 pub const KEEP_NAMES_RUNTIME =
-    \\var __name = (function(ObjectConstructor, globalObject) {
+    \\var __name = (function(ObjectConstructor) {
     \\  var objectCreate = ObjectConstructor.create;
     \\  var objectDefineProperty = ObjectConstructor.defineProperty;
     \\  var objectGetOwnPropertyDescriptor = ObjectConstructor.getOwnPropertyDescriptor;
-    \\  var symbolConstructor = globalObject && globalObject.Symbol;
-    \\  var descriptionDescriptor = symbolConstructor && symbolConstructor.prototype
-    \\    ? objectGetOwnPropertyDescriptor(symbolConstructor.prototype, "description")
+    \\  var objectGetPrototypeOf = ObjectConstructor.getPrototypeOf;
+    \\  var objectGetOwnPropertySymbols = ObjectConstructor.getOwnPropertySymbols;
+    \\  var regexpPrototype = objectGetPrototypeOf ? objectGetPrototypeOf(/./) : null;
+    \\  var symbolKeys = regexpPrototype && objectGetOwnPropertySymbols
+    \\    ? objectGetOwnPropertySymbols(regexpPrototype)
+    \\    : [];
+    \\  var symbolPrototype = symbolKeys.length && objectGetPrototypeOf
+    \\    ? objectGetPrototypeOf(symbolKeys[0])
+    \\    : null;
+    \\  var descriptionDescriptor = symbolPrototype
+    \\    ? objectGetOwnPropertyDescriptor(symbolPrototype, "description")
     \\    : null;
     \\  var descriptionGetter = descriptionDescriptor && descriptionDescriptor.get;
     \\  var getSymbolDescription = descriptionGetter && descriptionGetter.call.bind(descriptionGetter);
@@ -1133,11 +1143,11 @@ pub const KEEP_NAMES_RUNTIME =
     \\    descriptor.configurable = true;
     \\    return objectDefineProperty(target, "name", descriptor);
     \\  };
-    \\})(({}).constructor, typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : null);
+    \\})(({}).constructor);
     \\
 ;
 pub const KEEP_NAMES_RUNTIME_MIN =
-    "var " ++ NAMES.NAME_MIN ++ "=(function(O,g){var c=O.create,d=O.defineProperty,e=O.getOwnPropertyDescriptor,S=g&&g.Symbol,D=S&&S.prototype?e(S.prototype,\"description\"):null,G=D&&D.get,Q=G&&G.call.bind(G);return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=Q?Q(v):v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor,typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:typeof self!==\"undefined\"?self:typeof window!==\"undefined\"?window:null);";
+    "var " ++ NAMES.NAME_MIN ++ "=(function(O){var c=O.create,d=O.defineProperty,e=O.getOwnPropertyDescriptor,p=O.getPrototypeOf,s=O.getOwnPropertySymbols,r=p?p(/./):null,k=r&&s?s(r):[],P=k.length&&p?p(k[0]):null,D=P?e(P,\"description\"):null,G=D&&D.get,Q=G&&G.call.bind(G);return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=Q?Q(v):v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor);";
 
 /// Carry a converted computed key across its property's value evaluation so an
 /// immediately created captured arrow can receive the name inferred by the

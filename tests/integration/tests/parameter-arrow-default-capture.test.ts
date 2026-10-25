@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createFixture, runZntcInDir } from './helpers';
 
-const cases = [
+const cases: { name: string; source: string; preload?: string; expected?: string }[] = [
   {
     name: 'ordinary function nested in async state machine',
     source: `(async function () {
@@ -181,7 +181,73 @@ const cases = [
       console.log(name, calls, Object, Symbol);
     `,
   },
-] as const;
+  {
+    name: 'string computed-key helper does not read a preloaded global Symbol getter',
+    expected: '[[true,"read"],0]\n',
+    preload: `
+      globalThis.symbolReads = 0;
+      globalThis.savedSymbol = Object.getOwnPropertyDescriptor(globalThis, 'Symbol');
+      Object.defineProperty(globalThis, 'Symbol', {
+        configurable: true,
+        get: function () { globalThis.symbolReads++; return globalThis.savedSymbol.value; },
+      });
+    `,
+    source: `
+      globalThis.key = 'read';
+      function run(value = { [globalThis.key]: () => this }) {
+        return [value[globalThis.key]() === this, value[globalThis.key].name];
+      }
+      const result = run.call({});
+      const reads = globalThis.symbolReads;
+      Object.defineProperty(globalThis, 'Symbol', globalThis.savedSymbol);
+      console.log(JSON.stringify([result, reads]));
+    `,
+  },
+  {
+    name: 'string computed-key helper tolerates a throwing preloaded global Symbol getter',
+    expected: '[[true,"read"],0]\n',
+    preload: `
+      globalThis.symbolReads = 0;
+      globalThis.savedSymbol = Object.getOwnPropertyDescriptor(globalThis, 'Symbol');
+      Object.defineProperty(globalThis, 'Symbol', {
+        configurable: true,
+        get: function () { globalThis.symbolReads++; throw new Error('unexpected Symbol read'); },
+      });
+    `,
+    source: `
+      globalThis.key = 'read';
+      function run(value = { [globalThis.key]: () => this }) {
+        return [value[globalThis.key]() === this, value[globalThis.key].name];
+      }
+      const result = run.call({});
+      const reads = globalThis.symbolReads;
+      Object.defineProperty(globalThis, 'Symbol', globalThis.savedSymbol);
+      console.log(JSON.stringify([result, reads]));
+    `,
+  },
+  {
+    name: 'symbol computed-key helper preserves the name without reading a preloaded global Symbol getter',
+    expected: '[[true,"[read]"],0]\n',
+    preload: `
+      globalThis.symbolReads = 0;
+      globalThis.savedSymbol = Object.getOwnPropertyDescriptor(globalThis, 'Symbol');
+      globalThis.symbolKey = globalThis.savedSymbol.value('read');
+      Object.defineProperty(globalThis, 'Symbol', {
+        configurable: true,
+        get: function () { globalThis.symbolReads++; return globalThis.savedSymbol.value; },
+      });
+    `,
+    source: `
+      function run(value = { [globalThis.symbolKey]: () => this }) {
+        return [value[globalThis.symbolKey]() === this, value[globalThis.symbolKey].name];
+      }
+      const result = run.call({});
+      const reads = globalThis.symbolReads;
+      Object.defineProperty(globalThis, 'Symbol', globalThis.savedSymbol);
+      console.log(JSON.stringify([result, reads]));
+    `,
+  },
+];
 
 describe('parameter arrow this/arguments captures precede default checks (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -191,31 +257,42 @@ describe('parameter arrow this/arguments captures precede default checks (#4819)
   });
 
   for (const fixture of cases) {
-    for (const bundle of [false, true]) {
-      for (const minify of [false, true]) {
-        test(`${fixture.name}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
-          const dir = await createFixture({
-            'input.mjs': fixture.source,
-            'package.json': '{"type":"module"}',
+    const bins = fixture.preload ? (['zig', 'js'] as const) : (['zig'] as const);
+    for (const bin of bins) {
+      for (const bundle of [false, true]) {
+        for (const minify of [false, true]) {
+          test(`${fixture.name}, ${bin}, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+            const files: Record<string, string> = {
+              'input.mjs': fixture.source,
+              'package.json': '{"type":"module"}',
+            };
+            if (fixture.preload) files['preload.cjs'] = fixture.preload;
+            const dir = await createFixture(files);
+            cleanup = dir.cleanup;
+            const input = join(dir.dir, 'input.mjs');
+            const preloadArgs = fixture.preload ? ['--require', join(dir.dir, 'preload.cjs')] : [];
+            const native = spawnSync('node', [...preloadArgs, input], { encoding: 'utf8' });
+            expect(native.status, native.stderr).toBe(0);
+            if (fixture.expected !== undefined) expect(native.stdout).toBe(fixture.expected);
+            const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+            const result = await runZntcInDir(
+              dir.dir,
+              [
+                ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+                'input.mjs',
+                '--target=es5',
+                ...(minify ? ['--minify'] : []),
+                '-o',
+                output,
+              ],
+              { bin },
+            );
+            expect(result.exitCode, result.stderr).toBe(0);
+            const actual = spawnSync('node', [...preloadArgs, output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(native.stdout);
           });
-          cleanup = dir.cleanup;
-          const input = join(dir.dir, 'input.mjs');
-          const native = spawnSync('node', [input], { encoding: 'utf8' });
-          expect(native.status, native.stderr).toBe(0);
-          const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
-          const result = await runZntcInDir(dir.dir, [
-            ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
-            'input.mjs',
-            '--target=es5',
-            ...(minify ? ['--minify'] : []),
-            '-o',
-            output,
-          ]);
-          expect(result.exitCode, result.stderr).toBe(0);
-          const actual = spawnSync('node', [output], { encoding: 'utf8' });
-          expect(actual.status, actual.stderr).toBe(0);
-          expect(actual.stdout).toBe(native.stdout);
-        });
+        }
       }
     }
   }
