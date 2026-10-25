@@ -470,6 +470,11 @@ const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = [
   'duplicate_scope_owner',
 ];
 const SOURCE_SCOPE_OWNER_SCHEMA_FIELDS = new Set<string>(SOURCE_SCOPE_OWNER_ZERO_COUNTERS);
+const SYMBOL_COVERAGE_ZERO_COUNTERS = ['missing', 'wrong'] as const;
+const SYMBOL_COVERAGE_SCHEMA_FIELDS = new Set<string>([
+  'new_user_idents',
+  ...SYMBOL_COVERAGE_ZERO_COUNTERS,
+]);
 
 function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string) {
   const escapedModuleId = moduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -946,12 +951,7 @@ function transformIdentityAuditProblems(stderr: string): string[] {
   if (coverage.length !== 1) {
     problems.push(`symbol coverage reports=${coverage.length}, expected 1`);
   } else {
-    const match = coverage[0].match(/(?:^| )missing=(\d+) wrong=(\d+)(?: |$)/);
-    if (!match) {
-      problems.push(`malformed symbol coverage report: ${coverage[0]}`);
-    } else if (match[1] !== '0' || match[2] !== '0') {
-      problems.push(`symbol coverage missing=${match[1]} wrong=${match[2]}`);
-    }
+    problems.push(...symbolCoverageSchemaProblems(coverage[0]));
   }
 
   const strict = lines.filter((line) => line.startsWith('zntc: synthetic-coverage '));
@@ -959,6 +959,55 @@ function transformIdentityAuditProblems(stderr: string): string[] {
     problems.push(`strict synthetic coverage reports=${strict.length}, expected 1`);
   } else {
     problems.push(...strictSchemaProblems(strict[0]));
+  }
+  return problems;
+}
+
+function symbolCoverageSchemaProblems(report: string): string[] {
+  const prefix = 'zntc: symbol-coverage ';
+  if (!report.startsWith(prefix)) return ['missing symbol coverage report'];
+  const payloadMarkerIndex = report.lastIndexOf(': ');
+  if (payloadMarkerIndex === -1) return ['missing symbol coverage report payload'];
+
+  const payload = report.slice(payloadMarkerIndex + 2);
+  if (!payload.includes('=')) return ['missing symbol coverage report payload'];
+  const counts = new Map<string, number>();
+  const values = new Map<string, string>();
+  const problems: string[] = [];
+  for (const token of payload.trim().split(/\s+/)) {
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/);
+    if (!match) {
+      problems.push('malformed symbol coverage field ' + token);
+      continue;
+    }
+    const [, field, value] = match;
+    counts.set(field, (counts.get(field) ?? 0) + 1);
+    values.set(field, value);
+    if (!SYMBOL_COVERAGE_SCHEMA_FIELDS.has(field)) {
+      problems.push('unexpected symbol coverage field ' + field);
+      continue;
+    }
+    if (!/^\d+$/.test(value)) {
+      problems.push('malformed symbol coverage value ' + field + '=' + value);
+    } else if (!Number.isSafeInteger(Number(value))) {
+      problems.push('symbol coverage value ' + field + '=' + value + ' is not a safe integer');
+    }
+  }
+
+  for (const field of SYMBOL_COVERAGE_SCHEMA_FIELDS) {
+    const occurrences = counts.get(field) ?? 0;
+    if (occurrences !== 1) {
+      problems.push(field + ' occurrences=' + occurrences + ', expected 1');
+      continue;
+    }
+    if (
+      SYMBOL_COVERAGE_ZERO_COUNTERS.includes(
+        field as (typeof SYMBOL_COVERAGE_ZERO_COUNTERS)[number],
+      ) &&
+      values.get(field) !== '0'
+    ) {
+      problems.push(field + '=' + values.get(field) + ', expected 0');
+    }
   }
   return problems;
 }
@@ -3481,6 +3530,69 @@ describe('symbol identity coverage gate (#4819)', () => {
       'source scope-owner reports=0, expected 1',
       'symbol coverage reports=0, expected 1',
       'strict synthetic coverage reports=0, expected 1',
+    ]);
+    const coverage = 'zntc: symbol-coverage input.mjs: new_user_idents=1 missing=0 wrong=0';
+    expect(transformIdentityAuditProblems(`${coverage}\n${coverage}`)).toContain(
+      'symbol coverage reports=2, expected 1',
+    );
+  });
+
+  test('symbol coverage report schema rejects missing, duplicate, malformed, and unknown fields', () => {
+    const prefix = 'zntc: symbol-coverage input.mjs: ';
+    const values = { new_user_idents: '1', missing: '0', wrong: '0' };
+    const report =
+      prefix +
+      Object.entries(values)
+        .map(([field, value]) => `${field}=${value}`)
+        .join(' ');
+
+    expect(symbolCoverageSchemaProblems(report)).toEqual([]);
+    for (const [field, value] of Object.entries(values)) {
+      expect(
+        symbolCoverageSchemaProblems(report.replace(`${field}=${value}`, '')),
+        `${field} missing-field mutation`,
+      ).toContain(`${field} occurrences=0, expected 1`);
+      expect(
+        symbolCoverageSchemaProblems(
+          report.replace(`${field}=${value}`, `${field}=${value} ${field}=${value}`),
+        ),
+        `${field} duplicate-field mutation`,
+      ).toContain(`${field} occurrences=2, expected 1`);
+      expect(
+        symbolCoverageSchemaProblems(report.replace(`${field}=${value}`, `${field}=invalid`)),
+        `${field} malformed-value mutation`,
+      ).toContain(`malformed symbol coverage value ${field}=invalid`);
+      expect(
+        symbolCoverageSchemaProblems(
+          report.replace(`${field}=${value}`, `${field}=9007199254740992`),
+        ),
+        `${field} unsafe-integer mutation`,
+      ).toContain(`symbol coverage value ${field}=9007199254740992 is not a safe integer`);
+    }
+
+    for (const field of SYMBOL_COVERAGE_ZERO_COUNTERS) {
+      expect(
+        symbolCoverageSchemaProblems(report.replace(`${field}=0`, `${field}=1`)),
+        `${field} nonzero invariant mutation`,
+      ).toContain(`${field}=1, expected 0`);
+    }
+    expect(symbolCoverageSchemaProblems(report + ' future_counter=0')).toContain(
+      'unexpected symbol coverage field future_counter',
+    );
+    expect(symbolCoverageSchemaProblems(report + ' malformed')).toContain(
+      'malformed symbol coverage field malformed',
+    );
+    expect(
+      symbolCoverageSchemaProblems(
+        'zntc: symbol-coverage /tmp/input: new_user_idents=42.js: ' +
+          Object.entries(values)
+            .map(([field, value]) => `${field}=${value}`)
+            .join(' '),
+      ),
+    ).toEqual([]);
+    expect(symbolCoverageSchemaProblems('')).toEqual(['missing symbol coverage report']);
+    expect(symbolCoverageSchemaProblems('zntc: symbol-coverage input.mjs: no-report')).toEqual([
+      'missing symbol coverage report payload',
     ]);
   });
 
