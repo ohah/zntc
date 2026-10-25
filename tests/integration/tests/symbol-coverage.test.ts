@@ -6314,6 +6314,183 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('lenient typed using lowering retains exact graph across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-typed-using-graph-'));
+    const prelude = [
+      'interface SyncResource { readonly label: string; [Symbol.dispose](): void; }',
+      'interface AsyncResource { readonly label: string; [Symbol.asyncDispose](): Promise<void>; }',
+      'const events: string[] = [];',
+      'function syncResource(label: string, shouldThrow = false): SyncResource {',
+      '  return { label, [Symbol.dispose]() { events.push("dispose:" + label); if (shouldThrow) throw new Error("dispose:" + label); } };',
+      '}',
+      'function asyncResource(label: string): AsyncResource {',
+      '  return { label, [Symbol.asyncDispose]() { events.push("async-dispose:" + label); return Promise.resolve(); } };',
+      '}',
+    ].join('\n');
+    const cases = [
+      {
+        name: 'basic-block',
+        body: [
+          '{ using resource: SyncResource = syncResource("basic"); events.push("body:" + resource.label); }',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'nested-disposal-order',
+        body: [
+          '{ using outer: SyncResource = syncResource("outer");',
+          '  { using inner: SyncResource = syncResource("inner"); events.push("inside"); }',
+          '  events.push("outside");',
+          '}',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'cleanup-name-collisions',
+        body: [
+          'function run() {',
+          '  using _stack: SyncResource = syncResource("_stack");',
+          '  using _error: SyncResource = syncResource("_error");',
+          '  using _hasError: SyncResource = syncResource("_hasError");',
+          '  using _: SyncResource = syncResource("_");',
+          '  events.push("body");',
+          '}',
+          'run();',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'early-return',
+        body: [
+          'function run(): string { using resource: SyncResource = syncResource("return"); events.push("body"); return resource.label; }',
+          'events.push("result:" + run());',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'throw-and-catch',
+        body: [
+          'try { { using resource: SyncResource = syncResource("throw"); events.push("body"); throw new Error("body"); } }',
+          'catch (error) { events.push("caught:" + String(error)); }',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'suppressed-disposal-errors',
+        body: [
+          'try {',
+          '  { using first: SyncResource = syncResource("first", true); using second: SyncResource = syncResource("second", true); throw new Error("body"); }',
+          '} catch (error) { events.push(error instanceof Error ? error.name : String(error)); }',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'direct-eval-binding',
+        body: [
+          'function run() { using resource: SyncResource = syncResource("eval"); events.push(eval("typeof resource")); }',
+          'run();',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'async-disposer',
+        body: [
+          'async function run() { await using resource: AsyncResource = asyncResource("async"); events.push("body:" + resource.label); }',
+          'run().then(() => console.log(events.join(",")));',
+        ].join('\n'),
+      },
+      {
+        name: 'async-using-sync-disposer',
+        body: [
+          'async function run() { await using resource: SyncResource = syncResource("sync-fallback"); events.push("body:" + resource.label); }',
+          'run().then(() => console.log(events.join(",")));',
+        ].join('\n'),
+      },
+      {
+        name: 'generator-for-of-using',
+        body: [
+          'function* run() { for (using resource of [syncResource("first"), syncResource("second")]) { events.push("body:" + resource.label); yield resource.label; } }',
+          'for (const value of run()) events.push("yield:" + value);',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+      {
+        name: 'async-generator-for-await-using',
+        body: [
+          'async function* resources() { yield asyncResource("first"); yield asyncResource("second"); }',
+          'async function run() { for await (await using resource of resources()) events.push("body:" + resource.label); }',
+          'run().then(() => console.log(events.join(",")));',
+        ].join('\n'),
+      },
+      {
+        name: 'helper-name-shadowing',
+        body: [
+          'function run(Symbol: unknown, __using: unknown, __callDispose: unknown) {',
+          '  using resource: SyncResource = syncResource("shadow");',
+          '  events.push("body:" + resource.label + ":" + String(Symbol) + ":" + String(__using) + ":" + String(__callDispose));',
+          '}',
+          'run(null, null, null);',
+          'console.log(events.join(","));',
+        ].join('\n'),
+      },
+    ] as const;
+
+    try {
+      for (const testCase of cases) {
+        const source = [prelude, testCase.body].join('\n');
+        const input = join(dir, testCase.name + '.unknown');
+        const reference = join(dir, testCase.name + '.mjs');
+        writeFileSync(input, source);
+        writeFileSync(
+          reference,
+          ts.transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.ESNext,
+              target: ts.ScriptTarget.ESNext,
+            },
+          }).outputText,
+        );
+        const expected = runNode([reference]);
+        expect(expected.status, testCase.name + ' TypeScript: ' + expected.stderr).toBe(0);
+
+        for (const target of TARGETS) {
+          const result = runCoverage(input, target, dir, true);
+          expect(result.exitCode, testCase.name + ' ' + target.name + ': ' + result.stderr).toBe(0);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, 'retained'),
+            testCase.name + ' ' + target.name + ': ' + result.stderr,
+          ).toEqual([]);
+          expect(
+            transformIdentityAuditProblems(result.stderr),
+            testCase.name + ' ' + target.name + ': ' + result.stderr,
+          ).toEqual([]);
+          expect(
+            postMinifyAuditProblems(result.stderr),
+            testCase.name + ' ' + target.name + ': ' + result.stderr,
+          ).toEqual([]);
+          const identity = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(
+            exactIdentityObservationProblems(identity ?? ''),
+            testCase.name + ' ' + target.name + ': ' + (identity ?? 'missing exact report'),
+          ).toEqual([]);
+          if (target.name === 'es5') {
+            expect(identity, testCase.name + ': ' + result.stderr).toMatch(
+              /generated_bindings=[1-9]\d* generated_references=[1-9]\d* generated_scope_owners_checked=[1-9]\d*/,
+            );
+          }
+
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, testCase.name + ' ' + target.name + ': ' + actual.stderr).toBe(0);
+          expect(actual.stdout, testCase.name + ' ' + target.name).toBe(expected.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('bundled using helper references survive same-name function parameters', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-using-helper-shadow-'));
     const input = join(dir, 'entry.js');
