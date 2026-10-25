@@ -2206,26 +2206,27 @@ fn emitChunksImpl(
                         else
                             null;
                         defer if (public_entries) |entries| if (linker) |l| l.allocator.free(entries);
+                        var key_arena = std.heap.ArenaAllocator.init(allocator);
+                        defer key_arena.deinit();
+                        var public_keys: std.StringHashMapUnmanaged(void) = .empty;
+                        defer public_keys.deinit(allocator);
+                        for (em.export_bindings) |binding| {
+                            const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), binding.exported_name);
+                            try public_keys.put(allocator, key.text, {});
+                        }
+                        if (public_entries) |entries| for (entries) |entry| {
+                            const key = try @import("../public_export_key.zig").fromSyntax(key_arena.allocator(), entry.exported);
+                            try public_keys.put(allocator, key.text, {});
+                        };
                         var w: usize = 0;
                         for (export_names.items) |nm| {
-                            var entry_exported = false;
                             const emitted_key = if (pm_wrapped_esm_provider)
                                 if (linker) |l| l.getCrossChunkGlobalName(@intCast(ei), nm) orelse nm else nm
                             else
                                 nm;
-                            for (em.export_bindings) |eb| {
-                                if (std.mem.eql(u8, eb.exported_name, emitted_key)) {
-                                    entry_exported = true;
-                                    break;
-                                }
-                            }
-                            if (public_entries) |entries| for (entries) |entry| {
-                                if (std.mem.eql(u8, entry.exported, emitted_key)) {
-                                    entry_exported = true;
-                                    break;
-                                }
-                            };
-                            if (!entry_exported) {
+                            const key = try @import("../public_export_key.zig").fromSyntax(allocator, emitted_key);
+                            defer key.deinit(allocator);
+                            if (!public_keys.contains(key.text)) {
                                 export_names.items[w] = nm;
                                 w += 1;
                             }

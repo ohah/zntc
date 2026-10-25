@@ -433,3 +433,24 @@ test "preserved CJS public renderer borrows typed namespace and frees allocation
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWrappedCjsExportAllocation, .{});
     try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedCjsNamedEntryExports(std.testing.allocator, "body;", "namespace", &.{}));
 }
+
+test "preserved CJS public keys use one StringValue decoding pass" {
+    const keys = @import("../public_export_key.zig");
+    const cases = [_]struct { syntax: []const u8, value: []const u8 }{
+        .{ .syntax = "init_provider", .value = "init_provider" },
+        .{ .syntax = "\"init_provider\"", .value = "init_provider" },
+        .{ .syntax = "\"\\u0069nit_provider\"", .value = "init_provider" },
+        .{ .syntax = "\"\\\\u0069nit_provider\"", .value = "\\u0069nit_provider" },
+        .{ .syntax = "\"\\\"init_provider\\\"\"", .value = "\"init_provider\"" },
+        .{ .syntax = "\"\\xE9\"", .value = "é" },
+        .{ .syntax = "\"\\uD83D\\uDE00\"", .value = "😀" },
+        .{ .syntax = "\"\\u{1F600}\"", .value = "😀" },
+        .{ .syntax = "\"i\\\xe2\x80\xa8nit_provider\"", .value = "init_provider" },
+    };
+    for (cases) |case| {
+        const key = try keys.fromSyntax(std.testing.allocator, case.syntax);
+        defer key.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings(case.value, key.text);
+    }
+    try std.testing.expectError(error.InvalidPublicExportName, keys.fromSyntax(std.testing.allocator, "\"\\uD800\""));
+}
