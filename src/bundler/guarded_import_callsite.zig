@@ -271,9 +271,10 @@ test "guarded lazy source calls preserve original callee identity and actual nes
     const Bundler = @import("bundler.zig").Bundler;
     const helpers = @import("test_helpers.zig");
     for ([_][]const u8{
-        "function run(__zntc_guarded){return value();}globalThis.actual=run(null);",
-        "class Box{run(__zntc_guarded){return value();}}globalThis.actual=new Box().run(null);",
+        "function run(__zntc_guarded){const offset=1;return value()+offset-1;}globalThis.actual=run(null);",
+        "class Box{run(__zntc_guarded){const offset=1;return value()+offset-1;}}globalThis.actual=new Box().run(null);",
         "function* run(__zntc_guarded){yield value();}globalThis.actual=run(null).next().value;",
+        "function run(__zntc_guarded){for(let n=0;n<1;n++){const call=()=>{let offset=1;return value()+offset-1;};return call();}}globalThis.actual=run(null);",
     }) |body| for ([_]bool{ true, false }) |tree_shaking| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
@@ -310,14 +311,17 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         const original_sid = original_binding.local_symbol.semanticIndex().?;
         var use_scope: ScopeId = .none;
         var value_node: NodeIndex = .none;
+        var original_scope_stmt = Reference.NO_STMT;
         for (sem.references) |reference| {
             if (@backingInt(reference.symbol_id) == original_sid and reference.isValueUse()) {
                 try std.testing.expect(use_scope.isNone());
                 use_scope = reference.scope_id;
+                original_scope_stmt = reference.scope_stmt_idx;
                 value_node = reference.node_index;
             }
         }
         try std.testing.expect(!use_scope.isNone() and use_scope.toIndex() != 0);
+        try std.testing.expect(original_scope_stmt != Reference.NO_STMT);
         try std.testing.expectEqual(@as(?u32, original_sid), sem.symbol_ids[@backingInt(value_node)]);
         var generated_reads: usize = 0;
         for (module.import_bindings) |binding| {
@@ -326,6 +330,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
             for (sem.references) |reference| {
                 if (!reference.isValueUse() or binding.local_symbol.semanticIndex() != @backingInt(reference.symbol_id)) continue;
                 if (reference.scope_id == use_scope) {
+                    try std.testing.expectEqual(original_scope_stmt, reference.scope_stmt_idx);
                     generated_reads += 1;
                 } else try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
             }
