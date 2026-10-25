@@ -46,6 +46,7 @@ test {
     // test files
     _ = @import("analyzer_test.zig");
     _ = @import("function_directive_scope_test.zig");
+    _ = @import("catch_body_predeclaration_test.zig");
     _ = @import("checker_test.zig");
     _ = @import("scope_test.zig");
     _ = @import("symbol_test.zig");
