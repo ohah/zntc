@@ -315,6 +315,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(param_list, node.span);
+            if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(params_idx, params_node);
             const new_extra = try self.ast.addExtras(&.{
                 none, // name (anonymous)
                 @backingInt(params_node),

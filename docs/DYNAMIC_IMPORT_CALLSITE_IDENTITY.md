@@ -14,12 +14,14 @@ native import boundaries and cross-owner cache reuse remain separate work.
    `scope_owner_map`: its actual `ScopeId`, initial source expression and source
    `with` environment. Expressions do not claim to own lexical scopes.
 3. Explicit clone and generic visitor propagation preserve the source
-   expression. The strict class initializer factory and lowered constructor default producers explicitly relocate direct
-   expression scopes. Nested functions keep their ScopeId and reparent their
+   expression. Function/method/arrow parameter clones retain their exact scope
+   owner. Strict initializer factories and lowered function/constructor defaults
+   explicitly relocate direct expression scopes. Nested functions keep their
+   ScopeId and reparent their
    lexical root. Fresh semantic analysis of the same append-only AST preserves
    only that original expression handle, while taking ScopeIds from the new
-   owner. The output-scope walk reconciles existing provenance and rejects
-   a reachable import expression that lost its creation provenance.
+   owner. The output-scope walk validates existing creation provenance and rejects
+   missing or mismatched scopes; it never repairs them from the final AST.
 4. Before linker/shaker arrays are sized, a disconnected compiler-owned module
    is parsed and initially analyzed once. Its ordinary function owns the
    `Promise.resolve().then(callback)` body and a real parameter/reference scope.

@@ -1063,10 +1063,10 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         const node = self.ast.getNode(work.node);
         var scope = self.outputOwnedScope(work.node) orelse work.scope;
         if (node.tag == .import_expression) {
-            if (!editor.node_scope_provenance.contains(work.node))
+            const provenance = editor.node_scope_provenance.get(work.node) orelse
                 std.debug.panic("output import expression lost its creation scope provenance", .{});
-            editor.recordNodeScopeProvenance(work.node, scope) catch |err| return editError(err);
-            try self.transformed_node_scope_provenance.put(self.allocator, work.node, editor.node_scope_provenance.get(work.node).?);
+            if (provenance.scope != scope) return editError(error.InvalidScope);
+            try self.transformed_node_scope_provenance.put(self.allocator, work.node, provenance);
         }
         if (node.tag == .block_statement and self.outputOwnedScope(work.node) == null) {
             const function_body = !work.parent.isNone() and switch (self.ast.getNode(work.parent).tag) {
@@ -2400,18 +2400,22 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
 /// Their final scope is chosen later, after generated block scopes exist.
 pub fn moveGeneratedFunctionBodyBindings(self: *Transformer, source_scope: ScopeId, function_scope: ScopeId, body: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled or source_scope.isNone() or function_scope.isNone() or source_scope == function_scope) return;
-    const Work = struct { node: NodeIndex };
+    const Work = struct { node: NodeIndex, scope: ScopeId };
     var work_stack: std.ArrayList(Work) = .empty;
     defer work_stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(self.allocator);
-    try work_stack.append(self.allocator, .{ .node = body });
+    try work_stack.append(self.allocator, .{ .node = body, .scope = function_scope });
     while (work_stack.pop()) |work| {
         const node = work.node;
         if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
         const raw = @backingInt(node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
+        // This producer has selected the actual generated function owner.
+        // Move only direct source uses; nested functions retain their own IDs.
+        const output_scope = self.outputOwnedScope(node) orelse work.scope;
+        try self.relocateNodeScopeProvenance(node, source_scope, output_scope);
         const ast_node = self.ast.getNode(node);
         if (ast_node.tag == .binding_identifier) {
             if (self.getSymbolIdAt(node)) |raw_id| {
@@ -2428,8 +2432,11 @@ pub fn moveGeneratedFunctionBodyBindings(self: *Transformer, source_scope: Scope
             }
         }
         var it = ast_walk.children(self.ast, ast_node);
-        while (it.next()) |child| try work_stack.append(self.allocator, .{ .node = child });
+        while (it.next()) |child| try work_stack.append(self.allocator, .{ .node = child, .scope = output_scope });
     }
+    var nested_scopes = try liveScopeOwners(self, &seen);
+    defer nested_scopes.deinit(self.allocator);
+    try reparentLiveSourceScopes(self, source_scope, function_scope, &nested_scopes);
 }
 
 pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, function_scope: ScopeId, body: NodeIndex, temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
@@ -5089,21 +5096,45 @@ fn expectInvalidSemanticEditPanic(mode: []const u8, expected_error: []const u8) 
     defer child_environ.deinit();
     try child_environ.put("ZTS_6029_HOSTILE_PANIC_MODE", mode);
 
-    const child = try std.process.run(allocator, std.testing.io, .{
-        .argv = &.{executable_path},
+    // Run only the dedicated child through Zig's indexed test protocol.
+    // Re-running the full test executable would recurse through unrelated
+    // suites for every hostile input once this module is explicitly imported.
+    const child_index: u32 = blk: {
+        for (@import("builtin").test_functions, 0..) |test_function, index| {
+            if (std.mem.endsWith(u8, test_function.name, "hostile SymbolId 6029 panic child"))
+                break :blk @intCast(index);
+        }
+        return error.MissingHostilePanicChild;
+    };
+    const io = std.testing.io;
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ executable_path, "--listen=-" },
         .environ_map = &child_environ,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .pipe,
     });
-    defer allocator.free(child.stdout);
-    defer allocator.free(child.stderr);
-
-    try std.testing.expect(!child.term.success());
+    defer child.kill(io);
+    var message_buffer: [64]u8 = undefined;
+    var pipe_writer = child.stdin.?.writer(io, &message_buffer);
+    const client: std.zig.Client = .{ .in = undefined, .out = &pipe_writer.interface };
+    try client.serveRunTest(child_index);
+    try client.serveBodylessMessage(.exit);
+    child.stdin.?.close(io);
+    child.stdin = null;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_reader = std.Io.File.Reader.initStreaming(child.stderr.?, io, &stderr_buffer);
+    const stderr = try stderr_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    defer allocator.free(stderr);
+    const term = try child.wait(io);
+    try std.testing.expect(!term.success());
     const expected_message = try std.fmt.allocPrint(
         allocator,
         "invalid transform semantic edit: {s}",
         .{expected_error},
     );
     defer allocator.free(expected_message);
-    try std.testing.expect(std.mem.indexOf(u8, child.stderr, expected_message) != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr, expected_message) != null);
 }
 
 test "hostile SymbolId 6029 panic child" {
@@ -5115,7 +5146,9 @@ test "hostile SymbolId 6029 panic child" {
     defer arena.deinit();
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
 
-    if (std.mem.eql(u8, mode, "conflicting-transformer-editor")) {
+    if (std.mem.eql(u8, mode, "invalid-import-creation-scope")) {
+        try rejectPoisonedImportCreationScope(arena.allocator());
+    } else if (std.mem.eql(u8, mode, "conflicting-transformer-editor")) {
         const editor = try fixture.setEditorSymbol(fixture.reference_node, fixture.other_id);
         try bindPendingHoistedTempReference(
             &fixture.transformer,
@@ -5332,4 +5365,72 @@ test "hostile SymbolId 6029 writes assigned SID to transformer map" {
 test "hostile SymbolId 6029 fail closed on invalid existing reference" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("invalid-existing-scope", "InvalidScope");
+}
+
+test "generated body import provenance uses producer-owned nested scope before output walk" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "function read(){return import('./dep.cjs')}");
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var entries = analyzer.node_scope_provenance.iterator();
+    const entry = entries.next().?;
+    const import_node = entry.key_ptr.*;
+    const source_scope = entry.value_ptr.scope;
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    const ret = try transformer.ast.addNode(.{ .tag = .return_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = import_node, .flags = 0 } } });
+    const nested = try transformer.ast.addNode(.{ .tag = .block_statement, .span = .EMPTY, .data = .{ .list = try transformer.ast.addNodeList(&.{ret}) } });
+    const nested_scope = try transformer.addGeneratedScope(source_scope, nested, .block);
+    const body = try transformer.ast.addNode(.{ .tag = .block_statement, .span = .EMPTY, .data = .{ .list = try transformer.ast.addNodeList(&.{nested}) } });
+    const callback = try @import("../es_helpers.zig").buildGeneratorWrapper(&transformer, body, .EMPTY);
+    const callback_scope = try transformer.addGeneratedFunctionScope(source_scope, callback);
+    try moveGeneratedFunctionBodyBindings(&transformer, source_scope, callback_scope, body);
+    const editor = &transformer.semantic_editor.?;
+    try std.testing.expectEqual(nested_scope, editor.node_scope_provenance.get(import_node).?.scope);
+    try std.testing.expectEqual(callback_scope, editor.scopes.items[nested_scope.toIndex()].parent);
+    try std.testing.expectEqual(import_node, editor.node_scope_provenance.get(import_node).?.source_node);
+}
+
+fn rejectPoisonedImportCreationScope(a: std.mem.Allocator) !void {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    var scanner = try Scanner.init(a, "function read(){return import('./dep.cjs')}");
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var entries = analyzer.node_scope_provenance.iterator();
+    const entry = entries.next().?;
+    const root_scope: ScopeId = @fromBackingInt(@as(u32, 0));
+    try std.testing.expect(entry.value_ptr.scope != root_scope);
+    entry.value_ptr.scope = root_scope; // wrong, valid ScopeId
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(transformer.ast.nodes.items.len - 1)));
+    try bindOutputScopesAndReferences(&transformer, root, root_scope);
+}
+
+test "hostile SymbolId 6029 rejects import creation scope healing" {
+    if (isSemanticEditPanicChild()) return;
+    try expectInvalidSemanticEditPanic("invalid-import-creation-scope", "InvalidScope");
 }
