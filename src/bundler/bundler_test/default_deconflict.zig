@@ -2251,3 +2251,65 @@ test "preserved CJS source interop-name export is not overwritten by a compiler 
         try expectDefaultRuntimeOutput(script, "[42,0]\n");
     };
 }
+
+test "preserved CJS public StringValue aliases cannot steal private transport handles" {
+    const Kind = enum { init, namespace };
+    const Quoting = enum { plain, quoted, escaped, literal_backslash };
+    for ([_]Kind{ .init, .namespace }) |kind| for ([_]Quoting{ .plain, .quoted, .escaped, .literal_backslash }) |quoting| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("public transport kind={s} quoting={s} minify={}\n", .{ @tagName(kind), @tagName(quoting), minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+        const name = if (kind == .init) "init_provider" else "exports_provider";
+        const key = switch (quoting) {
+            .plain => try std.testing.allocator.dupe(u8, name),
+            .quoted => try std.fmt.allocPrint(std.testing.allocator, "\"{s}\"", .{name}),
+            .escaped => try std.fmt.allocPrint(std.testing.allocator, "\"\\u00{x}{s}\"", .{ name[0], name[1..] }),
+            .literal_backslash => try std.fmt.allocPrint(std.testing.allocator, "\"\\\\u00{x}{s}\"", .{ name[0], name[1..] }),
+        };
+        defer std.testing.allocator.free(key);
+        const source = if (kind == .init)
+            try std.fmt.allocPrint(std.testing.allocator, "import{{{s} as read}}from'./provider.mjs';console.log(read(),globalThis.count)", .{key})
+        else
+            try std.testing.allocator.dupe(u8, "import*as ns from'./provider.mjs';console.log(ns.read())");
+        defer std.testing.allocator.free(source);
+        const provider = if (kind == .init)
+            try std.fmt.allocPrint(std.testing.allocator, "import'./dep.mjs';globalThis.count=(globalThis.count||0)+1;function read(){{return 42}}export{{read as {s}}}", .{key})
+        else
+            try std.fmt.allocPrint(std.testing.allocator, "import{{seed}}from'./dep.mjs';export const marker=seed;export function read(){{return this.marker}}export{{read as {s}}}", .{key});
+        defer std.testing.allocator.free(provider);
+        try writeFile(tmp.dir, "entry.mjs", source);
+        try writeFile(tmp.dir, "provider.mjs", provider);
+        try writeFile(tmp.dir, "dep.mjs", if (kind == .init) "globalThis.dep=1;export const unused=1" else "export const seed=42");
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const expected = if (kind == .init) "42 1\n" else "42\n";
+        const native = try std.fmt.allocPrint(std.testing.allocator, "await import('file://{s}');", .{entry});
+        defer std.testing.allocator.free(native);
+        try expectDefaultRuntimeOutput(native, expected);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const provider_path = try absPath(&tmp, "provider.mjs");
+        defer std.testing.allocator.free(provider_path);
+        const owner = graph.getModule(graph.path_to_module.get(provider_path).?).?;
+        const handle = if (kind == .init) try owner.esmInitSymbol() else try owner.esmNamespaceSymbol();
+        const label = if (kind == .init) owner.getInitName(null).? else owner.getExportsName(null).?;
+        if (quoting == .literal_backslash) try std.testing.expectEqualStrings(name, label) else try std.testing.expect(!std.mem.eql(u8, name, label));
+        try std.testing.expectEqual(owner.index, handle.module);
+        try std.testing.expect(@backingInt(handle.inner) < owner.semantic.?.symbols.items.len);
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "(await import('node:module')).createRequire(import.meta.url)('{s}');", .{emitted});
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, expected);
+    };
+}

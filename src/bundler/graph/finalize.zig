@@ -218,6 +218,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
     // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
+    var public_key_arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer public_key_arena.deinit();
     var used_names: std.StringHashMapUnmanaged(u32) = .empty;
     defer used_names.deinit(self.allocator);
 
@@ -242,7 +244,10 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
         // the resulting exact wrapper SID remains authoritative everywhere.
         var public_it = self.modules.iterator(0);
         while (public_it.next()) |module| {
-            for (module.export_bindings) |binding| try used_names.put(self.allocator, binding.exported_name, 1);
+            for (module.export_bindings) |binding| {
+                const key = try @import("../public_export_key.zig").fromSyntax(public_key_arena.allocator(), binding.exported_name);
+                try used_names.put(self.allocator, key.text, 1);
+            }
         }
     }
 
