@@ -695,6 +695,7 @@ test "#4819 callback temp reference binds through its exact producer node" {
         &.{},
         .none,
         .none,
+        false,
     );
     try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_temp_refs.items.len);
     const binding = transformer.generator_state_temp_refs.items[0].binding;

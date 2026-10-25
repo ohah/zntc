@@ -13,11 +13,26 @@ an exact parameter and restores native NamedEvaluation with a computed object
 property, including Symbol and `__proto__` keys. It does not infer identities
 from the key spelling.
 
-An expression evaluated once in a direct function/module body statement uses
-that existing activation's storage. Original scope-owner provenance identifies
-an inferred-class copy's source evaluation site. Other sites currently get a
-per-evaluation wrapper. Source key expressions retain their original lexical
-class scope. Generated declaration statements have zero-length anchors.
+An expression proved to run once in its enclosing function/module activation
+uses that activation's ordinary temp hoister. An opaque producer ID carries the
+exact reserved SID into the actual declaration; no declaration is inserted into
+an argument or array list. Original scope-owner provenance identifies copied
+class sites. The proof also covers nested blocks, catch and switch regions.
+
+Loop bodies publish their lexical key cells before closure analysis. This
+includes an explicit block/scope producer for an unbraced body. The existing
+per-iteration function then owns the storage. Await-bearing bodies use a
+synchronous generator and an outer driver that awaits only source suspensions;
+finishing an iteration adds no Promise wait. Rejections return through the
+iterator's throw method, preserving source catch/finally and control-flow signals.
+Native generator helpers use their actual function owner and visit the body in
+the original capture frame before acquiring an arguments environment.
+
+Collected native class declarations hand their outer binding to actual wrapper
+storage while an inner class-expression binding retains the source class-self
+SID. ES5 class lowering keeps its separate existing producer. Other repeated
+sites still use a per-evaluation wrapper; those boundaries require further
+validation before publication.
 
 Super reads use the known class-self SID and the current home-object prototype,
 and receiver reads use the factory's exact this parameter. Getter-method calls
@@ -31,14 +46,20 @@ runtime helpers requested by the transformer.
 ## Pending validation and composition
 
 This is a local, unpublished implementation checkpoint, not #4819 completion.
-The native-derived constructor body's lazy-this lifetime must be composed with
-the separate constructor fix; eager body alias initialization still fails two
-runtime comparisons. Engine-retained fields that call an earlier body closure
-inside `super()` have a separate earlier-initialization requirement.
+The native-derived constructor fix is merged separately and still needs composed
+validation here. Engine-retained fields that call an earlier body closure inside
+`super()` have a separate earlier-initialization requirement.
 
-The direct-body placement proof does not cover arbitrary await-bearing keys in
-loops and nested lexical regions. These need actual source-context validation,
-not an extra async function that changes promise scheduling. The external slot
-of a wrapped class declaration must also satisfy the target's block-scoping
-contract. Cache, import/export, private/with/eval boundaries, final public API
-oracles, compileable implementation mutants and normal push checks remain due.
+The current runtime matrix has sixty-two inputs, each checked in plain/minified
+output. It covers source await ordering, rejection/finally, abrupt loop flow,
+nested/unbraced loops and a native-generator partial profile. A separate probe
+checks function-hoisted key storage before the final output walk. A loop-specific probe also checks storage and references before the final walk.
+The callback producer moves exact reference rows only after its hoisted storage
+is bound; source lexical storage is handed to the actual wrapper declaration.
+Driver storage still needs its own complete producer-boundary probes.
+
+Mutable source arguments, dynamic eval/with, partial capability combinations,
+external wrapped class declaration block-scoping, cache/import/export boundaries,
+final public API oracles, compileable implementation mutants and normal push
+checks remain due. In particular, a capture snapshot cannot establish mutable
+arguments-binding semantics across a suspension.

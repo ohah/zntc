@@ -401,6 +401,7 @@ pub const Transformer = struct {
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     capture_frame: u32 = 0,
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
+    retained_loop_key_cells: std.AutoHashMapUnmanaged(u32, []@import("retained_class_keys.zig").Cell) = .empty,
     retained_class_key_plan: ?*@import("retained_class_keys.zig").Plan = null,
     retained_field_name_cell: ?@import("retained_class_keys.zig").Cell = null,
     retained_field_initializer_frame: u32 = 0,

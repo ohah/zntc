@@ -1018,7 +1018,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try extractClassHeaderYields(self, stmt_idx, ops, next_label)
                     else
                         stmt_idx;
-                    try appendVisitedStatement(self, target, ops, next_label);
+                    try appendVisitedStatement(self, try registeredClassAssignment(self, target, self.generator_operation_scope), ops, next_label);
                 },
                 else => try appendVisitedStatement(self, stmt_idx, ops, next_label),
             }
@@ -1108,11 +1108,38 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var";
         }
 
+        /// The wrapper already owns this exact outer declaration binding.
+        /// Keep the class expression's separate inner self binding on its SID.
+        fn registeredClassAssignment(self: *Transformer, index: NodeIndex, inherited: ScopeId) Transformer.Error!NodeIndex {
+            const node = self.ast.getNode(index);
+            if (node.tag != .class_declaration or self.options.unsupported.class) return index;
+            const name = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
+            if (name.isNone()) return index;
+            if (!isRegisteredGeneratorBinding(self, name)) try registerStateMachineBindings(self, &.{name});
+            if (!isRegisteredGeneratorBinding(self, name)) return index;
+            const class_scope = self.outputOwnedScope(index) orelse return index;
+            const origin = self.scope_owner_origins.get(@backingInt(index)) orelse @backingInt(index);
+            const self_id = self.class_self_symbol_map.get(@backingInt(index)) orelse self.class_self_symbol_map.get(origin) orelse std.debug.panic("collected class has no exact self SID", .{});
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            const inner_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbols[self_id].name);
+            _ = try self.bindClassSelfStorage(index, inner_binding, class_scope);
+            var slots: [8]u32 = undefined;
+            for (0..slots.len) |i| slots[i] = self.ast.extra_data.items[node.data.extra + i];
+            slots[ast_mod.ClassExtra.name] = @backingInt(inner_binding);
+            const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = node.span, .data = .{ .extra = try self.ast.addExtras(&slots) } });
+            try self.remapCopiedScopeOwner(index, expression);
+            try self.class_self_symbol_map.put(self.allocator, @backingInt(expression), self_id);
+            const scope = if (inherited.isNone()) self.generator_state_machine_scope else inherited;
+            const target = try nativeAssignmentPattern(self, name, nativeWriteScope(self, scope), false);
+            return es_helpers.makeAssignStmt(self, target, expression, node.span, 0);
+        }
+
         fn rewriteNativeStateVars(self: *Transformer, index: NodeIndex, inherited: ScopeId) Transformer.Error!NodeIndex {
             if (index.isNone()) return index;
             var node = self.ast.getNode(index);
             const scope = self.outputOwnedScope(index) orelse inherited;
             switch (node.tag) {
+                .class_declaration => return registeredClassAssignment(self, index, inherited),
                 .variable_declaration => {
                     if (!isNativeSourceVar(self, index)) return index;
                     const expression = try nativeDeclarationExpression(self, index, nativeWriteScope(self, scope));
@@ -1369,6 +1396,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var_bindings.items,
                 call_scope,
                 generator_parent_scope,
+                false,
             );
             // `_loop` is an assignment inside the callback being built, but
             // that callback has no NodeIndex/ScopeId yet. Keep its exact owner

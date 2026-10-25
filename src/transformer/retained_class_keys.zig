@@ -78,15 +78,10 @@ fn reserveHoistedCell(self: anytype, anchor: Span, owner: @import("../semantic/s
     return .{ .span = name, .symbol_id = id, .owner_scope = owner, .temp_producer_id = producer };
 }
 
-pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast.NodeIndex {
-    if (!self.semantic_edit_enabled or !self.options.unsupported.arrow or self.options.unsupported.class or
-        self.options.unsupported.class_field or !self.options.use_define_for_class_fields or self.options.experimental_decorators) return null;
-    if (self.retained_class_key_plan) |plan| if (plan.source == source) return null;
+fn collectCells(self: anytype, original: ast.Node, cells: *std.ArrayList(Cell)) !void {
     const body_idx = self.ast.readExtraNode(original.data.extra, ast.ClassExtra.body);
-    if (body_idx.isNone()) return null;
+    if (body_idx.isNone()) return;
     const body = self.ast.getNode(body_idx);
-    var cells: std.ArrayList(Cell) = .empty;
-    defer cells.deinit(self.allocator);
     const start = body.data.list.start;
     const len = body.data.list.len;
     for (0..len) |offset| {
@@ -101,6 +96,91 @@ pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast
         if (!captures.this_value and !captures.super_value) continue;
         try cells.append(self.allocator, .{ .key = key, .arrow = arrow, .capture = undefined });
     }
+}
+
+/// Publish cells before loop capture analysis, while the original lexical
+/// body and class owners are still known. The loop closure then owns a fresh
+/// storage binding on every iteration without moving class keys into an IIFE.
+pub fn prepareLoopBody(self: anytype, body_idx: ast.NodeIndex) !bool {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.arrow or self.options.unsupported.class or
+        self.options.unsupported.class_field or !self.options.use_define_for_class_fields or self.options.experimental_decorators or body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    var body_owner = if (body.tag == .block_statement) self.outputOwnedScope(body_idx) else null;
+    var stack: std.ArrayList(ast.NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var declarations: std.ArrayList(ast.NodeIndex) = .empty;
+    defer declarations.deinit(self.allocator);
+    if (body.tag == .block_statement) {
+        var children = @import("../parser/ast_walk.zig").children(self.ast, body);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    } else try stack.append(self.allocator, body_idx);
+    var found = false;
+    var counter: u32 = 0;
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .class_declaration, .class_expression => {
+                const origin = self.scope_owner_origins.get(@backingInt(idx)) orelse @backingInt(idx);
+                if (self.retained_loop_key_cells.contains(origin)) {
+                    found = true;
+                    continue;
+                }
+                var cells: std.ArrayList(Cell) = .empty;
+                defer cells.deinit(self.allocator);
+                try collectCells(self, node, &cells);
+                if (cells.items.len == 0) continue;
+                if (body_owner == null) {
+                    if (body.tag != .block_statement) {
+                        const original_statement = try self.ast.addNode(body);
+                        self.ast.nodes.items[@backingInt(body_idx)] = .{ .tag = .block_statement, .span = body.span, .data = .{ .list = try self.ast.addNodeList(&.{original_statement}) } };
+                    }
+                    const scope = try self.addGeneratedScope(self.current_scope, body_idx, .block);
+                    try self.reparentGeneratedBodyScopes(self.current_scope, scope, body_idx);
+                    body_owner = scope;
+                }
+                const owner = body_owner.?;
+                for (cells.items) |*cell| {
+                    const name = try self.buildUniqueNameAvoidingDynamicEval("_fieldKey", &counter, owner);
+                    const binding = try helpers.makeExactSyntheticBinding(self, name);
+                    const id = try self.declareSyntheticInScope(binding, node.span, .variable_let, owner);
+                    cell.capture = .{ .span = self.ast.getNode(binding).data.string_ref, .symbol_id = id, .owner_scope = owner };
+                    const declaration = try helpers.makeDeclarator(self, binding, .none, node.span);
+                    try declarations.append(self.allocator, try helpers.makeVarDeclaration(self, &.{declaration}, .let, node.span));
+                }
+                try self.retained_loop_key_cells.put(self.allocator, origin, try self.allocator.dupe(Cell, cells.items));
+                found = true;
+            },
+            .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement, .do_while_statement, .with_statement, .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {},
+            else => {
+                var nested = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (nested.next()) |child| try stack.append(self.allocator, child);
+            },
+        }
+    }
+    if (declarations.items.len != 0) {
+        const list = self.ast.getNode(body_idx).data.list;
+        for (0..list.len) |i| try declarations.append(self.allocator, @fromBackingInt(self.ast.extra_data.items[list.start + i]));
+        self.ast.nodes.items[@backingInt(body_idx)].data.list = try self.ast.addNodeList(declarations.items);
+    }
+    return found;
+}
+
+pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast.NodeIndex {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.arrow or self.options.unsupported.class or
+        self.options.unsupported.class_field or !self.options.use_define_for_class_fields or self.options.experimental_decorators) return null;
+    if (self.retained_class_key_plan) |plan| if (plan.source == source) return null;
+    var cells: std.ArrayList(Cell) = .empty;
+    defer cells.deinit(self.allocator);
+    const origin = self.scope_owner_origins.get(@backingInt(source)) orelse @backingInt(source);
+    if (self.retained_loop_key_cells.get(origin)) |planned| {
+        var plan = Plan{ .source = source, .cells = planned };
+        const previous = self.retained_class_key_plan;
+        self.retained_class_key_plan = &plan;
+        defer self.retained_class_key_plan = previous;
+        return try self.visitNode(source);
+    }
+    try collectCells(self, original, &cells);
     if (cells.items.len == 0) return null;
     const class_scope = self.outputOwnedScope(source) orelse @panic("retained class key has no exact source scope");
     const parent = self.outputScopeParent(class_scope);

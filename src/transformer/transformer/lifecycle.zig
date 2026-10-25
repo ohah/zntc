@@ -138,6 +138,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.runtime_helper_ref_index.deinit(self.allocator);
     self.scope_owner_remaps.deinit(self.allocator);
     self.scope_owner_removed.deinit(self.allocator);
+    var retained_cells = self.retained_loop_key_cells.valueIterator();
+    while (retained_cells.next()) |cells| self.allocator.free(cells.*);
+    self.retained_loop_key_cells.deinit(self.allocator);
     self.scope_owner_origins.deinit(self.allocator);
     self.generated_class_without_source_anchor.deinit(self.allocator);
     self.generated_class_self_relocated_to_wrapper.deinit(self.allocator);

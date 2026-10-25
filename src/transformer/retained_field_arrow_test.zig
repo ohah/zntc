@@ -1,7 +1,7 @@
 const std = @import("std");
 
-test "retained field arrow owns creation site receiver across forty nine contexts" {
-    const Case = struct { name: []const u8, source: []const u8 };
+test "retained field arrow owns creation site receiver across sixty two contexts" {
+    const Case = struct { name: []const u8, source: []const u8, native_generator: bool = false };
     const cases = [_]Case{
         .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
         .{ .name = "constructor before fields", .source = "class Box{constructor(){this.other=2}value=7;read=()=>this.value}const box=new Box();console.log(box.read(),box.other);" },
@@ -51,6 +51,19 @@ test "retained field arrow owns creation site receiver across forty nine context
         .{ .name = "await key inside catch region", .source = "async function make(){try{throw 1}catch(e){return class{[await Promise.resolve(\"read\")]=()=>this}}}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
         .{ .name = "await key in repeated loop", .source = "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(\"read\"+i)]=()=>this})}return all}make().then(all=>console.log(all.map((C,i)=>{const x=new C();return x[\"read\"+i].name+\":\"+(x[\"read\"+i]()===x)}).join(\",\")));" },
         .{ .name = "yield key in repeated loop", .source = "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}const g=make();console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);" },
+        .{ .name = "await loop microtask order", .source = "const trace=[];async function make(){for(let i=0;i<2;i++){const C=class{[await Promise.resolve(\"read\"+i)]=()=>this};trace.push(new C()[\"read\"+i].name)}trace.push(\"done\")}make();Promise.resolve().then(()=>trace.push(\"a\")).then(()=>trace.push(\"b\")).then(()=>trace.push(\"c\")).then(()=>trace.push(\"d\"));setTimeout(()=>console.log(trace.join(\",\")),0);" },
+        .{ .name = "await class declaration in while", .source = "async function make(){const all=[];let i=0;while(i<2){class C{[await Promise.resolve(\"read\"+i++)]=()=>this}all.push(C)}return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));" },
+        .{ .name = "await class in for of", .source = "async function make(){const all=[];for(const key of [\"first\",\"second\"]){all.push(class{[await Promise.resolve(key)]=()=>this})}return all}make().then(all=>console.log(new all[0]().first.name,new all[1]().second.name));" },
+        .{ .name = "native generator repeated key", .source = "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}const g=make();console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true },
+        .{ .name = "await rejection caught in loop", .source = "async function make(){const trace=[];for(let i=0;i<2;i++){try{class C{[await (i?Promise.resolve(\"read\"):Promise.reject(Error(\"bad\")))]=()=>this}trace.push(new C().read.name)}catch(e){trace.push(e.message)}}console.log(trace.join(\",\"))}make();" },
+        .{ .name = "await loop finally suspends", .source = "async function make(){const trace=[];for(let i=0;i<2;i++){try{class C{[await Promise.resolve(\"read\"+i)]=()=>this}trace.push(new C()[\"read\"+i].name)}finally{trace.push(await Promise.resolve(\"finally\"+i))}}console.log(trace.join(\",\"))}make();" },
+        .{ .name = "await loop break and continue", .source = "async function make(){const all=[];for(let i=0;i<5;i++){class C{[await Promise.resolve(\"read\"+i)]=()=>this}if(i===1)continue;all.push(C);if(i===2)break}return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read2.name));" },
+        .{ .name = "await loop return value", .source = "async function make(){for(let i=0;i<2;i++){class C{[await Promise.resolve(\"read\"+i)]=()=>this}return C}}make().then(C=>console.log(new C().read0.name));" },
+        .{ .name = "await nested loops", .source = "async function make(){const all=[];for(let i=0;i<2;i++){for(let j=0;j<2;j++){all.push(class{[await Promise.resolve(\"read\"+i+j)]=()=>this})}}return all}make().then(all=>console.log(all.map((C,i)=>new C()[\"read\"+Math.floor(i/2)+i%2].name).join(\",\")));" },
+        .{ .name = "unbraced await loop class argument", .source = "async function make(){const all=[];for(let i=0;i<2;i++)all.push(class{[await Promise.resolve(\"read\"+i)]=()=>this});return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));" },
+        .{ .name = "native generator outer lexical key", .source = "function* make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[yield this.prefix+arguments[0]+i]=()=>this})}return all}const g=make.call({prefix:\"p\"},\"x\");console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true },
+        .{ .name = "await key source arguments", .source = "async function make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(arguments[0]+i)]=()=>this})}return all}make(\"read\").then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));" },
+        .{ .name = "await key source this and arguments", .source = "async function make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(this.prefix+arguments[0]+i)]=()=>this})}return all}make.call({prefix:\"p\"},\"x\").then(all=>console.log(new all[0]().px0.name,new all[1]().px1.name));" },
         .{ .name = "multiple key cells in class", .source = "class C{[\"left\"]=()=>this;[\"right\"]=()=>this}const box=new C();console.log(box.left.name,box.right.name,box.left()===box,box.right()===box);" },
     };
     var mismatches: usize = 0;
@@ -62,13 +75,16 @@ test "retained field arrow owns creation site receiver across forty nine context
         try std.testing.expectEqual(@as(u8, 0), native.term.exited);
         for ([_]bool{true}) |define| for ([_]bool{ false, true }) |minify| {
             std.debug.print("field capture running {s} define={any} minify={any}\n", .{ case.name, define, minify });
+            var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+            if (case.native_generator) unsupported.generator = false;
             const result = try @import("../transpile.zig").transpile(a, case.source, "input.cjs", .{
-                .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+                .unsupported = unsupported,
                 .use_define_for_class_fields = define,
                 .minify_identifiers = minify,
                 .minify_syntax = minify,
                 .minify_whitespace = minify,
             });
+            if (case.native_generator) try std.testing.expect(std.mem.indexOf(u8, result.code, "=>") == null);
             const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
             if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("case:{s} define={any} minify={any}\nsource:{s}\noutput:{s}\nexpected:{s}actual:{s}stderr:{s}\n", .{ case.name, define, minify, case.source, result.code, native.stdout, actual.stdout, actual.stderr });
             if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) mismatches += 1;
@@ -80,11 +96,12 @@ test "retained field arrow owns creation site receiver across forty nine context
 test "retained field arrow has exact factory bindings and references before final output walk" {
     const ast = @import("../parser/ast.zig");
     const ScopeId = @import("../semantic/scope.zig").ScopeId;
-    for ([_]bool{ false, true }) |computed| {
+    for ([_]u8{ 0, 1, 2 }) |variant| {
+        const computed = variant != 0;
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, if (computed) "class A{['read']=()=>this};class B extends A{['read']=()=>[super.read,eval('0')]}" else "class A{read=()=>this};class B extends A{read=()=>[super.read,eval('0')]}");
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, if (variant == 2) "function make(){class A{['read']=()=>this};class B extends A{['read']=()=>[super.read,eval('0')]}return B}" else if (computed) "class A{['read']=()=>this};class B extends A{['read']=()=>[super.read,eval('0')]}" else "class A{read=()=>this};class B extends A{read=()=>[super.read,eval('0')]}");
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
         parser.configureFromExtension(".cjs");
         const root = try parser.parse();
@@ -225,5 +242,76 @@ test "retained field arrow low-level graphless receiver output stays executable"
         if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("graphless source:{s}\noutput:{s}\nexpected:{s}actual:{s}stderr:{s}\n", .{ source, output, native.stdout, actual.stdout, actual.stderr });
         try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
         try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
+
+test "retained loop key cells retain exact owners before final output walk" {
+    const ast = @import("../parser/ast.zig");
+    const ScopeId = @import("../semantic/scope.zig").ScopeId;
+    const sources = [_][]const u8{
+        "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve('read'+i)]=()=>this})}return all}",
+        "async function make(){const all=[];for(let i=0;i<2;i++)all.push(class{[await Promise.resolve('read'+i)]=()=>this});return all}",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".cjs");
+        const root = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{
+            .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+            .use_define_for_class_fields = true,
+        });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.class_self_symbol_map = analyzer.class_self_symbol_map;
+        t.node_scope_provenance = analyzer.node_scope_provenance;
+        t.unresolved_references = &analyzer.unresolved_references;
+        t.semantic_edit_enabled = true;
+        try t.buildBlockRenameMap();
+        const output = try t.visitNode(root);
+        try std.testing.expectEqual(@as(u32, 1), t.retained_loop_key_cells.count());
+        var planned = t.retained_loop_key_cells.valueIterator();
+        const cells = planned.next().?.*;
+        try std.testing.expectEqual(@as(usize, 1), cells.len);
+        const sid = @backingInt(cells[0].capture.symbol_id.?);
+        const editor = &t.semantic_editor.?;
+        const Work = struct { node: ast.NodeIndex, scope: ScopeId };
+        var stack: std.ArrayList(Work) = .empty;
+        try stack.append(a, .{ .node = output, .scope = @fromBackingInt(0) });
+        var bindings: usize = 0;
+        var reads: usize = 0;
+        var writes: usize = 0;
+        while (stack.pop()) |work| {
+            if (work.node.isNone()) continue;
+            const node = t.ast.getNode(work.node);
+            const scope = t.outputOwnedScope(work.node) orelse work.scope;
+            if (t.getSymbolIdAt(work.node) == sid) {
+                if (node.tag == .binding_identifier) {
+                    try std.testing.expectEqual(t.nearestVarScope(scope), editor.symbols.items[sid].scope_id);
+                    bindings += 1;
+                } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+                    const reference = (try editor.referenceForNode(work.node)) orelse return error.MissingLoopKeyReferenceAtBirth;
+                    try std.testing.expectEqual(scope, reference.scope_id);
+                    try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
+                    try std.testing.expect(reference.flags.read != reference.flags.write);
+                    if (reference.flags.read) reads += 1 else writes += 1;
+                }
+            }
+            var children = @import("../parser/ast_walk.zig").children(t.ast, node);
+            while (children.next()) |child| try stack.append(a, .{ .node = child, .scope = scope });
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expect(reads > 0);
+        try std.testing.expect(writes > 0);
+        try std.testing.expectEqual(@as(usize, 0), t.deferred_generator_loop_migrations.count());
     }
 }

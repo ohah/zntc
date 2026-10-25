@@ -43,7 +43,7 @@ fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
             found.* = true;
             return .stop;
         },
-        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => return .skip_children,
+        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => return .skip_children,
         else => return .descend,
     }
 }
@@ -52,6 +52,13 @@ fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
 /// - `names`: 헤더 let/const + 본문에서 선언한 let/const/class — 이 중 하나라도 클로저가
 ///   캡처하면 반복별 추출이 필요하다.
 /// - `var_names`: 본문의 원래 `var` — 추출하면 바깥으로 끌어올린다.
+fn visitSuspendingLoopBody(self: *Transformer, body: NodeIndex, capture_source_values: bool) Error!NodeIndex {
+    const saved = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = saved or capture_source_values;
+    defer self.in_extracted_fn_body = saved;
+    return self.visitNode(body);
+}
+
 pub const LoopCapture = struct {
     names: std.ArrayList([]const u8) = .empty,
     var_names: std.ArrayList([]const u8) = .empty,
@@ -59,15 +66,18 @@ pub const LoopCapture = struct {
     var_bindings: std.ArrayList(NodeIndex) = .empty,
     /// 헤더가 아니라 본문 선언 때문에 추출해야 하는지(헤더 let 이 없는 루프도 추출하게 한다).
     body_captured: bool = false,
+    retained_key_cells: bool = false,
 
     pub fn init(self: *Transformer, head_names: []const []const u8, body: NodeIndex) Error!LoopCapture {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var c: LoopCapture = .{};
+        c.retained_key_cells = try @import("../retained_class_keys.zig").prepareLoopBody(self, body);
         try c.names.appendSlice(self.allocator, head_names);
         try BlockScoping.collectLoopBodyLexicalNames(self, body, false, &c.names);
         if (c.names.items.len > head_names.len) {
             c.body_captured = BlockScoping.hasCapturedClosure(self, body, c.names.items[head_names.len..]);
         }
+        c.body_captured = c.body_captured or c.retained_key_cells;
         try BlockScoping.collectLoopBodyVarBindings(self, body, &c.var_bindings);
         for (c.var_bindings.items) |binding| try c.var_names.append(self.allocator, try self.decodedName(self.ast.getText(self.ast.getNode(binding).span)));
         return c;
@@ -270,7 +280,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     try self.label_scope.append(self.allocator, null);
     const body_temp_start = self.temp_var_counter;
     self.pending_loop_extraction_depth += 1;
-    const raw_body = self.visitNode(orig_body) catch |err| {
+    const raw_body = visitSuspendingLoopBody(self, orig_body, capture.retained_key_cells and is_async) catch |err| {
         self.pending_loop_extraction_depth -= 1;
         return err;
     };
@@ -294,6 +304,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         capture.var_bindings.items,
         self.current_scope,
         .none,
+        capture.retained_key_cells and is_async,
     );
     const loop_node = try self.ast.addNode(.{
         .tag = node.tag,
@@ -325,7 +336,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
         if (lexical_names.items.len > 0 or capture.body_captured) {
             const orig_body_idx = node.data.ternary.c;
             // 원본 AST 에서 capture 검사 — visitNode 가 closure 경계를 변환하기 전 시점.
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
+            const has_capture = capture.retained_key_cells or BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             // body 에 await 가 있으면 _loop 도 async 여야 (호출부도 await wrap).
             // for-await-of 자체는 enclosing async function 보장이지만 body 에 await
             // 가 없으면 sync _loop 으로 충분.
@@ -348,7 +359,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
             if (has_capture) self.pending_loop_extraction_depth += 1;
-            const raw_c = self.visitNode(orig_body_idx) catch |err| {
+            const raw_c = visitSuspendingLoopBody(self, orig_body_idx, capture.retained_key_cells and is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -377,6 +388,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     .none,
+                    capture.retained_key_cells and is_async,
                 );
                 try splitCapturedLoopHeaderSymbols(
                     self,
@@ -558,7 +570,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         if (lexical_names.items.len > 0 or capture.body_captured) {
             // 원본 body에서 캡처/제어흐름 분석 (new AST에서는 extra 레이아웃이 변경됨)
             const orig_body_idx = self.readNodeIdx(e, 3);
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
+            const has_capture = capture.retained_key_cells or BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
             const preserve_this = if (has_capture) BlockScoping.hasLexicalThisReference(self, orig_body_idx) else false;
 
@@ -577,12 +589,20 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             // 위임하며, 본문은 방문하지 않고 원본 그대로 둔다(그 generator 가 나중에 한 번 방문).
             // 헤더 let 은 리네임될 수 있어 방문 안 한 본문과 이름이 어긋나므로 헤더 선언이 없는
             // 루프(for-of 풀이 결과)에만 쓴다 (#4722 → #4746).
-            const yield_closure = has_capture and lexical_names.items.len == 0 and bodyHasYield(self, orig_body_idx);
+            const yield_closure = has_capture and (lexical_names.items.len == 0 or self.semantic_edit_enabled) and bodyHasYield(self, orig_body_idx);
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
             if (has_capture and !yield_closure) self.pending_loop_extraction_depth += 1;
-            const raw_body = if (yield_closure) orig_body_idx else self.visitNode(orig_body_idx) catch |err| {
+            const raw_body = if (yield_closure) native_generator_body: {
+                if (self.options.unsupported.generator) break :native_generator_body orig_body_idx;
+                // Visit in the actual source frame before the implementation
+                // generator creates its own arguments environment.
+                const saved_extracted = self.in_extracted_fn_body;
+                self.in_extracted_fn_body = true;
+                defer self.in_extracted_fn_body = saved_extracted;
+                break :native_generator_body try self.visitNode(orig_body_idx);
+            } else visitSuspendingLoopBody(self, orig_body_idx, capture.retained_key_cells and is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -611,6 +631,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     if (yield_closure) self.outputScopeParent(self.current_scope) else .none,
+                    capture.retained_key_cells and is_async and !yield_closure,
                 );
 
                 try splitCapturedLoopHeaderSymbols(

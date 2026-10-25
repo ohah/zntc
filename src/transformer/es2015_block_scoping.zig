@@ -561,46 +561,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// `this` 를 가지므로 경계에서 멈추고, arrow function 은 outer `this` 를
         /// 캡처하므로 계속 탐색한다.
         pub fn hasLexicalThisReference(self: *Transformer, body_idx: NodeIndex) bool {
-            if (body_idx.isNone()) return false;
-            // 트랜스포머가 만든 노드도 본다(#4722). 예전엔 파서 노드만 봤는데, 바깥 루프 추출이
-            // 본문을 재작성하면 안쪽 루프가 새 노드가 되어 캡처를 못 보는 false negative 가
-            // 났다(가드 도입 당시 TODO 로 남아 있던 문제). 레이아웃은 comptime 표로 검증된다.
-            const max_node: usize = self.ast.nodes.items.len;
-
-            var stack: std.ArrayList(NodeIndex) = .empty;
-            defer stack.deinit(self.allocator);
-            stack.append(self.allocator, body_idx) catch return true;
-
-            while (stack.items.len > 0) {
-                const idx = stack.pop() orelse break;
-                if (idx.isNone()) continue;
-                if (@backingInt(idx) >= max_node) continue;
-                const node = self.ast.getNode(idx);
-
-                switch (node.tag) {
-                    .this_expression,
-                    .super_expression,
-                    => return true,
-
-                    .function_expression,
-                    .function_declaration,
-                    .function,
-                    .method_definition,
-                    .class_expression,
-                    .class_declaration,
-                    => continue,
-
-                    else => {},
-                }
-
-                var children: std.ArrayList(NodeIndex) = .empty;
-                defer children.deinit(self.allocator);
-                collectChildIndices(self, node, &children) catch return true;
-                for (children.items) |child_idx| {
-                    stack.append(self.allocator, child_idx) catch return true;
-                }
-            }
-            return false;
+            const captures = @import("es2015_arrow.zig").ES2015Arrow(Transformer).lexicalCaptures(self, body_idx) catch return true;
+            return captures.this_value or captures.super_value;
         }
 
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
@@ -701,7 +663,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 본문에 `yield`/`await` 이 있어 평범한 함수로는 추출할 수 없을 때 쓴다 —
             /// 상태 기계가 `[5, __values(_loop(x))]` 위임으로 접고, `yield*` 의 값이
             /// `_loop` 의 return 값이라 break/continue/return 신호도 그대로 실려 온다.
-            is_generator: bool,
+            delegates_yield: bool,
             /// 호출자가 본문을 visit 하기 **직전**의 `temp_var_counter`. 그 뒤에 생긴 임시
             /// 변수는 본문 안에서만 쓰이므로 `_loop` 안에 선언한다 — 바깥 함수에 두면 모든
             /// 반복이 한 변수를 공유해, 반복마다 만든 클로저가 마지막 값을 보게 된다 (#4729:
@@ -720,7 +682,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             call_scope: @import("../semantic/scope.zig").ScopeId,
             /// 추출된 generator 함수의 실제 삽입 부모. 비-generator 호출은 `.none`.
             generator_parent_scope: @import("../semantic/scope.zig").ScopeId,
+            await_driver: bool,
         ) Transformer.Error!LoopClosureResult {
+            const is_generator = delegates_yield or await_driver;
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
@@ -759,6 +723,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
 
             transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars, call_scope);
+            if (await_driver) try @import("loop_await_driver.zig").awaitToYield(self, transformed_body);
 
             var body_temp_bindings: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
             defer body_temp_bindings.deinit(self.allocator);
@@ -804,7 +769,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
-            const func_flags: u32 = (if (is_async) ast_mod.FunctionFlags.is_async else 0) |
+            const func_flags: u32 = (if (is_async and !await_driver) ast_mod.FunctionFlags.is_async else 0) |
                 (if (is_generator) ast_mod.FunctionFlags.is_generator else 0);
             const func_extra = try self.ast.addExtras(&.{
                 none,                          @backingInt(params_node),
@@ -819,9 +784,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             var generator_function_scope: ?ScopeId = null;
             if (is_generator and self.semantic_edit_enabled) {
-                if (generator_parent_scope.isNone() or call_scope.isNone())
+                if ((!await_driver and generator_parent_scope.isNone()) or call_scope.isNone())
                     std.debug.panic("extracted generator loop has no exact insertion scope", .{});
-                const function_scope = try self.addGeneratedFunctionScope(generator_parent_scope, func_expr);
+                const function_scope = try self.addGeneratedFunctionScope(if (await_driver) call_scope else generator_parent_scope, func_expr);
                 generator_function_scope = function_scope;
                 var header_symbol_ids: std.ArrayList(u32) = .empty;
                 defer header_symbol_ids.deinit(self.allocator);
@@ -855,7 +820,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     );
                 }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
-                try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
+                if (!await_driver and self.options.unsupported.generator) try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,
                     .enclosing_function_scope = self.current_scope,
@@ -907,7 +872,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 generated.synthetic_kind = .block_scoping_loop_binding;
                 generated.output_name_hint = "_loop";
             }
-            const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
+            const output_function = if (await_driver or (is_generator and !self.options.unsupported.generator)) try self.visitNode(func_expr) else func_expr;
+            const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, output_function, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
             for (hoist_vars, 0..) |name, name_i| {
@@ -958,7 +924,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // is_async — `_loop(...)` 가 Promise 반환. 호출부도 `await _loop(...)` 로
             // wrap 해야 iteration 순서 보존 + needsRetVar 시 _ret 가 resolved value.
-            const call_expr: NodeIndex = if (is_generator)
+            const driver = if (await_driver) try @import("loop_await_driver.zig").build(self, loop_call, call_scope, span) else null;
+            defer if (driver) |owned| self.allocator.free(owned.statements);
+            const call_expr: NodeIndex = if (driver) |driven| driven.value else if (delegates_yield)
                 try self.ast.addNode(.{
                     .tag = .yield_expression,
                     .span = span,
@@ -991,7 +959,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
 
             // 호출문을 블록으로 감싸기
-            const call_block_list = try self.ast.addNodeList(&.{final_stmt});
+            var call_statements: std.ArrayList(NodeIndex) = .empty;
+            defer call_statements.deinit(self.allocator);
+            if (driver) |driven| try call_statements.appendSlice(self.allocator, driven.statements);
+            try call_statements.append(self.allocator, final_stmt);
+            const call_block_list = try self.ast.addNodeList(call_statements.items);
             const call_block = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
@@ -1000,7 +972,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             return .{
                 .loop_fn = loop_var,
-                .loop_function = func_expr,
+                .loop_function = output_function,
                 .loop_binding = loop_binding,
                 .loop_symbol_id = loop_symbol,
                 .loop_owner_scope = loop_owner_scope,
