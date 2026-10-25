@@ -1063,9 +1063,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         const node = self.ast.getNode(work.node);
         var scope = self.outputOwnedScope(work.node) orelse work.scope;
         if (node.tag == .import_expression) {
-            const provenance = editor.node_scope_provenance.get(work.node) orelse
-                std.debug.panic("output import expression lost its creation scope provenance", .{});
-            if (provenance.scope != scope) return editError(error.InvalidScope);
+            const provenance = editor.node_scope_provenance.get(work.node) orelse return error.InvalidScope;
+            if (provenance.scope != scope) return error.InvalidScope;
             try self.transformed_node_scope_provenance.put(self.allocator, work.node, provenance);
         }
         if (node.tag == .block_statement and self.outputOwnedScope(work.node) == null) {
@@ -5147,7 +5146,7 @@ test "hostile SymbolId 6029 panic child" {
     const fixture = try HoistedTempHostileFixture.init(arena.allocator());
 
     if (std.mem.eql(u8, mode, "invalid-import-creation-scope")) {
-        try rejectPoisonedImportCreationScope(arena.allocator());
+        try rejectPoisonedImportCreationScope(arena.allocator(), false);
     } else if (std.mem.eql(u8, mode, "conflicting-transformer-editor")) {
         const editor = try fixture.setEditorSymbol(fixture.reference_node, fixture.other_id);
         try bindPendingHoistedTempReference(
@@ -5404,7 +5403,7 @@ test "generated body import provenance uses producer-owned nested scope before o
     try std.testing.expectEqual(import_node, editor.node_scope_provenance.get(import_node).?.source_node);
 }
 
-fn rejectPoisonedImportCreationScope(a: std.mem.Allocator) !void {
+fn rejectPoisonedImportCreationScope(a: std.mem.Allocator, comptime use_checked: bool) !void {
     const Parser = @import("../../parser/parser.zig").Parser;
     const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
     var scanner = try Scanner.init(a, "function read(){return import('./dep.cjs')}");
@@ -5427,7 +5426,16 @@ fn rejectPoisonedImportCreationScope(a: std.mem.Allocator) !void {
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(transformer.ast.nodes.items.len - 1)));
-    try bindOutputScopesAndReferences(&transformer, root, root_scope);
+    if (use_checked) {
+        try bindOutputScopesAndReferencesChecked(&transformer, root, root_scope);
+    } else try bindOutputScopesAndReferences(&transformer, root, root_scope);
+}
+
+test "hostile SymbolId 6029 checked API rejects import creation scope drift" {
+    if (isSemanticEditPanicChild()) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.InvalidScope, rejectPoisonedImportCreationScope(arena.allocator(), true));
 }
 
 test "hostile SymbolId 6029 rejects import creation scope healing" {
