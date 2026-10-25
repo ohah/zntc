@@ -621,7 +621,7 @@ pub fn visitParameterNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         self.native_parameter_default_root = saved_default_root;
         self.native_parameter_name_hint = saved_name_hint;
     }
-    return self.visitNode(idx);
+    return self.visitBinaryNode(idx);
 }
 
 /// Visit a complete parameter list while preserving the parameter environment

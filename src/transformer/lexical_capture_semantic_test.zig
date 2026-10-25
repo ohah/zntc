@@ -815,6 +815,8 @@ test "native parameter arrow references and lexical scopes exist before finaliza
     try checkNativeArrowReferenceBirth("function Parent(get=()=>new.target){return get}", 1);
     try checkNativeArrowReferenceBirth("function Parent(get=()=>class extends(new.target||Object){}){return get}", 1);
     try checkNativeArrowReferenceBirth("function Parent(get=()=>class{[new.target===Parent?'yes':'no'](){return 7}}){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=([read=()=>new.target]=[])=>read){return get}", 2);
+    try checkNativeArrowReferenceBirth("function Parent(get=({read=()=>new.target}={})=>read){return get}", 2);
     try checkNativeArrowReferenceBirth("function Parent(get=(value=new.target)=>value){return get}", 1);
     try checkNativeArrowReferenceBirth("function Parent(get=()=>()=>new.target){return get}", 2);
     try checkNativeArrowReferenceBirth("function Parent(get=(read=()=>new.target)=>read){return get}", 2);
