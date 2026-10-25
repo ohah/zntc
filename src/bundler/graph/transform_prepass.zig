@@ -14079,7 +14079,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         \\} else {
         \\  exports.Buffer = SafeBuffer;
         \\}
-        \\function SafeBuffer() { return Buffer(1); }
+        \\var SafeBuffer = function() { return Buffer(1); };
         \\SafeBuffer.from = 1;
     ;
 
@@ -14234,11 +14234,14 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
 
     var removed_nodes: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer removed_nodes.deinit(allocator);
+    var needs_semantic_reanalysis = false;
     try std.testing.expect(try cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
         allocator,
         &module.ast.?,
         &removed_nodes,
+        &needs_semantic_reanalysis,
     ));
+    try std.testing.expect(!needs_semantic_reanalysis);
     try std.testing.expect(removed_nodes.items.len > 0);
 
     const test_context = .{
@@ -14437,6 +14440,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     }
     try std.testing.expectEqual(buffer_refs_before, buffer_refs_after);
     try std.testing.expectEqual(@as(usize, 0), fallback_refs_after);
+    try std.testing.expectEqual(@as(u32, 0), semantic.symbols.items[fallback_symbol.?].reference_count);
     try std.testing.expect(scoped_ref_keeps_block_scope);
     try std.testing.expectEqual(
         buffer_reference_count_before,

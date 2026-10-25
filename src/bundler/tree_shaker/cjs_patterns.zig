@@ -57,8 +57,10 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     allocator: std.mem.Allocator,
     ast: *Ast,
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+    needs_semantic_reanalysis: *bool,
 ) !bool {
     removed_nodes.clearRetainingCapacity();
+    needs_semantic_reanalysis.* = false;
 
     var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
     defer buffer_names.deinit(allocator);
@@ -104,6 +106,7 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
         });
     }
     if (branches.items.len == 0) return false;
+    needs_semantic_reanalysis.* = hasTopLevelDeadFallbackFunction(ast, &dead_fallback_names);
 
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
@@ -143,6 +146,37 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     return true;
 }
 
+/// A removed CJS fallback export can make a same-named top-level function
+/// unreachable. The legacy path lets the normal tree shaker remove that
+/// declaration after rebuilding semantic data; the retained graph path does
+/// not yet update function declaration rows, so request that conservative
+/// path for this shape.
+fn hasTopLevelDeadFallbackFunction(
+    ast: *const Ast,
+    dead_names: *const std.StringHashMapUnmanaged(void),
+) bool {
+    if (dead_names.count() == 0) return false;
+    const root = programNode(ast) orelse return true;
+    const list = root.data.list;
+    const extra_len = ast.extra_data.items.len;
+    if (list.start > extra_len or list.len > extra_len - list.start) return true;
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return true;
+        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
+        if (stmt.tag != .function_declaration) continue;
+        const extra_base: usize = stmt.data.extra;
+        const name_offset: usize = ast_mod.FunctionExtra.name;
+        if (extra_base > extra_len or name_offset >= extra_len - extra_base) return true;
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_base + name_offset]));
+        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return true;
+        const name = ast.nodes.items[@backingInt(name_idx)];
+        if (name.tag != .binding_identifier) return true;
+        if (dead_names.contains(ast.getText(name.span))) return true;
+    }
+    return false;
+}
+
 fn isRetainableNodeBufferCapabilityBranch(tag: Node.Tag, variable_kind: ?u32) bool {
     return switch (tag) {
         .expression_statement, .block_statement => true,
@@ -175,6 +209,85 @@ test "retained Node Buffer capability branch accepts only var declarations" {
         @backingInt(ast_mod.VariableDeclarationKind.await_using),
     ));
     try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(.if_statement, null));
+}
+
+test "retained Node Buffer fold falls back for matching top-level fallback functions" {
+    const sources = [_][]const u8{
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function SafeBuffer() { return 1; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function unrelated() { return 1; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function outer() { function SafeBuffer() { return 1; } }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\async function SafeBuffer() { return 1; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function* SafeBuffer() { return 1; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function SafeBuffer(value) { return eval("value"); }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function SafeBuffer() { return 1; }
+        \\function SafeBuffer(value) { return value; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = Other; exports.Slow = SafeBuffer; }
+        \\function Other() { return 1; }
+        \\function SafeBuffer() { return 2; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\function SafeBuffer() { return 1; }
+        \\function unrelated() { return 2; }
+        ,
+        \\function SafeBuffer() { return 1; }
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+    };
+    const expected_reanalysis = [_]bool{ true, false, false, true, true, true, true, true, true, true };
+
+    for (sources, expected_reanalysis) |source, expected| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+        scanner.is_module = false;
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".cjs");
+        parser.is_module = false;
+        _ = try parser.parse();
+        var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        var needs_semantic_reanalysis = false;
+        try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+            allocator,
+            &parser.ast,
+            &removed_nodes,
+            &needs_semantic_reanalysis,
+        ));
+        try std.testing.expectEqual(expected, needs_semantic_reanalysis);
+    }
 }
 
 const BufferCapabilityFoldBranch = struct {
