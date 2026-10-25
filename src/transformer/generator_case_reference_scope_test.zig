@@ -376,3 +376,99 @@ test "generator FDI var storage exists in its actual wrapper before final output
     try checkModeWithDriver(source, false, true);
     try checkModeWithDriver(source, true, true);
 }
+
+fn checkAliasStoragePublication(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const output = try t.transform();
+    const Pair = struct { read: ast.NodeIndex, lexical_binding: ast.NodeIndex, variable_binding: ast.NodeIndex };
+    var pairs: std.ArrayList(Pair) = .empty;
+    var stack: std.ArrayList(ast.NodeIndex) = .empty;
+    try stack.append(a, output);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const node = t.ast.getNode(index);
+        if (node.tag == .assignment_expression) {
+            const left = node.data.binary.left;
+            const right = node.data.binary.right;
+            if (t.getSymbolIdAt(right)) |sid| {
+                if (try @import("../semantic/annex_b_function.zig").forSymbol(t.semantic_editor.?.symbols.items, @fromBackingInt(sid))) |role| {
+                    if (role.state == .lowered and t.getSymbolIdAt(left) == @as(?u32, @backingInt(role.variable))) {
+                        const editor = &t.semantic_editor.?;
+                        const read = (try editor.referenceForNode(right)) orelse return error.MissingAliasRead;
+                        const write = (try editor.referenceForNode(left)) orelse return error.MissingAliasWrite;
+                        try std.testing.expectEqual(role.lexical, read.symbol_id);
+                        try std.testing.expectEqual(role.variable, write.symbol_id);
+                        try std.testing.expectEqual(read.scope_id, write.scope_id);
+                        try std.testing.expect(read.flags.read and write.flags.write);
+                        var lexical_binding: ast.NodeIndex = .none;
+                        var variable_binding: ast.NodeIndex = .none;
+                        for (editor.references.items) |reference| {
+                            if (!reference.flags.declare or reference.declaration_node_index.isNone()) continue;
+                            if (reference.symbol_id == role.lexical) lexical_binding = reference.declaration_node_index;
+                            if (reference.symbol_id == role.variable) variable_binding = reference.declaration_node_index;
+                        }
+                        try std.testing.expect(!lexical_binding.isNone() and !variable_binding.isNone());
+                        // Exact declaration anchors, not matching source text,
+                        // prove both physical spellings at this producer.
+                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(lexical_binding).data.string_ref), t.ast.getText(t.ast.getNode(right).data.string_ref));
+                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(variable_binding).data.string_ref), t.ast.getText(t.ast.getNode(left).data.string_ref));
+                        try pairs.append(a, .{ .read = right, .lexical_binding = lexical_binding, .variable_binding = variable_binding });
+                    }
+                }
+            }
+        }
+        var children = walk.children(t.ast, node);
+        while (children.next()) |child| try stack.append(a, child);
+    }
+    try std.testing.expect(pairs.items.len > 0);
+    // The existing bundler fallback creates a new semantic owner. Its exact
+    // binding-node anchors must still connect each new read to L, never V.
+    t.ast.transformed_root = output;
+    var fresh = Analyzer.init(a, t.ast);
+    fresh.is_module = false;
+    try fresh.analyze();
+    for (pairs.items) |pair| {
+        const local = fresh.symbol_ids.items[@backingInt(pair.lexical_binding)] orelse return error.MissingFreshLexicalBinding;
+        const variable = fresh.symbol_ids.items[@backingInt(pair.variable_binding)] orelse return error.MissingFreshVariableBinding;
+        try std.testing.expect(local != variable);
+        try std.testing.expectEqual(@as(?u32, local), fresh.symbol_ids.items[@backingInt(pair.read)]);
+    }
+}
+
+test "generator Annex B assignment publishes exact storage spellings before legacy reanalysis" {
+    const sources = [_][]const u8{
+        "function* run(){const outer=()=>read;{yield typeof outer();function read(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>read;{yield read();function read(){return 1}yield outer()();function read(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>read;{yield typeof outer();function read(){return 41}yield outer()();}{yield read();function read(){return 42}return outer()();}}",
+        "function* run(){var read=7;const outer=()=>read;{yield outer();function read(){return 42}return outer()();}}",
+        "function* run(){function read(){return 7}const outer=()=>read;{yield outer()();function read(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>read;{yield typeof outer();label:function read(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>__proto__;{yield typeof outer();function __proto__(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>foo;{yield typeof outer();function f\\u006fo(){return 42}return outer()();}}",
+        "function* run(){const outer=()=>read;try{throw 42}catch(error){yield typeof outer();function read(){return error}return outer()();}}",
+        "function* run(){const outer=()=>read;for(let i=0;i<2;i++){yield typeof outer();function read(){return i}yield outer()();}}",
+    };
+    for (sources) |source| try checkAliasStoragePublication(source);
+}
