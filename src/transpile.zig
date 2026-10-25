@@ -92,6 +92,8 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose edited graph is not certified in legacy JS parser mode.
     has_lenient_unhandled_runtime_syntax: bool = false,
+    /// A local const enum is safe only after every output reference is proven erased.
+    has_lenient_const_enum_runtime_syntax: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
     /// Qualified metadata names with spellings the transform graph cannot yet
@@ -194,15 +196,21 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 const extra = node.data.extra;
                 // A non-const ambient enum is erased by the transformer and
-                // contributes no runtime binding to the emitted graph. Keep
-                // const enums and every other nonzero/unknown flag on fallback.
+                // contributes no runtime binding to the emitted graph. Local
+                // const enums are admitted only after the output graph proves
+                // their exact identity has no surviving binding or reference.
+                // Ambient const enums and every other nonzero/unknown flag stay
+                // on the analyzer path.
                 const is_plain_ambient_enum = extra < ast.extra_data.items.len and
                     ast.extra_data.items.len - extra > 3 and
                     ast.extra_data.items[extra + 3] == 2;
-                if (!is_plain_ambient_enum and (extra >= ast.extra_data.items.len or
-                    ast.extra_data.items.len - extra <= 3 or
-                    ast.extra_data.items[extra + 3] != 0))
-                {
+                const flags = if (extra < ast.extra_data.items.len and ast.extra_data.items.len - extra > 3)
+                    ast.extra_data.items[extra + 3]
+                else
+                    std.math.maxInt(u32);
+                if (flags == 1) {
+                    facts.has_lenient_const_enum_runtime_syntax = true;
+                } else if (!is_plain_ambient_enum and flags != 0) {
                     facts.has_lenient_unhandled_runtime_syntax = true;
                 }
             },
@@ -662,9 +670,91 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 /// globals. Keep still-unhandled runtime-generating TS/Flow constructs outside
 /// this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
+    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
+    return canMangleWithTransformFacts(options, parser, facts, false);
+}
+
+/// After transformation, admit a local const enum only when its exact source
+/// SymbolId has no binding or reference left in the output tree. This proves
+/// that the enum declaration and every use were erased or inlined in the same
+/// edited graph; dynamic/member-unhandled uses stay on the analyzer path.
+fn canMangleWithTransformSemanticAfterEdit(
+    options: TranspileOptions,
+    parser: *const Parser,
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
+    const may_admit_erased_const_enum = facts.has_lenient_const_enum_runtime_syntax and
+        !facts.has_lenient_unhandled_runtime_syntax and
+        localConstEnumIdentitiesAreAbsentFromOutput(transformer, root);
+    return canMangleWithTransformFacts(options, parser, facts, may_admit_erased_const_enum);
+}
+
+fn localConstEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, root: ast_mod.NodeIndex) bool {
+    const ast = transformer.ast;
+    if (root.isNone()) return false;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, ast, root) catch return false;
+    defer transformer.allocator.free(reachable);
+
+    var enum_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer enum_symbol_ids.deinit(transformer.allocator);
+    var enum_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer enum_names.deinit(transformer.allocator);
+    var found_local_const_enum = false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const extra = node.data.extra;
+        if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+        if (ast.extra_data.items[extra + 3] != 1) continue;
+        found_local_const_enum = true;
+
+        const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+        if (name_idx.isNone() or @backingInt(name_idx) >= transformer.symbol_ids.items.len) return false;
+        const enum_symbol_id = transformer.symbol_ids.items[@backingInt(name_idx)] orelse return false;
+        if (enum_symbol_id >= transformer.symbols.len) return false;
+        const symbol = transformer.symbols[enum_symbol_id];
+        if (symbol.scope_id.isNone()) return false;
+
+        const name_node = ast.getNode(name_idx);
+        if (symbol.name.start != name_node.span.start or symbol.name.end != name_node.span.end) return false;
+        const enum_name = Scanner.decodeIdentifierEscapesAlloc(
+            transformer.allocator,
+            ast.getText(name_node.span),
+        ) catch return false;
+        if (enum_name.len == 0) return false;
+        enum_symbol_ids.put(transformer.allocator, enum_symbol_id, {}) catch return false;
+        enum_names.put(transformer.allocator, enum_name, {}) catch return false;
+    }
+    if (!found_local_const_enum) return false;
+
+    for (reachable) |raw| {
+        const output_node = ast.getNode(@fromBackingInt(@intCast(raw)));
+        const output_symbol_id = if (raw < transformer.symbol_ids.items.len)
+            transformer.symbol_ids.items[raw]
+        else
+            null;
+        if (output_symbol_id) |symbol_id| {
+            if (enum_symbol_ids.contains(symbol_id)) return false;
+        } else if (output_node.tag == .identifier_reference or output_node.tag == .binding_identifier) {
+            const output_name = Scanner.decodeIdentifierEscapesAlloc(
+                transformer.allocator,
+                ast.getText(output_node.span),
+            ) catch return false;
+            if (enum_names.contains(output_name)) return false;
+        }
+    }
+    return true;
+}
+
+fn canMangleWithTransformFacts(
+    options: TranspileOptions,
+    parser: *const Parser,
+    facts: AstFacts,
+    exact_const_enum_graph: bool,
+) bool {
     if (!options.minify_identifiers) return false;
 
-    const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     // emitDecoratorMetadata has a complete exact graph for TypeScript and
     // JavaScript legacy decorators. Flow type nodes serialize to generated
     // runtime metadata references (Object for Flow-only type shapes), whose
@@ -692,7 +782,9 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     // is consumed by type-only export elision before analysis and does not make
     // the emitted semantic graph differ from the transform graph.
     if (parser.source_mode == .js_lenient) return !facts.has_import_declaration and
-        (!facts.has_typescript_syntax or !facts.has_lenient_unhandled_runtime_syntax);
+        (!facts.has_typescript_syntax or
+            (!facts.has_lenient_unhandled_runtime_syntax and
+                (!facts.has_lenient_const_enum_runtime_syntax or exact_const_enum_graph)));
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -1911,7 +2003,7 @@ fn transpileWithCallbackInternal(
     var mangle_analyzer: ?*SemanticAnalyzer = null;
     var mangle_uses_transform_semantic = false;
     if (options.minify_identifiers and analyzer_storage != null) {
-        if (canMangleWithTransformSemantic(options, &parser)) {
+        if (canMangleWithTransformSemanticAfterEdit(options, &parser, &transformer, root)) {
             mangle_uses_transform_semantic = true;
             mangle_analyzer = &analyzer_storage.?;
         } else {

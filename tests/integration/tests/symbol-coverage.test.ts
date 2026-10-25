@@ -237,7 +237,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
   {
     name: 'const-enum',
     source: 'const enum Color { Red = 1 } console.log(Color.Red);',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'auto-accessor',
@@ -2299,7 +2299,6 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reanalyzedSources = [
         'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);',
-        'const enum Color { Red = 1 } console.log(Color.Red);',
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
@@ -2320,6 +2319,180 @@ describe('symbol identity coverage gate (#4819)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('lenient local const enums retain only fully erased exact identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-const-enum-'));
+    const cases = [
+      {
+        name: 'numeric-member',
+        graph: 'retained',
+        runtime: true,
+        source: 'const enum Color { Red = 41 } console.log(Color.Red);',
+      },
+      {
+        name: 'auto-increment-and-prior-member',
+        graph: 'retained',
+        runtime: true,
+        source:
+          'const enum Color { Red = 40, Green = Red + 1 } console.log(Color.Red, Color.Green);',
+      },
+      {
+        name: 'string-member',
+        graph: 'retained',
+        runtime: true,
+        source: "const enum Text { Label = 'text' } console.log(Text.Label);",
+      },
+      {
+        name: 'computed-string-member',
+        graph: 'retained',
+        runtime: true,
+        source: "const enum Color { Value = 42 } console.log(Color['Value']);",
+      },
+      {
+        name: 'cross-enum-constant-expression',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'const enum Base { Value = 21 }',
+          'const enum Doubled { Value = Base.Value * 2 }',
+          'console.log(Doubled.Value);',
+        ].join('\n'),
+      },
+      {
+        name: 'shadowed-name',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'const enum Mode { Value = 40 }',
+          'function read(Mode: { Value: number }) { return Mode.Value + 1; }',
+          'console.log(Mode.Value, read({ Value: 1 }));',
+        ].join('\n'),
+      },
+      {
+        name: 'closure-reference',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'const enum Status { Ready = 42 }',
+          'const read = () => Status.Ready;',
+          'console.log(read());',
+        ].join('\n'),
+      },
+      {
+        name: 'default-parameter-reference',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'const enum Status { Ready = 42 }',
+          'function read(value = Status.Ready) { return value; }',
+          'console.log(read());',
+        ].join('\n'),
+      },
+      {
+        name: 'nested-function-scope',
+        graph: 'reanalyzed',
+        runtime: true,
+        source: [
+          'function read() {',
+          '  const enum Status { Ready = 42 }',
+          '  return Status.Ready;',
+          '}',
+          'console.log(read());',
+        ].join('\n'),
+      },
+      {
+        name: 'surviving-typeof-reference',
+        graph: 'reanalyzed',
+        // `transpileModule` does not type-check const-enum uses and emits a runtime enum here.
+        // This invalid TS use is covered for conservative graph selection, not oracle parity.
+        runtime: false,
+        source: 'const enum Color { Red = 41 } console.log(typeof Color);',
+      },
+      {
+        name: 'surviving-dynamic-member-reference',
+        graph: 'reanalyzed',
+        runtime: false,
+        source: [
+          'const enum Color { Red = 41 }',
+          "const key = 'Red';",
+          'console.log(Color[key]);',
+        ].join('\n'),
+      },
+      {
+        name: 'local-and-ambient-const-enum',
+        graph: 'reanalyzed',
+        runtime: true,
+        source: [
+          'const enum Local { Value = 41 }',
+          'declare const enum Ambient { Value = 42 }',
+          'console.log(Local.Value, typeof Ambient);',
+        ].join('\n'),
+      },
+      {
+        name: 'const-enum-with-string-module',
+        graph: 'reanalyzed',
+        runtime: true,
+        source: [
+          'const enum Color { Red = 41 }',
+          "declare module 'ambient' { export const value: number; }",
+          'console.log(Color.Red);',
+        ].join('\n'),
+      },
+    ] as const;
+
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.unknown`);
+        const oraclePath = join(dir, `${item.name}.oracle.cjs`);
+        writeFileSync(input, item.source);
+        writeFileSync(
+          oraclePath,
+          ts.transpileModule(item.source, {
+            compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES5 },
+          }).outputText,
+        );
+        const oracle = runNode([oraclePath]);
+        if (item.runtime)
+          expect(oracle.status, `${item.name} TypeScript oracle: ${oracle.stderr}`).toBe(0);
+
+        for (const target of TARGETS) {
+          const result = runCoverage(input, target, dir, true, ['--format=cjs']);
+          expect(result.exitCode, `${item.name} ${target.name}: ${result.stderr}`).toBe(0);
+          expect(
+            transformIdentityAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            postMinifyAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, item.graph),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          const identity = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(
+            exactIdentityObservationProblems(identity ?? ''),
+            `${item.name} ${target.name}: ${identity ?? 'missing exact report'}`,
+          ).toEqual([]);
+
+          if (item.runtime) {
+            const actual = runNode([join(dir, 'out.js')]);
+            expect(actual.status, `${item.name} ${target.name}: ${actual.stderr}`).toBe(0);
+            expect(
+              actual.stdout,
+              `${item.name} ${target.name}: output differs from TypeScript`,
+            ).toBe(oracle.stdout);
+            expect(actual.stderr, `${item.name} ${target.name}`).toBe('');
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   test('lenient .unknown erased declarations retain exact graph and runtime output', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-erased-decl-'));
@@ -2551,7 +2724,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('lenient TypeScript enums retain exact graph across targets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-enum-graph-'));
