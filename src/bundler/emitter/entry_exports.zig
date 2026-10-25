@@ -49,6 +49,21 @@ pub fn emitOutputExportsConflictDiag(
     });
 }
 
+/// Borrows the module body and returns an owned combined buffer only when
+/// public exports exist. The caller retains all other emission buffers until
+/// this fallible rendering succeeds.
+pub fn appendWrappedEsmEntryExports(
+    allocator: std.mem.Allocator,
+    module_code: []const u8,
+    entries: []const FinalExportEntry,
+    minify_whitespace: bool,
+) !?[]const u8 {
+    const suffix = try emitEsmEntryExports(allocator, entries, minify_whitespace);
+    defer allocator.free(suffix);
+    if (suffix.len == 0) return null;
+    return try std.mem.concat(allocator, u8, &.{ module_code, suffix });
+}
+
 /// Entry export struct를 ESM `export { ... }` 구문으로 출력.
 /// #3096: minify_whitespace 시 brace 안 공백 / 항목 사이 공백 제거 (`export{a,b as c};`).
 /// 후행 `\n` 은 유지 — bundle 끝의 `//# sourceMappingURL=` 주석이 같은 줄로 붙어
@@ -301,4 +316,69 @@ test "emitWrappedEntryExports: minify 시 공백/newline 제거 (#3096)" {
     const out = try emitWrappedEntryExports(std.testing.allocator, entries, true);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("return{a,b:b$1};\n", out);
+}
+
+test "wrapped ESM entries publish their canonical default binding" {
+    const Bundler = @import("../bundler.zig").Bundler;
+    const helpers = @import("../test_helpers.zig");
+    for ([_][]const u8{
+        "export default function(){return value();}",
+        "export default function answer(){return value();}",
+        "export default ()=>value();",
+        "export default class{run(){return value();}}",
+        "export default class Box{run(){return value();}}",
+        "export default {n:42};",
+        "export default [42];",
+        "export default 42;",
+        "const answer=42;export default answer;",
+        "export default value();",
+    }) |body| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import{{value}}from'./dep.mjs';{s}export const marker=7;export{{marker as publicAlias}};globalThis.entryValue=value;", .{body});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        try helpers.writeFile(tmp.dir, "second.mjs", "import{value}from'./dep.mjs';globalThis.second=value;");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42;}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const second = try helpers.absPath(&tmp, "second.mjs");
+        defer std.testing.allocator.free(second);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .format = .esm, .code_splitting = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        try std.testing.expectEqual(@TypeOf(module.wrap_kind).esm, module.wrap_kind);
+        for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');const d=ns.default;const result=typeof d==='function'?(d.prototype?.run?new d().run():d()):Array.isArray(d)?d[0]:d?.n??d;console.log(JSON.stringify({{keys:Object.keys(ns),result,marker:ns.marker,alias:ns.publicAlias}}));", .{emitted});
+        defer std.testing.allocator.free(script);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("{\"keys\":[\"default\",\"marker\",\"publicAlias\"],\"result\":42,\"marker\":7,\"alias\":7}\n", execution.stdout);
+    };
+}
+
+fn checkWrappedExportAllocation(allocator: std.mem.Allocator) !void {
+    const body = "var local=42;";
+    const entries = [_]FinalExportEntry{.{ .local = "local", .exported = "default" }};
+    const combined = (try appendWrappedEsmEntryExports(allocator, body, &entries, false)).?;
+    defer allocator.free(combined);
+    try std.testing.expectEqualStrings("var local=42;export { local as default };\n", combined);
+    try std.testing.expectEqualStrings("var local=42;", body);
+}
+
+test "wrapped entry export concatenation frees allocation failures without consuming the body" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkWrappedExportAllocation, .{});
+    try std.testing.expectEqual(@as(?[]const u8, null), try appendWrappedEsmEntryExports(std.testing.allocator, "var local=42;", &.{}, false));
 }
