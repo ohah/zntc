@@ -829,3 +829,171 @@ test "native parameter arrow references and lexical scopes exist before finaliza
     try checkNativeArrowReferenceBirth("function Parent(__proto__=()=>new.target){return __proto__}", 1);
     try checkNativeArrowReferenceBirth("function Parent(_newTarget=11,get=()=>{eval('1');return new.target}){return get}", 1);
 }
+
+const FieldInitializerBirthWalker = struct {
+    transformer: *Transformer,
+    outside_symbol: u32,
+    reads: usize = 0,
+    import_provenance: usize = 0,
+    parameters: std.ArrayList(struct { id: u32, scope: ScopeId, name: []const u8 }) = .empty,
+
+    fn walk(self: *@This(), owner: NativeArrowBirthAst.NodeIndex, expected_scope: ScopeId) anyerror!void {
+        if (owner.isNone()) return;
+        const t = self.transformer;
+        const node = t.ast.getNode(owner);
+        const scopes = if (t.semantic_editor) |*editor| editor.scopes.items else t.scopes;
+        var expected_id: ?u32 = null;
+        if (node.tag == .identifier_reference) {
+            if (t.getSymbolIdAt(owner) == self.outside_symbol) expected_id = self.outside_symbol;
+            for ([_][]const u8{ "__publicField", "__name" }) |helper_name| {
+                if (t.runtime_helper_symbol_ids.get(helper_name)) |helper| {
+                    if (t.getSymbolIdAt(owner) == @backingInt(helper)) expected_id = @backingInt(helper);
+                }
+            }
+            for (self.parameters.items) |parameter| {
+                if (parameter.scope == expected_scope and std.mem.eql(u8, parameter.name, t.ast.identifierNameText(node))) expected_id = parameter.id;
+            }
+        }
+        if (expected_id) |id| {
+            const found = if (t.semantic_editor) |*editor| try editor.referenceForNode(owner) else blk: {
+                for (t.references) |reference| if (reference.node_index == owner) break :blk reference;
+                break :blk null;
+            };
+            const reference = found orelse return error.FieldInitializerReferenceNotCreated;
+            try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            try std.testing.expect(reference.flags.read and !reference.flags.write);
+            if (id == self.outside_symbol) self.reads += 1;
+        }
+        if (node.tag == .import_expression) {
+            const provenance = t.transformed_node_scope_provenance.get(owner) orelse
+                t.node_scope_provenance.get(owner) orelse return error.FieldInitializerImportProvenanceNotCreated;
+            try std.testing.expectEqual(expected_scope, provenance.scope);
+            try std.testing.expect(@backingInt(provenance.source_node) < t.parser_node_count);
+            try std.testing.expectEqual(NativeArrowBirthAst.Node.Tag.import_expression, t.ast.getNode(provenance.source_node).tag);
+            self.import_provenance += 1;
+        }
+        switch (node.tag) {
+            .function, .function_declaration, .function_expression, .arrow_function_expression, .method_definition => {
+                const scope = t.outputOwnedScope(owner) orelse return error.FieldInitializerFunctionScopeNotCreated;
+                const arrow = node.tag == .arrow_function_expression;
+                const parameters = t.ast.readExtraNode(node.data.extra, if (arrow) 0 else 1);
+                const body = t.ast.readExtraNode(node.data.extra, if (arrow) 1 else 2);
+                const parameter_scope = t.outputOwnedScope(parameters) orelse scope;
+                const root = if (parameter_scope != scope) parameter_scope else scope;
+                try std.testing.expectEqual(expected_scope, scopes[root.toIndex()].parent);
+                if (parameter_scope != scope) try std.testing.expectEqual(parameter_scope, scopes[scope.toIndex()].parent);
+                const old_parameters = self.parameters.items.len;
+                defer self.parameters.shrinkRetainingCapacity(old_parameters);
+                if (@backingInt(owner) >= t.parser_node_count and node.tag == .method_definition) {
+                    const list = t.ast.getNode(parameters).data.list;
+                    for (t.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                        const parameter = t.ast.nodes.items[raw];
+                        if (parameter.tag != .rest_element) continue;
+                        const binding = parameter.data.unary.operand;
+                        const id = t.getSymbolIdAt(binding) orelse return error.FieldInitializerParameterIdNotCreated;
+                        const symbols = if (t.semantic_editor) |*editor| editor.symbols.items else t.symbols;
+                        try std.testing.expectEqual(parameter_scope, symbols[id].scope_id);
+                        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, symbols[id].kind);
+                        try self.parameters.append(t.allocator, .{ .id = id, .scope = parameter_scope, .name = t.ast.identifierNameText(t.ast.getNode(binding)) });
+                    }
+                }
+                try self.walk(parameters, parameter_scope);
+                try self.walk(body, scope);
+                return;
+            },
+            .class_declaration, .class_expression => {
+                const scope = t.outputOwnedScope(owner) orelse return error.FieldInitializerClassScopeNotCreated;
+                try std.testing.expectEqual(expected_scope, scopes[scope.toIndex()].parent);
+            },
+            else => {},
+        }
+        const scope = t.outputOwnedScope(owner) orelse expected_scope;
+        var children = ast_walk.children(t.ast, node);
+        while (children.next()) |child| try self.walk(child, scope);
+    }
+};
+
+fn checkFieldInitializerReferenceBirth(source: []const u8) !void {
+    try checkFieldInitializerReferenceBirthWithDefine(source, false);
+    try checkFieldInitializerReferenceBirthWithDefine(source, true);
+}
+
+fn checkFieldInitializerReferenceBirthWithDefine(source: []const u8, define: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var outside: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (symbol.scope_id == @as(ScopeId, @fromBackingInt(0)) and std.mem.eql(u8, symbol.nameText(parser.ast.source), "outside")) outside = @intCast(id);
+    }
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .use_define_for_class_fields = define,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    try transformer.buildBlockRenameMap();
+    try @import("parameter_environment.zig").collectClassInferredNames(&transformer);
+    try @import("native_parameter_cells.zig").normalize(&transformer);
+    const root = try transformer.visitNode(@fromBackingInt(@as(u32, @intCast(transformer.parser_node_count - 1))));
+    var walker: FieldInitializerBirthWalker = .{ .transformer = &transformer, .outside_symbol = outside.? };
+    try walker.walk(root, @fromBackingInt(0));
+    // Expression provenance is checked independently: the original analyzer
+    // still omits import argument references (separate mandatory producer gap).
+    try std.testing.expect(walker.reads > 0 or walker.import_provenance > 0);
+}
+
+test "field initializer implicit constructor scope exists before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside}");
+}
+
+test "field initializer existing constructor references use actual scope before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside;constructor(){this.body=1}}");
+}
+
+test "field initializer arrow frontier uses actual constructor before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=()=>outside;constructor(){this.body=1}}");
+}
+
+test "field initializer constructor and lexical frontier inventory exists before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside=7;class Base{}class Box extends Base{value=outside}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Base{}class Box extends Base{value=outside;constructor(){super();this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{#value=outside;read(){return this.#value}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=function(){return outside};constructor(){this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=class Inner{read(){return outside}};constructor(){this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;const Box=class{value=()=>outside}");
+    try checkFieldInitializerReferenceBirth("const key='value';const outside=7;class Box{[key]=outside;constructor(){this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=()=>outside;constructor(outside=1){this.body=outside}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=()=>outside;constructor(outside){this.body=outside}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=()=>outside;constructor(){var outside=9;this.body=outside}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside;constr\\u0075ctor(){this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside;['constructor'](){return outside}}");
+}
+
+test "field initializer actual constructor roles and blank define field scope exist before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside;'constructor'(){this.body=1}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{value=outside;static constructor(){return 2}}");
+    try checkFieldInitializerReferenceBirth("const outside=7;class Box{empty;read(){return outside}}");
+}
+
+test "field initializer direct import and nested import provenance exists before finalization" {
+    try checkFieldInitializerReferenceBirth("const outside='node:os';class Box{value=import(outside);constructor(){}}");
+    try checkFieldInitializerReferenceBirth("const outside='node:os';class Box{value=()=>import(outside);constructor(outside){this.body=outside}}");
+    try checkFieldInitializerReferenceBirth("const outside='node:os';class Box{value=class Inner{read(){return import(outside)}};constructor(){}}");
+}
