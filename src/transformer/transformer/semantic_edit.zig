@@ -2965,6 +2965,27 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
     try setSymbolId(self, node, symbol);
 }
 
+/// Add the semantic graph edge for a generated reference whose producer
+/// SymbolId is already attached to its AST node by an earlier lowering pass.
+/// This is useful when a state-machine pass must expose the edge immediately
+/// for a local invariant while still deferring final output-scope resolution.
+pub fn addSyntheticReferenceEdgeInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
+    const symbol = id orelse return;
+    const existing = self.getSymbolIdAt(node) orelse
+        std.debug.panic("synthetic reference edge has no immediate SymbolId", .{});
+    if (existing != @backingInt(symbol))
+        std.debug.panic("synthetic reference edge disagrees with its attached SymbolId", .{});
+    const editor = try editorFor(self);
+    editor.addReference(
+        node,
+        symbol,
+        scope,
+        flags,
+        Reference.NO_STMT,
+        Reference.NO_STMT,
+    ) catch |err| return editError(err);
+}
+
 /// Carry a producer-selected SymbolId with a generated reference whose final
 /// output scope is not known until its containing class/wrapper is assembled.
 /// The finalizer resolves scope from this exact node's output ancestry; it

@@ -1130,6 +1130,7 @@ pub const Transformer = struct {
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const makeSyntheticRefForSymbol = @import("transformer/semantic_edit.zig").makeSyntheticRefForSymbol;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
+    pub const addSyntheticReferenceEdgeInScope = @import("transformer/semantic_edit.zig").addSyntheticReferenceEdgeInScope;
     pub const removeSemanticReference = @import("transformer/semantic_edit.zig").removeSemanticReference;
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
     pub const ensureStandaloneRuntimeHelperPreambleSymbol = @import("transformer/semantic_edit.zig").ensureStandaloneRuntimeHelperPreambleSymbol;

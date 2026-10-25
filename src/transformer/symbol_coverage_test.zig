@@ -5590,7 +5590,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     defer arena.deinit();
     const allocator = arena.allocator();
     const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-    const source = "const _a = 0, _b = 0, _step = 0, _ret = 0, _errObj = 0; async function drain(source) { for await (const value of source) use(value); }";
+    const source = "const _a = 0, _b = 0, _step = 0, _ret = 0, _errObj = 0; async function drain(source) { { outer: for await (const value of source) use(value); } }";
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
@@ -5603,10 +5603,21 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
         if (node.tag == .for_await_of_statement) source_loop = @fromBackingInt(@intCast(index));
     }
     const loop = source_loop orelse return error.MissingForAwaitLoop;
+    var label_name_idx = NodeIndex.none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .labeled_statement and node.data.binary.right == loop) {
+            label_name_idx = node.data.binary.left;
+            break;
+        }
+    }
+    if (label_name_idx.isNone()) return error.MissingForAwaitLabel;
     const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForAwaitScope;
     const source_loop_scope: ScopeId = @fromBackingInt(@intCast(loop_scope));
+    const outer_scope = analyzer.scopes.items[source_loop_scope.toIndex()].parent;
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -5621,7 +5632,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
 
     const lowering = @import("es2018_for_await.zig").ES2018ForAwait(Transformer);
-    _ = try lowering.rewriteForAwait(&transformer, loop, parser.ast.getNode(loop), .none, false, true);
+    const lowered_wrapper = try lowering.rewriteForAwait(&transformer, loop, parser.ast.getNode(loop), label_name_idx, false, true);
     try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
     var emitted_body: ?NodeIndex = null;
     for (transformer.ast.nodes.items[transformer.parser_node_count..]) |node| {
@@ -5632,9 +5643,21 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     const body = emitted_body orelse return error.MissingLoweredForAwaitBody;
     const body_scope = transformer.outputOwnedScope(body) orelse return error.MissingProducerBodyScope;
     try std.testing.expectEqual(source_loop_scope, transformer.semantic_editor.?.scopes.items[body_scope.toIndex()].parent);
+    var catch_scope: ?ScopeId = null;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .catch_clause) continue;
+        catch_scope = transformer.outputOwnedScope(@fromBackingInt(@intCast(raw)));
+    }
+    const generated_catch_scope = catch_scope orelse return error.MissingGeneratedForAwaitCatchScope;
+    const wrapper_scope = transformer.outputOwnedScope(lowered_wrapper) orelse return error.MissingGeneratedForAwaitWrapperScope;
+    const output_scopes = transformer.semantic_editor.?.scopes.items;
+    try std.testing.expectEqual(outer_scope, output_scopes[wrapper_scope.toIndex()].parent);
+    try std.testing.expectEqual(wrapper_scope, output_scopes[source_loop_scope.toIndex()].parent);
+    try std.testing.expectEqual(wrapper_scope, output_scopes[generated_catch_scope.toIndex()].parent);
 
     var binding_ids: [4]?u32 = @splat(null);
     var ref_counts: [4]usize = @splat(0);
+    var scope_counts: [4][4]usize = @splat(@splat(0));
     for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
         const temp_name = transformer.ast.getText(temp_span);
         for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
@@ -5656,13 +5679,44 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
         const ref_name = transformer.ast.getText(node.data.string_ref);
         for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
             if (!std.mem.eql(u8, ref_name, transformer.ast.getText(temp_span))) continue;
-            const exact_id = transformer.exact_output_ref_symbol_ids.get(@intCast(raw)) orelse
-                return error.MissingDeferredSyntheticTempReference;
-            try std.testing.expectEqual(binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol, exact_id);
+            const reference_node: NodeIndex = @fromBackingInt(@intCast(raw));
+            const immediate_id = transformer.getSymbolIdAt(reference_node) orelse
+                return error.MissingImmediateGeneratedForAwaitTempReference;
+            try std.testing.expectEqual(binding_ids[temp_index].?, immediate_id);
+            const pending = blk: {
+                for (transformer.generator_state_semantic_refs.items) |reference| {
+                    if (reference.node == reference_node) break :blk reference;
+                }
+                return error.MissingDeferredForAwaitReferenceScope;
+            };
+            try std.testing.expectEqual(immediate_id, pending.symbol_id);
+            const direct_reference = try transformer.semantic_editor.?.referenceForNode(reference_node);
+            if (temp_index == 1 and pending.flags.read and pending.scope == body_scope) {
+                const actual = direct_reference orelse return error.MissingLoopValueCreationReference;
+                try std.testing.expectEqual(immediate_id, @backingInt(actual.symbol_id));
+                try std.testing.expectEqual(body_scope, actual.scope_id);
+            } else {
+                try std.testing.expect(direct_reference == null);
+            }
+            const scope_index: usize = if (pending.scope == source_loop_scope)
+                0
+            else if (pending.scope == body_scope)
+                1
+            else if (pending.scope == outer_scope)
+                2
+            else if (pending.scope == generated_catch_scope)
+                3
+            else
+                return error.UnexpectedForAwaitTempReferenceScope;
+            scope_counts[temp_index][scope_index] += 1;
             ref_counts[temp_index] += 1;
         }
     }
     for (ref_counts) |count| try std.testing.expect(count > 0);
+    try std.testing.expectEqual([4]usize{ 1, 0, 2, 0 }, scope_counts[0]);
+    try std.testing.expectEqual([4]usize{ 1, 1, 2, 0 }, scope_counts[1]);
+    try std.testing.expectEqual([4]usize{ 0, 0, 2, 0 }, scope_counts[2]);
+    try std.testing.expectEqual([4]usize{ 0, 0, 2, 1 }, scope_counts[3]);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
