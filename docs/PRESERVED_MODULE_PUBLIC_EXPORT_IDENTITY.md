@@ -98,3 +98,11 @@ properties, so an actual source export with that key remains authoritative,
 including quoted/escaped aliases. The check does not invoke public getters or
 select any semantic identity by spelling. Babel-style default interop and the
 source-public-marker collision have independent Node controls.
+
+Public-key reservation and transport deduplication use ModuleExportName
+StringValue, not its quoted/escaped syntax. The public-key-only decoder borrows
+identifier names and decodes original quoted syntax once. A literal backslash-u
+key remains distinct from an actual Unicode escape. This normalization selects
+output spellings and compares public property keys; it never discovers or
+reassigns a SymbolID/ScopeID. Private initializer/namespace handles are still
+created and consumed through the same exact typed module fields.

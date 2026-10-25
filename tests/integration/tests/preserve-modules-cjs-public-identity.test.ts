@@ -424,3 +424,87 @@ describe('preserved CJS source public interop-name exports keep their actual get
         }
       });
 });
+
+describe('preserved CJS public StringValue keys preserve private transport roles', () => {
+  for (const kind of ['init', 'namespace'] as const)
+    for (const quoting of [
+      'plain',
+      'quoted',
+      'escaped',
+      'literal-backslash',
+      'hex',
+      'codepoint',
+      'line-continuation',
+    ] as const)
+      for (const minify of [false, true]) {
+        test(`${kind} ${quoting} minify=${minify}`, async () => {
+          const name = kind === 'init' ? 'init_provider' : 'exports_provider';
+          const hex = name.charCodeAt(0).toString(16);
+          const slash = String.fromCharCode(92),
+            quote = String.fromCharCode(34);
+          const key =
+            quoting === 'plain'
+              ? name
+              : quoting === 'quoted'
+                ? JSON.stringify(name)
+                : quoting === 'escaped'
+                  ? quote + slash + 'u00' + hex + name.slice(1) + quote
+                  : quoting === 'literal-backslash'
+                    ? JSON.stringify(slash + 'u00' + hex + name.slice(1))
+                    : quoting === 'hex'
+                      ? quote + slash + 'x' + hex + name.slice(1) + quote
+                      : quoting === 'codepoint'
+                        ? quote + slash + 'u{' + hex + '}' + name.slice(1) + quote
+                        : quote +
+                          name[0] +
+                          slash +
+                          String.fromCharCode(0x2028) +
+                          name.slice(1) +
+                          quote;
+          const { dir, cleanup } = await createFixture({
+            'package.json': JSON.stringify({ type: 'commonjs' }),
+            'entry.mjs':
+              kind === 'init'
+                ? `import{${key} as read}from'./provider.mjs';console.log(read(),globalThis.count)`
+                : "import*as ns from'./provider.mjs';console.log(ns.read())",
+            'provider.mjs':
+              kind === 'init'
+                ? `import'./dep.mjs';globalThis.count=(globalThis.count||0)+1;function read(){return 42}export{read as ${key}}`
+                : `import{seed}from'./dep.mjs';export const marker=seed;export function read(){return this.marker}export{read as ${key}}`,
+            'dep.mjs':
+              kind === 'init' ? 'globalThis.dep=1;export const unused=1' : 'export const seed=42',
+          });
+          try {
+            const native = await spawnCaptured('node', [join(dir, 'entry.mjs')]);
+            expect(native.status).toBe(0);
+            expect(native.stderr).toBe('');
+            expect(native.stdout).toBe((kind === 'init' ? '42 1' : '42') + String.fromCharCode(10));
+            await init();
+            try {
+              const result = await build({
+                entryPoints: [join(dir, 'entry.mjs')],
+                rootDir: dir,
+                outdir: join(dir, 'out'),
+                write: true,
+                platform: 'react-native',
+                entryErrorGuard: true,
+                format: 'cjs',
+                outputExports: 'named',
+                splitting: true,
+                preserveModules: true,
+                minify,
+              });
+              expect(result.errors).toEqual([]);
+            } finally {
+              close();
+            }
+            const actual = await spawnCaptured('node', [join(dir, 'out/entry.js')]);
+            expect(actual.status).toBe(0);
+            expect(actual.stderr).toBe('');
+            expect(actual.stdout).toBe(native.stdout);
+          } finally {
+            await cleanup();
+          }
+        });
+      }
+});

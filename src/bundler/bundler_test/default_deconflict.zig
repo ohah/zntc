@@ -2254,8 +2254,8 @@ test "preserved CJS source interop-name export is not overwritten by a compiler 
 
 test "preserved CJS public StringValue aliases cannot steal private transport handles" {
     const Kind = enum { init, namespace };
-    const Quoting = enum { plain, quoted, escaped, literal_backslash };
-    for ([_]Kind{ .init, .namespace }) |kind| for ([_]Quoting{ .plain, .quoted, .escaped, .literal_backslash }) |quoting| for ([_]bool{ false, true }) |minify| {
+    const Quoting = enum { plain, quoted, escaped, literal_backslash, hex, codepoint, line_continuation };
+    for ([_]Kind{ .init, .namespace }) |kind| for ([_]Quoting{ .plain, .quoted, .escaped, .literal_backslash, .hex, .codepoint, .line_continuation }) |quoting| for ([_]bool{ false, true }) |minify| {
         errdefer std.debug.print("public transport kind={s} quoting={s} minify={}\n", .{ @tagName(kind), @tagName(quoting), minify });
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
@@ -2266,6 +2266,9 @@ test "preserved CJS public StringValue aliases cannot steal private transport ha
             .quoted => try std.fmt.allocPrint(std.testing.allocator, "\"{s}\"", .{name}),
             .escaped => try std.fmt.allocPrint(std.testing.allocator, "\"\\u00{x}{s}\"", .{ name[0], name[1..] }),
             .literal_backslash => try std.fmt.allocPrint(std.testing.allocator, "\"\\\\u00{x}{s}\"", .{ name[0], name[1..] }),
+            .hex => try std.fmt.allocPrint(std.testing.allocator, "\"\\x{x}{s}\"", .{ name[0], name[1..] }),
+            .codepoint => try std.fmt.allocPrint(std.testing.allocator, "\"\\u{{{x}}}{s}\"", .{ name[0], name[1..] }),
+            .line_continuation => try std.fmt.allocPrint(std.testing.allocator, "\"{c}\\\xe2\x80\xa8{s}\"", .{ name[0], name[1..] }),
         };
         defer std.testing.allocator.free(key);
         const source = if (kind == .init)
