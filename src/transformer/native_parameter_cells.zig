@@ -1,9 +1,10 @@
 //! Preserve a native non-simple parameter environment when ES2018 object rest
 //! must move into the body. Raw native formals retain arity and unmapped
 //! arguments; ordered lexical cells retain forward closures and genuine TDZ.
-//! This producer covers statically nameable synchronous ordinary functions and
-//! arrows. Class methods, async/generator timing and dynamic lookup retain
-//! their existing lowering paths and remain separate follow-up boundaries.
+//! Synchronous functions/arrows and actual class methods keep exact parameter
+//! cells; constructors also move initialization behind lowered instance fields.
+//! Dynamic environments, metadata/property formals and async/generator timing
+//! retain their existing paths until their separate handoffs are available.
 const std = @import("std");
 const ast = @import("../parser/ast.zig");
 const walk = @import("../parser/ast_walk.zig");
@@ -11,20 +12,167 @@ const helpers = @import("es_helpers.zig");
 const env = @import("parameter_environment.zig");
 const NodeIndex = ast.NodeIndex;
 
-pub fn applies(self: anytype, node: ast.Node) !bool {
+pub fn hasPotentialClassWork(self: anytype) bool {
+    const unsupported = self.options.unsupported;
+    return !unsupported.default_params and !unsupported.block_scoping and
+        (unsupported.class_field or !self.options.use_define_for_class_fields or
+            unsupported.requiresPrivateDownlevel());
+}
+
+fn classOwnerForMethod(self: anytype, owner: NodeIndex) ?NodeIndex {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var scope = self.outputOwnedScope(owner) orelse return null;
+    var remaining = scopes.len;
+    while (!scope.isNone() and scope.toIndex() < scopes.len and remaining > 0) : (remaining -= 1) {
+        if (scopes[scope.toIndex()].kind == .class_body) break;
+        scope = scopes[scope.toIndex()].parent;
+    }
+    if (scope.isNone() or remaining == 0) return null;
+    var owners = self.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* != @backingInt(scope)) continue;
+        const class_owner: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const class = self.ast.getNode(class_owner);
+        if (class.tag != .class_declaration and class.tag != .class_expression) continue;
+        const body = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body));
+        for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |member| {
+            // Scope ancestry alone also admits an object method nested in a
+            // field initializer. Only the actual class-member edge qualifies.
+            if (member == @backingInt(owner)) return class_owner;
+        }
+    }
+    return null;
+}
+
+fn classMovesInstanceInitialization(self: anytype, class_owner: NodeIndex) bool {
+    const class = self.ast.getNode(class_owner);
+    const body = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body));
+    const private_fields_move = classLowersPrivateFields(self, body.data.list);
+    for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
+        if (instanceMemberMoves(self, self.ast.nodes.items[raw], private_fields_move)) return true;
+    }
+    return false;
+}
+
+pub fn instanceMemberMoves(self: anytype, member: ast.Node, private_fields_move: bool) bool {
+    const unsupported = self.options.unsupported;
+    switch (member.tag) {
+        .property_definition, .accessor_property, .method_definition => {},
+        else => return false,
+    }
+    const flags = self.ast.readExtra(member.data.extra, if (member.tag == .method_definition) ast.MethodExtra.flags else ast.PropertyExtra.flags);
+    if (flags & (ast.PropertyFlags.is_static | ast.PropertyFlags.is_abstract | ast.PropertyFlags.is_declare) != 0) return false;
+    const key = self.ast.getNode(self.ast.readExtraNode(member.data.extra, 0));
+    if (key.tag == .private_identifier)
+        return unsupported.class or (if (member.tag == .method_definition) unsupported.class_private_method else unsupported.class_private_field);
+    if (member.tag == .property_definition)
+        return unsupported.class or unsupported.class_field or !self.options.use_define_for_class_fields or
+            (private_fields_move and self.ast.readExtra(member.data.extra, ast.PropertyExtra.deco_len) == 0);
+    return member.tag == .accessor_property and
+        (unsupported.class or (unsupported.decorator_auto_accessor and unsupported.class_private_field));
+}
+
+fn initializerObservesDynamicEnvironment(self: anytype, root: NodeIndex) !bool {
+    const nodes = try walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+    defer self.allocator.free(nodes);
+    for (nodes) |raw| {
+        const node = self.ast.nodes.items[raw];
+        if (node.tag == .with_statement) return true;
+        if (!@import("static_class_capture.zig").isDirectEvalCall(self, node)) continue;
+        if (self.ast.readExtra(node.data.extra, 2) == 0) continue;
+        const args = self.ast.readExtra(node.data.extra, 1);
+        const first = self.ast.getNode(self.ast.readExtraNode(args, 0));
+        switch (first.tag) {
+            .numeric_literal, .boolean_literal, .null_literal, .bigint_literal, .regexp_literal => continue,
+            .string_literal => {},
+            else => return true,
+        }
+        const decoded = @import("../string_escape.zig").decodeJsStringLiteral(self.allocator, self.ast.getText(first.span)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return true,
+        };
+        defer self.allocator.free(decoded);
+        const text = std.mem.trim(u8, decoded, " \t\r\n");
+        // Native class constructors retain strictness and the instance this.
+        // Context-free arithmetic (including its syntax errors) sees neither
+        // constructor bindings nor the erased class-field arguments context.
+        if (std.mem.eql(u8, text, "this")) continue;
+        for (text) |c| {
+            if (std.mem.indexOfScalar(u8, "0123456789.+-*/%() \t\r\n", c) == null) return true;
+        }
+    }
+    return false;
+}
+
+pub fn classLowersPrivateFields(self: anytype, members: ast.NodeList) bool {
+    const unsupported = self.options.unsupported;
+    if (!unsupported.class and !unsupported.class_private_field) return false;
+    for (self.ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
+        const member = self.ast.nodes.items[raw];
+        if (member.tag != .property_definition and member.tag != .accessor_property) continue;
+        const flags = self.ast.readExtra(member.data.extra, ast.PropertyExtra.flags);
+        if (flags & (ast.PropertyFlags.is_abstract | ast.PropertyFlags.is_declare) != 0) continue;
+        if (member.tag == .accessor_property and (unsupported.class or unsupported.decorator_auto_accessor)) return true;
+        const key = self.ast.getNode(self.ast.readExtraNode(member.data.extra, ast.PropertyExtra.key));
+        if (key.tag == .private_identifier) return true;
+    }
+    return false;
+}
+
+pub fn applies(self: anytype, owner: NodeIndex) !bool {
     if (!self.semantic_edit_enabled or self.options.unsupported.default_params or self.options.unsupported.block_scoping or
-        !self.options.unsupported.object_spread) return false;
+        (!self.options.unsupported.object_spread and !hasPotentialClassWork(self))) return false;
+    const node = self.ast.getNode(owner);
     switch (node.tag) {
-        .function, .function_expression, .function_declaration, .arrow_function_expression => {},
+        .function, .function_expression, .function_declaration, .arrow_function_expression, .method_definition => {},
         else => return false,
     }
     const arrow = node.tag == .arrow_function_expression;
-    const flags = self.ast.extra_data.items[node.data.extra + if (arrow) @as(u32, 2) else ast.FunctionExtra.flags];
+    const source_flags = self.ast.extra_data.items[node.data.extra + if (arrow) @as(u32, 2) else ast.FunctionExtra.flags];
+    const flags = if (node.tag == .method_definition) ast.methodFlagsToFunctionFlags(source_flags) else source_flags;
     if (if (arrow) flags & ast.ArrowFlags.is_async != 0 else flags & (ast.FunctionFlags.is_async | ast.FunctionFlags.is_generator) != 0) return false;
     const params = self.ast.functionParamsList(node);
-    if (!(try @import("es2015_params.zig").ES2015Params(@TypeOf(self.*)).hasObjectRestParam(self, params))) return false;
+    if (params.len == 0) return false;
+    var moved_instance_initialization = false;
+    if (node.tag == .method_definition) {
+        const is_constructor = source_flags & ast.MethodFlags.is_static == 0 and
+            helpers.isConstructorKey(self, self.ast.readExtraNode(node.data.extra, ast.MethodExtra.key));
+        if (!self.options.unsupported.object_spread and !is_constructor) return false;
+        const class_owner = classOwnerForMethod(self, owner) orelse return false;
+        // These source formals are also metadata/property producers. Keep
+        // their current path until the original-formal handoff is explicit.
+        if (self.options.emit_decorator_metadata and
+            (self.ast.readExtra(node.data.extra, ast.MethodExtra.deco_len) > 0 or
+                (is_constructor and self.ast.readExtra(self.ast.getNode(class_owner).data.extra, ast.ClassExtra.deco_len) > 0))) return false;
+        for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw| {
+            const param = self.ast.nodes.items[raw];
+            if (param.tag == .formal_parameter and
+                (self.ast.readExtra(param.data.extra, ast.FormalParameterExtra.flags) != 0 or
+                    self.ast.readExtra(param.data.extra, ast.FormalParameterExtra.deco_len) != 0)) return false;
+        }
+        moved_instance_initialization = is_constructor and classMovesInstanceInitialization(self, class_owner);
+    }
+    const Params = @import("es2015_params.zig").ES2015Params(@TypeOf(self.*));
+    if (moved_instance_initialization) {
+        if (!Params.hasDefaultOrRest(self, params)) return false;
+    } else if (!self.options.unsupported.object_spread or !(try Params.hasObjectRestParam(self, params))) return false;
     if (try env.parameterListHasDynamicLookup(self, params)) return false;
     const body = self.ast.readExtraNode(node.data.extra, if (arrow) 1 else 2);
+    if (body.isNone()) return false;
+    if (moved_instance_initialization) {
+        const class_owner = classOwnerForMethod(self, owner).?;
+        const class = self.ast.getNode(class_owner);
+        const members = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body)).data.list;
+        const private_fields_move = classLowersPrivateFields(self, members);
+        // Dynamic instance-initializer environments require their own source
+        // class-context handoff, not constructor-local lexical bindings.
+        for (self.ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
+            const member = self.ast.nodes.items[raw];
+            if (member.tag != .property_definition and member.tag != .accessor_property) continue;
+            if (!instanceMemberMoves(self, member, private_fields_move)) continue;
+            if (try initializerObservesDynamicEnvironment(self, self.ast.readExtraNode(member.data.extra, ast.PropertyExtra.init))) return false;
+        }
+    }
     if (try env.nodeHasDynamicLookup(self, body)) return false;
     return true;
 }
@@ -33,8 +181,8 @@ pub fn normalize(self: anytype) !void {
     const count = self.ast.nodes.items.len;
     for (0..count) |raw| {
         const function = self.ast.nodes.items[raw];
-        if (!(try applies(self, function))) continue;
         const owner: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (!(try applies(self, owner))) continue;
         const output_scope = self.outputOwnedScope(owner) orelse continue;
         const arrow = function.tag == .arrow_function_expression;
         const params_slot: u32 = function.data.extra + if (arrow) @as(u32, 0) else 1;
@@ -142,7 +290,7 @@ pub fn normalize(self: anytype) !void {
             try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(declaration));
             try statements.append(self.allocator, declaration);
         }
-        if (!non_simple) {
+        if (!non_simple and !self.semantic_editor.?.scopes.items[output_scope.toIndex()].is_strict) {
             // A native destructuring parameter also has unmapped arguments.
             // An unused rest tail preserves that property without changing
             // Function.length or reading another user argument.
@@ -161,9 +309,16 @@ pub fn normalize(self: anytype) !void {
             const ret = try self.ast.addNode(.{ .tag = .return_statement, .span = body_node.span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } });
             body = try self.ast.addNode(.{ .tag = .block_statement, .span = body_node.span, .data = .{ .list = try self.ast.addNodeList(&.{ret}) } });
         }
-        self.ast.extra_data.items[body_slot] = @backingInt(try self.prependStatementsToBody(body, statements.items));
+        try publishBody(self, body_slot, body, statements.items);
         const new_params = try self.ast.addFormalParameters(try self.ast.addNodeList(formals.items), self.ast.getNode(params_node).span);
         try self.remapCopiedScopeOwner(params_node, new_params);
         self.ast.extra_data.items[params_slot] = @backingInt(new_params);
     }
+}
+
+pub fn publishBody(self: anytype, body_slot: u32, body: NodeIndex, statements: []const NodeIndex) !void {
+    // The new body appends extra_data and can reallocate it. Resolve the
+    // destination slot only after construction, never before the RHS.
+    const initialized_body = try self.prependStatementsToBody(body, statements);
+    self.ast.extra_data.items[body_slot] = @backingInt(initialized_body);
 }

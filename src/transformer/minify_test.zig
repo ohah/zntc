@@ -1308,6 +1308,13 @@ test "dead store: unused initializer retains getter invocation" {
     );
 }
 
+test "inline declaration: retain initializer lexical TDZ before later binding" {
+    try expectMinifyDead(
+        "let first=(()=>value)();let value=7;return first;",
+        "function run() {\n\tlet first = value,value = 7;\n\treturn first;\n}\nrun();",
+    );
+}
+
 test "dead store: unused let with pure binary 제거" {
     try expectMinifyDead("let x = 1 + 2;", "function run() {\n\t;\n}\nrun();");
 }

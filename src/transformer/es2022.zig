@@ -792,7 +792,9 @@ pub fn ES2022(comptime Transformer: type) type {
                     const new_node = self.ast.getNode(new_member);
                     if (new_node.tag == .method_definition) {
                         const nkey: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[new_node.data.extra]));
-                        if (es_helpers.isConstructorKey(self, nkey)) {
+                        if ((self.readU32(new_node.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static) == 0 and
+                            es_helpers.isConstructorKey(self, nkey))
+                        {
                             ctor_pos = body_nodes.items.len;
                         }
                     }
@@ -820,7 +822,7 @@ pub fn ES2022(comptime Transformer: type) type {
             return true;
         }
 
-        fn reservePrivateConstructorScope(self: *Transformer, body: NodeIndex, methods: []const Transformer.PrivateMethodMapping, fields: []const Transformer.PrivateFieldMapping) Transformer.Error!ScopeId {
+        pub fn reservePrivateConstructorScope(self: *Transformer, body: NodeIndex, methods: []const Transformer.PrivateMethodMapping, fields: []const Transformer.PrivateFieldMapping) Transformer.Error!ScopeId {
             if (!self.semantic_edit_enabled) return self.current_scope;
             var needed = false;
             for (methods) |method| if (method.class_name == null) {
@@ -833,7 +835,8 @@ pub fn ES2022(comptime Transformer: type) type {
             while (members.next()) |member| {
                 const node = self.ast.getNode(member);
                 if (node.tag == .method_definition) {
-                    if (es_helpers.isConstructorKey(self, self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key)))
+                    if ((self.readU32(node.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static) == 0 and
+                        es_helpers.isConstructorKey(self, self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key)))
                         return self.outputOwnedScope(member) orelse std.debug.panic("private initializer constructor has no source ScopeId", .{});
                 } else if (node.tag == .property_definition) {
                     const flags = self.readU32(node.data.extra, ast_mod.PropertyExtra.flags);

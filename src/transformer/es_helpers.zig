@@ -542,7 +542,12 @@ pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
     if (key_idx.isNone()) return false;
     const key = self.ast.getNode(key_idx);
     return switch (key.tag) {
-        .identifier_reference, .binding_identifier => std.mem.eql(u8, self.ast.getText(key.data.string_ref), "constructor"),
+        .identifier_reference, .binding_identifier => blk: {
+            const raw = self.ast.identifierNameText(key);
+            var buffer: [64]u8 = undefined;
+            const name = @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesInto(raw, &buffer) orelse break :blk false;
+            break :blk std.mem.eql(u8, name, "constructor");
+        },
         .string_literal => blk: {
             const name = (self.ast.directStaticKeyName(self.allocator, key_idx) catch break :blk false) orelse break :blk false;
             defer self.allocator.free(name);
@@ -550,6 +555,34 @@ pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
         },
         else => false,
     };
+}
+
+/// A key's StringValue does not distinguish a class constructor from an
+/// ordinary object method. Preserve the actual class-member edge, including
+/// exact scope-owner aliases produced by copying a source method.
+pub fn isClassConstructorMethod(self: anytype, owner: NodeIndex, node: Node) bool {
+    if (node.tag != .method_definition or
+        self.ast.readExtra(node.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static != 0 or
+        !isConstructorKey(self, self.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.key))) return false;
+    const scope = if (self.semantic_edit_enabled) self.outputOwnedScope(owner) else null;
+    for (self.ast.nodes.items) |class| {
+        if (class.tag != .class_declaration and class.tag != .class_expression) continue;
+        const body_idx = self.ast.readExtraNode(class.data.extra, ast_mod.ClassExtra.body);
+        if (body_idx.isNone()) continue;
+        const body = self.ast.getNode(body_idx);
+        for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
+            if (raw == @backingInt(owner)) return true;
+            if (scope) |method_scope| {
+                const member: NodeIndex = @fromBackingInt(raw);
+                const candidate = self.ast.getNode(member);
+                if (candidate.tag != .method_definition or
+                    self.ast.readExtra(candidate.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static != 0 or
+                    !isConstructorKey(self, self.ast.readExtraNode(candidate.data.extra, ast_mod.MethodExtra.key))) continue;
+                if (self.outputOwnedScope(member) == method_scope) return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
