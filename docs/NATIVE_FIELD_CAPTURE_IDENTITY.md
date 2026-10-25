@@ -13,7 +13,10 @@ binding explicitly. Parameter environments and nested ordinary functions do
 not borrow this body-local storage.
 
 Constructor assembly places that declaration before field assignments and,
-for derived constructors with a direct super call, after that call. The source
+for derived constructors with a direct super call, after that call. Reads
+from a derived constructor body use the existing initialized-this assertion,
+so an arrow called before super throws ReferenceError and the same closure
+reads the receiver after super returns. The source
 constructor's ordinary capture producer does not create a second declaration.
 Both implicit constructor shells and existing constructor owners keep their
 exact ScopeIds. The borrowed context is restored when each visit ends.

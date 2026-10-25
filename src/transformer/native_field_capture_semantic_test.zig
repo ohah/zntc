@@ -2,6 +2,8 @@ const std = @import("std");
 
 const Case = struct { name: []const u8, source: []const u8, capture: bool = true };
 const cases = [_]Case{
+    .{ .name = "derived body capture before and after super", .source = "class Parent{};class Box extends Parent{value=7;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
+    .{ .name = "derived shared capture before and after super", .source = "class Parent{};class Box extends Parent{value=7;read=()=>this.value;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
     .{ .name = "global alias collision", .source = "const _this=11;class Box{value=7;read=()=>[this.value,_this]}console.log(JSON.stringify(new Box().read()));" },
     .{ .name = "native non-simple constructor collision", .source = "class Box{value=7;read=()=>this.value;constructor(_this=11){this.other=_this}}const box=new Box();console.log(box.read(),box.other);" },
     .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
@@ -19,7 +21,7 @@ const cases = [_]Case{
     .{ .name = "constructor first shared storage", .source = "class Box{constructor(){this.body=()=>this.value}value=7;read=()=>this.value}const box=new Box();console.log(box.read(),box.body());" },
 };
 
-test "native field capture preserves source values across fifteen constructor contexts" {
+test "native field capture preserves source values across seventeen constructor contexts" {
     for (cases) |case| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
