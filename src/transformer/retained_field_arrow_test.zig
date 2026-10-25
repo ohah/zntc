@@ -361,3 +361,39 @@ test "retained loop key cells retain exact owners before final output walk" {
         try std.testing.expectEqual(@as(usize, 0), t.deferred_generator_loop_migrations.count());
     }
 }
+
+test "retained native fields initialize constructor this before callback use" {
+    const cases = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "derived-during-fields", .source = "let read;class Parent{}class Box extends Parent{value=read();constructor(){read=()=>this;super()}}const box=new Box();console.log(box.value===box);" },
+        .{ .name = "base-during-fields", .source = "let read;class Box{value=read();constructor(){read=()=>this}}try{new Box()}catch(e){console.log(e.name)}" },
+        .{ .name = "derived-before-super", .source = "let read;class Parent{}class Box extends Parent{constructor(){read=()=>this;try{read()}catch(e){console.log(e.name)}super()}}new Box();" },
+        .{ .name = "derived-after-super", .source = "let read;class Parent{}class Box extends Parent{constructor(){read=()=>this;super();console.log(read()===this)}}new Box();" },
+        .{ .name = "derived-replacement-object", .source = "let read;class Parent{constructor(){return {tag:7}}}class Box extends Parent{value=read();constructor(){read=()=>this;super()}}const box=new Box();console.log(box.value===box,box.tag);" },
+        .{ .name = "derived-field-throw", .source = "let read;class Parent{}class Box extends Parent{value=(()=>{console.log(read()===this);throw Error(\"field\")})();constructor(){read=()=>this;try{super()}catch(e){console.log(e.message,read()===this)}}}new Box();" },
+        .{ .name = "first-function-name", .source = "let read;class Parent{}class Box extends Parent{value=function(){};constructor(){read=()=>this;super()}}const box=new Box();console.log(box.value.name,read()===box);" },
+        .{ .name = "first-class-name", .source = "let read;class Parent{}class Box extends Parent{value=class{static seen=this.name};constructor(){read=()=>this;super()}}const box=new Box();console.log(box.value.name,box.value.seen,read()===box);" },
+        .{ .name = "reentrant-same-class", .source = "let read;let depth=0;class Parent{}class Box extends Parent{value=read();constructor(){const previous=read;read=()=>this;const own=read;if(depth++===0){new Box();read=own}super();read=previous}}const box=new Box();console.log(box.value===box);" },
+        .{ .name = "failed-before-fields", .source = "let read;let fail=true;class Parent{constructor(){if(fail){fail=false;throw Error(\"base\")}}}class Box extends Parent{value=read();constructor(){read=()=>this;super()}}try{new Box()}catch(e){console.log(e.message)}const box=new Box();console.log(box.value===box);" },
+    };
+    var mismatches: usize = 0;
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", case.source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        const result = try @import("../transpile.zig").transpile(a, case.source, "input.cjs", .{
+            .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+            .use_define_for_class_fields = true,
+            .minify_identifiers = minify,
+            .minify_syntax = minify,
+            .minify_whitespace = minify,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+            std.debug.print("engine field callback case={s} minify={}\nsource:{s}\ncode:{s}\nexpected:{s}actual:{s}error:{s}\n", .{ case.name, minify, case.source, result.code, native.stdout, actual.stdout, actual.stderr });
+            mismatches += 1;
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
