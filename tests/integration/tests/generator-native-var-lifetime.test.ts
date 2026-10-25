@@ -60,3 +60,50 @@ describe('native generator var storage survives callback resumption (#4819)', ()
     }
   }
 });
+
+describe('native generator var storage in bundle module graphs (#4819)', () => {
+  for (const [name, body] of inputs) {
+    for (const format of ['esm', 'cjs']) {
+      for (const split of [false, true]) {
+        for (const minify of [false, true]) {
+          test(`${name}, format=${format}, split=${split}, minify=${minify}`, async () => {
+            const entry =
+              'import {f} from "./factory.mjs";const it=f();it.next();console.log(JSON.stringify(it.next().value));';
+            const fixture = await createFixture({
+              'package.json': JSON.stringify({ type: format === 'cjs' ? 'commonjs' : 'module' }),
+              'factory.mjs': `export function* f(){${body}}`,
+              'entry.mjs': entry,
+              'second.mjs': entry,
+            });
+            try {
+              const source = join(fixture.dir, 'entry.mjs');
+              const native = spawnSync('node', [source], { encoding: 'utf8' });
+              expect(native.status, native.stderr).toBe(0);
+              const output = join(
+                fixture.dir,
+                split ? 'dist/entry.js' : format === 'cjs' ? 'out.cjs' : 'out.mjs',
+              );
+              const args = ['--bundle', source, '--target=es5', `--format=${format}`];
+              if (split)
+                args.push(
+                  join(fixture.dir, 'second.mjs'),
+                  '--splitting',
+                  '--outdir',
+                  join(fixture.dir, 'dist'),
+                );
+              else args.push('-o', output);
+              if (minify) args.push('--minify-identifiers', '--minify-syntax');
+              const built = spawnSync(ZNTC_BIN, args, { encoding: 'utf8' });
+              expect(built.status, built.stderr).toBe(0);
+              const run = spawnSync('node', [output], { encoding: 'utf8' });
+              expect(run.status, run.stderr).toBe(0);
+              expect(run.stdout).toBe(native.stdout);
+            } finally {
+              await fixture.cleanup();
+            }
+          });
+        }
+      }
+    }
+  }
+});
