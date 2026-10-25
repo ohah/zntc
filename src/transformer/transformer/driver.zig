@@ -413,6 +413,12 @@ pub fn appendParameterBodyVarCopies(
         try self.addSyntheticRefInScope(value, @fromBackingInt(copy.parameter_symbol_id), reference_scope, .{ .read = true });
         try self.trackExactOutputRead(value, copy.parameter_symbol_id);
         try statements.append(self.allocator, try es_helpers.makeAssignStmt(self, target, value, copy.source_span, 0));
+        if (copy.annex_b_lexical_symbols.len != 0) {
+            const editor = if (self.semantic_editor) |*current| current else std.debug.panic("Annex B parameter copy has no semantic owner", .{});
+            for (copy.annex_b_lexical_symbols) |lexical|
+                @import("../../semantic/annex_b_function.zig").markParameterLowered(editor.symbols.items, @fromBackingInt(lexical), @fromBackingInt(copy.body_var_symbol_id), @fromBackingInt(copy.parameter_symbol_id)) catch
+                    std.debug.panic("Annex B parameter copy does not match its initial exact role", .{});
+        }
     }
 }
 

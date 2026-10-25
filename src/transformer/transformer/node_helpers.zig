@@ -135,6 +135,15 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     }
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
     for (symbols, 0..) |sym, i| {
+        const annex_role = @import("../../semantic/annex_b_function.zig").forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(i)))) catch
+            std.debug.panic("invalid native Annex B name allocation role", .{});
+        if (annex_role) |role| if (role.state != .lowered) {
+            // Source syntax still performs V=L. Only a previously allocated
+            // exact V alias may change this group's spelling; L never receives
+            // an independent lexical-block rename.
+            if (map.get(@backingInt(role.variable))) |name| try map.put(self.allocator, @intCast(i), name);
+            continue;
+        };
         const parameter_rename = parameter_renames.contains(@intCast(i));
         const block_rename = lower_block_scoping and table.contains(@intCast(i));
         if (!block_rename and !parameter_rename) continue;

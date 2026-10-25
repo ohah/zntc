@@ -119,6 +119,24 @@ pub fn mangleAll(
     defer reserved.deinit(allocator);
     for (input.global_reserved) |r| try reserved.put(allocator, r, {});
 
+    const native_masks = try allocator.alloc(std.DynamicBitSet, input.modules.len);
+    var initialized_masks: usize = 0;
+    defer {
+        for (native_masks[0..initialized_masks]) |*mask| mask.deinit();
+        allocator.free(native_masks);
+    }
+    for (input.modules, 0..) |module, index| {
+        native_masks[index] = try @import("../semantic/annex_b_function.zig").nativeBindingMask(allocator, module.symbols);
+        initialized_masks += 1;
+        for (module.scope_maps) |map| {
+            var names = map.iterator();
+            while (names.next()) |entry| {
+                if (entry.value_ptr.* < module.symbols.len and native_masks[index].isSet(entry.value_ptr.*))
+                    try reserved.put(allocator, entry.key_ptr.*, {});
+            }
+        }
+    }
+
     // ================================================================
     // Phase A — cross-module frequency
     // ================================================================
@@ -197,6 +215,8 @@ pub fn mangleAll(
     var phase_a_internal_wrapped: usize = 0;
 
     for (sorted) |cand| {
+        if (cand.module_index < native_masks.len and cand.symbol_id < native_masks[cand.module_index].capacity() and
+            native_masks[cand.module_index].isSet(cand.symbol_id)) continue;
         if (audit_enabled) {
             if (cross_module_ref_set.contains(.{ .module_index = cand.module_index, .symbol_id = cand.symbol_id })) {
                 phase_a_cross_module += 1;

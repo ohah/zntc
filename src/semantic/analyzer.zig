@@ -238,6 +238,12 @@ pub const SemanticAnalyzer = struct {
     /// scope_maps 가 아닌 이 풀에서만 lookup.
     helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty,
 
+    /// Initial var-instantiation handoff, keyed by the exact source declaration.
+    /// The lexical pass consumes this target into Symbol.annex_b_alias.
+    annex_b_variable_targets: std.AutoHashMapUnmanaged(NodeIndex, AnnexBVariableTarget) = .empty,
+    parameter_environments: std.AutoHashMapUnmanaged(ScopeId, ScopeId) = .empty,
+    annex_b_barriers: std.StringHashMapUnmanaged(u32) = .empty,
+
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
@@ -353,6 +359,11 @@ pub const SemanticAnalyzer = struct {
         owned_member_names: std.ArrayList([]u8) = .empty,
     };
 
+    const AnnexBVariableTarget = struct {
+        variable: SymbolId,
+        parameter_source: SymbolId = .none,
+    };
+
     pub fn init(allocator: std.mem.Allocator, ast: *Ast) SemanticAnalyzer {
         return .{
             .ast = ast,
@@ -418,6 +429,9 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.annex_b_variable_targets.deinit(self.allocator);
+        self.parameter_environments.deinit(self.allocator);
+        self.annex_b_barriers.deinit(self.allocator);
         self.node_scope_provenance.deinit(self.allocator);
         self.class_self_symbol_map.deinit(self.allocator);
         for (self.namespace_member_groups.items) |*group| group.members.deinit(self.allocator);
@@ -853,6 +867,16 @@ pub const SemanticAnalyzer = struct {
                 // var 스코프에서 같은 이름의 함수 선언 여럿, 또는 var 와 함수 선언도 바인딩 하나다. 새 심볼을
                 // 만들면 앞 심볼이 스코프 맵에서 밀려나 선언도 참조도 없는 고아가 되고, 그 심볼에 쓰는
                 // `var f = …` 문장은 번들 tree shaker 가 지운다 (#5803). 먼저 선언된 종류를 유지한다.
+                if (!self.isCurrentStrict() and kind == .function_decl and existing.kind == .function_decl and
+                    !target_scope.isNone() and !self.scopes.items[target_scope.toIndex()].kind.isVarScope())
+                {
+                    const existing_id = self.findSymbolIndexInScope(target_scope, name_text).?;
+                    if (node_idx) |ni| if (ni < self.symbol_ids.items.len) {
+                        self.symbol_ids.items[ni] = @intCast(existing_id);
+                    };
+                    self.recordDeclareRef(@intCast(existing_id), target_scope, node_idx);
+                    return;
+                }
                 const same_var_scope_function = (kind.isFunctionLike() or kind == .variable_var) and
                     (existing.kind.isFunctionLike() or existing.kind == .variable_var) and
                     (kind.isFunctionLike() or existing.kind.isFunctionLike()) and
@@ -890,38 +914,6 @@ pub const SemanticAnalyzer = struct {
             !self.scopes.items[target_scope.toIndex()].kind.isVarScope())))
         {
             if (try self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
-        }
-
-        // nested-block FunctionDeclaration: var_scope 에 같은 이름 function-like predeclare 가
-        // 있으면 block-scope shadow 를 새로 만들지 않고 var_scope 의 X 를 block_scope.map 에
-        // alias 로 등록한다. 새 심볼을 만들면 name node 가 shadow 를 가리키게 되어 var_scope X
-        // 기준의 linker rename / reference 와 어긋난다 (#2714 LogBox 회귀).
-        // alias 후 같은 block 의 후속 lexical/function 선언은 block_scope.map 에서 X 를 발견
-        // 해 canRedeclare 체크가 정상 작동한다.
-        // Strict code keeps the block function its own lexical binding (#4767):
-        // aliasing it to the var-scope X made the block's later visit see X
-        // as an earlier declaration of the same name.
-        if (!is_function_expression_name and !is_annex_b_fn and !self.isCurrentStrict() and kind.isFunctionLike() and !target_scope.isNone() and
-            !self.scopes.items[target_scope.toIndex()].kind.isVarScope())
-        {
-            const var_scope_for_alias = self.findVarScope();
-            if (!var_scope_for_alias.isNone() and var_scope_for_alias.toIndex() < self.scope_maps.items.len) {
-                if (self.scope_maps.items[var_scope_for_alias.toIndex()].get(name_text)) |x_idx| {
-                    // 같은 이름의 `var` 가 있어도 블록 함수는 그 var 바인딩에 대입된다(B.3.3). 1st pass
-                    // 가 var 와 함수를 한 심볼로 합치므로 var 종류도 받는다 (#5803). 같은 블록의 var 충돌은
-                    // 위 checkLexicalVarConflict 가 먼저 잡는다.
-                    const x_kind = self.symbols.items[x_idx].kind;
-                    if (x_kind.isFunctionLike() or x_kind == .variable_var) {
-                        try self.scope_maps.items[target_scope.toIndex()].put(self.allocator, name_text, x_idx);
-                        if (node_idx) |ni| {
-                            if (ni < self.symbol_ids.items.len) {
-                                self.symbol_ids.items[ni] = @intCast(x_idx);
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
         }
 
         const sym_index = self.symbols.items.len;
@@ -3638,9 +3630,27 @@ pub const SemanticAnalyzer = struct {
                     // visible throughout the block, including before their
                     // source position. Function-body var declarations keep
                     // using the separate var prepass below.
-                    if (!self.isCurrentStrict() or self.current_scope.isNone() or
+                    if (self.current_scope.isNone() or
                         self.scopes.items[self.current_scope.toIndex()].kind.isVarScope()) continue;
                     try self.predeclareFuncDecl(stmt);
+                    if (self.annex_b_variable_targets.get(idx)) |target| {
+                        const name_idx = self.ast.readExtraNode(stmt.data.extra, ast_mod.FunctionExtra.name);
+                        if (!name_idx.isNone()) if (self.symbol_ids.items[@backingInt(name_idx)]) |lexical| {
+                            if (@as(u32, @backingInt(target.variable)) == lexical) std.debug.panic("Annex B lexical and variable identities must differ", .{});
+                            const alias = &self.symbols.items[lexical].annex_b_alias;
+                            if (!alias.variable.isNone() and (alias.variable != target.variable or alias.parameter_source != target.parameter_source))
+                                std.debug.panic("one lexical function has conflicting Annex B targets", .{});
+                            alias.variable = target.variable;
+                            alias.parameter_source = target.parameter_source;
+                            alias.source_assignment_count += 1;
+                            // The native declaration executes V=L at its source
+                            // statement. Its existing exact declare anchor owns
+                            // this implicit operation; no identifier AST is made.
+                            self.symbols.items[lexical].reference_count += 1;
+                            self.symbols.items[@backingInt(target.variable)].reference_count += 1;
+                            self.symbols.items[@backingInt(target.variable)].write_count += 1;
+                        };
+                    }
                 },
                 .class_declaration => {
                     const extra_start = stmt.data.extra;
@@ -5480,7 +5490,9 @@ pub const SemanticAnalyzer = struct {
             return .{ .body_scope_saved = body_scope_saved };
         }
         try self.registerParams(params);
+        const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
+        try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
@@ -5502,7 +5514,9 @@ pub const SemanticAnalyzer = struct {
         try self.declareArrowParams(params_root);
         try self.checkArrowParameterDuplicates(params_root);
         try self.visitArrowParameterExpressions(params_root);
+        const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
+        try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);
         return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
     }
 
@@ -5625,9 +5639,16 @@ pub const SemanticAnalyzer = struct {
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         const saved = self.current_stmt_idx;
         defer self.current_stmt_idx = saved;
-        for (indices, 0..) |raw_idx, i| {
-            if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
-            try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(raw_idx)), true);
+        // FunctionDeclarationInstantiation initializes body functions before
+        // ordinary vars; Annex B targets must know whether a parameter copy
+        // is superseded by such a hoisted function initializer.
+        for ([_]bool{ true, false }) |function_pass| {
+            for (indices, 0..) |raw_idx, i| {
+                const index: NodeIndex = @fromBackingInt(raw_idx);
+                if ((self.ast.getNode(index).tag == .function_declaration) != function_pass) continue;
+                if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
+                try self.predeclareVarDeclsRecursive(index, true);
+            }
         }
     }
 
@@ -5637,6 +5658,70 @@ pub const SemanticAnalyzer = struct {
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
             try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(raw_idx)), false);
+        }
+    }
+
+    fn addAnnexBBarrier(self: *SemanticAnalyzer, binding: NodeIndex, added: *std.ArrayList([]const u8)) AllocError!void {
+        var identifiers = try ast_walk.bindingIdentifiers(self.allocator, self.ast, binding, .{});
+        defer identifiers.deinit();
+        while (try identifiers.next()) |identifier| {
+            const raw = try self.ast.getTextStable(self.allocator, self.ast.getNode(identifier).span);
+            const name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw);
+            const entry = try self.annex_b_barriers.getOrPut(self.allocator, name);
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            try added.append(self.allocator, name);
+            entry.value_ptr.* += 1;
+        }
+    }
+
+    fn removeAnnexBBarriers(self: *SemanticAnalyzer, added: []const []const u8) void {
+        for (added) |name| {
+            const count = self.annex_b_barriers.getPtr(name).?;
+            count.* -= 1;
+            if (count.* == 0) _ = self.annex_b_barriers.remove(name);
+        }
+    }
+
+    fn addAnnexBLexicalBarriers(self: *SemanticAnalyzer, statement: Node, added: *std.ArrayList([]const u8)) AllocError!void {
+        switch (statement.tag) {
+            .variable_declaration => {
+                if (!self.ast.variableDeclarationKind(statement).isLexical()) return;
+                const start = self.ast.extra_data.items[statement.data.extra + 1];
+                const len = self.ast.extra_data.items[statement.data.extra + 2];
+                for (self.ast.extra_data.items[start .. start + len]) |raw| {
+                    const declaration = self.ast.getNode(@fromBackingInt(raw));
+                    if (declaration.tag == .variable_declarator)
+                        try self.addAnnexBBarrier(self.ast.readExtraNode(declaration.data.extra, 0), added);
+                }
+            },
+            .function_declaration, .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
+            else => {},
+        }
+    }
+
+    fn predeclareVarDeclsInLexicalRegion(self: *SemanticAnalyzer, lists: []const NodeList) AllocError!void {
+        // A direct block function is checked against the enclosing lexical
+        // region; its own lexical binding does not suppress its Annex B alias.
+        for (lists) |list| {
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                const index: NodeIndex = @fromBackingInt(raw);
+                if (self.ast.getNode(index).tag == .function_declaration)
+                    try self.predeclareVarDeclsRecursive(index, false);
+            }
+        }
+        var added: std.ArrayList([]const u8) = .empty;
+        defer added.deinit(self.allocator);
+        defer self.removeAnnexBBarriers(added.items);
+        for (lists) |list| {
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw|
+                try self.addAnnexBLexicalBarriers(self.ast.getNode(@fromBackingInt(raw)), &added);
+        }
+        for (lists) |list| {
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                const index: NodeIndex = @fromBackingInt(raw);
+                if (self.ast.getNode(index).tag != .function_declaration)
+                    try self.predeclareVarDeclsRecursive(index, false);
+            }
         }
     }
 
@@ -5662,6 +5747,33 @@ pub const SemanticAnalyzer = struct {
                 // Only declarations directly in a function body's statement list are
                 // predeclared in its var scope; recursive Annex B hoisting is sloppy-only.
                 if (!is_direct_function_body_statement and self.isCurrentStrict()) return;
+                if (!is_direct_function_body_statement) {
+                    const flags = self.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.flags];
+                    if (functionSymbolKind(flags) != .function_decl) return;
+                    const name_idx = self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+                    if (name_idx.isNone()) return;
+                    const name_node = self.ast.getNode(name_idx);
+                    const raw_name = try self.ast.getTextStable(self.allocator, name_node.span);
+                    const name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+                    const var_scope = self.findVarScope();
+                    if (self.annex_b_barriers.contains(name_text)) return;
+                    if (self.findSymbolInScope(var_scope, name_text)) |existing| if (existing.kind.isBlockScoped()) return;
+                    var parameter_source: SymbolId = .none;
+                    if (self.parameter_environments.get(var_scope)) |parameter_scope| {
+                        if (self.findSymbolIndexInScope(parameter_scope, name_text)) |parameter| {
+                            if (self.symbols.items[parameter].kind == .parameter)
+                                parameter_source = @fromBackingInt(@as(u32, @intCast(parameter)));
+                        }
+                    }
+                    try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, null);
+                    if (self.findSymbolIndexInScope(var_scope, name_text)) |variable| {
+                        try self.annex_b_variable_targets.put(self.allocator, idx, .{
+                            .variable = @fromBackingInt(@as(u32, @intCast(variable))),
+                            .parameter_source = if (self.symbols.items[variable].kind == .variable_var) parameter_source else .none,
+                        });
+                    }
+                    return;
+                }
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + ast_mod.FunctionExtra.flags >= extras.len) return;
@@ -5689,7 +5801,7 @@ pub const SemanticAnalyzer = struct {
             },
             // 재귀 대상: block/if/for/while/switch/try/labeled 등
             .block_statement, .static_block => {
-                try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);
+                try self.predeclareVarDeclsInLexicalRegion(&.{node.data.list});
             },
             .if_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
@@ -5700,11 +5812,20 @@ pub const SemanticAnalyzer = struct {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra + 3 < extras.len) {
                     try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(extras[node.data.extra])), false); // init
+                    var added: std.ArrayList([]const u8) = .empty;
+                    defer added.deinit(self.allocator);
+                    defer self.removeAnnexBBarriers(added.items);
+                    const initializer: NodeIndex = @fromBackingInt(extras[node.data.extra]);
+                    if (!initializer.isNone()) try self.addAnnexBLexicalBarriers(self.ast.getNode(initializer), &added);
                     try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(extras[node.data.extra + 3])), false); // body
                 }
             },
             .for_in_statement, .for_of_statement, .for_await_of_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
+                var added: std.ArrayList([]const u8) = .empty;
+                defer added.deinit(self.allocator);
+                defer self.removeAnnexBBarriers(added.items);
+                if (!node.data.ternary.a.isNone()) try self.addAnnexBLexicalBarriers(self.ast.getNode(node.data.ternary.a), &added);
                 try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
             .while_statement, .do_while_statement => {
@@ -5718,6 +5839,15 @@ pub const SemanticAnalyzer = struct {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);
                 try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
+            .catch_clause => {
+                var added: std.ArrayList([]const u8) = .empty;
+                defer added.deinit(self.allocator);
+                defer self.removeAnnexBBarriers(added.items);
+                const parameter = node.data.binary.left;
+                if (!parameter.isNone() and self.ast.getNode(parameter).tag != .binding_identifier)
+                    try self.addAnnexBBarrier(parameter, &added);
+                try self.predeclareVarDeclsRecursive(node.data.binary.right, false);
+            },
             // switch: extra = [discriminant, cases.start, cases.len], case: extra = [test, body.start, body.len].
             // case 안의 var·블록 함수도 함수 스코프로 호이스팅된다 (Annex B.3.3 은 case 절도 포함).
             .switch_statement => {
@@ -5727,10 +5857,15 @@ pub const SemanticAnalyzer = struct {
                 const cases_start = extras[extra + 1];
                 const cases_len = extras[extra + 2];
                 if (cases_start > extras.len or cases_len > extras.len - cases_start) return;
-                var i: u32 = 0;
-                while (i < cases_len) : (i += 1) {
-                    try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(self.ast.extra_data.items[cases_start + i])), false);
+                var lists: std.ArrayList(NodeList) = .empty;
+                defer lists.deinit(self.allocator);
+                for (extras[cases_start .. cases_start + cases_len]) |raw_case| {
+                    const clause = self.ast.getNode(@fromBackingInt(raw_case));
+                    const case_extra = clause.data.extra;
+                    if (clause.tag != .switch_case or case_extra > extras.len or extras.len - case_extra < 3) continue;
+                    try lists.append(self.allocator, .{ .start = extras[case_extra + 1], .len = extras[case_extra + 2] });
                 }
+                try self.predeclareVarDeclsInLexicalRegion(lists.items);
             },
             .switch_case => {
                 const extras = self.ast.extra_data.items;

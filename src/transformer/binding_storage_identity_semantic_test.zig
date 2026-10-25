@@ -191,6 +191,7 @@ fn runAnnexBCase(source: []const u8, broken: bool, renamed: bool, equivalent_spe
         if (!function_name.isNone()) break;
     }
     try std.testing.expect(!function_name.isNone());
+    const lexical_id = analyzer.symbol_ids.items[@backingInt(function_name)].?;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -214,19 +215,22 @@ fn runAnnexBCase(source: []const u8, broken: bool, renamed: bool, equivalent_spe
         const span = try transformer.ast.addString("typed_output_alias");
         transformer.ast.nodes.items[@backingInt(function_name)].data.string_ref = span;
         transformer.block_rename_map = .empty;
-        try transformer.block_rename_map.?.put(allocator, outer_id, "typed_output_alias");
+        try transformer.block_rename_map.?.put(allocator, lexical_id, "typed_output_alias");
     }
     if (broken) {
         try std.testing.expectError(error.InvalidSymbol, edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope()));
     } else {
         try edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope());
-        try std.testing.expectEqual(outer_id, transformer.getSymbolIdAt(function_name).?);
+        try std.testing.expectEqual(lexical_id, transformer.getSymbolIdAt(function_name).?);
+        try std.testing.expect(outer_id != lexical_id);
+        try std.testing.expectEqual(outer_id, @as(u32, @backingInt(transformer.semantic_editor.?.symbols.items[lexical_id].annex_b_alias.variable)));
     }
     try std.testing.expectEqual(analyzer.symbols.items.len, transformer.semantic_editor.?.symbols.items.len);
 }
 
 test "Annex B shape cannot legitimize a different producer binding identity" {
     try runAnnexBCase("var value=1;if(true){function inner(){}}", true, false, null);
+    try runAnnexBCase("var value=1;if(true){function value(){}}", true, false, null);
 }
 
 test "Annex B producer spelling validation preserves Unicode and typed output aliases" {
@@ -282,7 +286,9 @@ test "Annex B accepts a same-name alias with a long escaped spelling" {
         if (!function_name.isNone()) break;
     }
     try std.testing.expect(!function_name.isNone());
-    try std.testing.expectEqual(outer_id, analyzer.symbol_ids.items[@backingInt(function_name)].?);
+    const lexical_id = analyzer.symbol_ids.items[@backingInt(function_name)].?;
+    try std.testing.expect(outer_id != lexical_id);
+    try std.testing.expectEqual(outer_id, @as(u32, @backingInt(analyzer.symbols.items[lexical_id].annex_b_alias.variable)));
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);

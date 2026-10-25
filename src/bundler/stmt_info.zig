@@ -1759,6 +1759,10 @@ pub fn buildFromSemantic(
         }
 
         if (r.flags.declare) {
+            const alias = symbols[sym_u32].annex_b_alias;
+            if (!alias.variable.isNone() and alias.state != .lowered and !r.declaration_node_index.isNone() and
+                @backingInt(alias.variable) < symbols.len and isProgramTopLevelScope(scopes, symbols[@backingInt(alias.variable)].scope_id))
+                try writer_buckets[@backingInt(alias.variable)].append(allocator, r.stmt_idx);
             // #1669: analyzer 가 모든 scope 선언에 declare ref 를 남기므로 top-level (scope_id==0)
             // 만 bucket 분배. 함수/블록 내부 declare ref 는 `scope_stmt_idx` 와 함께 references
             // 배열에 남아 optimizer pass (single-use inline 등) 가 직접 소비.
@@ -2025,6 +2029,11 @@ pub fn build(
         // symbol's declaration_span can cover a source class, including reads
         // in its methods; those reads must keep the class -> storage edge.
         // Binding roles also preserve all redeclarations of a shared var SID.
+        const alias = sym.annex_b_alias;
+        if (n.tag == .binding_identifier and reachable_stmt[node_i] != no_stmt and !alias.variable.isNone() and alias.state != .lowered and
+            @backingInt(alias.variable) < symbols.len and isProgramTopLevelScope(scopes, symbols[@backingInt(alias.variable)].scope_id))
+            try writer_bufs[@backingInt(alias.variable)].append(allocator, stmt_i);
+
         const is_binding = n.tag == .binding_identifier or
             n.tag == .import_default_specifier or n.tag == .import_namespace_specifier or
             import_local_nodes.isSet(node_i);

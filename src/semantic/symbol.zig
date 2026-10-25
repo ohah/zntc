@@ -24,6 +24,18 @@ pub const SymbolId = enum(u32) {
     }
 };
 
+/// Annex B keeps a lexical block function and an outer var binding distinct.
+/// Native syntax gives them one output spelling; lowering replaces that implicit
+/// assignment with an exact variable = lexical assignment at the source statement.
+pub const AnnexBFunctionAlias = struct {
+    variable: SymbolId = .none,
+    parameter_source: SymbolId = .none,
+    state: State = .native,
+    source_assignment_count: u32 = 0,
+
+    pub const State = enum(u32) { native, parameter_lowered, lowered };
+};
+
 /// 심볼 종류. 재선언 규칙이 kind별로 다르다.
 ///
 /// 재선언 규칙 요약:
@@ -424,6 +436,10 @@ pub const Symbol = struct {
     /// Owner symbol for virtual references attached to an emitted binding,
     /// such as an enum member property owned by its generated IIFE parameter.
     synthetic_owner_id: ?SymbolId = null,
+
+    /// Created by initial block-function binding instantiation. This is never
+    /// inferred from equal names after transformation or cache reconstruction.
+    annex_b_alias: AnnexBFunctionAlias = .{},
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
