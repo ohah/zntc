@@ -1666,6 +1666,107 @@ test "exact identity audit rejects a `$N` source name routed to its unsuffixed s
     try std.testing.expect(!corrupted.isClean());
 }
 
+test "exact declaration anchors reject `$N` bindings routed to their unsuffixed sibling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const suffix_names = [_][]const u8{
+        "x$1", "x$2", "x$3", "x$4", "x$5", "x$6", "x$7", "x$8", "x$9", "x$10",
+    };
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    for (suffix_names) |suffixed_name| {
+        const source = try std.fmt.allocPrint(allocator, "let x = 1; let {s} = 2;", .{suffixed_name});
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+
+        var unsuffixed_id: ?u32 = null;
+        var suffixed_id: ?u32 = null;
+        var suffixed_binding: ?usize = null;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier) continue;
+            const name = parser.ast.getText(node.data.string_ref);
+            const id = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+            if (std.mem.eql(u8, name, "x")) {
+                unsuffixed_id = id;
+            } else if (std.mem.eql(u8, name, suffixed_name)) {
+                suffixed_id = id;
+                suffixed_binding = raw;
+            }
+        }
+        const wrong_id = unsuffixed_id orelse return error.TestUnexpectedResult;
+        const right_id = suffixed_id orelse return error.TestUnexpectedResult;
+        const binding_raw = suffixed_binding orelse return error.TestUnexpectedResult;
+        try std.testing.expect(wrong_id != right_id);
+
+        const baseline = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+            allocator,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            analyzer.symbol_ids.items,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+            &analyzer.namespace_member_owners,
+            &analyzer.namespace_declaration_owners,
+            analyzer.scopes.items.len,
+        );
+        try std.testing.expect(baseline.isClean());
+
+        const corrupted_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+        corrupted_ids[binding_raw] = wrong_id;
+
+        // The legacy name-based diagnostic collapses x and x$N to the same
+        // base, so it cannot identify this binding corruption on its own.
+        var legacy = try coverage.check(
+            allocator,
+            &parser.ast,
+            root,
+            0,
+            corrupted_ids,
+            analyzer.symbols.items,
+            null,
+        );
+        defer legacy.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 0), legacy.wrong.items.len);
+
+        const exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+            allocator,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            corrupted_ids,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+            &analyzer.namespace_member_owners,
+            &analyzer.namespace_declaration_owners,
+            analyzer.scopes.items.len,
+        );
+        try std.testing.expectEqual(@as(usize, 1), exact.declaration_identity_mismatch);
+        try std.testing.expect(!exact.isClean());
+    }
+}
+
 test "exact scope audit rejects owner scopes detached from their AST parent scopes" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
