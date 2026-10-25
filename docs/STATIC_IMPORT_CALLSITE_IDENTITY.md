@@ -23,9 +23,9 @@
 
 ## 검사
 
-세 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다.
+네 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개, strict-order dynamic target 2개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다.
 
-외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. compiled mutation 및 최종 통합 결과는 PR에 별도로 기록한다.
+외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. 첫 10개 변이 및 source-order/binding-only 보호 제거 2개 변이는 모두 컴파일 뒤 실제 테스트 실패로 검출했다. 최종 통합 결과는 PR에 별도로 기록한다.
 
 ## 유지한 잔여
 
