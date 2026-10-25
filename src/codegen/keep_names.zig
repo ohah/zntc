@@ -20,6 +20,7 @@ const Level = @import("precedence.zig").Level;
 const ExprFlags = @import("precedence.zig").ExprFlags;
 
 pub fn helperName(self: anytype) []const u8 {
+    if (self.options.keep_names_helper_name) |name| return name;
     return if (self.options.minify_whitespace) rt.NAMES.NAME_MIN else "__name";
 }
 

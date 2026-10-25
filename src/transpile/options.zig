@@ -65,6 +65,7 @@ pub const TranspileOptions = struct {
     module_format: codegen.ModuleFormat = .esm,
     minify_whitespace: bool = false,
     minify_identifiers: bool = false,
+    keep_names: bool = false,
     minify_syntax: bool = false,
     ascii_only: bool = false,
     charset_utf8: bool = false,
@@ -133,6 +134,7 @@ pub const ConfigOptionsDto = struct {
     minify: ?bool = null,
     minifyWhitespace: ?bool = null,
     minifyIdentifiers: ?bool = null,
+    keepNames: ?bool = null,
     minifySyntax: ?bool = null,
     sourcemap: ?bool = null,
     /// 출력 형식 — `"linked"` / `"external"` / `"inline"` (#2152). missing 시 linked.
@@ -405,6 +407,9 @@ pub fn applyTranspileSharedFields(
     if (dto.platform) |v| target.platform = v;
     if (dto.minifyWhitespace) |v| target.minify_whitespace = v;
     if (dto.minifyIdentifiers) |v| target.minify_identifiers = v;
+    if (dto.keepNames) |v| if (@hasField(@TypeOf(target.*), "keep_names")) {
+        target.keep_names = v;
+    };
     if (dto.minifySyntax) |v| target.minify_syntax = v;
     // `--minify` 통합 → 세 하위 minify 모두 ON (개별 플래그보다 우선). esbuild 의미론 +
     // NAPI build 경로(napi/options.zig:750-752)와 일관 — 그동안 transpile 경로만 누락(#3648).

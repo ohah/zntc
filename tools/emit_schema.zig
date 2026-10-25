@@ -30,6 +30,7 @@ const field_docs = std.StaticStringMap([]const u8).initComptime(.{
     .{ "platform", "Target platform — affects built-in externals and Node polyfills." },
     .{ "minifyWhitespace", "Remove whitespace." },
     .{ "minifyIdentifiers", "Mangle local identifiers." },
+    .{ "keepNames", "Preserve function/class reflection names (default: false)." },
     .{ "minifySyntax", "Apply syntax-level minification." },
     .{ "sourcemap", "Generate sourcemap JSON." },
     .{ "sourcemapDebugIds", "Embed Sentry-compatible Debug IDs." },

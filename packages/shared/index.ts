@@ -34,6 +34,8 @@ export interface TranspileOptions {
   minifyWhitespace?: boolean;
   /** Minify identifiers. */
   minifyIdentifiers?: boolean;
+  /** Preserve function/class reflection names (default: false). */
+  keepNames?: boolean;
   /** Minify syntax. */
   minifySyntax?: boolean;
   /** Full minification (whitespace + identifiers + syntax). */
@@ -306,6 +308,7 @@ export function buildOptionsJson(
   else if (opts.platform) payload.platform = opts.platform;
   if (opts.minifyWhitespace || opts.minify) payload.minifyWhitespace = true;
   if (opts.minifyIdentifiers || opts.minify) payload.minifyIdentifiers = true;
+  if (opts.keepNames !== undefined) payload.keepNames = opts.keepNames;
   if (opts.minifySyntax || opts.minify) payload.minifySyntax = true;
   if (opts.sourcemap) payload.sourcemap = true;
   if (opts.sourcemapDebugIds) payload.sourcemapDebugIds = true;

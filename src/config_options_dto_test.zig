@@ -206,7 +206,6 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "splitting", // bundler 옵션, DTO 에 모음
     "treeShaking",
     "metafile",
-    "keepNames",
     "shimMissingExports",
     "drop",
     "dropLabels",
@@ -340,4 +339,17 @@ test "AliasDto / ManualChunkDto 는 bundler/types entry 타입의 alias — drif
     // type 자체가 같아야 — 한 정의 변경 시 다른 곳 자동 반영. drift 차단.
     try std.testing.expect(transpile.AliasDto == bundler_types_mod.AliasEntry);
     try std.testing.expect(transpile.ManualChunkDto == bundler_types_mod.ManualChunkEntry);
+}
+
+test "optionsFromJson: keepNames optional true false and default are distinct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const omitted = try @import("transpile.zig").optionsFromJson(allocator, std.testing.io, "{}", null);
+    const enabled = try @import("transpile.zig").optionsFromJson(allocator, std.testing.io, "{\"keepNames\":true}", null);
+    const disabled = try @import("transpile.zig").optionsFromJson(allocator, std.testing.io, "{\"keepNames\":false}", null);
+    try std.testing.expect(!omitted.keep_names);
+    try std.testing.expect(enabled.keep_names);
+    try std.testing.expect(!disabled.keep_names);
+    try std.testing.expect(!enabled.minify_identifiers);
 }

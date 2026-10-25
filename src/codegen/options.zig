@@ -156,6 +156,9 @@ pub const CodegenOptions = struct {
     platform: Platform = .browser,
     /// --keep-names: restore `.name` of renamed functions/classes (keep_names.zig).
     keep_names: bool = false,
+    /// Producer-resolved spelling of the already selected standalone helper.
+    /// Bundle/semantic-less callers retain their existing shared runtime ABI.
+    keep_names_helper_name: ?[]const u8 = null,
     /// The target supports class static blocks (`static { __name(this, ..) }`).
     keep_names_static_block: bool = false,
     // JSX 옵션 제거: Transformer의 jsx_lowering이 JSX -> call_expression 변환을 담당.
