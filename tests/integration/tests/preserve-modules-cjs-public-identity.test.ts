@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'bun:test';
+import { spawn } from 'bun';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { build, close, init } from '../../../packages/core/index';
 import { createFixture } from './helpers';
+
+async function spawnCaptured(command: string, args: string[]) {
+  const proc = spawn({ cmd: [command, ...args], stdout: 'pipe', stderr: 'pipe' });
+  const [stdout, stderr, status] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { status, stdout, stderr };
+}
 
 // Original ten-source corpus: SHA-256 0cd1b1bc1020ba3f05e97c6fb9bd39c7dc1ae655daa8161e69f1c5b9e4e3c5ef.
 const cases = [
@@ -188,16 +198,12 @@ describe('preserved CJS eager imports use actual source Scope0 callers', () => {
         });
         try {
           const execute = (file: string, guarded: boolean) =>
-            spawnSync(
-              'node',
-              [
-                '--input-type=module',
-                '-e',
-                `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{default:ns};if(babel.default!==ns.default)throw new Error('wrong interop default');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
-              ],
-              { encoding: 'utf8' },
-            );
-          const native = execute(join(dir, 'entry.mjs'), false);
+            spawnCaptured('node', [
+              '--input-type=module',
+              '-e',
+              `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{default:ns};if(babel.default!==ns.default)throw new Error('wrong interop default');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
+            ]);
+          const native = await execute(join(dir, 'entry.mjs'), false);
           expect(native.status).toBe(0);
           expect(native.stderr).toBe('');
           expect(native.stdout).toBe(entry.expected);
@@ -219,7 +225,7 @@ describe('preserved CJS eager imports use actual source Scope0 callers', () => {
           } finally {
             close();
           }
-          const actual = execute(join(dir, 'out/entry.js'), true);
+          const actual = await execute(join(dir, 'out/entry.js'), true);
           expect(actual.status).toBe(0);
           expect(actual.stderr).toBe('');
           expect(actual.stdout).toBe(`${native.stdout}${entry.guardReads}\n`);
@@ -287,16 +293,12 @@ describe('owned namespace reexports preserve source default roles', () => {
         });
         try {
           const execute = (file: string) =>
-            spawnSync(
-              'node',
-              [
-                '--input-type=module',
-                '-e',
-                `const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});console.log(ns.default());`,
-              ],
-              { encoding: 'utf8' },
-            );
-          const native = execute(join(dir, 'entry.mjs'));
+            spawnCaptured('node', [
+              '--input-type=module',
+              '-e',
+              `const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});console.log(ns.default());`,
+            ]);
+          const native = await execute(join(dir, 'entry.mjs'));
           expect(native.status).toBe(0);
           expect(native.stderr).toBe('');
           expect(native.stdout).toBe(entry.expected);
@@ -318,7 +320,7 @@ describe('owned namespace reexports preserve source default roles', () => {
           } finally {
             close();
           }
-          const actual = execute(join(dir, 'out/entry.js'));
+          const actual = await execute(join(dir, 'out/entry.js'));
           expect(actual.status).toBe(0);
           expect(actual.stderr).toBe('');
           expect(actual.stdout).toBe(native.stdout);
@@ -341,16 +343,12 @@ describe('preserved CJS public default getters keep native source roles', () => 
         });
         try {
           const execute = (file: string) =>
-            spawnSync(
-              'node',
-              [
-                '--input-type=module',
-                '-e',
-                `const values=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});values.change();console.log(${entry.use});`,
-              ],
-              { encoding: 'utf8' },
-            );
-          const native = execute(join(dir, 'entry.mjs'));
+            spawnCaptured('node', [
+              '--input-type=module',
+              '-e',
+              `const values=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});values.change();console.log(${entry.use});`,
+            ]);
+          const native = await execute(join(dir, 'entry.mjs'));
           expect(native.status).toBe(0);
           expect(native.stdout).toBe(entry.expected);
           await init();
@@ -371,7 +369,7 @@ describe('preserved CJS public default getters keep native source roles', () => 
           } finally {
             close();
           }
-          const actual = execute(join(dir, 'out/entry.js'));
+          const actual = await execute(join(dir, 'out/entry.js'));
           expect(actual.status).toBe(0);
           expect(actual.stderr).toBe('');
           expect(actual.stdout).toBe(native.stdout);
@@ -391,16 +389,12 @@ describe('preserved CJS source public interop-name exports keep their actual get
         });
         try {
           const execute = (file: string) =>
-            spawnSync(
-              'node',
-              [
-                '--input-type=module',
-                '-e',
-                `const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});console.log(JSON.stringify([ns.default(),ns.__esModule]));`,
-              ],
-              { encoding: 'utf8' },
-            );
-          const native = execute(join(dir, 'entry.mjs'));
+            spawnCaptured('node', [
+              '--input-type=module',
+              '-e',
+              `const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});console.log(JSON.stringify([ns.default(),ns.__esModule]));`,
+            ]);
+          const native = await execute(join(dir, 'entry.mjs'));
           expect(native.status).toBe(0);
           expect(native.stdout).toBe('[42,0]\n');
           await init();
@@ -421,7 +415,7 @@ describe('preserved CJS source public interop-name exports keep their actual get
           } finally {
             close();
           }
-          const actual = execute(join(dir, 'out/entry.js'));
+          const actual = await execute(join(dir, 'out/entry.js'));
           expect(actual.status).toBe(0);
           expect(actual.stderr).toBe('');
           expect(actual.stdout).toBe(native.stdout);
