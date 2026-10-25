@@ -1318,7 +1318,200 @@ pub const SemanticEditor = struct {
         }
         self.references.shrinkRetainingCapacity(write);
     }
+
+    /// Remove the semantic declaration for a local const whose exact binding
+    /// node is unreachable after syntax minification. The caller must remove
+    /// every reference first. Keep the SymbolId row stable as an orphaned slot;
+    /// clear only its dead AST mapping and scope-name entries.
+    pub fn removeUnreachableLocalConstDeclaration(
+        self: *SemanticEditor,
+        binding_node: NodeIndex,
+        reachable: *const std.DynamicBitSet,
+    ) Error!SymbolId {
+        if (binding_node.isNone()) return error.InvalidNode;
+        const raw = @backingInt(binding_node);
+        if (raw >= self.ast.nodes.items.len or raw >= self.symbol_ids.items.len or
+            raw >= reachable.capacity() or reachable.isSet(raw) or
+            self.ast.nodes.items[raw].tag != .binding_identifier) return error.InvalidNode;
+        const symbol_raw = self.symbol_ids.items[raw] orelse return error.InvalidSymbol;
+        if (symbol_raw >= self.symbols.items.len) return error.InvalidSymbol;
+        const symbol_id: SymbolId = @fromBackingInt(symbol_raw);
+        const symbol = self.symbols.items[symbol_raw];
+        if (symbol.kind != .variable_const or symbol.isExported() or symbol.isSynthetic() or
+            symbol.synthetic_name.len != 0 or symbol.synthetic_owner_id != null or
+            symbol.output_name_hint.len != 0 or symbol.reference_count != 0 or
+            symbol.write_count != 0 or symbol.scope_id.isNone() or
+            symbol.scope_id.toIndex() >= self.scopes.items.len or
+            symbol.name.start & Ast.STRING_TABLE_BIT != 0 or !self.validTextSpan(symbol.name))
+            return error.InvalidSymbol;
+
+        var declaration_index: ?usize = null;
+        for (self.references.items, 0..) |reference, index| {
+            if (reference.symbol_id != symbol_id) continue;
+            if (!reference.flags.declare or reference.flags.read or reference.flags.write or
+                reference.flags.type_context or reference.flags.value_as_type or
+                reference.scope_id != symbol.scope_id or reference.node_index != .none or
+                reference.declaration_node_index != binding_node or declaration_index != null)
+                return error.InvalidSymbol;
+            declaration_index = index;
+        }
+        const declaration = declaration_index orelse return error.ReferenceNotFound;
+
+        const name = symbol.nameText(self.ast.source);
+        const scope_raw = symbol.scope_id.toIndex();
+        const scope_map = &self.scope_maps.items[scope_raw];
+        if (name.len == 0 or scope_map.get(name) != symbol_raw or
+            self.scopes.items[scope_raw].symbol_count == 0 or
+            self.scope_owner_map.contains(raw)) return error.InvalidScope;
+
+        // Analyzer maps keep both escaped and decoded keys for source names.
+        // Remove only aliases that point to this exact SymbolId.
+        _ = self.takeDecodedAlias(symbol.scope_id, name, symbol_raw);
+        _ = scope_map.remove(name);
+        self.scopes.items[scope_raw].symbol_count -= 1;
+        _ = self.references.orderedRemove(declaration);
+        if (self.reference_index_built) {
+            for (self.references.items[declaration..], declaration..) |reference, index| {
+                if (reference.node_index.isNone()) continue;
+                if (self.reference_index.getPtr(@backingInt(reference.node_index))) |stored_index|
+                    stored_index.* = index;
+            }
+        }
+        self.symbol_ids.items[raw] = null;
+        _ = self.node_scope_provenance.remove(binding_node);
+        return symbol_id;
+    }
 };
+
+const DeadLocalConstMutation = enum {
+    none,
+    reachable_binding,
+    wrong_binding_node,
+    missing_symbol_identity,
+    wrong_symbol_identity,
+    exported_symbol,
+    non_const_symbol,
+    synthetic_name,
+    live_reference,
+    missing_scope_name,
+    wrong_scope_name_identity,
+    wrong_declaration_anchor,
+    duplicate_declaration,
+    nonzero_reference_count,
+    nonzero_write_count,
+    output_name_hint,
+    scope_owner_sidecar,
+};
+
+fn deadLocalConstRemovalForTest(mutation: DeadLocalConstMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = if (mutation == .live_reference)
+        "const local = 1; function read() { return local; } const other = 2;"
+    else
+        "const local = 1; const other = 2;";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    const root = try parser.parse();
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    defer analyzer.deinit();
+    try analyzer.analyze();
+
+    var local_id: ?u32 = null;
+    var other_id: ?u32 = null;
+    var local_binding: ?NodeIndex = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        const name = symbol.nameText(source);
+        if (std.mem.eql(u8, name, "local")) local_id = @intCast(index);
+        if (std.mem.eql(u8, name, "other")) other_id = @intCast(index);
+    }
+    const local_symbol = local_id orelse return error.MissingLocalSymbol;
+    const other_symbol = other_id orelse return error.MissingOtherSymbol;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and raw < analyzer.symbol_ids.items.len and
+            analyzer.symbol_ids.items[raw] == local_symbol)
+        {
+            local_binding = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const binding = local_binding orelse return error.MissingLocalBinding;
+    const scope_id = analyzer.symbols.items[local_symbol].scope_id;
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+
+    if (mutation != .reachable_binding) {
+        if (parser.ast.nodes.items[@backingInt(root)].tag != .program) return error.InvalidProgram;
+        parser.ast.nodes.items[@backingInt(root)].data.list.len = 0;
+    }
+    switch (mutation) {
+        .none, .reachable_binding => {},
+        .wrong_binding_node => {},
+        .missing_symbol_identity => editor.symbol_ids.items[@backingInt(binding)] = null,
+        .wrong_symbol_identity => editor.symbol_ids.items[@backingInt(binding)] = other_symbol,
+        .exported_symbol => editor.symbols.items[local_symbol].decl_flags.is_exported = true,
+        .non_const_symbol => editor.symbols.items[local_symbol].kind = .variable_let,
+        .synthetic_name => editor.symbols.items[local_symbol].synthetic_name = "generated",
+        .live_reference => {},
+        .missing_scope_name => _ = editor.scope_maps.items[scope_id.toIndex()].remove("local"),
+        .wrong_scope_name_identity => try editor.scope_maps.items[scope_id.toIndex()].put(allocator, "local", other_symbol),
+        .wrong_declaration_anchor => for (editor.references.items) |*reference| {
+            if (reference.symbol_id == @as(@TypeOf(reference.symbol_id), @fromBackingInt(@intCast(local_symbol))) and reference.flags.declare) {
+                reference.declaration_node_index = .none;
+                break;
+            }
+        },
+        .duplicate_declaration => {
+            const declaration = for (editor.references.items) |reference| {
+                if (reference.symbol_id == @as(@TypeOf(reference.symbol_id), @fromBackingInt(@intCast(local_symbol))) and reference.flags.declare) break reference;
+            } else return error.MissingLocalDeclaration;
+            try editor.references.append(allocator, declaration);
+        },
+        .nonzero_reference_count => editor.symbols.items[local_symbol].reference_count = 1,
+        .nonzero_write_count => editor.symbols.items[local_symbol].write_count = 1,
+        .output_name_hint => editor.symbols.items[local_symbol].output_name_hint = "kept-name",
+        .scope_owner_sidecar => try editor.scope_owner_map.put(allocator, @backingInt(binding), @backingInt(scope_id)),
+    }
+
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len);
+    defer reachable.deinit();
+    const live_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(
+        allocator,
+        &parser.ast,
+        root,
+    );
+    defer allocator.free(live_nodes);
+    for (live_nodes) |raw| reachable.set(raw);
+
+    const symbol_id: SymbolId = @fromBackingInt(local_symbol);
+    const removal_node = if (mutation == .wrong_binding_node) root else binding;
+    const result = editor.removeUnreachableLocalConstDeclaration(removal_node, &reachable);
+    switch (mutation) {
+        .none => {
+            const removed = try result;
+            try std.testing.expectEqual(symbol_id, removed);
+            try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(binding)]);
+            try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[scope_id.toIndex()].get("local"));
+            try std.testing.expectEqual(@as(u16, 1), editor.scopes.items[scope_id.toIndex()].symbol_count);
+        },
+        .reachable_binding, .wrong_binding_node => try std.testing.expectError(error.InvalidNode, result),
+        .missing_scope_name, .wrong_scope_name_identity, .scope_owner_sidecar => try std.testing.expectError(error.InvalidScope, result),
+        else => try std.testing.expectError(error.InvalidSymbol, result),
+    }
+}
+
+test "dead local const removal keeps SymbolId stable and rejects hostile graph mutations" {
+    inline for (std.meta.tags(DeadLocalConstMutation)) |mutation| {
+        try deadLocalConstRemovalForTest(mutation);
+    }
+}
 
 test "parameter rename preserves the body function binding and rejects inconsistent maps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
