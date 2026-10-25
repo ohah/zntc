@@ -1942,22 +1942,23 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
         if (case.extra_name) |name| try writeFile(tmp.dir, name, case.extra_source);
         const entry = try absPath(&tmp, "entry.mjs");
         defer std.testing.allocator.free(entry);
-        // Guard-off build preserves the same parsed/prepass graph without
-        // invoking this producer. The direct call below runs before output.
+        // Build and link the real graph directly, before invoking any output
+        // or source-callsite producer. Guard-off bundle() now owns plain calls
+        // too, so it cannot serve as an untouched seed for this oracle.
         const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .entry_error_guard = false, .tree_shaking = false };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = ModuleGraph.init(std.testing.allocator, &cache);
         defer graph.deinit();
-        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
-        defer bundler.deinit();
-        const initial = try bundler.bundle(std.testing.io);
-        defer initial.deinit(std.testing.allocator);
-        try std.testing.expect(!initial.hasErrors());
+        graph.code_splitting = true;
+        graph.preserve_modules = true;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
         var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, format);
         defer linker.deinit();
         linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = true });
         try linker.link();
+        linker.populateImportSymbols();
         const module_index = graph.path_to_module.get(entry).?;
         const before_module = graph.moduleAtMut(module_index).?;
         const owner = before_module.semantic.?.captureOwnerToken();
@@ -2014,6 +2015,7 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
             try std.testing.expect(original.local_declaration_node != null);
             try std.testing.expectEqual(original.local_declaration_node, current.local_declaration_node);
             try std.testing.expectEqual(original.kind, current.kind);
+            try std.testing.expect(original.local_symbol.semanticIndex() != null);
             const sid = original.local_symbol.semanticIndex().?;
             try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(original.local_symbol_node.?)]);
             for (references) |before| {

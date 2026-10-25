@@ -41,6 +41,7 @@ fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, bind
     const canonical = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return null;
     if (canonical.canonical.synthetic_member != null or !binding.symbol.isValid() or binding.symbol.semanticIndex() == null or binding.symbol.moduleIndex() != canonical.canonical.module_index) return null;
     const value = graph.getModule(binding.symbol.moduleIndex()) orelse return error.InvalidGuardedImportBinding;
+    if (!linker.entry_error_guard and (direct.in_async_cone or value.in_async_cone)) return null;
     if (value.wrap_kind != .esm or !value.shouldGuard(true) or value.isUserDeclaredSideEffectful() or (linker.tree_shaker_active and !value.is_included)) return null;
     const value_semantic = value.semantic orelse return error.InvalidGuardedImportBinding;
     const value_sid = binding.symbol.semanticIndex().?;
@@ -292,14 +293,32 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
 
 const refreshStatementInfo = @import("statement_owner_projection.zig").refresh;
 
+/// Both policies create their real callee at the source read's exact ScopeId.
+/// Plain initialization has no guard binding, provider or synthetic argument.
+fn initializationCall(builder: *Builder, guard: ?SymbolId, target: SymbolId, scope: ScopeId, source: ?Reference) !NodeIndex {
+    const callee = try builder.reference(guard orelse target, scope);
+    if (source) |reference| try builder.editor.moveReference(callee, scope, reference.stmt_idx, reference.scope_stmt_idx);
+    const call = if (guard != null) blk: {
+        const argument = try builder.reference(target, scope);
+        if (source) |reference| try builder.editor.moveReference(argument, scope, reference.stmt_idx, reference.scope_stmt_idx);
+        break :blk try builder.call(callee, &.{argument});
+    } else try builder.call(callee, &.{});
+    try builder.editor.recordNodeScopeProvenance(call, scope);
+    return call;
+}
+
 pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.zig").Linker, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
-    if (!linker.inline_requires or !linker.entry_error_guard or graph.entry_guard_ast_provider == null) return;
-    const guard = try @import("runtime_entry_guard_ast.zig").exactBinding(graph);
+    if (!linker.inline_requires) return;
+    const guarded = linker.entry_error_guard;
+    if (!guarded and (!graph.preserve_modules or graph.dev_mode or (linker.format != .esm and linker.format != .cjs))) return;
+    if (guarded and graph.entry_guard_ast_provider == null) return;
+    const guard: ?SymbolID = if (guarded) try @import("runtime_entry_guard_ast.zig").exactBinding(graph) else null;
     const count = graph.moduleCount();
     var activated = false;
     for (0..count) |raw| {
         const module = graph.moduleAtMut(ModuleIndex.fromUsize(raw)) orelse continue;
         if (module.wrap_kind != .esm and module.wrap_kind != .none) continue;
+        if (!guarded and module.in_async_cone) continue;
         if (shaker) |s| if (!s.isIncluded(@intCast(raw))) continue;
         const ast = if (module.ast) |*value| value else continue;
         const sem = if (module.semantic) |*value| value else continue;
@@ -351,7 +370,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
         var builder: Builder = .{ .allocator = a, .module = module, .graph = graph, .ast = ast, .editor = &editor };
-        const guard_local = try builder.imported(guard, .entry_guard);
+        const guard_local: ?SymbolId = if (guard) |target| try builder.imported(target, .entry_guard) else null;
         var initializer_locals: std.AutoHashMapUnmanaged(SymbolID, SymbolId) = .empty;
         var prologue: std.ArrayList(NodeIndex) = .empty;
         var initialized: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
@@ -362,8 +381,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             const local = try builder.imported(owned.target, .esm_init);
             try initializer_locals.put(a, owned.target, local);
             const scope: ScopeId = @fromBackingInt(@as(u32, 0));
-            const call = try builder.call(try builder.reference(guard_local, scope), &.{try builder.reference(local, scope)});
-            try editor.recordNodeScopeProvenance(call, scope);
+            const call = try initializationCall(&builder, guard_local, local, scope, null);
             const statement = try ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = call, .flags = 0 } } });
             try prologue.append(a, statement);
         }
@@ -395,13 +413,8 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                         try initializer_locals.put(a, target, created);
                         break :blk created;
                     };
-                    const callee = try builder.reference(guard_local, call.scope);
-                    const argument = try builder.reference(local, call.scope);
-                    try editor.moveReference(callee, call.scope, reference.stmt_idx, reference.scope_stmt_idx);
-                    try editor.moveReference(argument, call.scope, reference.stmt_idx, reference.scope_stmt_idx);
-                    const guarded = try builder.call(callee, &.{argument});
-                    try editor.recordNodeScopeProvenance(guarded, call.scope);
-                    try sequence.append(a, guarded);
+                    const initialization = try initializationCall(&builder, guard_local, local, call.scope, reference);
+                    try sequence.append(a, initialization);
                 }
                 try editor.recordNodeScopeProvenance(clone, call.scope);
                 try sequence.append(a, clone);
@@ -442,10 +455,18 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         };
         activated = true;
     }
-    if (activated) try @import("runtime_entry_guard_ast.zig").activate(graph, shaker);
+    if (activated and guarded) try @import("runtime_entry_guard_ast.zig").activate(graph, shaker);
 }
 
 test "guarded lazy source calls preserve original callee identity and actual nested scope" {
+    try expectSourceCallScope(true);
+}
+
+test "plain source calls preserve original callee identity and actual nested scope" {
+    try expectSourceCallScope(false);
+}
+
+fn expectSourceCallScope(guarded: bool) !void {
     const Bundler = @import("bundler.zig").Bundler;
     const helpers = @import("test_helpers.zig");
     for ([_][]const u8{
@@ -472,7 +493,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         defer std.testing.allocator.free(entry);
         const second = try helpers.absPath(&tmp, "second.mjs");
         defer std.testing.allocator.free(second);
-        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .rn_version_matrix = if (native_classes) .{ .generator = true } else null, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true, .tree_shaking = tree_shaking, .minify_whitespace = true };
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .rn_version_matrix = if (native_classes) .{ .generator = true } else null, .code_splitting = true, .entry_error_guard = guarded, .preserve_modules = !guarded, .strict_execution_order = true, .tree_shaking = tree_shaking, .minify_whitespace = true };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
@@ -482,6 +503,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         const output = try bundler.bundle(std.testing.io);
         defer output.deinit(std.testing.allocator);
         try std.testing.expect(!output.hasErrors());
+        if (!guarded) try std.testing.expect(graph.entry_guard_ast_provider == null);
         const module = graph.getModule(graph.path_to_module.get(entry).?).?;
         const sem = module.semantic.?;
         const ast = &module.ast.?;
@@ -511,6 +533,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         var generated_reads: usize = 0;
         for (module.import_bindings) |binding| {
             const target = binding.callsite_target orelse continue;
+            if (!guarded) try std.testing.expectEqual(@import("binding_scanner.zig").CallsiteRole.esm_init, target.role);
             try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
             for (sem.references) |reference| {
                 if (!reference.isValueUse() or binding.local_symbol.semanticIndex() != @backingInt(reference.symbol_id)) continue;
@@ -520,7 +543,7 @@ test "guarded lazy source calls preserve original callee identity and actual nes
                 } else try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
             }
         }
-        try std.testing.expect(generated_reads >= 2);
+        try std.testing.expectEqual(@as(usize, if (guarded) 2 else 1), generated_reads);
         const current_root = ast.transformed_root.?;
         const current_list = ast.getNode(current_root).data.list;
         try std.testing.expectEqual(current_list.len, @as(u32, @intCast(module.prebuilt_stmt_info.?.stmts.len)));
