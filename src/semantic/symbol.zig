@@ -44,6 +44,14 @@ pub const ParameterBodyVarCopy = struct {
     pub const State = enum(u32) { native, lowered };
 };
 
+/// Producer-owned presence bits make loss of an optional source operation
+/// distinguishable from a binding that never had that operation.
+pub const BindingInstantiation = packed struct(u8) {
+    annex_b: bool = false,
+    parameter_copy: bool = false,
+    reserved: u6 = 0,
+};
+
 /// 심볼 종류. 재선언 규칙이 kind별로 다르다.
 ///
 /// 재선언 규칙 요약:
@@ -450,6 +458,7 @@ pub const Symbol = struct {
     annex_b_alias: AnnexBFunctionAlias = .{},
 
     parameter_copy: ParameterBodyVarCopy = .{},
+    binding_instantiation: BindingInstantiation = .{},
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {

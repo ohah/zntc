@@ -457,6 +457,7 @@ pub const Codegen = struct {
                 return symbol.output_name_hint;
             if (symbol.synthetic_kind != .enum_iife_member and symbol.synthetic_name.len > 0)
                 return symbol.synthetic_name;
+            if (output_sid != sid) return self.ast.getText(symbol.name);
         }
         return null;
     }
