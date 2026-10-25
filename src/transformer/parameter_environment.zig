@@ -1068,8 +1068,15 @@ fn runtimeKeyTempProducerId(self: anytype, key_ref: ast_mod.NodeIndex) std.mem.A
 }
 
 /// Whether a class has its own static `name` member.
-fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
-    const class = self.ast.getNode(class_idx);
+pub fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    var source = @backingInt(class_idx);
+    var depth: usize = 0;
+    while (self.scope_owner_origins.get(source)) |origin| {
+        if (origin == source or depth >= self.ast.nodes.items.len) break;
+        source = origin;
+        depth += 1;
+    }
+    const class = self.ast.getNode(@fromBackingInt(@intCast(source)));
     const body = self.ast.readExtraNode(class.data.extra, ast_mod.ClassExtra.body);
     if (body.isNone()) return false;
     const list = self.ast.getNode(body).data.list;
@@ -1190,6 +1197,7 @@ pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding:
     if (key) |k| _ = self.parameter_inferred_names.remove(k);
     const anonymous = takeAnonymousClassName(self, source);
     const name = hinted orelse anonymous orelse return null;
+    if (try definesStaticName(self, source)) return null;
     // A generated binding that already spells the name needs no call.
     if (std.mem.eql(u8, self.ast.getText(self.ast.getNode(binding).data.string_ref), self.ast.getText(name))) return null;
     const saved_scope = self.current_scope;
