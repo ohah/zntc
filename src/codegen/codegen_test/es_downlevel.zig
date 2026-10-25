@@ -4734,7 +4734,7 @@ test "ES5: for-of 본문 선언 캡처도 반복별로 뽑는다 (#4743)" {
     var r = try e2eTarget(std.testing.allocator, "for (const x of xs){ const v=x*2; f.push(()=>v); }", .es5);
     defer r.deinit();
     // for-of 풀이 뒤 x·v 모두 본문 선언이라 둘 다 _loop 안에서 반복마다 새로 선언된다 (#4746).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop=function(){var x=_step.value;var v=x*2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_loop=function(){var x=_step.value;{var v=x*2;") != null);
 }
 
 test "ES5: 중첩 루프 본문의 캡처는 안쪽 루프만 뽑는다 (#4743)" {
@@ -4831,7 +4831,7 @@ test "for-of 풀이: 본문이 헤더 이름을 다시 선언하면 본문을 �
 
     var r2 = try e2eFull(std.testing.allocator, "for (const x of a) { let y = 1; f(x, y); }", .{ .unsupported = u }, .{ .minify_whitespace = true }, ".ts");
     defer r2.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r2.output, "{const x=_step.value;let y=1;f(x,y);}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "{const x=_step.value;{let y=1;f(x,y);}}") != null);
 }
 
 test "ES5 상태 기계: for-in 은 키 스냅샷 + 인덱스 for 풀이를 수집하고 _keys/_idx 는 모듈 고유 이름이다 (#4746)" {

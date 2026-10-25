@@ -1683,34 +1683,38 @@ fn collectGeneratedLoopNodes(self: *Transformer, root: NodeIndex) Transformer.Er
 
 fn reparentGeneratedLoopScopeFrontiers(self: *Transformer, nodes: *const GeneratedLoopNodeSet, source_nodes: *const GeneratedLoopNodeSet, new_parent: ScopeId) Transformer.Error!GeneratedLoopNodeSet {
     const editor = try editorFor(self);
+    var live_scopes: GeneratedLoopNodeSet = .empty;
+    defer live_scopes.deinit(self.allocator);
     var candidates: GeneratedLoopNodeSet = .empty;
     defer candidates.deinit(self.allocator);
     var owners = nodes.keyIterator();
     while (owners.next()) |raw| {
-        const origin = self.scope_owner_origins.get(raw.*) orelse raw.*;
-        if (!source_nodes.contains(origin)) continue;
         const owner_scope = self.transformed_scope_owner_map.get(raw.*) orelse editor.scope_owner_map.get(raw.*) orelse self.scope_owner_map.get(raw.*) orelse continue;
         const scope: ScopeId = @fromBackingInt(@intCast(owner_scope));
-        if (scope == new_parent or scopeWithin(editor.scopes.items, scope, new_parent)) continue;
         if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len) std.debug.panic("generated loop scope owner is invalid", .{});
-        try candidates.put(self.allocator, scope.toIndex(), {});
+        try live_scopes.put(self.allocator, owner_scope, {});
+        const origin = self.scope_owner_origins.get(raw.*) orelse raw.*;
+        if (scope != new_parent and source_nodes.contains(origin)) try candidates.put(self.allocator, owner_scope, {});
     }
     var frontiers: GeneratedLoopNodeSet = .empty;
     errdefer frontiers.deinit(self.allocator);
     var roots = candidates.keyIterator();
     while (roots.next()) |raw| {
-        var parent = editor.scopes.items[raw.*].parent;
-        var has_candidate_ancestor = false;
-        while (!parent.isNone()) {
-            if (candidates.contains(parent.toIndex())) {
-                has_candidate_ancestor = true;
-                break;
-            }
+        const original_parent = editor.scopes.items[raw.*].parent;
+        var parent = original_parent;
+        var hops: usize = 0;
+        // Callback assembly can remove the extracted body's original block.
+        // Preserve actual intermediate owners, including generated loop bodies,
+        // while dropping only parents which have no node in this exact region.
+        while (parent != new_parent and !parent.isNone() and !live_scopes.contains(@backingInt(parent))) {
+            if (hops >= editor.scopes.items.len) std.debug.panic("generator body scope parent cycle", .{});
+            hops += 1;
             parent = editor.scopes.items[parent.toIndex()].parent;
         }
-        if (has_candidate_ancestor) continue;
+        if (parent.isNone()) parent = new_parent;
+        if (parent == original_parent) continue;
         try frontiers.put(self.allocator, raw.*, {});
-        editor.reparentScope(@fromBackingInt(@intCast(raw.*)), new_parent) catch |err| return editError(err);
+        editor.reparentScope(@fromBackingInt(@intCast(raw.*)), parent) catch |err| return editError(err);
     }
     return frontiers;
 }
