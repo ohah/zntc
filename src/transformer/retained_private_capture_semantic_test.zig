@@ -8,6 +8,10 @@ const ast = @import("../parser/ast.zig");
 const Span = @import("../lexer/token.zig").Span;
 
 fn checkRetainedPrivate(source: []const u8, private_lowering: bool, expected_private_name: ?[]const u8, orphan: bool) !void {
+    return checkRetainedPrivateProfile(source, private_lowering, expected_private_name, orphan, null);
+}
+
+fn checkRetainedPrivateProfile(source: []const u8, private_lowering: bool, expected_private_name: ?[]const u8, orphan: bool, mixed_methods: ?bool) !void {
     errdefer std.debug.print("source: {s}\n", .{source});
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -24,6 +28,12 @@ fn checkRetainedPrivate(source: []const u8, private_lowering: bool, expected_pri
     // A valid partial capability profile: arrows require lowering, private
     // classes remain native. It must keep the existing 1503/1504 policy.
     unsupported.arrow = true;
+    if (mixed_methods) |methods| {
+        unsupported = TransformOptions.compat.fromESTarget(.es2022);
+        unsupported.arrow = true;
+        unsupported.class_private_method = methods;
+        unsupported.class_private_field = !methods;
+    }
     var t = try Transformer.init(alloc, &parser.ast, .{ .unsupported = unsupported });
     try t.initSymbolIds(analyzer.symbol_ids.items);
     t.symbols = analyzer.symbols.items;
@@ -92,4 +102,18 @@ test "retained private capture supplies a typed diagnostic with real source span
     try std.testing.expectEqual(@import("../error_codes.zig").Code.arrow_private_dynamic_scope, Capture.code.?);
     const span = Capture.span.?;
     try std.testing.expectEqualStrings("#value", source[span.start..span.end]);
+}
+
+// Partial target capabilities close over the shared all-private lowering plan.
+// A retained native field is therefore not legal when only methods need lowering,
+// and vice versa; native-private controls keep both feature bits supported.
+test "retained private capture mixed feature profiles share producer plan" {
+    const fields = "function Parent(){return()=>{with({}){return [this,new(class{#value=7;read(){return this.#value}})().read()]}}}";
+    const methods = "function Parent(){return()=>{with({}){return [this,new(class{#read(){return 7}read(){return this.#read()}})().read()]}}}";
+    for ([_]bool{ false, true }) |unsupported_methods| {
+        try checkRetainedPrivateProfile(fields, true, "#value", false, unsupported_methods);
+        try checkRetainedPrivateProfile(methods, true, "#read", false, unsupported_methods);
+    }
+    try checkRetainedPrivate(fields, false, "#value", false);
+    try checkRetainedPrivate(methods, false, "#read", false);
 }
