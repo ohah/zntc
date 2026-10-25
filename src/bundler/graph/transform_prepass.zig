@@ -9427,10 +9427,16 @@ fn isPostGraphOutputBindingKind(synthetic_kind: SemanticSyntheticKind, kind: Sem
         .stage3_metadata_binding,
         .stage3_class_decorator_binding,
         .stage3_member_decorator_binding,
-        .this_capture_binding,
         .arguments_capture_binding,
         => switch (kind) {
             .variable_var, .variable_let, .variable_const => true,
+            else => false,
+        },
+        .this_capture_binding => switch (kind) {
+            // Native-parameter arrows use their generated IIFE's parameter
+            // as the exact `_this` capture binding. Other arrow lowerings use
+            // a variable declaration for the same synthetic role.
+            .variable_var, .variable_let, .variable_const, .parameter => true,
             else => false,
         },
         .object_super_home_binding => kind == .parameter,
@@ -9439,12 +9445,17 @@ fn isPostGraphOutputBindingKind(synthetic_kind: SemanticSyntheticKind, kind: Sem
     };
 }
 
-test "post-graph tagged-template cache requires its exact function binding metadata" {
+test "post-graph output bindings validate their exact producer kinds" {
     try std.testing.expect(isPostGraphOutputNameKind(.tagged_template_function_binding));
     try std.testing.expect(isValidPostGraphOutputNameHint(.tagged_template_function_binding, "_templateObject"));
     try std.testing.expect(!isValidPostGraphOutputNameHint(.tagged_template_function_binding, "_templateObject2"));
     try std.testing.expect(isPostGraphOutputBindingKind(.tagged_template_function_binding, .function_decl));
     try std.testing.expect(!isPostGraphOutputBindingKind(.tagged_template_function_binding, .variable_var));
+    try std.testing.expect(isPostGraphOutputNameKind(.this_capture_binding));
+    try std.testing.expect(isValidPostGraphOutputNameHint(.this_capture_binding, "_this"));
+    try std.testing.expect(isPostGraphOutputBindingKind(.this_capture_binding, .variable_var));
+    try std.testing.expect(isPostGraphOutputBindingKind(.this_capture_binding, .parameter));
+    try std.testing.expect(!isPostGraphOutputBindingKind(.this_capture_binding, .function_decl));
 }
 
 /// Preserve exact producer binding nodes for names selected by
