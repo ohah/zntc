@@ -115,22 +115,26 @@ route passes all ten, including distinct parameter/body scopes, strict factories
 source helper decoys and ESM namespace handles. Ten malformed-handle controls
 reject scope, owner, node and local/foreign SID corruption before finish.
 
-Ten independently compiled mutations are detected: lost clone source origin,
+Fifteen independently compiled mutations are detected: lost clone source origin,
 guessed callback parent, omitted callee Reference, omitted callback owner,
 wrong valid scheduler SID, stale codegen SID array, omitted provider owner guard,
 omitted foreign owner guard, omitted actual AST use-scope check and dropped
-serialized provenance. The unmodified snapshot passes after restoration.
+serialized provenance, omitted speculative-record rollback, omitted formal-parameter
+scope-owner cloning, omitted default-initializer movement, flattened nested
+output scope and restored postwalk scope healing. The unmodified snapshot passes
+after restoration.
 
-The pre-rebase full Debug suite passes 7,469 tests; the final integrated suite
-also passes through the normal pre-push hook. ReleaseFast CLI execution passes
-120 combinations (ten sources, four target/minification modes and three output
-formats). Runtime tests separately exercise literal eval tokens, live/dead
-Promise getter timing, microtask order, bootstrap caches, source CJS/UMD sloppy
-environments, native option evaluation, with-environment legacy controls and
-persistent-cache execution. The final ReleaseFast NAPI run executes 217 tests: 208 pass and nine retained
-baseline TODOs fail as expected. These controls do not turn the explicit remaining
-boundaries above into completed scope contracts. Normal formatting, full test,
-oxlint and oxfmt pre-push checks pass without bypass flags.
+The complete snapshot composed with its prerequisite producer-scope changes
+passes 7,513 full Debug tests and 120 CLI runtime combinations (ten sources,
+four target/minification modes and three output formats). ReleaseFast NAPI build
+passes all 31 steps. Its 229 runtime tests contain 220 passes and nine retained
+baseline TODOs; those nine are not counted as passing controls. Three parameter
+contexts and a generated nested-scope context assert the creation handoff before
+any generic output walk. A wrong valid creation ScopeId is explicitly rejected
+rather than healed. Runtime controls also cover async generators, literal eval,
+Promise getter timing, microtasks, bootstrap caches, CJS/UMD sloppy environments,
+native options, with-environment legacy routes and persistent-cache execution.
+These controls do not complete the remaining boundaries above.
 
 Five additional runtime combinations remain executable TODO controls because
 both the prior provider-only compiler and this slice fail them: full minification
