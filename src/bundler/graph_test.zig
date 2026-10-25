@@ -1840,8 +1840,22 @@ fn expectCachedAstMaterializeEquivalent(graph: *ModuleGraph) !void {
         try std.testing.expectEqualStrings(old.exported_name, new.exported_name);
         try std.testing.expectEqual(old.local_symbol_node, new.local_symbol_node);
         if (old.local_symbol_node) |node| {
-            try std.testing.expectEqual(semantic.symbol_ids[@backingInt(node)], new.symbol.semanticIndex());
-            try std.testing.expectEqual(m.index, new.symbol.moduleIndex());
+            const local_sid = semantic.symbol_ids[@backingInt(node)];
+            try std.testing.expect(local_sid != null);
+            if (old.kind == .local) {
+                try std.testing.expectEqual(local_sid, new.symbol.semanticIndex());
+                try std.testing.expectEqual(m.index, new.symbol.moduleIndex());
+            } else {
+                // A local-syntax barrel retains its local reference anchor,
+                // while the export symbol still owns the separate alias role.
+                try std.testing.expectEqual(old.symbol.semanticIndex(), new.symbol.semanticIndex());
+                var found_local = false;
+                for (m.import_bindings) |binding| {
+                    if (binding.import_record_index != new.import_record_index) continue;
+                    if (binding.local_symbol.semanticIndex() == local_sid) found_local = true;
+                }
+                try std.testing.expect(found_local);
+            }
         }
     }
     if (gt_statements) |old| {
