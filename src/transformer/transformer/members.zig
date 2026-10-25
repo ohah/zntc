@@ -98,7 +98,8 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
     const span = node.span;
 
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
-    const new_key = try self.visitNode(self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
+    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 본문의 `super` 를 그 기준으로
     // 낮춘다 (#4729). 계산된 키는 바깥 문맥이라 키 방문 **뒤에** 켠다.
@@ -182,7 +183,8 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     // TS method overload signature: body가 없으면 제거
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
-    const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
+    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 메서드(객체 리터럴 메서드·getter 포함)는 자기 `this` 를 가진다 — static 초기값·static 블록
     // 안에서도 클래스 이름으로 치환하면 안 된다. 계산된 키는 바깥 `this` 라 키 방문 **뒤에** 올린다 (#4801).
