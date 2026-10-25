@@ -267,11 +267,20 @@ pub const Codegen = struct {
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len / 2);
         self.collectTopLevelDeclNames(root);
         var emitted = false;
+        var names_emitted = !self.options.keep_names;
         for (stmt_indices) |raw_idx| {
             const node_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (node_idx.isNone()) continue;
+            const tag = self.ast.getNode(node_idx).tag;
+            if (!names_emitted and tag != .directive and tag != .hashbang) {
+                const restored = try @import("statements.zig").emitHoistedFunctionNames(self, stmt_indices, emitted);
+                emitted = emitted or restored;
+                names_emitted = true;
+            }
             if (emitted) try self.writeNewline();
             try self.emitNode(node_idx);
+            if (tag == .hashbang and self.options.minify_whitespace)
+                try self.write(self.options.newline);
             emitted = true;
         }
         if (emitted) try self.writeNewline();

@@ -597,6 +597,7 @@ pub fn emitEsmWrappedModule(
         var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
             .minify_whitespace = options.minify_whitespace,
             .minify_syntax = options.minify_syntax,
+            .keep_names = options.keep_names,
             .module_format = .cjs,
             .skip_cjs_exports = true,
             .use_var_for_imports = true,
