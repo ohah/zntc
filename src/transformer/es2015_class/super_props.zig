@@ -223,25 +223,29 @@ pub fn SuperProps(comptime Transformer: type) type {
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
             // Parent.prototype.method 또는 static Parent.method
-            const super_base = try buildSuperBaseRef(self, span);
-            var new_method_prop = try self.visitNode(method_prop_idx);
-            // #4229: identifier escape (\u{6d} 등) 는 합성 member 에 verbatim
-            // 잔존하면 es5 산출물에 ES2015 문법 — canonical(디코드) identifier 로.
-            {
-                const mp = self.ast.getNode(new_method_prop);
-                if (mp.tag == .identifier_reference) {
-                    const raw = self.ast.getText(mp.data.string_ref);
-                    if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
-                        const group_name = @import("../../regexp/group_name.zig");
-                        var decoded: std.ArrayList(u8) = .empty;
-                        defer decoded.deinit(self.allocator);
-                        try group_name.appendCanonical(self.allocator, &decoded, raw);
-                        const dec_span = try self.ast.addString(decoded.items);
-                        new_method_prop = try es_helpers.makePropertyNameFromSpan(self, dec_span);
+            const method_member = if (@import("../retained_field_arrow.zig").activeSuper(self))
+                try buildSuperPropGet(self, try makeStaticSuperPropArg(self, method_prop_idx), span)
+            else member: {
+                const super_base = try buildSuperBaseRef(self, span);
+                var new_method_prop = try self.visitNode(method_prop_idx);
+                // #4229: identifier escape (\u{6d} 등) 는 합성 member 에 verbatim
+                // 잔존하면 es5 산출물에 ES2015 문법 — canonical(디코드) identifier 로.
+                {
+                    const mp = self.ast.getNode(new_method_prop);
+                    if (mp.tag == .identifier_reference) {
+                        const raw = self.ast.getText(mp.data.string_ref);
+                        if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
+                            const group_name = @import("../../regexp/group_name.zig");
+                            var decoded: std.ArrayList(u8) = .empty;
+                            defer decoded.deinit(self.allocator);
+                            try group_name.appendCanonical(self.allocator, &decoded, raw);
+                            const dec_span = try self.ast.addString(decoded.items);
+                            new_method_prop = try es_helpers.makePropertyNameFromSpan(self, dec_span);
+                        }
                     }
                 }
-            }
-            const method_member = try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
+                break :member try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
+            };
 
             // Parent.prototype.method.call
             const call_prop = try es_helpers.makePropertyName(self, "call");
@@ -430,6 +434,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해
         /// via_proto_chain / non-derived / is_static 분기를 일관되게 처리해야 한다.
         pub fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (try @import("../retained_field_arrow.zig").superBase(self, span)) |base| return base;
             // 객체 리터럴 메서드: home object 의 프로토타입 (#4729). 클래스 진입 시 비워진다.
             if (self.current_super_home_object) |home| {
                 return @import("../object_super.zig").buildHomeProto(self, home, span);
@@ -451,6 +456,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (try @import("../retained_field_arrow.zig").superReceiver(self, span)) |receiver| return receiver;
             if (self.current_super_static_receiver) |receiver_span| {
                 if (try @import("../static_class_capture.zig").makeThisReference(self)) |capture| return capture;
                 return self.makeCurrentClassRef(receiver_span);
@@ -752,9 +758,13 @@ pub fn SuperProps(comptime Transformer: type) type {
             const ce = callee_node.data.extra;
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
-            const super_base = try buildSuperBaseRef(self, span);
-            const new_method_prop = try self.visitNode(method_prop_idx);
-            const method_member = try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
+            const method_member = if (@import("../retained_field_arrow.zig").activeSuper(self))
+                try buildSuperPropGet(self, try self.visitNode(method_prop_idx), span)
+            else member: {
+                const super_base = try buildSuperBaseRef(self, span);
+                const new_method_prop = try self.visitNode(method_prop_idx);
+                break :member try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
+            };
 
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);

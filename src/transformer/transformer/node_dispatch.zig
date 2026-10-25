@@ -647,21 +647,30 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
-            if (self.options.unsupported.async_await) {
-                const extras = self.ast.extra_data.items;
-                const e = node.data.extra;
-                if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
-                    // async + generator 둘 다 unsupported → 직접 state machine 생성
-                    if (self.options.unsupported.generator) {
-                        return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
+            var field_plan = if (arrow_needs_downlevel) try @import("../retained_field_arrow.zig").prepare(self, idx, node.span) else null;
+            const saved_field_plan = self.retained_field_this_plan;
+            defer self.retained_field_this_plan = saved_field_plan;
+            defer if (field_plan) |*plan| plan.deinit(self.allocator);
+            if (field_plan) |*plan| self.retained_field_this_plan = plan;
+            const arrow_result = result: {
+                if (self.options.unsupported.async_await) {
+                    const extras = self.ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
+                        // async + generator 둘 다 unsupported → 직접 state machine 생성
+                        if (self.options.unsupported.generator) {
+                            break :result es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
+                        }
+                        break :result es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, idx, node);
                     }
-                    return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, idx, node);
                 }
-            }
-            if (self.options.unsupported.arrow) {
-                return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, idx, node);
-            }
-            return self.visitArrowFunction(idx, node);
+                if (self.options.unsupported.arrow) {
+                    break :result es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, idx, node);
+                }
+                break :result self.visitArrowFunction(idx, node);
+            };
+            const value = try arrow_result;
+            return if (field_plan) |*plan| @import("../retained_field_arrow.zig").finish(self, plan, value, node.span) else value;
         },
         .class_declaration => {
             if (self.with_statement_depth > 0 and self.options.unsupported.class and
@@ -826,6 +835,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         // === 리프 노드: 그대로 복사 (자식 없음) ===
         // this_expression: static block 안에서 클래스 이름으로 치환 가능
         .this_expression => {
+            if (try @import("../retained_field_arrow.zig").reference(self, idx, node.span)) |ref| return ref;
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 if (self.native_parameter_arrow_this_capture) |capture| {
                     if (capture.frame == self.capture_frame) {

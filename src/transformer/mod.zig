@@ -124,3 +124,7 @@ test {
 test {
     _ = @import("for_of_cleanup_scope_semantic_test.zig");
 }
+
+test {
+    _ = @import("retained_field_arrow_test.zig");
+}

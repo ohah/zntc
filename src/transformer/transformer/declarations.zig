@@ -698,6 +698,9 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
             .class_decl,
             class_scope,
         )) orelse std.debug.panic("inferred class name did not receive a SymbolId", .{});
+        // This name is visible to static initializers before any post-class
+        // naming helper can run. Preserve it on the producer's exact SID.
+        self.semantic_editor.?.symbols.items[@backingInt(id)].decl_flags.preserve_class_name = true;
         try self.class_self_symbol_map.put(self.allocator, @backingInt(named), @backingInt(id));
     }
     return named;

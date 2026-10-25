@@ -401,6 +401,11 @@ pub const Transformer = struct {
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     capture_frame: u32 = 0,
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
+    retained_class_key_plan: ?*@import("retained_class_keys.zig").Plan = null,
+    retained_field_name_cell: ?@import("retained_class_keys.zig").Cell = null,
+    retained_field_initializer_frame: u32 = 0,
+    retained_field_initializer_static: bool = false,
+    retained_field_this_plan: ?*@import("retained_field_arrow.zig").Plan = null,
     next_capture_frame: u32 = 1,
     /// Formal-parameter initializers evaluate in a separate environment from
     /// the function body. Downleveled arrows there must capture lexical values
@@ -880,7 +885,7 @@ pub const Transformer = struct {
     /// 아닌데 위 3 flag 도 모두 false 면 (즉 평범한 native class method) 어차피 false 반환 ⇒
     /// 가드 제거가 일반 native class method 의 raw super 를 건드릴 위험 없음.
     pub inline fn needsSuperLowering(self: *const Transformer) bool {
-        return self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn or
+        return @import("retained_field_arrow.zig").activeSuper(self) or self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn or
             self.current_super_home_object != null;
     }
 

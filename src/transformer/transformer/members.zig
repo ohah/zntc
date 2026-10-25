@@ -438,10 +438,35 @@ pub fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     const flags = self.readU32(e, 2);
     // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & 0xE0) != 0) return NodeIndex.none;
-    const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    const name_cell = @import("../retained_class_keys.zig").cellFor(self, self.readNodeIdx(e, 0));
+    var new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    if (name_cell) |cell| new_key = try @import("../retained_class_keys.zig").memoize(self, cell, new_key, node.span);
     if (self.semantic_edit_enabled)
         try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
-    var new_value = try self.visitNode(self.readNodeIdx(e, 1));
+    var new_value = blk: {
+        const env = if (self.options.unsupported.arrow and !self.options.unsupported.class) es_helpers.pushArrowEnv(self) else null;
+        defer if (env) |saved| es_helpers.popArrowEnv(self, saved);
+        const saved_name_cell = self.retained_field_name_cell;
+        self.retained_field_name_cell = name_cell;
+        defer self.retained_field_name_cell = saved_name_cell;
+        const saved_frame = self.retained_field_initializer_frame;
+        const saved_static = self.retained_field_initializer_static;
+        const saved_plan = self.retained_field_this_plan;
+        const saved_target = self.new_target_ctx;
+        defer {
+            self.retained_field_initializer_frame = saved_frame;
+            self.retained_field_initializer_static = saved_static;
+            self.retained_field_this_plan = saved_plan;
+            self.new_target_ctx = saved_target;
+        }
+        if (env != null) {
+            self.retained_field_initializer_frame = self.capture_frame;
+            self.retained_field_initializer_static = flags & ast_mod.PropertyFlags.is_static != 0;
+            self.retained_field_this_plan = null;
+            self.new_target_ctx = .field_initializer;
+        }
+        break :blk try self.visitNode(self.readNodeIdx(e, 1));
+    };
     // styled-components: `class { static Child = styled.div\`\` }` 의 value 가 styled
     // tagged template 이면 field key 를 displayName 으로 사용해 wrap. 인스턴스 필드도
     // 동일하게 처리 (드물지만 가능). objectProperty 패턴 재사용.
