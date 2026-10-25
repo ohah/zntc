@@ -160,3 +160,108 @@ test "storage identities are never invented to repair a duplicated producer ID" 
 test "storage identities are not merged into same-spelled var storage" {
     try runAllStorageCases(.colliding_placement);
 }
+
+test "Annex B shape cannot legitimize a different producer binding identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var value = 1; if (true) { function inner() {} }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+
+    const program = parser.ast.getNode(root).data.list;
+    const declaration = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[program.start])));
+    const declarator = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[parser.ast.extra_data.items[declaration.data.extra + 1]])));
+    const outer_binding = parser.ast.readExtraNode(declarator.data.extra, 0);
+    const outer_id = analyzer.symbol_ids.items[@backingInt(outer_binding)].?;
+    var function_name: ast.NodeIndex = .none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .function_declaration) continue;
+        function_name = parser.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+        if (!function_name.isNone()) break;
+    }
+    try std.testing.expect(!function_name.isNone());
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    // Simulate a producer assigning the unrelated outer `value` identity to
+    // the block function. Final placement must reject it before Annex B can
+    // treat scope and function-declaration shape as sufficient evidence.
+    transformer.symbol_ids.items[@backingInt(function_name)] = outer_id;
+    try std.testing.expectError(
+        error.InvalidSymbol,
+        edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope()),
+    );
+}
+
+test "Annex B accepts a same-name alias with a long escaped spelling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const name_len = 60;
+    const plain_name = try allocator.alloc(u8, name_len);
+    @memset(plain_name, 'a');
+    var escaped_name: std.ArrayList(u8) = .empty;
+    defer escaped_name.deinit(allocator);
+    for (0..name_len) |_| try escaped_name.appendSlice(allocator, "\\u0061");
+    try std.testing.expect(escaped_name.items.len > 256);
+
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(allocator);
+    try source.appendSlice(allocator, "var ");
+    try source.appendSlice(allocator, plain_name);
+    try source.appendSlice(allocator, "=1;if(true){function ");
+    try source.appendSlice(allocator, escaped_name.items);
+    try source.appendSlice(allocator, "(){}}");
+
+    var scanner = try Scanner.init(allocator, source.items);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+
+    const program = parser.ast.getNode(root).data.list;
+    const declaration = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[program.start])));
+    const declarator = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[declaration.data.extra + 1])));
+    const outer_binding = parser.ast.readExtraNode(declarator.data.extra, 0);
+    const outer_id = analyzer.symbol_ids.items[@backingInt(outer_binding)].?;
+    var function_name: ast.NodeIndex = .none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .function_declaration) continue;
+        function_name = parser.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+        if (!function_name.isNone()) break;
+    }
+    try std.testing.expect(!function_name.isNone());
+    try std.testing.expectEqual(outer_id, analyzer.symbol_ids.items[@backingInt(function_name)].?);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    try edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope());
+}
