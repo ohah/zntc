@@ -56,6 +56,23 @@ pub fn ES2017(comptime Transformer: type) type {
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 try self.relocateNodeScopeProvenance(idx, source, inner);
+                // Direct body reads execute in the actual inner generator.
+                // Publish their existing rows before any source declaration is
+                // moved into its storage; renamed copies must already see it.
+                const body_reference = editor.referenceForNode(idx) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    std.debug.panic("invalid async generator body reference: {s}", .{@errorName(err)});
+                };
+                if (body_reference) |ref| {
+                    if (!ref.flags.declare and ref.scope_id == source) {
+                        editor.moveReference(idx, inner, ref.stmt_idx, ref.scope_stmt_idx) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
+                            std.debug.panic("invalid async generator body reference placement: {s}", .{@errorName(err)});
+                        };
+                        if (self.tracked_runtime_helper_ref_index.get(raw)) |index|
+                            self.tracked_runtime_helper_refs.items[index].scope = inner;
+                    }
+                }
                 const owner = self.transformed_scope_owner_map.get(raw) orelse
                     editor.scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw);
                 if (owner) |scope_raw| {

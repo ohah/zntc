@@ -789,7 +789,7 @@ fn containsNodeInExtraList(ast: *const ast_mod.Ast, start: u32, len: u32, child:
     return false;
 }
 
-fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
+pub fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     switch (parent.tag) {
