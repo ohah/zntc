@@ -125,6 +125,15 @@ test "static storage preserves source binding SID scope and declaration handoff 
                 try std.testing.expect(record.callsite_lowered);
                 const physical_binding = binding.local_symbol_node.?;
                 const sid = sem.symbol_ids[@backingInt(physical_binding)].?;
+                if (context == 8) {
+                    var export_anchor_found = false;
+                    for (module.export_bindings) |export_binding| {
+                        if (!std.mem.eql(u8, export_binding.exported_name, "other")) continue;
+                        export_anchor_found = true;
+                        try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(export_binding.local_symbol_node.?)]);
+                    }
+                    try std.testing.expect(export_anchor_found);
+                }
                 try std.testing.expect(binding.local_role == .materialized_var);
                 try std.testing.expectEqual(@as(?u32, sid), binding.local_symbol.semanticIndex());
                 var original: NodeIndex = .none;

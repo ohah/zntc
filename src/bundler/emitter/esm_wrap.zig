@@ -756,22 +756,6 @@ pub fn emitEsmWrappedModule(
                                     module_ast.getText(eb.local_span)
                                 else
                                     local_name;
-                                // Materialized imports own actual local var storage.
-                                // Select it by the export's exact node/SID, before the
-                                // legacy alias-barrel spelling match below.
-                                if (module.import_records[rec_idx].callsite_lowered) if (eb.local_symbol_node) |anchor| {
-                                    if (module.semantic) |sem| {
-                                        const raw = @backingInt(anchor);
-                                        if (raw < sem.symbol_ids.len) {
-                                            if (sem.symbol_ids[raw]) |sid| {
-                                                if (sid < sem.symbols.items.len and sem.symbols.items[sid].kind == .variable_var) {
-                                                    const local = @import("../symbol.zig").SymbolRef.makeSemantic(module.index, sid);
-                                                    break :blk l.getCanonicalByRef(local) orelse module.symbolName(@fromBackingInt(sid)) orelse return error.InvalidCallsiteBinding;
-                                                }
-                                            }
-                                        }
-                                    }
-                                };
                                 for (module.import_bindings) |ib| {
                                     if (ib.import_record_index != rec_idx) continue;
                                     if (std.mem.eql(u8, ib.imported_name, local_name) or
