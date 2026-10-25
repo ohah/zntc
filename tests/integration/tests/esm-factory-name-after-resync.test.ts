@@ -28,6 +28,48 @@ const cases = {
     'entry.mjs': "import { f } from './mid.mjs';\nawait 0;\nconsole.log(f());",
     expected: '5\n',
   },
+  'alias in a nested block': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { { const local = k; return local; } }\nawait 0;\nconsole.log(f());",
+    expected: '5\n',
+  },
+  'two chained local aliases': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { const first = k; const second = first; return second; }\nawait 0;\nconsole.log(f());",
+    expected: '5\n',
+  },
+  'alias captured by a returned closure': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { const local = k; return () => local; }\nawait 0;\nconsole.log(f()());",
+    expected: '5\n',
+  },
+  'two aliases removed from one function': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { const left = k; const right = k; return left + right; }\nawait 0;\nconsole.log(f());",
+    expected: '10\n',
+  },
+  'alias in a nested function': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { return function g() { const local = k; return local; }; }\nawait 0;\nconsole.log(f()());",
+    expected: '5\n',
+  },
+  'alias folded with a primitive expression': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f() { const local = k + 2; return local; }\nawait 0;\nconsole.log(f());",
+    expected: '7\n',
+  },
+  'alias selected through a conditional': {
+    'dep.mjs': dep,
+    'entry.mjs':
+      "import { k } from './dep.mjs';\nfunction f(flag) { const local = flag ? k : k; return local; }\nawait 0;\nconsole.log(f(true));",
+    expected: '5\n',
+  },
 } as const;
 
 describe('ESM factory helper keeps its name after a semantic refresh (#5629)', () => {
