@@ -615,7 +615,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.addSyntheticRefInScope(ref, symbol, scope, .{ .read = true });
                 // Per-iteration extraction can move this computed value into
                 // a generated callback whose switch ScopeId does not exist yet.
-                if (self.state_machine_depth > 0) try self.trackExactOutputReference(ref, @backingInt(symbol));
+                if (self.state_machine_depth > 0) {
+                    try self.trackDeferredGeneratorForInBodyReference(
+                        ref,
+                        @backingInt(symbol),
+                        self.generator_state_machine_scope,
+                    );
+                }
             }
             return ref;
         }

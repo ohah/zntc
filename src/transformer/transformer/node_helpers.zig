@@ -248,6 +248,21 @@ fn copyExpressionScopeProvenance(self: anytype, src_idx: NodeIndex, dst_idx: Nod
     }
 }
 
+fn copyDeferredGeneratorForInReference(self: anytype, src_raw: u32, dst_idx: NodeIndex) Error!void {
+    if (src_raw == @backingInt(dst_idx)) return;
+    const owner = self.deferred_generator_for_in_body_ref_scopes.get(src_raw) orelse return;
+    const symbol_id = self.exact_output_ref_symbol_ids.get(src_raw) orelse
+        std.debug.panic("deferred generator for-in reference lost its exact SymbolId before copy", .{});
+    try self.trackExactOutputReference(dst_idx, symbol_id);
+    const dst_raw = @backingInt(dst_idx);
+    if (self.deferred_generator_for_in_body_ref_scopes.get(dst_raw)) |existing| {
+        if (existing != owner)
+            std.debug.panic("copied generator for-in reference changed its deferred owner", .{});
+    } else {
+        try self.deferred_generator_for_in_body_ref_scopes.put(self.allocator, dst_raw, owner);
+    }
+}
+
 pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) Error!void {
     try inheritSynthetic(self, old_idx, new_idx);
     try copyExpressionScopeProvenance(self, old_idx, new_idx);
@@ -261,6 +276,8 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     // lexical-capture use. Its symbol is bound from the capture declaration,
     // never inherited from the replaced source identifier.
     if (self.capture_ref_by_origin.contains(new_i)) return;
+
+    try copyDeferredGeneratorForInReference(self, old_i, new_idx);
 
     if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
         if (self.exact_output_ref_scope_ids.get(new_i)) |existing_scope| {
@@ -318,6 +335,8 @@ pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error
 
     const src_i = @backingInt(src_idx);
     const dst_i = @backingInt(dst_idx);
+
+    try copyDeferredGeneratorForInReference(self, src_i, dst_idx);
 
     try ensureSymbolIds(self, dst_i);
 
