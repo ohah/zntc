@@ -137,7 +137,7 @@ test "native derived this cell has exact read write scope at creation" {
             if (node.tag == .binding_identifier) {
                 try std.testing.expectEqual(scope, t.semantic_editor.?.symbols.items[id].scope_id);
                 const declarator = t.ast.getNode(work.parent);
-                try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 1).isNone());
+                try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 2).isNone());
                 bindings += 1;
             } else {
                 const reference = (try t.semantic_editor.?.referenceForNode(work.node)) orelse return error.MissingReferenceAtCreation;
@@ -164,4 +164,79 @@ test "native derived this cell has exact read write scope at creation" {
     try std.testing.expectEqual(@as(usize, 1), bindings);
     try std.testing.expectEqual(@as(usize, 1), reads);
     try std.testing.expectEqual(@as(usize, 2), writes);
+}
+
+test "native derived this cell declaration is uninitialized at the binding producer boundary" {
+    const std = @import("std");
+    const Transformer = @import("transformer.zig").Transformer;
+    for ([_]bool{ false, true }) |field_binding_first| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "class P{}class D extends P{read=()=>this;constructor(){const f=()=>this;super()}}";
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".cjs");
+        _ = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        var t = try Transformer.init(a, &parser.ast, .{
+            .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+            .use_define_for_class_fields = false,
+        });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.class_self_symbol_map = analyzer.class_self_symbol_map;
+        t.node_scope_provenance = analyzer.node_scope_provenance;
+        t.semantic_edit_enabled = true;
+        var constructor: NodeIndex = .none;
+        for (t.ast.nodes.items, 0..) |node, raw| {
+            if (helpers.isClassConstructorMethod(&t, @fromBackingInt(@intCast(raw)), node)) constructor = @fromBackingInt(@intCast(raw));
+        }
+        try std.testing.expect(!constructor.isNone());
+        t.current_scope = t.originalFunctionScope(constructor);
+        const frame = helpers.pushCaptureFrame(&t);
+        defer helpers.popCaptureFrame(&t, frame);
+        var plan: @import("transformer.zig").NativeFieldCapturePlan = .{
+            .derived = true,
+            .frame = frame.active_frame,
+            .scope = t.capture_scope,
+            .initialize_on_super = !field_binding_first,
+        };
+        const semantic_edit = @import("transformer/semantic_edit.zig");
+        try semantic_edit.ensureNativeConstructorCaptureBinding(&t, &plan, t.ast.getNode(constructor).span);
+        const original_declaration = plan.this_declaration;
+        const original_symbol = plan.symbol_id.?;
+        const declaration = t.ast.getNode(original_declaration);
+        const start = t.ast.readExtra(declaration.data.extra, 1);
+        const declarator_idx: NodeIndex = @fromBackingInt(t.ast.extra_data.items[start]);
+        const declarator = t.ast.getNode(declarator_idx);
+        const binding = t.ast.readExtraNode(declarator.data.extra, 0);
+        try std.testing.expectEqual(original_symbol, t.getSymbolIdAt(binding).?);
+        try std.testing.expectEqual(plan.scope, t.semantic_editor.?.symbols.items[original_symbol].scope_id);
+        if (field_binding_first) {
+            const old_initializer = t.ast.readExtraNode(declarator.data.extra, 2);
+            try std.testing.expectEqual(ast.Node.Tag.this_expression, t.ast.getNode(old_initializer).tag);
+            plan.initialize_on_super = true;
+            try semantic_edit.ensureNativeConstructorCaptureBinding(&t, &plan, t.ast.getNode(constructor).span);
+            try std.testing.expectEqual(original_declaration, plan.this_declaration);
+            try std.testing.expectEqual(original_symbol, plan.symbol_id.?);
+        }
+        // Check immediately after the producer, before a later capture use can
+        // revisit the declaration. The descriptor check is independent of the
+        // numeric initializer slot used by the write above.
+        try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 2).isNone());
+        var children = @import("../parser/ast_walk.zig").children(t.ast, declarator);
+        var actual_children: usize = 0;
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            try std.testing.expectEqual(binding, child);
+            actual_children += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_children);
+    }
 }
