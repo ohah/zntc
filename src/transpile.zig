@@ -661,6 +661,7 @@ fn scanForUnsupportedBindingLiteShadow(
 
 fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
     return options.minify_identifiers or
+        options.keep_names or
         options.minify_syntax or
         options.minify_whitespace or
         options.drop_console or
@@ -1878,6 +1879,7 @@ fn transpileWithCallbackInternal(
         .jsx_filename = file_path,
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
+        .keep_names = options.keep_names,
         // Non-minified standalone output chooses helper aliases after all
         // generated SymbolIds are registered, immediately before codegen.
         .defer_runtime_helper_name_resolution = !options.minify_identifiers,
@@ -1989,6 +1991,10 @@ fn transpileWithCallbackInternal(
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__setFunctionName", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__propKey", options.minify_whitespace);
     }
+    // Reserve a typed candidate before mangling. A raw name call may be emitted
+    // later, but a no-rename file must not execute an unused runtime preamble.
+    if (options.keep_names)
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__name", options.minify_whitespace);
     if (analyzer_storage) |*analyzer| {
         // The transformer took the analyzer's map header by value and kept
         // adding classes to it; a put that grows the map frees the backing the
@@ -2093,7 +2099,7 @@ fn transpileWithCallbackInternal(
             .unresolved_globals = null,
             .references = analyzer.references.items,
             .allow_top_level_inline = options.minify_syntax,
-            .preserve_inferred_names = !options.minify_identifiers,
+            .preserve_inferred_names = options.keep_names or !options.minify_identifiers,
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         // S4b: 단일 파일 모드에서도 const → let 변환 후 mergeDecls — esbuild parity.
@@ -2144,6 +2150,15 @@ fn transpileWithCallbackInternal(
                 reserveCommonJsCodegenNames(arena_alloc, &reserved) catch return error.OutOfMemory;
             }
             reserveFlowEnumCodegenNames(arena_alloc, transformer.ast, &reserved) catch return error.OutOfMemory;
+            if (options.keep_names) {
+                const staging_name = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
+                try reserved.put(arena_alloc, staging_name, {});
+                if (mangle_uses_transform_semantic) {
+                    const helper = transformer.runtime_helper_symbol_ids.get("__name") orelse return error.TransformError;
+                    if (@backingInt(helper) >= post.symbols.items.len) return error.TransformError;
+                    keep.set(@backingInt(helper));
+                }
+            }
             if (mangle_uses_transform_semantic) {
                 reserveGeneratedExternalNames(
                     arena_alloc,
@@ -2259,7 +2274,7 @@ fn transpileWithCallbackInternal(
         if (analyzer_storage) |*analyzer| break :blk analyzer.symbol_ids.items;
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
-    const has_helpers = transformer.runtime_helpers.hasAny();
+    var has_helpers = transformer.runtime_helpers.hasAny();
     var standalone_late_output_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     const use_late_helper_names = transformer.options.defer_runtime_helper_name_resolution and
         transformer.semantic_edit_enabled and
@@ -2278,6 +2293,10 @@ fn transpileWithCallbackInternal(
         .final_renames = helper_final_renames,
         .final_output_names = if (use_late_helper_names) &standalone_late_output_name_overrides else null,
     };
+    const keep_names_helper_name = if (options.keep_names or transformer.runtime_helpers.keep_names)
+        try helper_name_resolver.resolve("__name", options.minify_whitespace)
+    else
+        null;
     // The block-scoping map is keyed by transform-graph SymbolIds. A
     // post-transform reanalysis builds unrelated IDs, so only expose these
     // overrides when codegen uses the transform graph (or no mangle graph).
@@ -2371,7 +2390,7 @@ fn transpileWithCallbackInternal(
         if (transformer.runtime_helpers.yield_star)
             local_names.yield_star = try helper_name_resolver.resolve("__yieldStar", options.minify_whitespace);
         if (transformer.runtime_helpers.keep_names)
-            local_names.keep_names = try helper_name_resolver.resolve("__name", options.minify_whitespace);
+            local_names.keep_names = keep_names_helper_name orelse return error.TransformError;
         if (transformer.runtime_helpers.tdz)
             local_names.tdz = try helper_name_resolver.resolve("__tdz", options.minify_whitespace);
         if (transformer.runtime_helpers.metadata)
@@ -2407,6 +2426,8 @@ fn transpileWithCallbackInternal(
         .program_preamble = helper_preamble,
         .minify_whitespace = options.minify_whitespace,
         .minify_syntax = options.minify_syntax,
+        .keep_names = options.keep_names,
+        .keep_names_helper_name = keep_names_helper_name,
         .sourcemap = options.sourcemap,
         .ascii_only = if (options.charset_utf8) false else options.ascii_only,
         .lower_unicode_brace = options.unsupported.unicode_brace_escape,
@@ -2432,7 +2453,27 @@ fn transpileWithCallbackInternal(
         cg.addSourceFile(file_path) catch {};
         cg.line_offsets = scanner.line_offsets.items;
     }
-    const output = cg.generate(root) catch return error.CodegenError;
+    var output = cg.generate(root) catch return error.CodegenError;
+    if (options.keep_names and cg.keep_names_used and !transformer.runtime_helpers.keep_names) {
+        // Demand is known only after the selected names and emit contexts are
+        // resolved. Re-emit with the helper before user code so source maps and
+        // directive/hashbang boundaries use the final preamble from the start.
+        // No parser/analyzer or semantic edit is repeated.
+        var with_name: std.ArrayList(u8) = .empty;
+        try with_name.appendSlice(arena_alloc, helper_preamble);
+        rt.appendRuntimeHelpersWithStandaloneLocalNames(&with_name, arena_alloc, .{ .keep_names = true }, options.minify_whitespace, transformer.runtime_es5_compat, .{ .keep_names = keep_names_helper_name orelse return error.TransformError }) catch return error.OutOfMemory;
+        var final_options = cg.options;
+        final_options.program_preamble = with_name.items;
+        cg = Codegen.initWithOptions(arena_alloc, transformer.ast, final_options);
+        cg.comments = scanner.comments.items;
+        if (options.sourcemap) {
+            cg.addSourceFile(file_path) catch {};
+            cg.line_offsets = scanner.line_offsets.items;
+        }
+        output = cg.generate(root) catch return error.CodegenError;
+        transformer.runtime_helpers.keep_names = true;
+        has_helpers = true;
+    }
     mem_profile.snap(&arena, "generate");
 
     // JSX runtime import 는 위 transformer finalize 단계에서 semantic ID 가 붙은 AST 노드로 생성.
@@ -7033,6 +7074,74 @@ test "#4482 minify: 음수 리터럴이 call callee / new callee 면 괄호" {
     try expectMinifiedCodeContains("const a = 2; g((-a)());", "(-2)()");
 }
 
+test "standalone keepNames exact helper handoff preserves ten native name environments" {
+    const sources = [_][]const u8{
+        "function read(){return 42}console.log(JSON.stringify([read.name,read()]));",
+        "function read(){return this}console.log(read.name);",
+        "const read=function(){};console.log(read.name);",
+        "const read=()=>42;console.log(JSON.stringify([read.name,read()]));",
+        "const __name=7;function read(){return __name}console.log(JSON.stringify([read.name,read()]));",
+        "const $nm=8;function read(){return $nm}console.log(JSON.stringify([read.name,read()]));",
+        "function run(__name,$nm){const read=function(){};return[read.name,__name,$nm]}console.log(JSON.stringify(run(7,8)));",
+        "function r\\u0065ad(){return 42}console.log(JSON.stringify([r\\u0065ad.name,r\\u0065ad()]));",
+        "function __proto__(){return 42}console.log(JSON.stringify([__proto__.name,__proto__()]));",
+        "const Box=class Inner{};console.log(Box.name);",
+    };
+    for (sources, 0..) |source, index| for ([_]bool{ false, true }) |minify| {
+        var result = try transpile(std.testing.allocator, source, "input.cjs", .{ .keep_names = true, .minify_identifiers = minify, .minify_whitespace = minify, .minify_syntax = minify, .module_format = .cjs });
+        defer result.deinit(std.testing.allocator);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        const generated = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(generated.stdout);
+        defer std.testing.allocator.free(generated.stderr);
+        if (generated.stderr.len != 0 or !std.mem.eql(u8, native.stdout, generated.stdout)) std.debug.print("standalone keepNames case {d} min={any}: expected={s} actual={s} error={s} code={s}\n", .{ index, minify, native.stdout, generated.stdout, generated.stderr, result.code });
+        try std.testing.expectEqualStrings("", native.stderr);
+        try std.testing.expectEqualStrings("", generated.stderr);
+        try std.testing.expectEqualStrings(native.stdout, generated.stdout);
+    };
+}
+
+test "standalone keepNames no-rename files do not publish or initialize a candidate helper" {
+    const sources = [_][]const u8{
+        "function read(){return 42}console.log(read.name);",
+        "let value=42;console.log(value);",
+        "console.log(eval('typeof __name'));",
+        "const define=Object.defineProperty;let reads=0;define(Object,'defineProperty',{configurable:true,get(){reads++;return define}});function read(){}console.log(JSON.stringify([read.name,reads]));",
+        "'use strict';function read(){return this}console.log(read()===undefined);",
+    };
+    for (sources) |source| {
+        var result = try transpile(std.testing.allocator, source, "input.cjs", .{ .keep_names = true, .module_format = .cjs });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.has_helpers);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "var __name") == null);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        const generated = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(generated.stdout);
+        defer std.testing.allocator.free(generated.stderr);
+        try std.testing.expectEqualStrings("", generated.stderr);
+        try std.testing.expectEqualStrings(native.stdout, generated.stdout);
+    }
+}
+
+test "standalone keepNames shares a helper used by AST fields without parameter capture" {
+    const source = "const key='field';class Box{[key]=function(){}}function run(value){const read=function(){};return[read.name,value,new Box().field.name]}console.log(JSON.stringify(run(7)));";
+    var result = try transpile(std.testing.allocator, source, "input.cjs", .{ .keep_names = true, .minify_identifiers = true, .minify_whitespace = true, .minify_syntax = true, .module_format = .cjs, .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    defer result.deinit(std.testing.allocator);
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    const generated = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(generated.stdout);
+    defer std.testing.allocator.free(generated.stderr);
+    if (generated.stderr.len != 0) std.debug.print("keepNames AST/raw caller code={s}\nerror={s}\n", .{ result.code, generated.stderr });
+    try std.testing.expectEqualStrings("", generated.stderr);
+    try std.testing.expectEqualStrings(native.stdout, generated.stdout);
+}
+
 test "#4482 minify: 폴딩된 음수 리터럴 앞 단항 부호는 공백으로 끊는다" {
     // `--2` 는 prefix 감소 연산으로 오파싱 → SyntaxError (리터럴은 lvalue 가 아님).
     try expectMinifiedCodeContains("const a = 2; g(-(-a));", "- -2");
@@ -7049,4 +7158,65 @@ test "#4482 minify: 과잉 괄호 방지 — 양수 리터럴은 그대로" {
     try expectMinifiedCodeContains("g(a - (-b - a));", "g(a-(-b-a))");
     // `<<` 는 maximal-munch 로 먼저 떨어져 `<!--` 가 생기지 않는다 → 공백 불필요.
     try expectMinifiedCodeContains("g(x << !--b);", "g(x<<!--b)");
+}
+
+test "standalone keepNames candidate helper keeps its exact producer slot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    // No helper callsite exists. The exact SID is created with the preamble
+    // declaration and indexed by its canonical runtime-helper export name.
+    try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__name", false);
+    const symbol_id = transformer.runtime_helper_symbol_ids.get("__name") orelse return error.MissingPreambleHelperSymbolId;
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEditResult;
+    transformer.symbols = edited.symbols.items;
+    transformer.scopes = edited.scopes;
+    transformer.scope_maps = edited.scope_maps;
+    transformer.scope_owner_map = edited.scope_owner_map;
+    transformer.node_scope_provenance = edited.node_scope_provenance;
+    transformer.helper_scope_map = edited.helper_scope_map;
+    transformer.references = edited.references;
+
+    const raw_id = @backingInt(symbol_id);
+    try std.testing.expect(raw_id < transformer.symbols.len);
+    const symbol = transformer.symbols[raw_id];
+    try std.testing.expectEqual(@import("semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);
+    try std.testing.expectEqual(@as(?@import("semantic/symbol.zig").SyntheticKind, .runtime_helper_preamble), symbol.synthetic_kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expectEqualStrings("__name", symbol.synthetic_name);
+    try std.testing.expectEqualStrings("__name", try standaloneRuntimeHelperSymbolName(&transformer, "__name", false));
+
+    // The resolver must use the recorded ID even if the secondary name index
+    // is absent; it must not recover identity from a matching local spelling.
+    _ = transformer.helper_scope_map.remove("__name");
+    try std.testing.expectEqualStrings("__name", try standaloneRuntimeHelperSymbolName(&transformer, "__name", false));
+
+    try transformer.helper_scope_map.put(allocator, "__name", raw_id);
+    _ = transformer.runtime_helper_symbol_ids.remove("__name");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__name", false),
+    );
 }

@@ -1306,6 +1306,7 @@ pub fn main(init: std.process.Init) !void {
             .module_format = opts.module_format,
             .minify_whitespace = opts.minify_whitespace,
             .minify_identifiers = opts.minify_identifiers,
+            .keep_names = opts.keep_names,
             .minify_syntax = opts.minify_syntax,
             .drop_console = opts.drop_console,
             .drop_debugger = opts.drop_debugger,
