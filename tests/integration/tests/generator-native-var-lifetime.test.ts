@@ -107,3 +107,36 @@ describe('native generator var storage in bundle module graphs (#4819)', () => {
     }
   }
 });
+
+describe('native generator var storage preserves sloppy with lookup', () => {
+  const controls = [
+    'const host={shared:1};with(host){var shared=42;}yield 0;return [shared,host.shared];',
+    'const host={shared:1};if(true){with(host){var shared=42;}}yield 0;return [shared,host.shared];',
+    'var shared=7;const host={shared:1};with(host){var shared=42;}yield 0;return [shared,host.shared];',
+    'const host={shared:1};with(host){var shared=42;var get=()=>shared;}yield 0;return [shared,get(),host.shared];',
+  ];
+  for (const [index, body] of controls.entries()) {
+    for (const minify of [false, true]) {
+      test(`with control=${index}, minify=${minify}`, async () => {
+        const fixture = await createFixture({
+          'entry.cjs': `function* run(){${body}}const it=run();it.next();console.log(JSON.stringify(it.next().value));`,
+        });
+        try {
+          const input = join(fixture.dir, 'entry.cjs');
+          const native = spawnSync('node', [input], { encoding: 'utf8' });
+          expect(native.status, native.stderr).toBe(0);
+          const output = join(fixture.dir, 'out.cjs');
+          const args = [input, '--target=es5', '-o', output];
+          if (minify) args.push('--minify-identifiers', '--minify-syntax');
+          const built = spawnSync(ZNTC_BIN, args, { encoding: 'utf8' });
+          expect(built.status, built.stderr).toBe(0);
+          const run = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(run.status, run.stderr).toBe(0);
+          expect(run.stdout).toBe(native.stdout);
+        } finally {
+          await fixture.cleanup();
+        }
+      });
+    }
+  }
+});

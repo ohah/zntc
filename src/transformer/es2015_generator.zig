@@ -954,6 +954,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         }
                     }
                 },
+                .with_statement => {
+                    if (es2015_scan.hasYieldOrReturn(self, stmt_idx)) return appendVisitedStatement(self, stmt_idx, ops, next_label);
+                    const new_stmt = try visitNativeStateRegion(self, stmt_idx);
+                    if (!new_stmt.isNone()) try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                },
                 .for_await_of_statement => {
                     if (try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, stmt_idx, false))
                         return collectOperations(self, stmt_idx, ops, next_label);
@@ -2258,7 +2263,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 헤더의 let/const 는 상태 기계가 루프를 수집할 때 리네임·등록한다 (#4712).
                 if (!stateMachineRenamesBlockScope(self) or !isLexicalDeclaration(self, self.readNodeIdx(e, 0))) try collectHoistedVarFromNode(self, self.readNodeIdx(e, 0), hoisted);
                 try collectHoistedVarFromNode(self, self.readNodeIdx(e, 3), hoisted);
-            } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
+            } else if (node.tag == .while_statement or node.tag == .do_while_statement or node.tag == .with_statement) {
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
             } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
                 if (!stateMachineRenamesBlockScope(self) or !isLexicalDeclaration(self, node.data.ternary.a)) try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
@@ -5108,7 +5113,7 @@ test "native generator var writes retain their wrapper SID and exact producer sc
     const Transformer = @import("transformer.zig").Transformer;
     const Options = @import("transformer.zig").TransformOptions;
     const walk = @import("../parser/ast_walk.zig");
-    const Fixture = struct { body: []const u8, native_write: bool = true };
+    const Fixture = struct { body: []const u8, native_write: bool = true, is_module: bool = true };
     const bodies = [_]Fixture{
         .{ .body = "if(true) var shared=42;yield 0;return shared;" },
         .{ .body = "for(var value of [42]){var shared=value;}yield 0;return[value,shared];" },
@@ -5122,6 +5127,10 @@ test "native generator var writes retain their wrapper SID and exact producer sc
         .{ .body = "if(true){var shared=42;function inner(){var shared=9;return shared;}class Box{static get(){var shared=7;return shared;}}var fn=inner;var klass=Box;}yield 0;return[shared,fn(),klass.get()];" },
         .{ .body = "var shared=42;if(true){var shared;}yield 0;return shared;", .native_write = false },
         .{ .body = "if(true){let local=9;var get=()=>local;var shared=42;}yield 0;return[get(),shared];" },
+        .{ .body = "const host={shared:1};with(host){var shared=42;}yield 0;return [shared,host.shared];", .is_module = false },
+        .{ .body = "const host={shared:1};if(true){with(host){var shared=42;}}yield 0;return [shared,host.shared];", .is_module = false },
+        .{ .body = "var shared=7;const host={shared:1};with(host){var shared=42;}yield 0;return [shared,host.shared];", .is_module = false },
+        .{ .body = "const host={shared:1};with(host){var shared=42;var get=()=>shared;}yield 0;return [shared,get(),host.shared];", .is_module = false },
     };
     for (bodies) |fixture| {
         const body_source = fixture.body;
@@ -5131,12 +5140,12 @@ test "native generator var writes retain their wrapper SID and exact producer sc
         const source = try std.fmt.allocPrint(a, "function* f(){{{s}}}", .{body_source});
         var scanner = try Scanner.init(a, source);
         var parser = Parser.init(a, &scanner);
-        parser.is_module = true;
-        scanner.is_module = true;
+        parser.is_module = fixture.is_module;
+        scanner.is_module = fixture.is_module;
         _ = try parser.parse();
         try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
         var analyzer = Analyzer.init(a, &parser.ast);
-        analyzer.is_module = true;
+        analyzer.is_module = fixture.is_module;
         analyzer.enable_exact_declaration_anchors = true;
         try analyzer.analyze();
         var function: NodeIndex = .none;
@@ -5149,6 +5158,15 @@ test "native generator var writes retain their wrapper SID and exact producer sc
         try std.testing.expect(!function.isNone());
         const wrapper_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(function)).?);
         const expected_sid: u32 = @intCast(analyzer.scope_maps.items[wrapper_scope.toIndex()].get("shared").?);
+        // The final source redeclaration is the native-region declaration in
+        // the controls with an earlier wrapper initializer. Match its source
+        // span only to select this test's producer-created write references.
+        var native_binding_start: u32 = 0;
+        for (parser.ast.nodes.items, 0..) |source_node, raw| {
+            if (source_node.tag == .binding_identifier and analyzer.symbol_ids.items[raw] == expected_sid)
+                native_binding_start = @max(native_binding_start, source_node.data.string_ref.start);
+        }
+
         var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = Options.compat.fromESTarget(.es5) });
         try transformer.initSymbolIds(analyzer.symbol_ids.items);
         transformer.symbols = analyzer.symbols.items;
@@ -5169,6 +5187,7 @@ test "native generator var writes retain their wrapper SID and exact producer sc
         try std.testing.expect(!result.body.isNone() and !result.var_decl.isNone());
         const editor = &transformer.semantic_editor.?;
         try std.testing.expectEqual(wrapper_scope, editor.symbols.items[expected_sid].scope_id);
+        if (!fixture.is_module) try std.testing.expect(editor.scopes.items[wrapper_scope.toIndex()].subtree_has_with);
         var wrapper_bindings: usize = 0;
         var stack: std.ArrayList(NodeIndex) = .empty;
         try stack.append(a, result.var_decl);
@@ -5188,7 +5207,7 @@ test "native generator var writes retain their wrapper SID and exact producer sc
             const scope = transformer.outputOwnedScope(item.node) orelse item.scope;
             if (transformer.getSymbolIdAt(item.node) == expected_sid) {
                 try std.testing.expect(output.tag != .binding_identifier);
-                if (fixture.native_write and @backingInt(item.node) >= transformer.parser_node_count) {
+                if (@backingInt(item.node) >= transformer.parser_node_count and output.span.start == native_binding_start) {
                     const reference = try editor.referenceForNode(item.node) orelse return error.MissingNativeVarReference;
                     if (reference.flags.write) {
                         if (scope != reference.scope_id) std.debug.print("native scope fixture={s} node={d} expected={d} actual={d}\n", .{ body_source, @backingInt(item.node), @backingInt(scope), @backingInt(reference.scope_id) });
@@ -5202,6 +5221,6 @@ test "native generator var writes retain their wrapper SID and exact producer sc
             var children = walk.children(transformer.ast, output);
             while (children.next()) |child| if (!child.isNone()) try pending.append(a, .{ .node = child, .scope = scope });
         }
-        if (fixture.native_write) try std.testing.expect(writes > 0);
+        if (fixture.native_write) try std.testing.expect(writes > 0) else try std.testing.expectEqual(@as(usize, 0), writes);
     }
 }
