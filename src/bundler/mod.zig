@@ -135,6 +135,7 @@ test {
     _ = @import("runtime_interop_ast.zig");
     _ = @import("interop_callsite.zig");
     _ = @import("static_import_callsite.zig");
+    _ = @import("static_import_source_anchor_test.zig");
     _ = @import("runtime_dynamic_import_ast.zig");
     _ = @import("runtime_entry_guard_ast.zig");
     _ = @import("runtime_entry_guard_calls.zig");

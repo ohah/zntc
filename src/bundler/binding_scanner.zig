@@ -41,6 +41,9 @@ pub const ImportBinding = struct {
     /// The foreign identity is captured at creation, never recovered by name.
     callsite_target: ?CallsiteTarget = null,
 
+    /// The producer may materialize an imported value as real local storage.
+    /// Its exact current declaration anchor keeps the same source SymbolId.
+    local_role: enum { import_binding, materialized_var } = .import_binding,
     kind: Kind,
     /// 이 모듈에서 사용하는 로컬 이름 (e.g. "bar" in `import { foo as bar }`)
     local_name: []const u8,
@@ -68,8 +71,9 @@ pub const ImportBinding = struct {
     /// linker.populateImportSymbols가 exact local_symbol_node의 SID로 채운다.
     /// invalid = exact semantic anchor가 없거나 유효하지 않은 경우.
     local_symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
-    /// Exact AST node that declares this local import binding. Parse-time
-    /// consumers can recover its analyzer SymbolId without a name-based lookup.
+    /// Exact current declaration of this consumer local. Source imports start
+    /// at the parser binding; materialization explicitly hands off to its real
+    /// storage binding node while retaining the same SymbolId.
     local_symbol_node: ?NodeIndex = null,
     /// #3068: helper marker (runtime helper / JSX runtime) 가 적용된 binding.
     /// semantic ID map이 없는 저수준 caller의 호환 lookup은 이 marker로
@@ -125,11 +129,16 @@ pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymb
             else => return symbol_mod.SymbolRef.invalid,
         }
         const sid = ids[raw] orelse return symbol_mod.SymbolRef.invalid;
-        if (sid >= context.symbols.len or context.symbols[sid].kind != .import_binding)
-            return symbol_mod.SymbolRef.invalid;
+        const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
+            .import_binding => .import_binding,
+            .materialized_var => .variable_var,
+        };
+        if (sid >= context.symbols.len or context.symbols[sid].kind != expected_kind) return symbol_mod.SymbolRef.invalid;
+        if (binding.local_role == .materialized_var and (ast.nodes.items[raw].tag != .binding_identifier or context.symbols[sid].scope_id.isNone())) return symbol_mod.SymbolRef.invalid;
         return symbol_mod.SymbolRef.makeSemantic(context.module_index, sid);
     }
 
+    if (binding.local_role == .materialized_var) return symbol_mod.SymbolRef.invalid;
     const scope = if (binding.is_helper) context.helper_scope else context.module_scope;
     const symbol_index = (scope orelse return symbol_mod.SymbolRef.invalid).get(binding.local_name) orelse
         return symbol_mod.SymbolRef.invalid;

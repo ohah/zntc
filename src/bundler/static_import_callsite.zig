@@ -1,4 +1,4 @@
-//! Actual single-output named-import reads of a wrapped CommonJS module.
+//! Ordered single-output CJS imports with actual references and storage.
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
@@ -8,6 +8,28 @@ const SymbolID = @import("symbol.zig").SymbolID;
 const scanner = @import("binding_scanner.zig");
 const walk = @import("../parser/ast_walk.zig");
 const parser = @import("../parser/module.zig");
+
+const MaterializedStorage = struct { statement: NodeIndex, binding: NodeIndex };
+
+fn materializeStorage(builder: *Builder, sid: u32, initializer: NodeIndex) !MaterializedStorage {
+    if (sid >= builder.editor.symbols.items.len) return error.InvalidCallsiteBinding;
+    const symbol = &builder.editor.symbols.items[sid];
+    if (symbol.kind != .import_binding or symbol.scope_id.isNone() or symbol.scope_id.toIndex() != 0) return error.InvalidCallsiteBinding;
+    const name = builder.module.symbolName(@fromBackingInt(sid)) orelse return error.InvalidCallsiteBinding;
+    // Validate this already selected binding; never choose a replacement SID.
+    if (builder.editor.scope_maps.items[0].get(name) != @as(?usize, sid)) return error.InvalidCallsiteBinding;
+    const binding = try builder.ast.addNode(.{ .tag = .binding_identifier, .span = symbol.name, .data = .{ .string_ref = symbol.name } });
+    try builder.editor.attachExistingBinding(binding, @fromBackingInt(sid));
+    symbol.kind = .variable_var;
+    symbol.decl_flags.is_import = false;
+    symbol.decl_flags.block_scoped = false;
+    symbol.decl_flags.is_const = false;
+    symbol.decl_flags.function_scoped = true;
+    const declarator = try builder.ast.addNode(.{ .tag = .variable_declarator, .span = symbol.name, .data = .{ .extra = try builder.ast.addExtras(&.{ @backingInt(binding), @backingInt(NodeIndex.none), @backingInt(initializer) }) } });
+    const list = try builder.ast.addNodeList(&.{declarator});
+    const statement = try builder.ast.addNode(.{ .tag = .variable_declaration, .span = .EMPTY, .data = .{ .extra = try builder.ast.addExtras(&.{ @backingInt(ast_mod.VariableDeclarationKind.@"var"), list.start, list.len }) } });
+    return .{ .statement = statement, .binding = binding };
+}
 
 pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.zig").Linker) !void {
     // This phase shares the existing single-output provider admission gate.
@@ -48,6 +70,15 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             if (!entry.found_existing) entry.value_ptr.* = .empty;
             try entry.value_ptr.append(a, reference);
         }
+        var by_source: std.AutoHashMapUnmanaged(NodeIndex, usize) = .empty;
+        for (module.import_records, 0..) |record, index| {
+            if (record.source_node.isNone()) continue;
+            const raw = @backingInt(record.source_node);
+            if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .string_literal) return error.InvalidCallsiteBinding;
+            const entry = try by_source.getOrPut(a, record.source_node);
+            if (entry.found_existing) return error.InvalidCallsiteBinding;
+            entry.value_ptr.* = index;
+        }
         const Plan = struct { declaration: NodeIndex, record: usize, symbols: []const u32 };
         var plans: std.ArrayList(Plan) = .empty;
         var statements = ast.iterateExtraList(ast.getNode(root).data.list);
@@ -55,22 +86,31 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             const node = ast.getNode(statement);
             if (node.tag != .import_declaration or compiler_declarations.contains(statement)) continue;
             const decl = parser.readImportDeclExtras(ast, node.data.extra);
-            if (decl.is_type_only or decl.specs_len == 0 or decl.phase != .none or decl.attrs_len != 0) continue;
+            if (decl.is_type_only or decl.phase != .none or decl.attrs_len != 0) continue;
             var symbols: std.ArrayList(u32) = .empty;
-            var record_index: ?usize = null;
+            var record_index: ?usize = if (decl.specs_len == 0) by_source.get(decl.source) orelse return error.InvalidCallsiteBinding else null;
             var supported = true;
             for (0..decl.specs_len) |offset| {
                 const spec = ast.getNode(ast.readExtraNode(decl.specs_start, @intCast(offset)));
-                if (spec.tag != .import_specifier or spec.data.binary.flags & parser.SPEC_FLAG_TYPE_ONLY != 0) {
-                    supported = false;
-                    break;
-                }
-                const local_node = if (!spec.data.binary.right.isNone()) spec.data.binary.right else spec.data.binary.left;
+                const local_node = switch (spec.tag) {
+                    .import_specifier => node: {
+                        if (spec.data.binary.flags & parser.SPEC_FLAG_TYPE_ONLY != 0) {
+                            supported = false;
+                            break;
+                        }
+                        break :node if (!spec.data.binary.right.isNone()) spec.data.binary.right else spec.data.binary.left;
+                    },
+                    .import_default_specifier, .import_namespace_specifier => ast.readExtraNode(decl.specs_start, @intCast(offset)),
+                    else => {
+                        supported = false;
+                        break;
+                    },
+                };
                 if (@backingInt(local_node) >= sem.symbol_ids.len) return error.InvalidCallsiteBinding;
                 const sid = sem.symbol_ids[@backingInt(local_node)] orelse return error.InvalidCallsiteBinding;
                 const binding_index = by_sid.get(sid) orelse return error.InvalidCallsiteBinding;
                 const binding = module.import_bindings[binding_index];
-                if (binding.importsDefault() or binding.is_helper) {
+                if (binding.is_helper) {
                     supported = false;
                     break;
                 }
@@ -78,7 +118,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                     if (previous != binding.import_record_index) return error.InvalidCallsiteBinding;
                 } else record_index = binding.import_record_index;
                 for (if (references_by_sid.get(sid)) |rows| rows.items else &.{}) |reference| {
-                    if (reference.flags.write or forbidden.contains(reference.node_index) or ast.getNode(reference.node_index).tag != .identifier_reference) {
+                    if (reference.flags.write or ((!binding.importsDefault() and binding.kind != .namespace) and forbidden.contains(reference.node_index)) or ast.getNode(reference.node_index).tag != .identifier_reference) {
                         supported = false;
                         break;
                     }
@@ -92,6 +132,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             const ri = record_index orelse continue;
             if (ri >= module.import_records.len) return error.InvalidCallsiteBinding;
             const record = module.import_records[ri];
+            if (record.source_node != decl.source) return error.InvalidCallsiteBinding;
             if (record.callsite_lowered or record.ts_elided or record.resolved.isNone()) continue;
             const target = graph.getModule(record.resolved) orelse continue;
             if (target.wrap_kind != .cjs or !target.is_included) continue;
@@ -140,10 +181,41 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             const require_sid = target.require_symbol orelse return error.InvalidCallsiteTarget;
             const alias = try builder.imported(SymbolID.make(target.index, @backingInt(require_sid)), .require);
             const root_scope: ScopeId = @fromBackingInt(@as(u32, 0));
-            const init = try builder.call(try builder.reference(alias, root_scope), &.{});
-            try replacement_statements.append(a, try ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = init, .flags = 0 } } }));
+            var has_storage = false;
             for (plan.symbols) |sid| {
                 const binding = module.import_bindings[by_sid.get(sid).?];
+                if (binding.importsDefault() or binding.kind == .namespace) has_storage = true;
+            }
+            if (!has_storage) {
+                const init = try builder.call(try builder.reference(alias, root_scope), &.{});
+                try replacement_statements.append(a, try ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = init, .flags = 0 } } }));
+            }
+            for (plan.symbols) |sid| {
+                const binding = module.import_bindings[by_sid.get(sid).?];
+                if (binding.importsDefault() or binding.kind == .namespace) {
+                    var value = try builder.call(try builder.reference(alias, root_scope), &.{});
+                    if (binding.kind == .namespace or !module.canUseDirectCjsDefaultImport(target)) {
+                        const provider = graph.interop_ast_provider orelse return error.InvalidCallsiteTarget;
+                        const slots = try @import("runtime_interop_ast.zig").resolveBindings(graph);
+                        const helper = slots[7] orelse return error.InvalidCallsiteTarget;
+                        const to_esm = try builder.use(SymbolID.make(provider.module_index, @backingInt(helper.symbol_id)), root_scope, .to_esm);
+                        const one_span = try ast.addString("1");
+                        const one = try ast.addNode(.{ .tag = .numeric_literal, .span = one_span, .data = .{ .string_ref = one_span } });
+                        value = try builder.call(to_esm, if (module.def_format.isNodeEsm()) &.{ value, one } else &.{value});
+                        if (binding.importsDefault()) {
+                            const property_span = try ast.addString("\"default\"");
+                            const property = try ast.addNode(.{ .tag = .string_literal, .span = property_span, .data = .{ .string_ref = property_span } });
+                            value = try ast.addNode(.{ .tag = .computed_member_expression, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(value), @backingInt(property), 0 }) } });
+                        }
+                    }
+                    const storage = try materializeStorage(&builder, sid, value);
+                    const stored_binding = &module.import_bindings[by_sid.get(sid).?];
+                    stored_binding.local_role = .materialized_var;
+                    stored_binding.local_symbol_node = storage.binding;
+                    stored_binding.local_symbol = @import("symbol.zig").SymbolRef.makeSemantic(module.index, sid);
+                    try replacement_statements.append(a, storage.statement);
+                    continue;
+                }
                 for (if (references_by_sid.get(sid)) |rows| rows.items else &.{}) |reference| {
                     const require_call = try builder.call(try builder.reference(alias, reference.scope_id), &.{});
                     const property_span = try ast.addString(try std.json.Stringify.valueAlloc(a, binding.imported_name, .{}));
@@ -396,9 +468,11 @@ test "static named callsites retain source order at mixed raw dependency boundar
         var modules = graph.modulesIterator();
         while (modules.next()) |module| {
             if (!std.mem.endsWith(u8, module.path, "/consumer.mjs")) continue;
+            var actual_calls: usize = 0;
             for (module.import_bindings) |binding| {
-                try std.testing.expect(binding.callsite_target == null);
+                if (binding.callsite_target != null) actual_calls += 1;
             }
+            try std.testing.expect(actual_calls >= 2);
         }
     };
 }

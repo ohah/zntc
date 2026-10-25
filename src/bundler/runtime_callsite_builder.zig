@@ -102,7 +102,7 @@ pub const Builder = struct {
         const record_index: u32 = @intCast(self.records.items.len);
         // Binding-only dependency: executable work belongs to the actual AST
         // caller. Eager metadata must not synthesize another initializer.
-        self.records.appendAssumeCapacity(.{ .specifier = foreign.path, .kind = .static_import, .span = source_span, .resolved = target.module, .callsite_lowered = true });
+        self.records.appendAssumeCapacity(.{ .specifier = foreign.path, .kind = .static_import, .span = source_span, .resolved = target.module, .source_node = source, .callsite_lowered = true });
         self.bindings.appendAssumeCapacity(.{
             .kind = .named,
             .local_name = name,

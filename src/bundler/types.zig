@@ -782,6 +782,9 @@ pub const ImportRecord = struct {
         return self.external_specifier orelse self.specifier;
     }
 
+    /// Exact current static module-source literal. Parser/scanner constructors
+    /// capture it directly; syntax refresh transfers the current AST anchor.
+    source_node: @import("../parser/ast.zig").NodeIndex = .none,
     /// Exact source import() expression, assigned when its AST node is created.
     call_node: @import("../parser/ast.zig").NodeIndex = .none,
     callsite_lowered: bool = false,

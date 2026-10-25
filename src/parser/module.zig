@@ -314,7 +314,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
             const spec = extractImportSpecifier(self, raw);
-            _ = appendImportRecord(self, spec, .side_effect, src_node.span);
+            _ = appendSourceImportRecord(self, spec, .side_effect, src_node.span, source_node);
             self.scan_result.has_esm_syntax = true;
         }
 
@@ -413,7 +413,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     const src_node = self.ast.getNode(source_node);
                     const raw = self.ast.source[src_node.span.start..src_node.span.end];
                     const specifier = extractImportSpecifier(self, raw);
-                    const rec_idx = appendImportRecord(self, specifier, .static_import, src_node.span);
+                    const rec_idx = appendSourceImportRecord(self, specifier, .static_import, src_node.span, source_node);
                     try collectImportBindings(self, scratch_top, rec_idx);
                     self.scan_result.has_esm_syntax = true;
                 }
@@ -477,7 +477,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const src_node = self.ast.getNode(source_node);
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
         const spec = extractImportSpecifier(self, raw);
-        const rec_idx = appendImportRecord(self, spec, .static_import, src_node.span);
+        const rec_idx = appendSourceImportRecord(self, spec, .static_import, src_node.span, source_node);
         try collectImportBindings(self, scratch_top, rec_idx);
         self.scan_result.has_esm_syntax = true;
     }
@@ -779,7 +779,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
             const spec = extractImportSpecifier(self, raw);
-            const rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
+            const rec_idx = appendSourceImportRecord(self, spec, .re_export, src_node.span, source_node);
 
             if (!exported_name.isNone() and @backingInt(exported_name) < self.ast.nodes.items.len) {
                 // export * as ns from "module"
@@ -871,7 +871,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 const src_node = self.ast.getNode(source_node);
                 const raw = self.ast.source[src_node.span.start..src_node.span.end];
                 const spec = extractImportSpecifier(self, raw);
-                rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
+                rec_idx = appendSourceImportRecord(self, spec, .re_export, src_node.span, source_node);
             }
 
             for (self.scratch.items[scratch_top..]) |spec_idx| {
@@ -1384,8 +1384,13 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
 
 /// import 레코드를 추가하고 인덱스를 반환한다.
 fn appendImportRecord(self: *Parser, specifier: []const u8, kind: scan_results_mod.ImportKind, span: Span) u32 {
+    return appendSourceImportRecord(self, specifier, kind, span, .none);
+}
+
+fn appendSourceImportRecord(self: *Parser, specifier: []const u8, kind: scan_results_mod.ImportKind, span: Span, source_node: NodeIndex) u32 {
     const rec_idx: u32 = @intCast(self.scan_import_records.items.len);
     self.scan_import_records.append(self.allocator, .{
+        .source_node = source_node,
         .specifier = specifier,
         .kind = kind,
         .span = span,

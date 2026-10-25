@@ -1,40 +1,40 @@
-# 단일 출력 named CJS import의 실제 호출 참조
+# 단일 출력 CJS static import의 실제 호출과 저장 binding
 
-이 단계는 wrapped ESM 소비자(`wrap_kind == .esm`)가 CJS 모듈에서 가져오는 non-default named import를 실제 AST/Reference로 전환한다. #4819/#5954/#6193 전체 완료를 뜻하지 않는다.
+이 경로는 wrapped ESM 소비자(`wrap_kind == .esm`)가 CJS 모듈에서 가져오는 bare/named/default/namespace import를 같은 source-order AST plan으로 전환한다. #4819/#5954/#6193 전체 완료를 뜻하지 않는다.
 
-## 기존 문제와 실행 결과
+## 실제 실행 경계
 
-`consumer.mjs`가 `import {call, value} from './dep.cjs'` 뒤 `export function run(){return [call(),value]}`를 내보내고, entry가 이를 dynamic import하는 경우다. dependency는 실행 횟수를 증가시키고 `call`은 strict 함수에서 `this === undefined`를 반환한다.
+기존 named import 문자열 rename은 `require_dep().call()`로 strict 함수의 receiver를 바꾸고, dependency 실행을 최초 binding read까지 미뤘다. 첫 actual-caller 경로는 `(0, require_dep()["call"])`와 실제 dependency initializer를 만들어 native `1 [true,42]`를 회복했다.
 
-- native: `1 [true,42]`
-- 이전 문자열 expression rename: `undefined [false,42]`
-- 실제 initializer/callee AST: `1 [true,42]`
+이후 bare/default/namespace를 raw prefix에 남긴 모듈은 실행 순서를 함께 결정할 수 없어 admission에서 제외했다. 이번 ordered 경로는 세 종류도 실제 AST로 전환해 source statement 순서대로 초기화한다. 이전 mixed 24셀(default/namespace/bare × A→B/B→A × plain/min, consumer body effect 유무)을 그대로 유지하며 모두 native와 대조한다. 이전 no-body 6개 및 body-effect 12개 실패를 분모에서 삭제하지 않고 회복 여부를 검사한다.
 
-기존 `require_dep().call()` expression rename은 함수 호출 receiver를 바꾸며, wrapped 소비자의 dependency 실행도 최초 binding read까지 미룬다. 새 경로는 소비자 초기화 AST에 실제 require 호출을 두고, binding read를 `(0, require_dep()["call"])` AST로 바꾼다. 최종 이름은 이미 선택한 foreign require SID의 rename 결과를 사용한다.
+## Source anchor와 local identity
 
-## 소유권과 처리 경계
+- parser가 static/side-effect/re-export record를 만들 때 실제 module-source string literal의 `NodeIndex`를 `source_node`에 기록한다. parser_metadata는 이를 graph에 그대로 전달하고 AST scanner도 현재 source 노드에서 직접 같은 필드를 생성한다.
+- import declaration이 재생성돼도 리프 identity는 보존된다. 실제 literal clone이 있으면 syntax scanner가 새 anchor를 기록하고 `mergeImportRecords`는 기존 dependency resolution과 현재 AST anchor를 명시적으로 결합한다. 작은/큰 fan-out 두 merge 경로를 검사한다. dynamic `call_node`의 original-expression provenance 계약은 변경하지 않는다.
+- bare import는 source literal NodeIndex로 record를 선택한다. spelling/span/cached local SID로 source binding을 재선택하지 않는다. missing/out-of-range/wrong-kind/duplicate anchor는 명시적으로 실패한다.
+- named non-default read는 original/current local binding anchor의 SID로 선택하고, 원래 Reference의 ScopeId에서 require/member/callee AST를 만든다. 기존 Reference는 일괄 제거한다.
+- default/namespace는 기존 source SID와 Module Scope를 유지하며 실제 var binding/declarator/initializer를 생성한다. kind/decl_flags를 physical storage에 맞게 전환하고 declaration Reference를 새 binding node에 reanchor한다. 기존 read/export Reference의 SID는 바꾸지 않는다.
+- `ImportBinding.local_role.materialized_var`와 현재 binding node를 생성 시 보존한다. 공통 exact helper는 role에 맞는 kind와 node shape를 검증하며, 새 role에는 semantic-less name fallback이 없다. 기존 original-import low-level 계약은 유지한다. export getter도 materialized record의 exact export node→local SID를 우선 사용한다.
 
-- `static_import_callsite.zig`: 현재 import specifier의 exact local NodeIndex→SID와 scanner가 보존한 original binding anchor의 SID를 연결한다. scope-map/local spelling/cached local SID로 binding을 재선택하지 않는다. supported anchor가 없거나 record 범위가 잘못되면 `InvalidCallsiteBinding`을 반환한다.
-- source Reference는 현재 semantic snapshot의 SID로 한 번 분류한다. 각 새 callee Reference는 그 source Reference의 실제 ScopeId에서 생성한다. generic 출력 walk로 scope를 고치지 않는다.
-- `runtime_callsite_builder.zig`: module arena에서 실제 local import binding SID, declaration AST, import record, foreign role/SID/owner handle을 생성한다. 배열 확장은 amortized capacity를 유지한다. target 검증은 `runtime_callsite_targets.zig`의 known role 슬롯과 비교하며 이름 검색으로 복구하지 않는다.
-- compiler import record는 binding-only edge이며 `callsite_lowered=true`로 생성한다. strict-order/async-cone metadata의 eager loop가 별도 raw initializer를 만들지 않는다. 그렇지 않으면 wrapped 소비자의 내부 dynamic import가 `run / dep / 42` 대신 `dep / run / 42`로 실행되는 기존 결함이 있었다. CJS/ESM target을 실제 실행으로 대조한다.
-- 기존 source Reference는 일괄 제거한다. 원래 source import declaration을 program에서 제거하고, source record의 `callsite_lowered`를 표시한다. `linker/metadata.zig`는 이 source record의 raw preamble와 expression rename을 모두 생략한다. 생성한 compiler import는 기존 exact-target 분기를 사용한다.
-- program owner는 새 root로 명시 이관하며 editor finish 결과와 transform-cache ID 배열을 동일 snapshot으로 갱신한다. 두 번 semantic analysis를 실행하지 않는다.
-- source directive prologue의 모든 노드는 원래 순서대로 먼저 유지하고 dependency initializer는 그 뒤에 넣는다. `use strict` 앞에 호출을 삽입해 directive를 일반 문자열 식으로 바꾸지 않는다. compiler import declaration도 prologue 앞에 놓지 않는다.
+## 실행과 이름의 소유권
 
-## 검사
+`runtime_callsite_builder.zig`는 실제 local import SID/declaration/reference와 foreign role/SID/owner handle을 생성한다. 배열 확장은 amortized capacity를 유지한다. require/toESM 최종 이름은 이미 선택한 exact foreign SID의 rename 결과이며 이름 검색으로 ID를 복구하지 않는다.
 
-다섯 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개, strict-order dynamic target 2개, directive prologue 4개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다. directive 검사는 실제 eval leak 결과와 custom/strict 노드 순서·첫 initializer 위치를 각각 확인한다.
+compiler import는 binding-only edge로 `callsite_lowered=true`를 가진다. strict-order/async-cone metadata가 별도 raw initializer를 추가하지 않는다. source record도 변환 완료를 표시하므로 기존 raw preamble/storage/expression rename은 동시에 제거된다. default interop의 기존 direct-require 최적화도 유지해 Proxy prototype trap 같은 새 관찰 효과를 추가하지 않는다.
 
-외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. 첫 10개 변이 및 source-order/binding-only/directive 보호 제거 3개 변이는 모두 컴파일 뒤 실제 테스트 실패로 검출했다. 최종 통합 결과는 PR에 별도로 기록한다.
+source directive prologue는 custom/strict 노드의 원래 순서로 먼저 유지하며 initializer와 compiler import는 그 뒤에 둔다. program owner는 새 root로 명시 이관하고 editor finish 결과와 transform-cache ID 배열을 동일 snapshot으로 갱신한다. generic 출력 walk로 scope를 고치거나 새 semantic analysis를 추가하지 않는다.
 
-## 유지한 잔여
+## 검증과 남은 경계
 
-- 첫 경로는 단일 출력 provider admission 안에서만 열린다. inlineRequires/Metro의 의도된 lazy 실행은 기존 경로를 유지한다. 기존 RN named-import ordering control을 함께 실행한다.
-- 다른 user eager import가 raw 경로에 남아 있으면 해당 소비자 모듈 전체를 전환하지 않는다. mixed prefix의 bare B→named A에서 기존 정상 `B,A`가 `A,B`로 바뀌는 실제 회귀를 확인했다(plain/min). planned record와 exact compiler/helper record만 함께 허용하며, 다른 user eager record는 source-order typed handoff 후에 전환한다.
-- mixed default/namespace/bare 3종 × source 순서 2종 × 일반/압축 12셀을 native/이전/새 출력으로 대조한다. consumer body effect가 있는 12셀도 별도로 실행한다. 기존 raw 순서 실패는 기존 debt로 유지하며 보호 gate의 회귀 방지를 별도로 검사한다.
-- 일반 unwrapped 소비자의 snapshot 변수, namespace/default/bare import, reexport, shorthand/object-property 사용, source-phase/defer/attribute import, helper binding은 후속 실제 caller 전환 대상이다. 지원 범위에서 제외했다는 이유로 A 완료에 포함하지 않는다.
-- foreign CJS wrapper 자체의 생성 Scope/Reference와 raw emitter는 이 단계로 제거되지 않는다. split/preserve/HMR도 기존 미완료 gate를 유지한다.
-- compiler import가 있는 소비자는 기존 process-owner cache eviction 정책을 따른다. owner-linked persistent warm reuse는 아직 완료하지 않았으며 warm parse 0을 주장하지 않는다. 새 wire field나 codec 버전 변경은 없다.
-- dynamic phase의 기존 DCE 5개 및 실제 TLA 4개 실패는 별도 잔여다. 이 named 경로의 통과 수에 섞지 않는다.
-- 명시 directive 없는 ESM 소비자의 implicit strictness는 기존 raw wrapper에서 사라진다. eval leak oracle의 plain/min 두 칸은 native `["strict",42]`, 이전 출력 `["sloppy",42]`로 별도 재현했다. 명시 prologue를 복원한 이번 수정으로 이 wrapper 자체의 기존 strictness 결함까지 완료했다고 주장하지 않는다.
+parser/scanner 직접 생성, 실제 literal clone, 1/70개 record merge, AST codec 재구성, unicode/specifier rewrite의 current anchor를 검사한다. storage source 10개는 기존 SID·Scope·decl anchor와 actual AST owner walk를 독립 대조한다. malformed/poisoned state 10개는 cached SID/spelling/span/record order 오염과 null/range/kind/duplicate anchor를 포함한다. 실제 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × plain/fullmin 행렬도 native와 대조한다. 최종 full/NAPI/compiled mutation 수치는 PR에 기록한다.
+
+ImportRecord와 local-role은 graph-facing memory state이며 module codec wire에 포함되지 않는다. AST cache 복원 후 scanner가 anchor를 재구성한다. compiler-import consumer는 기존 process-owner cache eviction을 유지하므로 owner-linked persistent warm reuse나 warm parse 0을 완료했다고 주장하지 않는다.
+
+아래 경계는 여전히 별도 필수 잔여다.
+
+- inlineRequires/Metro의 lazy policy, wrapped ESM target 및 guarded source prefix, re-export source execution, source-phase/defer/attribute import, split/preserve/HMR은 기존 admission을 유지한다. 일부 unsupported use가 raw에 남으면 module 전체의 mixed-order gate도 유지한다.
+- moduleSpecifierMap의 original default-spec binding 생성은 기존 `hasMappedImportToSplit` reanalysis gate를 유지한다. rewrite control은 current anchor 전달만 증명하며 same-owner SID birth 완료로 세지 않는다.
+- foreign CJS/ESM raw wrapper와 raw export getter의 실제 closure Scope/Reference는 이 단계로 제거되지 않는다.
+- 명시 directive 없는 ESM wrapper implicit-strict 두 칸은 native `["strict",42]`, 이전/현재 `["sloppy",42]`의 기존 debt다.
+- 실제 TLA 4개(별도 CJS 2개 정상 control) 및 기존 DCE 5개 실패는 통과 수에 섞지 않는다.
