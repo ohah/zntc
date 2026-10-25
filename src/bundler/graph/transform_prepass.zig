@@ -9743,6 +9743,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    if (transformer.unsupported_arrow_private_scope_span) |span| {
+        self.addDiag(.arrow_private_dynamic_scope, .@"error", module.path, span, .parse, TransformOptions.arrow_private_dynamic_scope_msg, null);
+        return;
+    }
     if (transformer.used_unsupported_static_initializer_dynamic_scope) {
         self.addDiag(.static_initializer_dynamic_scope, .@"error", module.path, Span.EMPTY, .parse, TransformOptions.static_initializer_dynamic_scope_msg, null);
         return;

@@ -78,6 +78,7 @@ pub fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c
             error.SemanticError => "SemanticError",
             error.TransformError => "TransformError",
             error.StaticInitializerDynamicScope => "ZNTC1505: class initializer or extracted private method cannot preserve its dynamic class lexical environment",
+            error.ArrowPrivateDynamicScope => "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target",
             error.CodegenError => "CodegenError",
             error.OutOfMemory => "OutOfMemory",
         };

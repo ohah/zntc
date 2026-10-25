@@ -106,6 +106,7 @@ const AstFacts = struct {
 
 pub const TranspileError = error{
     StaticInitializerDynamicScope,
+    ArrowPrivateDynamicScope,
     ParseError,
     SemanticError,
     TransformError,
@@ -1944,6 +1945,15 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
+    if (transformer.unsupported_arrow_private_scope_span) |span| {
+        if (on_error) |cb| cb(source, file_path, &scanner, &.{.{
+            .code = .arrow_private_dynamic_scope,
+            .span = span,
+            .message = TransformOptions.arrow_private_dynamic_scope_msg,
+            .kind = .semantic,
+        }});
+        return error.ArrowPrivateDynamicScope;
+    }
     if (transformer.used_unsupported_static_initializer_dynamic_scope)
         return error.StaticInitializerDynamicScope;
     if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {

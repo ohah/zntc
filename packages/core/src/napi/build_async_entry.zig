@@ -73,7 +73,9 @@ fn buildWorkerThread(async_data: *BuildAsyncData) void {
     var bundler = Bundler.init(native_alloc, async_data.options);
     defer bundler.deinit();
     async_data.result = bundler.bundle(common.io()) catch |err| {
-        async_data.err_msg = if (err == error.StaticInitializerDynamicScope)
+        async_data.err_msg = if (err == error.ArrowPrivateDynamicScope)
+            "ZNTC1506: retained dynamic capture contains private syntax requiring lowering for the target"
+        else if (err == error.StaticInitializerDynamicScope)
             "ZNTC1505: static initializer cannot be moved out of its class dynamic lexical environment"
         else
             @errorName(err);

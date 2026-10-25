@@ -201,6 +201,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // Replacing an object method with a function erases the home
                 // object context required by a retained lexical-super arrow.
                 self.used_unsupported_arrow_dynamic_scope = true;
+                try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
             // V7 fix: 이전 F7 가 object_expression 진입 시 super context 5종을 일괄 reset 했으나,
@@ -638,10 +639,12 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // generated `_this`/`_arguments`/`_newTarget` name could be
                 // intercepted by the `with` object regardless of its suffix.
                 self.used_unsupported_arrow_dynamic_scope = true;
+                try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
             if (capture_needs_downlevel and has_dynamic_eval_argument) {
                 self.used_unsupported_arrow_dynamic_eval = true;
+                try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
             if (self.options.unsupported.async_await) {
@@ -667,6 +670,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // Lowering the method would erase the home-object context that
                 // a retained lexical-super arrow needs in order to stay valid.
                 self.used_unsupported_arrow_dynamic_scope = true;
+                try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
             // 계산된 키는 클래스 바깥 문맥(`super`·static 블록의 `this`)으로 평가된다 (#4735).
@@ -714,6 +718,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx))
             {
                 self.used_unsupported_arrow_dynamic_scope = true;
+                try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
             // 계산된 키는 클래스 바깥 문맥(`super`·static 블록의 `this`)으로 평가된다 (#4735).

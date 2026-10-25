@@ -97,6 +97,7 @@ test {
     _ = @import("class_computed_key_semantic_test.zig");
     _ = @import("native_field_capture_semantic_test.zig");
     _ = @import("inner_with_capture_semantic_test.zig");
+    _ = @import("retained_private_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
     _ = @import("object_super_semantic_test.zig");

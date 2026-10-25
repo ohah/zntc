@@ -765,6 +765,8 @@ pub const Transformer = struct {
     /// eval argument can observe any generated capture alias.
     used_unsupported_arrow_dynamic_eval: bool = false,
     used_unsupported_static_initializer_dynamic_scope: bool = false,
+    /// Real source private span in an intentionally retained dynamic capture.
+    unsupported_arrow_private_scope_span: ?Span = null,
 
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.

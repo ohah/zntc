@@ -973,6 +973,8 @@ pub const BundlerDiagnostic = struct {
         arrow_dynamic_eval,
         /// Moving a static initializer would change its direct-eval/with environment.
         static_initializer_dynamic_scope,
+        /// Dynamic capture retention cannot keep target-unsupported private syntax.
+        arrow_private_dynamic_scope,
         /// sloppy 모듈의 `with` 문이 ESM 출력(모듈로 로드하면 strict)에 들어감 (#5455). warning severity.
         with_in_esm_output,
         /// export 선언 안 top-level await 를 async 함수 없는 타겟에서 번들 — 기다릴

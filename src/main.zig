@@ -143,7 +143,7 @@ fn transpileFile(
     var result = transpile_mod.transpileWithCallback(allocator, source, file_path, core_opts, &printErrors) catch |err| {
         // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
-            error.ParseError, error.SemanticError => {},
+            error.ParseError, error.SemanticError, error.ArrowPrivateDynamicScope => {},
             error.StaticInitializerDynamicScope => {
                 try stderr.print("zntc: {s}: ZNTC1505: {s}\n", .{ file_path, lib.transformer.TransformOptions.static_initializer_dynamic_scope_msg });
             },
@@ -875,7 +875,9 @@ pub fn main(init: std.process.Init) !void {
         defer bundler.deinit();
 
         const result = bundler.bundle(io) catch |err| {
-            if (err == error.StaticInitializerDynamicScope)
+            if (err == error.ArrowPrivateDynamicScope)
+                try stderr.print("zntc: ZNTC1506: {s}\n", .{lib.transformer.TransformOptions.arrow_private_dynamic_scope_msg})
+            else if (err == error.StaticInitializerDynamicScope)
                 try stderr.print("zntc: ZNTC1505: {s}\n", .{lib.transformer.TransformOptions.static_initializer_dynamic_scope_msg})
             else
                 try stderr.print("zntc: bundle failed: {}\n", .{err});
@@ -906,9 +908,15 @@ pub fn main(init: std.process.Init) !void {
                 // 없는 진단은 기존 `[sev] file: msg` 평문 유지.
                 const zntc_code = lib.rich_diagnostic.bundlerErrorCode(d.code);
                 if (zntc_code) |zc| {
-                    try stderr.print("[{s}] {s}: {s}: {s}\n", .{ zc.format(), sev_str, d.file_path, d.message });
+                    if (d.line != null and d.column != null)
+                        try stderr.print("[{s}] {s}: {s}:{d}:{d}: {s}\n", .{ zc.format(), sev_str, d.file_path, d.line.?, d.column.? + 1, d.message })
+                    else
+                        try stderr.print("[{s}] {s}: {s}: {s}\n", .{ zc.format(), sev_str, d.file_path, d.message });
                 } else {
-                    try stderr.print("[{s}] {s}: {s}\n", .{ sev_str, d.file_path, d.message });
+                    if (d.line != null and d.column != null)
+                        try stderr.print("[{s}] {s}:{d}:{d}: {s}\n", .{ sev_str, d.file_path, d.line.?, d.column.? + 1, d.message })
+                    else
+                        try stderr.print("[{s}] {s}: {s}\n", .{ sev_str, d.file_path, d.message });
                 }
                 // (#3986) suggestion 은 *교정된 이름*이 아니라 unresolved specifier 또는
                 // 조언 문장(producer 가 record.specifier / 전체 문장을 넣음)이다. ZNTC 엔
