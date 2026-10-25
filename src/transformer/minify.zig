@@ -782,7 +782,8 @@ pub fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) 
                 if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
             },
             .export_specifier => {
-                // Both edges name bindings; neither accepts a value expression.
+                // Local binding and public export name are lexical slots;
+                // neither accepts a value expression.
                 // Implicit exports can share their local/public identifier node.
                 for ([_]NodeIndex{ node.data.binary.left, node.data.binary.right }) |name| {
                     const raw = @backingInt(name);
