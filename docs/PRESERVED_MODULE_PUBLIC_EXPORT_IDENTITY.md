@@ -25,11 +25,32 @@ export specifier stays an identifier with the original local SymbolId.
 import record remains available to canonical value naming; `callsite_lowered`
 would incorrectly suppress that consumer too.
 
-This eager extension admits records consisting of supported live exported named
-bindings. Mixed lazy/eager binding records, default/namespace imports and other
-legacy raw-prefix callers are not newly admitted here. Owner-bound compiler
-imports retain the existing conservative cache eviction policy. This change does
-not establish cross-process foreign-owner reuse or close #4819.
+The synchronous PM ESM producer also owns default/namespace and bare-import
+initialization. A mixed record keeps canonical value bindings alive while
+separately marking eager initialization and lazy read calls. The legacy eager
+preamble skips only work already owned by those actual calls. CJS and async/TLA
+initializers retain their separate paths; this admission does not widen them.
+
+Import bindings carry their actual declaration NodeIndex from construction:
+parser scan batches, AST scanning and compiler import creation all publish it.
+The planner checks the birth declaration, current source literal and actual
+specifier/local anchor together. It does not repair an owner from names or spans.
+A bare import has no local binding, so its known source literal must have exactly
+one live bare-import owner.
+
+An eagerly initialized namespace keeps its original source read SID and Scope,
+and consumes the provider's exact namespace storage slot. The public getter and
+final-export collector use the same source export-anchor SID relation. Member
+calls keep their original AST receiver. For an owned re-export, namespace getters
+read the live provider property instead of a legacy synthetic-default snapshot
+or another initializer expression. A real source `export default value` or member
+expression still owns its snapshot facade; named declaration defaults remain
+live, including lowered named classes and chains of re-exports.
+
+Owner-bound compiler imports retain the existing conservative persistent-store
+eviction policy. Disk snapshots are taken before those process-local callsites
+are constructed, and supported reloads construct fresh owners. This change does
+not establish arbitrary cross-process foreign-owner reuse or close #4819.
 
 Preserved import specifiers are calculated from the same output paths used by
 the file writer, including root-level virtual helper files and nested source
@@ -41,3 +62,12 @@ Node comparisons, actual typed guard targets and reference scopes, unchanged
 live-export identifier anchors, wrapper/public alias conflicts, and output-path
 controls with and without a preserve-modules root. Separate mutation logs record
 compile failures, real test failures and restored-source controls independently.
+
+The eager-call matrix preserves an immutable ten-source input corpus and checks
+plain/minified output against native Node. A direct producer probe compares
+original source SID, Scope, reference flags, nested coordinates and declaration
+owners before any output walk. It also checks real program-call target uniqueness
+and Scope0 statement coordinates. Reporter getter counts independently detect a
+raw guard call left behind by another emitter. Mutable namespace barrels have
+separate expression/member snapshot, named function/class, anonymous class and
+multi-edge re-export controls.
