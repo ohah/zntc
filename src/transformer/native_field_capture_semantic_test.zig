@@ -125,3 +125,70 @@ test "native field capture owns exact constructor storage and references before 
         try std.testing.expect((references > 0) == case.capture);
     }
 }
+
+test "native field capture restores caller state at the field producer boundary" {
+    const ast = @import("../parser/ast.zig");
+    const helpers = @import("transformer/class_member_helpers.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "class Box{value=()=>this}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{
+        .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+        .use_define_for_class_fields = false,
+    });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    var class_node: ast.NodeIndex = .none;
+    var property: ast.NodeIndex = .none;
+    for (t.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .class_declaration) class_node = @fromBackingInt(@as(u32, @intCast(raw)));
+        if (node.tag == .property_definition) property = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    const class_scope = t.outputOwnedScope(class_node) orelse return error.MissingSourceClassScope;
+    t.current_scope = class_scope;
+    const body = t.ast.readExtraNode(t.ast.getNode(class_node).data.extra, ast.ClassExtra.body);
+    const plan = try helpers.prepareFieldInitializerPlan(&t, body, class_scope);
+    var members: std.ArrayList(ast.NodeIndex) = .empty;
+    var fields: std.ArrayList(helpers.FieldAssignment) = .empty;
+    var decorators: std.ArrayList(helpers.MemberDecoratorInfo) = .empty;
+    var parameter_decorators: std.ArrayList(ast.NodeIndex) = .empty;
+    var constructor: ?ast.NodeIndex = null;
+    var constructor_position: ?usize = null;
+    var params: ast.NodeList = .{ .start = 0, .len = 0 };
+    var context: helpers.ClassMemberContext = .{
+        .field_initializer_plan = plan,
+        .class_members = &members,
+        .field_assignments = &fields,
+        .member_decorators = &decorators,
+        .existing_constructor = &constructor,
+        .existing_constructor_pos = &constructor_position,
+        .ctor_param_decos = &parameter_decorators,
+        .ctor_params = &params,
+    };
+    const capture_scope = t.capture_scope;
+    try helpers.classifyPropertyDefinition(&t, @backingInt(property), t.ast.getNode(property), &context);
+    try std.testing.expectEqual(class_scope, t.current_scope);
+    try std.testing.expectEqual(capture_scope, t.capture_scope);
+    try std.testing.expectEqual(@as(u32, 0), t.capture_frame);
+    try std.testing.expectEqual(@as(u32, 0), t.arrow_this_depth);
+    try std.testing.expect(!t.needs_this_var and !t.needs_arguments_var and !t.super_call_this_alias);
+    try std.testing.expect(t.native_field_capture_plan == null);
+    try std.testing.expectEqual(@as(usize, 1), fields.items.len);
+    const capture = context.field_initializer_plan.capture;
+    try std.testing.expect(!capture.this_declaration.isNone());
+    try std.testing.expectEqual(plan.scope, t.semantic_editor.?.symbols.items[capture.symbol_id.?].scope_id);
+}
