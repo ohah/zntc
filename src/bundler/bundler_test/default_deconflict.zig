@@ -867,15 +867,14 @@ test "Default: export default from namespace import assigns ns var" {
     // ns var 할당이 반드시 존재해야 한다. 공유 namespace preamble 경로에서는
     // 병렬 metadata 순서에 따라 var 이름이 X_ns 외의 `<import>_ns`가 될 수 있다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, " = {get foo()") != null);
-    // default getter가 X를 반환 (minified 또는 non-minified 둘 다 허용)
-    // default getter는 arrow 또는 function expression (platform/minify에 따라 다름)
-    const has_default_getter = std.mem.indexOf(u8, result.output, "\"default\": () => X") != null or
-        std.mem.indexOf(u8, result.output, "\"default\":()=>X") != null or
-        std.mem.indexOf(u8, result.output, "\"default\": function() { return X; }") != null;
+    // The exported default is a snapshot facade initialized from the namespace.
+    const has_default_getter = std.mem.indexOf(u8, result.output, "\"default\": function() { return _default; }") != null or
+        std.mem.indexOf(u8, result.output, "\"default\":()=>_default") != null or
+        std.mem.indexOf(u8, result.output, "\"default\": () => _default") != null;
     try std.testing.expect(has_default_getter);
-    // 할당 라인 확인: `X = <shared namespace var>;`
-    const has_assign = (std.mem.indexOf(u8, result.output, "X = ") != null or
-        std.mem.indexOf(u8, result.output, "X=") != null) and
+    // The facade receives the lowered shared namespace object.
+    const has_assign = (std.mem.indexOf(u8, result.output, "_default = ") != null or
+        std.mem.indexOf(u8, result.output, "_default=") != null) and
         std.mem.indexOf(u8, result.output, "_ns;") != null;
     try std.testing.expect(has_assign);
 }
@@ -943,7 +942,7 @@ test "Default: shared namespace preamble has no runtime helper overhead (#1940)"
     // Namespace keys are sorted (#5633): `bar` comes before `foo`.
     try std.testing.expect(std.mem.startsWith(u8, result.output, "var lib_ns = {get bar()"));
     try std.testing.expect(std.mem.count(u8, result.output, "var lib_ns = {get bar()") == 1);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(foo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(_default.foo)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") == null);

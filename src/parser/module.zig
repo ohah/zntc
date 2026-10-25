@@ -40,6 +40,9 @@ pub const ImportPhase = enum(u4) {
 pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
 
 /// Whether `export default` needs the analyzer's synthetic `_default` facade.
+/// Named function/class declarations keep their declaration binding. Every
+/// expression, including an identifier reference, evaluates a default value
+/// snapshot and therefore needs a distinct export identity.
 /// Keep this decision shared by parsing, semantic analysis, and bundler export
 /// metadata so a real source binding named `_default` is never used as a proxy.
 pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex) bool {
@@ -52,8 +55,6 @@ pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex) b
             const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
             if (!name_idx.isNone()) return false;
         }
-    } else if (inner.tag == .identifier_reference) {
-        return false;
     }
     return true;
 }
@@ -310,7 +311,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         _ = try self.eat(.semicolon);
 
         // Inline scan: side-effect import (no bindings)
-        if (self.enable_scan and !is_type_only and !source_node.isNone()) {
+        if (self.enable_scan and !self.ctx.in_ambient and !is_type_only and !source_node.isNone()) {
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
             const spec = extractImportSpecifier(self, raw);
@@ -409,7 +410,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
                 // Inline scan: default-only import (type-only 는 graph/linker 가
                 // import_record 의 type-only marker 로 elide — scan 단계에선 record 등록).
-                if (self.enable_scan and !is_type_only and !source_node.isNone()) {
+                if (self.enable_scan and !self.ctx.in_ambient and !is_type_only and !source_node.isNone()) {
                     const src_node = self.ast.getNode(source_node);
                     const raw = self.ast.source[src_node.span.start..src_node.span.end];
                     const specifier = extractImportSpecifier(self, raw);
@@ -473,7 +474,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // Inline scan: full import (namespace/named/mixed). type-only 는 graph/linker
     // 단계에서 import_record 의 type-only marker 로 elide — scan 단계에선 record 등록.
-    if (self.enable_scan and !is_type_only and !source_node.isNone()) {
+    if (self.enable_scan and !self.ctx.in_ambient and !is_type_only and !source_node.isNone()) {
         const src_node = self.ast.getNode(source_node);
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
         const spec = extractImportSpecifier(self, raw);
@@ -702,8 +703,9 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         });
 
         // Inline scan: export default
-        if (self.enable_scan) {
+        if (self.enable_scan and !self.ctx.in_ambient) {
             self.scan_result.has_esm_syntax = true;
+            const has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl);
             var local_name: []const u8 = "_default";
             var local_symbol_node_index: ?u32 = null;
             if (!decl.isNone()) {
@@ -730,16 +732,26 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 }
             }
             // barrel re-export check
-            const re = checkBarrelReExport(self, local_name);
+            // `export default importedName` evaluates the imported value now;
+            // it is not a live `export { importedName as default }` re-export.
+            var re_kind: scan_results_mod.ExportBindingKind = .local;
+            var re_import_record_index: ?u32 = null;
+            var re_local_name = local_name;
+            if (!has_default_export_facade) {
+                const re = checkBarrelReExport(self, local_name);
+                re_kind = re.kind;
+                re_import_record_index = re.import_record_index;
+                re_local_name = re.local_name;
+            }
             self.scan_export_bindings.append(self.allocator, .{
                 .exported_name = "default",
-                .local_name = re.local_name,
+                .local_name = re_local_name,
                 .local_span = .{ .start = start, .end = self.currentSpan().start },
-                .local_symbol_node_index = if (re.kind == .local) local_symbol_node_index else null,
-                .kind = re.kind,
-                .import_record_index = re.import_record_index,
+                .local_symbol_node_index = if (re_kind == .local) local_symbol_node_index else null,
+                .kind = re_kind,
+                .import_record_index = re_import_record_index,
                 .default_export_node_index = @backingInt(export_node),
-                .has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl),
+                .has_default_export_facade = has_default_export_facade,
             }) catch {};
         }
 
@@ -774,7 +786,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         if (is_type_only_export) return NodeIndex.none;
 
         // Inline scan: export * from "module" / export * as ns from "module"
-        if (self.enable_scan and !source_node.isNone()) {
+        if (self.enable_scan and !self.ctx.in_ambient and !source_node.isNone()) {
             self.scan_result.has_esm_syntax = true;
             const src_node = self.ast.getNode(source_node);
             const raw = self.ast.source[src_node.span.start..src_node.span.end];
@@ -863,7 +875,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         }
 
         // Inline scan: export { a, b } / export { a } from "module"
-        if (self.enable_scan and !is_type_only_export) {
+        if (self.enable_scan and !self.ctx.in_ambient and !is_type_only_export) {
             self.scan_result.has_esm_syntax = true;
             const has_source = !source_node.isNone();
             var rec_idx: ?u32 = null;
@@ -987,7 +999,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
     if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return decl;
 
     // Inline scan: export var/let/const/function/class
-    if (self.enable_scan) {
+    if (self.enable_scan and !self.ctx.in_ambient) {
         self.scan_result.has_esm_syntax = true;
         try collectDeclExportBindings(self, decl);
     }

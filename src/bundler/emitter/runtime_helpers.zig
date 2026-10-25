@@ -196,7 +196,7 @@ pub fn emitBundleRuntimeHelpers(
     // entry_error_guard: Metro `guardedLoadModule` 동등 mechanism 의 helper 주입.
     // 실제 wrap 은 emit 단계에서 module init 호출 site 별로 `__zntc_guarded(fn)` 으로 emit.
     if (options.entry_error_guard) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARDED_RUNTIME_MIN else rt.GUARDED_RUNTIME);
+        try output.appendSlice(allocator, rt.guardedRuntime(options.minify_whitespace, options.code_splitting));
     }
     // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
     // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.

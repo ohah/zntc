@@ -499,13 +499,17 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                     // (mangler/linker 가 그 이름을 쓰면 오판). metadata 없으면(비-bundle) 합성 간주.
                     const is_synthetic_default = if (self.options.linking_metadata) |md| md.default_export_is_synthetic else true;
                     if (is_synthetic_default) {
-                        // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
-                        if (!self.options.esm_var_assign_only) try self.write("var ");
-                        try self.write(def_name);
-                        try self.writeByte('=');
-                        // sequence(comma) inner 는 괄호 wrap 필요 — `=a,b` 가 `(=a),b` 로 깨짐 (#4289).
-                        try keep_names.emitNamedValue(self, inner, keep_names.defaultExportHint(self, inner), .comma, .{});
-                        try self.writeByte(';');
+                        // Preserve namespace-import lowering while giving the snapshot
+                        // its own facade binding (`_default = X_ns`).
+                        if (!(try tryEmitNsVarAssignment(self, def_name, inner))) {
+                            // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
+                            if (!self.options.esm_var_assign_only) try self.write("var ");
+                            try self.write(def_name);
+                            try self.writeByte('=');
+                            // sequence(comma) inner 는 괄호 wrap 필요 — `=a,b` 가 `(=a),b` 로 깨짐 (#4289).
+                            try keep_names.emitNamedValue(self, inner, keep_names.defaultExportHint(self, inner), .comma, .{});
+                            try self.writeByte(';');
+                        }
                     } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
                         // namespace import이면 ns var name을 직접 사용 (rename과 다름).
                         if (!(try tryEmitNsVarAssignment(self, def_name, inner))) {
