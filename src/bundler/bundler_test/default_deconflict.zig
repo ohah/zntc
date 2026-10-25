@@ -1924,14 +1924,22 @@ test "preserved CJS named exports retain exact source values and namespace recei
 }
 
 test "preserved eager producer keeps original identities before any output walk" {
-    try expectPreservedEagerBeforewalk(.esm);
+    try expectPreservedEagerBeforewalk(.esm, true);
 }
 
 test "preserved CJS producer keeps original identities before any output walk" {
-    try expectPreservedEagerBeforewalk(.cjs);
+    try expectPreservedEagerBeforewalk(.cjs, true);
 }
 
-fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.Format) !void {
+test "preserved plain ESM producer keeps original identities before any output walk" {
+    try expectPreservedEagerBeforewalk(.esm, false);
+}
+
+test "preserved plain CJS producer keeps original identities before any output walk" {
+    try expectPreservedEagerBeforewalk(.cjs, false);
+}
+
+fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.Format, guarded: bool) !void {
     const Reference = @import("../../semantic/symbol.zig").Reference;
     for (preservedEagerValidationCases) |case| {
         errdefer std.debug.print("preserved eager beforewalk {s}\n", .{case.name});
@@ -1956,7 +1964,7 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
         try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
         var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, format);
         defer linker.deinit();
-        linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = true });
+        linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = guarded });
         try linker.link();
         linker.populateImportSymbols();
         const module_index = graph.path_to_module.get(entry).?;
@@ -1968,7 +1976,7 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
         defer std.testing.allocator.free(references);
         const scopes = try std.testing.allocator.dupe(@import("../../semantic/scope.zig").Scope, before_module.semantic.?.scopes);
         defer std.testing.allocator.free(scopes);
-        try @import("../runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        if (guarded) try @import("../runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
         const before_ast = &before_module.ast.?;
         const original_root = before_ast.transformed_root orelse @as(@import("../../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(before_ast.nodes.items.len - 1))));
         before_ast.transformed_root = original_root;
@@ -2066,25 +2074,31 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
             if (call.tag != .call_expression) continue;
             const callee = ast.readExtraNode(call.data.extra, 0);
             const callee_sid = semantic.symbol_ids[@backingInt(callee)] orelse continue;
-            var is_guard = false;
-            for (module.import_bindings) |binding| {
-                const target = binding.callsite_target orelse continue;
-                if (target.role == .entry_guard and binding.local_symbol.semanticIndex() == @as(?u32, callee_sid)) is_guard = true;
-            }
-            if (!is_guard) continue;
-            try std.testing.expectEqual(@as(u32, 1), ast.readExtra(call.data.extra, 2));
-            const argument = ast.readExtraNode(ast.readExtra(call.data.extra, 1), 0);
-            const argument_sid = semantic.symbol_ids[@backingInt(argument)].?;
             var initializer: ?@import("../symbol.zig").SymbolID = null;
+            var is_initialization = false;
             for (module.import_bindings) |binding| {
                 const target = binding.callsite_target orelse continue;
-                if (target.role == .esm_init and binding.local_symbol.semanticIndex() == @as(?u32, argument_sid)) initializer = target.symbol;
+                const expected_role: @import("../binding_scanner.zig").CallsiteRole = if (guarded) .entry_guard else .esm_init;
+                if (target.role == expected_role and binding.local_symbol.semanticIndex() == @as(?u32, callee_sid)) {
+                    is_initialization = true;
+                    if (!guarded) initializer = target.symbol;
+                }
+            }
+            if (!is_initialization) continue;
+            try std.testing.expectEqual(@as(u32, if (guarded) 1 else 0), ast.readExtra(call.data.extra, 2));
+            const argument = if (guarded) ast.readExtraNode(ast.readExtra(call.data.extra, 1), 0) else @as(@import("../../parser/ast.zig").NodeIndex, .none);
+            if (guarded) {
+                const argument_sid = semantic.symbol_ids[@backingInt(argument)].?;
+                for (module.import_bindings) |binding| {
+                    const target = binding.callsite_target orelse continue;
+                    if (target.role == .esm_init and binding.local_symbol.semanticIndex() == @as(?u32, argument_sid)) initializer = target.symbol;
+                }
             }
             try std.testing.expect(initializer != null);
             try std.testing.expect(!initialized.contains(initializer.?));
             try initialized.put(std.testing.allocator, initializer.?, {});
             for (semantic.references) |reference| {
-                if (reference.node_index != callee and reference.node_index != argument) continue;
+                if (reference.node_index != callee and (argument.isNone() or reference.node_index != argument)) continue;
                 try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
                 try std.testing.expectEqual(statement_index, reference.stmt_idx);
                 try std.testing.expectEqual(statement_index, reference.scope_stmt_idx);
@@ -2104,6 +2118,12 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
             }
         }
         try std.testing.expect(generated > 0);
+        if (!guarded) {
+            try std.testing.expect(graph.entry_guard_ast_provider == null);
+            for (module.import_bindings) |binding| if (binding.callsite_target) |target| {
+                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
+            };
+        }
     }
 }
 
@@ -2315,6 +2335,73 @@ test "preserved CJS public StringValue aliases cannot steal private transport ha
         defer std.testing.allocator.free(emitted);
         const script = try std.fmt.allocPrint(std.testing.allocator, "(await import('node:module')).createRequire(import.meta.url)('{s}');", .{emitted});
         defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, expected);
+    };
+}
+
+test "preserved plain imports evaluate with exact zero-argument init callees and no guard provider" {
+    for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .cjs }) |format| for (preservedCjsPublicCases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("plain runtime format={s} case={s} minify={}\n", .{ @tagName(format), case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", if (format == .esm) "{\"type\":\"module\"}" else "{\"type\":\"commonjs\"}");
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        if (case.extra_name) |name| try writeFile(tmp.dir, name, case.extra_source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = false, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        try std.testing.expect(graph.entry_guard_ast_provider == null);
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        const semantic = module.semantic.?;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target) |target| {
+                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            } else if (!binding.is_helper) {
+                const sid = binding.local_symbol.semanticIndex().?;
+                try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
+                try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, semantic.symbols.items[sid].kind);
+                try std.testing.expect(binding.guarded_eager_init_lowered or binding.guarded_lazy_calls_lowered);
+            }
+        }
+        const ast = &module.ast.?;
+        var actual_init_calls: usize = 0;
+        for (try @import("../../parser/ast_walk.zig").collectReachableNodeIndices(module.parse_arena.?.allocator(), ast)) |raw| {
+            const node = ast.nodes.items[raw];
+            if (node.tag != .call_expression) continue;
+            const callee = ast.readExtraNode(node.data.extra, 0);
+            const sid = semantic.symbol_ids[@backingInt(callee)] orelse continue;
+            for (module.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (binding.local_symbol.semanticIndex() != @as(?u32, sid)) continue;
+                try std.testing.expectEqual(@import("../binding_scanner.zig").CallsiteRole.esm_init, target.role);
+                try std.testing.expectEqual(@as(u32, 0), ast.readExtra(node.data.extra, 2));
+                actual_init_calls += 1;
+            }
+        }
+        try std.testing.expect(actual_init_calls > 0);
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const load = if (format == .esm)
+            try std.fmt.allocPrint(std.testing.allocator, "await import('file://{s}')", .{emitted})
+        else
+            try std.fmt.allocPrint(std.testing.allocator, "(await import('node:module')).createRequire(import.meta.url)('{s}')", .{emitted});
+        defer std.testing.allocator.free(load);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{get(){{reads++;return undefined}}}});const ns={s};console.log(JSON.stringify({s}));console.log(reads);", .{ load, case.read });
+        defer std.testing.allocator.free(script);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}0\n", .{case.expected});
+        defer std.testing.allocator.free(expected);
         try expectDefaultRuntimeOutput(script, expected);
     };
 }
