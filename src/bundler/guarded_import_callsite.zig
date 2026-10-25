@@ -55,6 +55,69 @@ fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, bind
     return .{ .direct = try direct.esmInitSymbol(), .value = try value.esmInitSymbol() };
 }
 
+fn preservedEagerTarget(graph: anytype, linker: anytype, module: *const Module, target: *const Module) bool {
+    return graph.preserve_modules and linker.format == .esm and module.wrap_kind == .esm and
+        target.wrap_kind == .esm and target.shouldGuard(true) and !target.in_async_cone;
+}
+
+fn preservedEagerBindingTargets(graph: anytype, linker: anytype, module: *const Module, binding: Binding, sid: u32) !?Initializers {
+    if (binding.is_helper or binding.callsite_target != null or binding.source_type_only == true or binding.guarded_eager_init_lowered) return null;
+    if (!binding.importsDefault() and binding.kind != .namespace and !hasLiveLocalExport(module, sid)) return null;
+    const record = module.import_records[binding.import_record_index];
+    const direct = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
+    if (binding.kind == .namespace) {
+        if (!preservedEagerTarget(graph, linker, module, direct)) return null;
+        _ = try direct.esmNamespaceSymbol();
+        const initializer = try direct.esmInitSymbol();
+        return .{ .direct = initializer, .value = initializer };
+    }
+    const resolved = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return null;
+    if (resolved.canonical.synthetic_member != null) return null;
+    // Evaluation uses the linker's already-resolved module edge, including
+    // an unwrapped barrel. No value SID is rediscovered from an export name.
+    const value = graph.getModule(resolved.canonical.module_index) orelse return error.InvalidGuardedImportBinding;
+    const direct_init: ?SymbolID = if (direct.wrap_kind == .none) null else if (preservedEagerTarget(graph, linker, module, direct)) try direct.esmInitSymbol() else return null;
+    const value_init: ?SymbolID = if (value.wrap_kind == .none) null else if (preservedEagerTarget(graph, linker, module, value)) try value.esmInitSymbol() else return null;
+    const first = direct_init orelse value_init orelse return null;
+    return .{ .direct = first, .value = value_init orelse first };
+}
+
+fn importSourceOwner(ast: *const ast_mod.Ast, root: NodeIndex, source: NodeIndex, bare: bool) !NodeIndex {
+    if (source.isNone() or @backingInt(source) >= ast.nodes.items.len or ast.getNode(source).tag != .string_literal) return error.InvalidGuardedImportSource;
+    var owner: ?NodeIndex = null;
+    var statements = ast.iterateExtraList(ast.getNode(root).data.list);
+    while (statements.next()) |statement| {
+        const node = ast.getNode(statement);
+        if (node.tag != .import_declaration) continue;
+        const declaration = @import("../parser/module.zig").readImportDeclExtras(ast, node.data.extra);
+        if (declaration.source != source) continue;
+        if (owner != null or declaration.is_type_only or (declaration.specs_len == 0) != bare) return error.InvalidGuardedImportSource;
+        owner = statement;
+    }
+    return owner orelse error.InvalidGuardedImportSource;
+}
+
+fn validateBindingSource(ast: *const ast_mod.Ast, owner: NodeIndex, binding: Binding) !void {
+    const anchor = binding.local_symbol_node orelse return error.InvalidGuardedImportSource;
+    const declaration = @import("../parser/module.zig").readImportDeclExtras(ast, ast.getNode(owner).data.extra);
+    var count: usize = 0;
+    for (ast.extra_data.items[declaration.specs_start .. declaration.specs_start + declaration.specs_len]) |raw| {
+        const specifier: NodeIndex = @fromBackingInt(raw);
+        const node = ast.getNode(specifier);
+        const local = switch (node.tag) {
+            .import_default_specifier => if (binding.kind == .default) specifier else continue,
+            .import_namespace_specifier => if (binding.kind == .namespace) specifier else continue,
+            .import_specifier => if (binding.kind == .named and node.data.binary.flags & @import("../parser/module.zig").SPEC_FLAG_TYPE_ONLY == 0)
+                if (!node.data.binary.right.isNone()) node.data.binary.right else node.data.binary.left
+            else
+                continue,
+            else => continue,
+        };
+        if (local == anchor) count += 1;
+    }
+    if (count != 1) return error.InvalidGuardedImportSource;
+}
+
 const EagerHelper = struct { record: usize, target: SymbolID, bindings: []const usize, owns_record: bool = false };
 
 /// Validate the scanner's exact source anchor against its live export syntax.
@@ -76,10 +139,9 @@ fn validateReExportSource(ast: *const ast_mod.Ast, root: NodeIndex, source: Node
     if (owners != 1) return error.InvalidGuardedReExport;
 }
 
-/// Preserve the existing eager order: this slice owns helper-only eager
-/// records and explicit ESM re-exports. Other eager dependencies must be
-/// deferred named reads or unwrapped modules executed by ordinary graph order.
-/// Mixed eager work stays with its current producer until the ordered phase owns it.
+/// Own supported eager work in original record order. A mixed record keeps
+/// original value bindings alive: evaluation and lazy reads have separate
+/// per-binding ownership, while bare/re-export records have no local values.
 fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: NodeIndex, a: std.mem.Allocator) ![]const EagerHelper {
     var result: std.ArrayList(EagerHelper) = .empty;
     for (module.import_records, 0..) |record, record_index| {
@@ -87,7 +149,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
         if (record.resolved.isNone()) return &.{};
         const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
         if (linker.tree_shaker_active and !target.is_included) continue;
-        if (target.wrap_kind == .none) continue;
+        if (target.wrap_kind == .none and !(graph.preserve_modules and linker.format == .esm and module.wrap_kind == .esm and record.kind == .static_import)) continue;
         if (record.kind == .re_export) {
             if (module.wrap_kind != .esm or target.wrap_kind != .esm or !target.shouldGuard(true) or target.in_async_cone) return &.{};
             try validateReExportSource(&module.ast.?, root, record.source_node);
@@ -99,11 +161,18 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
             try result.append(a, .{ .record = record_index, .target = try target.esmInitSymbol(), .bindings = &.{}, .owns_record = true });
             continue;
         }
+        if (record.kind == .side_effect) {
+            if (!preservedEagerTarget(graph, linker, module, target)) return &.{};
+            _ = try importSourceOwner(&module.ast.?, root, record.source_node, true);
+            try result.append(a, .{ .record = record_index, .target = try target.esmInitSymbol(), .bindings = &.{}, .owns_record = true });
+            continue;
+        }
         if (record.kind != .static_import) return &.{};
         var helpers: std.ArrayList(usize) = .empty;
         var ordinary: usize = 0;
         var eager_bindings: std.ArrayList(usize) = .empty;
         var eager_targets: std.ArrayList(SymbolID) = .empty;
+        var source_owner: ?NodeIndex = null;
         for (module.import_bindings, 0..) |binding, index| {
             if (binding.import_record_index != record_index) continue;
             if (binding.is_helper) {
@@ -112,11 +181,14 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
                 try helpers.append(a, index);
             } else {
                 if (module.wrap_kind != .esm) return &.{};
+                if (graph.preserve_modules and linker.format == .esm) {
+                    if (source_owner == null) source_owner = try importSourceOwner(&module.ast.?, root, record.source_node, false);
+                    try validateBindingSource(&module.ast.?, source_owner.?, binding);
+                }
                 const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = module.semantic.?.symbol_ids, .symbols = module.semantic.?.symbols.items });
                 const sid = local.semanticIndex() orelse return &.{};
                 if (try targetsFor(graph, linker, module, binding, sid) == null) {
-                    if (!graph.preserve_modules or !hasLiveLocalExport(module, sid)) return &.{};
-                    const targets = try targetsForPolicy(graph, linker, module, binding, sid, true) orelse return &.{};
+                    const targets = try preservedEagerBindingTargets(graph, linker, module, binding, sid) orelse return &.{};
                     try eager_bindings.append(a, index);
                     try eager_targets.append(a, targets.direct);
                     if (!targets.value.eql(targets.direct)) try eager_targets.append(a, targets.value);
@@ -124,13 +196,10 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
             }
         }
         if (eager_bindings.items.len != 0) {
-            if (helpers.items.len != 0 or ordinary != 0) return &.{};
             for (eager_targets.items) |initializer| try result.append(a, .{ .record = record_index, .target = initializer, .bindings = eager_bindings.items });
-            continue;
         }
-        if (helpers.items.len == 0 and ordinary == 0) return &.{};
+        if (helpers.items.len == 0 and ordinary == 0 and eager_bindings.items.len == 0) return &.{};
         if (helpers.items.len != 0) {
-            if (ordinary != 0) return &.{};
             try result.append(a, .{ .record = record_index, .target = try target.esmInitSymbol(), .bindings = helpers.items });
         }
     }

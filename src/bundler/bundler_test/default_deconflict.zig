@@ -1751,3 +1751,249 @@ test "Default: preserved wrapped modules publish public exports and exact guard 
         try expectDefaultRuntimeOutput(script, "42\n");
     };
 }
+
+const preservedEagerCases = [_]struct { name: []const u8, entry: []const u8, dep: []const u8, extra_name: ?[]const u8 = null, extra_source: []const u8 = "", read: []const u8, expected: []const u8 }{
+    .{ .name = "default-function", .entry = "import value from'./dep.mjs';export default()=>value()", .dep = "export default function value(){return 42}", .read = "ns.default()", .expected = "42\n" },
+    .{ .name = "default-expression", .entry = "import value from'./dep.mjs';export default()=>value()", .dep = "let value=()=>42;export default value;value=()=>43", .read = "ns.default()", .expected = "42\n" },
+    .{ .name = "default-alias", .entry = "import{default as value}from'./dep.mjs';export default()=>value()", .dep = "export default function value(){return 42}", .read = "ns.default()", .expected = "42\n" },
+    .{ .name = "default-barrel", .entry = "import value from'./dep.mjs';export default()=>value()", .dep = "export{default}from'./leaf.mjs'", .read = "ns.default()", .expected = "42\n", .extra_name = "leaf.mjs", .extra_source = "export default function value(){return 42}" },
+    .{ .name = "namespace-receiver", .entry = "import*as values from'./dep.mjs';export default()=>values.value()", .dep = "export const marker=42;export function value(){return this.marker}", .read = "ns.default()", .expected = "42\n" },
+    .{ .name = "namespace-value", .entry = "import*as values from'./dep.mjs';export default values", .dep = "export function value(){return 42}", .read = "ns.default.value()", .expected = "42\n" },
+    .{ .name = "namespace-live-export", .entry = "import*as values from'./dep.mjs';export{values};export default()=>values.value()", .dep = "export function value(){return 42}", .read = "[ns.values.value(),ns.default()]", .expected = "[42,42]\n" },
+    .{ .name = "bare-effect", .entry = "import'./dep.mjs';export default globalThis.answer", .dep = "globalThis.answer=42", .read = "ns.default", .expected = "42\n" },
+    .{ .name = "bare-order", .entry = "import'./first.mjs';import'./dep.mjs';export default globalThis.events.join(',')", .dep = "globalThis.events.push('b')", .read = "ns.default", .expected = "\"a,b\"\n", .extra_name = "first.mjs", .extra_source = "globalThis.events=['a']" },
+    .{ .name = "mixed-live-lazy", .entry = "import{left,right}from'./dep.mjs';export{left as live};export default()=>right()", .dep = "export function left(){return 42}export function right(){return 42}", .read = "[ns.live(),ns.default()]", .expected = "[42,42]\n" },
+};
+
+const preservedEagerValidationCases = preservedEagerCases ++ [_]@TypeOf(preservedEagerCases[0]){.{
+    .name = "control-two-live-bindings-one-record",
+    .entry = "import{left,right}from'./dep.mjs';export{left,right};export default()=>left()+right()",
+    .dep = "export function left(){return 21}export function right(){return 21}",
+    .read = "[ns.left(),ns.right(),ns.default()]",
+    .expected = "[21,21,42]\n",
+}};
+
+test "preserved eager imports retain source values and namespace receivers" {
+    for (preservedEagerValidationCases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved eager case {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        if (case.extra_name) |name| try writeFile(tmp.dir, name, case.extra_source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        const semantic = module.semantic.?;
+        var eager_calls: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target) |target| {
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                if (target.role != .entry_guard) continue;
+                const local = binding.local_symbol.semanticIndex().?;
+                for (semantic.references) |reference| {
+                    if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+                    try std.testing.expectEqual(@as(?u32, local), semantic.symbol_ids[@backingInt(reference.node_index)]);
+                    if (reference.scope_id.toIndex() == 0) eager_calls += 1;
+                }
+            } else if (!binding.is_helper) {
+                const sid = binding.local_symbol.semanticIndex().?;
+                try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
+                try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, semantic.symbols.items[sid].kind);
+                try std.testing.expect(binding.guarded_eager_init_lowered or binding.guarded_lazy_calls_lowered);
+                try std.testing.expect(!module.import_records[binding.import_record_index].callsite_lowered);
+                if (binding.kind == .namespace) {
+                    const namespace = (try @import("../binding_scanner.zig").eagerNamespaceSymbol(&graph, module, binding)).?;
+                    try std.testing.expect(namespace.eql(try graph.getModule(namespace.module).?.esmNamespaceSymbol()));
+                }
+            }
+        }
+        try std.testing.expect(eager_calls > 0);
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        var guard_calls: usize = 0;
+        var modules = graph.modules.iterator(0);
+        while (modules.next()) |candidate| {
+            const sem = candidate.semantic orelse continue;
+            for (candidate.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (target.role != .entry_guard) continue;
+                for (sem.references) |reference| {
+                    if (reference.flags.read and binding.local_symbol.semanticIndex() == @as(?u32, @backingInt(reference.symbol_id))) guard_calls += 1;
+                }
+            }
+        }
+        const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{configurable:true,get(){{reads++;return undefined}}}});const ns=await import('file://{s}');console.log(JSON.stringify({s}));console.log(reads);", .{ emitted, case.read });
+        defer std.testing.allocator.free(script);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}{d}\n", .{ case.expected, guard_calls });
+        defer std.testing.allocator.free(expected);
+        try expectDefaultRuntimeOutput(script, expected);
+    };
+}
+
+test "preserved eager producer keeps original identities before any output walk" {
+    const Reference = @import("../../semantic/symbol.zig").Reference;
+    for (preservedEagerValidationCases) |case| {
+        errdefer std.debug.print("preserved eager beforewalk {s}\n", .{case.name});
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        if (case.extra_name) |name| try writeFile(tmp.dir, name, case.extra_source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        // Guard-off build preserves the same parsed/prepass graph without
+        // invoking this producer. The direct call below runs before output.
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = true, .entry_error_guard = false, .tree_shaking = false };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const initial = try bundler.bundle(std.testing.io);
+        defer initial.deinit(std.testing.allocator);
+        try std.testing.expect(!initial.hasErrors());
+        var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+        linker.setEmitFormat(.esm, .{ .inline_requires = true, .entry_error_guard = true });
+        try linker.link();
+        const module_index = graph.path_to_module.get(entry).?;
+        const before_module = graph.moduleAtMut(module_index).?;
+        const owner = before_module.semantic.?.captureOwnerToken();
+        const originals = try std.testing.allocator.dupe(@import("../binding_scanner.zig").ImportBinding, before_module.import_bindings);
+        defer std.testing.allocator.free(originals);
+        const references = try std.testing.allocator.dupe(Reference, before_module.semantic.?.references);
+        defer std.testing.allocator.free(references);
+        const scopes = try std.testing.allocator.dupe(@import("../../semantic/scope.zig").Scope, before_module.semantic.?.scopes);
+        defer std.testing.allocator.free(scopes);
+        try @import("../runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        const before_ast = &before_module.ast.?;
+        const original_root = before_ast.transformed_root orelse @as(@import("../../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(before_ast.nodes.items.len - 1))));
+        before_ast.transformed_root = original_root;
+        // Same text in an orphan literal cannot own a record. The planner
+        // rejects it before publishing AST, bindings or evaluation markers.
+        const source = before_module.import_records[0].source_node;
+        const orphan = try before_ast.addNode(before_ast.getNode(source));
+        before_module.import_records[0].source_node = orphan;
+        try std.testing.expectError(error.InvalidGuardedImportSource, @import("../guarded_import_callsite.zig").lower(&graph, &linker, null));
+        try std.testing.expectEqual(original_root, before_ast.transformed_root.?);
+        try std.testing.expectEqual(originals.len, before_module.import_bindings.len);
+        try std.testing.expect(!before_module.import_records[0].callsite_lowered);
+        for (before_module.import_bindings) |binding| try std.testing.expect(!binding.guarded_eager_init_lowered and !binding.guarded_lazy_calls_lowered);
+        before_module.import_records[0].source_node = source;
+        try @import("../guarded_import_callsite.zig").lower(&graph, &linker, null);
+        const module = graph.getModule(module_index).?;
+        const semantic = module.semantic.?;
+        try std.testing.expectEqual(owner, semantic.owner_token);
+        try std.testing.expectEqual(scopes.len, semantic.scopes.len);
+        for (scopes, semantic.scopes) |before, after| {
+            try std.testing.expectEqual(before.parent, after.parent);
+            try std.testing.expectEqual(before.kind, after.kind);
+            try std.testing.expectEqual(before.is_strict, after.is_strict);
+        }
+        for (originals, 0..) |original, i| {
+            const current = module.import_bindings[i];
+            try std.testing.expect(original.local_symbol.eql(current.local_symbol));
+            try std.testing.expectEqual(original.local_symbol_node, current.local_symbol_node);
+            try std.testing.expectEqual(original.kind, current.kind);
+            const sid = original.local_symbol.semanticIndex().?;
+            try std.testing.expectEqual(@as(?u32, sid), semantic.symbol_ids[@backingInt(original.local_symbol_node.?)]);
+            for (references) |before| {
+                if (@backingInt(before.symbol_id) != sid) continue;
+                var matched: usize = 0;
+                for (semantic.references) |after| {
+                    if (after.symbol_id != before.symbol_id or after.node_index != before.node_index or after.declaration_node_index != before.declaration_node_index) continue;
+                    matched += 1;
+                    try std.testing.expectEqual(before.scope_id, after.scope_id);
+                    try std.testing.expect(std.meta.eql(before.flags, after.flags));
+                    if (before.scope_id.toIndex() != 0) try std.testing.expectEqual(before.scope_stmt_idx, after.scope_stmt_idx);
+                }
+                try std.testing.expectEqual(@as(usize, 1), matched);
+            }
+            if (current.kind == .namespace) {
+                const scanner = @import("../binding_scanner.zig");
+                const namespace = (try scanner.eagerNamespaceSymbol(&graph, module, current)).?;
+                const target = graph.moduleAtMut(namespace.module).?;
+                const original_slot = target.exports_symbol;
+                const original_kind = target.semantic.?.symbols.items[@backingInt(namespace.inner)].kind;
+                target.exports_symbol = null;
+                try std.testing.expectError(error.MissingWrapperSymbol, scanner.eagerNamespaceSymbol(&graph, module, current));
+                target.exports_symbol = target.init_symbol;
+                try std.testing.expectError(error.MissingWrapperSymbol, scanner.eagerNamespaceSymbol(&graph, module, current));
+                target.exports_symbol = @fromBackingInt(@as(u32, @intCast(target.semantic.?.symbols.items.len)));
+                try std.testing.expectError(error.MissingWrapperSymbol, scanner.eagerNamespaceSymbol(&graph, module, current));
+                target.exports_symbol = original_slot;
+                target.semantic.?.symbols.items[@backingInt(namespace.inner)].kind = .function_decl;
+                try std.testing.expectError(error.MissingWrapperSymbol, scanner.eagerNamespaceSymbol(&graph, module, current));
+                target.semantic.?.symbols.items[@backingInt(namespace.inner)].kind = original_kind;
+            }
+        }
+        const ast = &module.ast.?;
+        const root = ast.transformed_root.?;
+        try std.testing.expectEqual(@as(?u32, 0), semantic.scope_owner_map.get(@backingInt(root)));
+        // Inspect actual program statements, not a producer counter. Each
+        // eager initializer target appears once, with Scope0 coordinates.
+        var initialized: std.AutoHashMapUnmanaged(@import("../symbol.zig").SymbolID, void) = .empty;
+        defer initialized.deinit(std.testing.allocator);
+        var statements = ast.iterateExtraList(ast.getNode(root).data.list);
+        var statement_index: u32 = 0;
+        while (statements.next()) |statement| : (statement_index += 1) {
+            const stmt = ast.getNode(statement);
+            if (stmt.tag != .expression_statement) continue;
+            const call = ast.getNode(stmt.data.unary.operand);
+            if (call.tag != .call_expression) continue;
+            const callee = ast.readExtraNode(call.data.extra, 0);
+            const callee_sid = semantic.symbol_ids[@backingInt(callee)] orelse continue;
+            var is_guard = false;
+            for (module.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (target.role == .entry_guard and binding.local_symbol.semanticIndex() == @as(?u32, callee_sid)) is_guard = true;
+            }
+            if (!is_guard) continue;
+            try std.testing.expectEqual(@as(u32, 1), ast.readExtra(call.data.extra, 2));
+            const argument = ast.readExtraNode(ast.readExtra(call.data.extra, 1), 0);
+            const argument_sid = semantic.symbol_ids[@backingInt(argument)].?;
+            var initializer: ?@import("../symbol.zig").SymbolID = null;
+            for (module.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (target.role == .esm_init and binding.local_symbol.semanticIndex() == @as(?u32, argument_sid)) initializer = target.symbol;
+            }
+            try std.testing.expect(initializer != null);
+            try std.testing.expect(!initialized.contains(initializer.?));
+            try initialized.put(std.testing.allocator, initializer.?, {});
+            for (semantic.references) |reference| {
+                if (reference.node_index != callee and reference.node_index != argument) continue;
+                try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+                try std.testing.expectEqual(statement_index, reference.stmt_idx);
+                try std.testing.expectEqual(statement_index, reference.scope_stmt_idx);
+            }
+        }
+        try std.testing.expect(initialized.count() > 0);
+        var generated: usize = 0;
+        for (module.import_bindings) |binding| {
+            const target = binding.callsite_target orelse continue;
+            try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            const local = binding.local_symbol.semanticIndex().?;
+            for (semantic.references) |reference| {
+                if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+                generated += 1;
+                try std.testing.expectEqual(@as(?u32, local), semantic.symbol_ids[@backingInt(reference.node_index)]);
+                try std.testing.expect(reference.stmt_idx != Reference.NO_STMT and reference.scope_stmt_idx != Reference.NO_STMT);
+            }
+        }
+        try std.testing.expect(generated > 0);
+    }
+}

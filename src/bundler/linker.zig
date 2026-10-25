@@ -6192,7 +6192,12 @@ pub const Linker = struct {
             if (eb.kind == .local and m.exportBindingSemanticIndex(eb) != null) {
                 binding_symbol = eb.symbol;
             }
-            const actual_local = if (eb.kind == .re_export_namespace) blk: {
+            const actual_local = if (try @import("binding_scanner.zig").eagerNamespaceForExport(self.graph, m, eb)) |namespace| blk: {
+                const owner = self.graph.getModule(namespace.module) orelse return error.MissingWrapperSymbol;
+                binding_symbol = namespace.toRef();
+                init_mod = null;
+                break :blk owner.getExportsName(null) orelse return error.MissingWrapperSymbol;
+            } else if (eb.kind == .re_export_namespace) blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
                 break :blk eb_local;
             } else if (eb.kind == .re_export) blk: {

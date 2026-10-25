@@ -696,7 +696,7 @@ pub fn buildMetadataForAst(
                 var other_bindings: usize = 0;
                 for (m.import_bindings) |binding| {
                     if (binding.import_record_index != rec_index) continue;
-                    if (binding.guarded_eager_init_lowered) owned_helpers += 1 else other_bindings += 1;
+                    if (binding.guarded_eager_init_lowered) owned_helpers += 1 else if (!binding.guarded_lazy_calls_lowered) other_bindings += 1;
                 }
                 if (owned_helpers != 0 and other_bindings == 0) continue;
                 if (rec.resolved.isNone()) continue;
@@ -1115,7 +1115,7 @@ pub fn buildMetadataForAst(
             // ⚠️ **preserve-modules 한정**: 각 모듈이 별도 파일이라 forwarding 썽크(init_X)가 소비자
             // 파일에 로컬 정의된다. splitting 은 init_X 가 cross-chunk 라 이 청크서 undefined 일 수 있어
             // (그쪽은 cross-chunk 네이밍이 별도 처리) 여기선 제외 (code-review).
-            if (self.graph.preserve_modules and
+            if (self.graph.preserve_modules and !ib.guarded_eager_init_lowered and
                 !(canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm))
             {
                 if (resolved) |rb| {
@@ -1139,6 +1139,12 @@ pub fn buildMetadataForAst(
             if (ib.kind == .namespace) {
                 const ns_sym_id = ib.local_symbol.semanticIndex() orelse continue;
                 const local_name = m.importBindingLocalName(ib);
+                if (try @import("../binding_scanner.zig").eagerNamespaceSymbol(self.graph, &m, ib)) |namespace| {
+                    const owner = self.graph.getModule(namespace.module) orelse return error.MissingWrapperSymbol;
+                    const value = owner.getExportsName(null) orelse return error.MissingWrapperSymbol;
+                    try putOwnedRename(self, &renames, &owned_nested_renames, ns_sym_id, value);
+                    continue;
+                }
 
                 // (#3975) target 이 CJS 를 export*/export*-as 로 재노출하면(혼합·다중·inner),
                 // 정적 ns-object 가 CJS 동적 멤버를 못 담는다. per-module preamble(CJS region
@@ -1495,7 +1501,10 @@ pub fn buildMetadataForAst(
                     // `(init_removed(), __toCommonJS(exports_removed))` orphan 호출이 남아
                     // RN release 런타임에서 ReferenceError 가 난다.
                     // self-import는 제외 (순환 자기 참조 시 body codegen이 처리).
-                    const has_namespace = recordHasBindingAt(rec_has_namespace, m.import_bindings, rec_i, true);
+                    var has_namespace = false;
+                    for (m.import_bindings) |binding| {
+                        if (binding.import_record_index == rec_i and binding.kind == .namespace and !binding.guarded_eager_init_lowered) has_namespace = true;
+                    }
                     if (!has_namespace or (self.tree_shaker_active and !tmod.is_included)) {
                         try hoisted_specifiers.put(self.allocator, rec.specifier, {});
                     }

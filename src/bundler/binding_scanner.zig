@@ -42,7 +42,7 @@ pub const ImportBinding = struct {
     callsite_target: ?CallsiteTarget = null,
     /// Original value identity remains; actual source AST owns lazy init calls.
     guarded_lazy_calls_lowered: bool = false,
-    /// A real program-prologue AST owns this original helper initialization.
+    /// A real program-prologue AST owns this original import initialization.
     guarded_eager_init_lowered: bool = false,
 
     /// The producer may materialize an imported value as real local storage.
@@ -105,6 +105,35 @@ pub const ImportBinding = struct {
             (self.kind == .named and preamble_writer.isDefaultExportName(self.imported_name));
     }
 };
+
+/// The eager source call owns evaluation; namespace value uses retain the
+/// original import SID and refer to the provider's exact namespace storage.
+pub fn eagerNamespaceSymbol(graph: anytype, module: anytype, binding: ImportBinding) error{MissingWrapperSymbol}!?symbol_mod.SymbolID {
+    if (!binding.guarded_eager_init_lowered or binding.kind != .namespace) return null;
+    if (binding.import_record_index >= module.import_records.len) return error.MissingWrapperSymbol;
+    const target = module.import_records[binding.import_record_index].resolved;
+    if (target.isNone() or target == module.index) return error.MissingWrapperSymbol;
+    const owner = graph.getModule(target) orelse return error.MissingWrapperSymbol;
+    const namespace = owner.esmNamespaceSymbol() catch return error.MissingWrapperSymbol;
+    const semantic = owner.semantic orelse return error.MissingWrapperSymbol;
+    if (semantic.symbols.items[@backingInt(namespace.inner)].kind != .variable_var) return error.MissingWrapperSymbol;
+    return namespace;
+}
+
+pub fn eagerNamespaceForExport(graph: anytype, module: anytype, exported: ExportBinding) error{MissingWrapperSymbol}!?symbol_mod.SymbolID {
+    if (exported.has_default_export_facade) return null;
+    const anchor = exported.local_symbol_node orelse return null;
+    const ast = module.ast orelse return null;
+    const semantic = module.semantic orelse return null;
+    if (anchor.isNone() or @backingInt(anchor) >= ast.nodes.items.len or @backingInt(anchor) >= semantic.symbol_ids.len or ast.getNode(anchor).tag != .identifier_reference) return null;
+    const sid = semantic.symbol_ids[@backingInt(anchor)] orelse return null;
+    for (module.import_bindings) |binding| {
+        const local = resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = &ast, .symbol_ids = semantic.symbol_ids, .symbols = semantic.symbols.items });
+        if (local.semanticIndex() != @as(?u32, sid)) continue;
+        return eagerNamespaceSymbol(graph, module, binding);
+    }
+    return null;
+}
 
 pub const ImportLocalSymbolContext = struct {
     module_index: ModuleIndex,

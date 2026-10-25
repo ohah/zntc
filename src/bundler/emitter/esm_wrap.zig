@@ -137,6 +137,36 @@ inline fn shouldSkipTreeShakenReExportSource(l: *const Linker, m: *const Module,
     return !src_mod.is_included;
 }
 
+/// An owned re-export evaluates its dependency through real source AST.
+/// Its namespace getter must read the live provider value, not a legacy
+/// synthetic-default snapshot or a second initializer expression.
+fn ownedLiveReExportTarget(l: *const Linker, module: *const Module, exported: ExportBinding, options: *const EmitOptions) ?ReExportTarget {
+    if (!options.preserve_modules or options.format != .esm or exported.has_default_export_facade or !isReExportLike(exported)) return null;
+    const record_index = exported.import_record_index orelse return null;
+    if (record_index >= module.import_records.len) return null;
+    const record = module.import_records[record_index];
+    var owned = record.kind == .re_export and record.callsite_lowered;
+    var name = exported.local_name;
+    if (!owned) {
+        const node = exported.local_symbol_node orelse return null;
+        const semantic = module.semantic orelse return null;
+        if (node.isNone() or @backingInt(node) >= semantic.symbol_ids.len) return null;
+        const sid = semantic.symbol_ids[@backingInt(node)] orelse return null;
+        for (module.import_bindings) |binding| {
+            if (binding.import_record_index != record_index or binding.kind == .namespace or !binding.guarded_eager_init_lowered) continue;
+            const local = @import("../binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = if (module.ast) |*ast| ast else null, .symbol_ids = semantic.symbol_ids, .symbols = semantic.symbols.items });
+            if (local.semanticIndex() != @as(?u32, sid)) continue;
+            owned = true;
+            name = binding.imported_name;
+            break;
+        }
+    }
+    if (!owned or record.resolved.isNone() or record.resolved == module.index) return null;
+    const target = l.graph.getModule(record.resolved) orelse return null;
+    if (target.wrap_kind != .esm or target.in_async_cone) return null;
+    return .{ .mod = target, .index = target.index.toU32(), .name = name };
+}
+
 inline fn shouldEmitSyntheticDefaultReExport(l: ?*const Linker, m: *const Module, eb: ExportBinding) bool {
     const linker = l orelse return true;
     if (!linker.tree_shaker_active) return true;
@@ -479,6 +509,7 @@ pub fn emitEsmWrappedModule(
         for (module.export_bindings) |eb| {
             if (eb.kind == .re_export and eb.hasSyntheticDefault(module.semanticSymbols())) {
                 if (!shouldEmitSyntheticDefaultReExport(linker, module, eb)) continue;
+                if (linker) |l| if (ownedLiveReExportTarget(l, module, eb, options) != null) continue;
                 const def_name = defaultExportName(metadata);
                 try hoisted_var_names.append(allocator, def_name);
                 break;
@@ -731,9 +762,22 @@ pub fn emitEsmWrappedModule(
                             // synthetic_default로 표시하고, 나머지 re-export는 re_export_alias로
                             // 표현 → linker가 canonical_name을 채운다. barrel `export { X }`같은
                             // kind 오분류에도 영향받지 않음 (#1321 방어).
+                            if (linker) |l| if (ownedLiveReExportTarget(l, module, eb, options)) |live| {
+                                _ = try live.mod.esmNamespaceSymbol();
+                                const namespace = live.mod.getExportsName(null) orelse return error.MissingWrapperSymbol;
+                                const access = try @import("../linker/preamble_writer.zig").allocMemberAccess(allocator, live.name);
+                                defer allocator.free(access);
+                                const value = try std.fmt.allocPrint(allocator, "{s}{s}", .{ namespace, access });
+                                try star_owned.append(allocator, value);
+                                break :blk value;
+                            };
                             if (isSyntheticDefault(eb.symbol, module)) {
                                 break :blk defaultExportName(metadata);
                             }
+                            if (linker) |l| if (try @import("../binding_scanner.zig").eagerNamespaceForExport(l.graph, module, eb)) |namespace| {
+                                const owner = l.graph.getModule(namespace.module) orelse return error.MissingWrapperSymbol;
+                                break :blk owner.getExportsName(null) orelse return error.MissingWrapperSymbol;
+                            };
                             // direct re-export는 현재 모듈에 로컬 변수가 선언되지 않으므로
                             // source module의 getter/value를 직접 참조해야 한다 (#1425).
                             // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
@@ -976,6 +1020,7 @@ pub fn emitEsmWrappedModule(
         if (eb.kind != .re_export) continue;
         if (!eb.hasSyntheticDefault(module.semanticSymbols())) continue;
         if (!shouldEmitSyntheticDefaultReExport(linker, module, eb)) continue;
+        if (linker) |l| if (ownedLiveReExportTarget(l, module, eb, options) != null) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;
@@ -1118,7 +1163,7 @@ pub fn emitEsmWrappedModule(
         // 누락 시 RN 런타임에서 target 모듈의 top-level이 실행되지 않아
         // global setup(예: Reanimated LayoutAnimationsManager) 실패 (#1193).
         for (module.import_records) |rec| {
-            if (rec.kind != .side_effect) continue;
+            if (rec.kind != .side_effect or rec.callsite_lowered) continue;
             if (rec.resolved.isNone()) continue;
             const src_i = @backingInt(rec.resolved);
             const src_mod = l.graph.getModule(rec.resolved) orelse continue;
