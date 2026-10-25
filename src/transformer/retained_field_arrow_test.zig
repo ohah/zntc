@@ -1,7 +1,7 @@
 const std = @import("std");
 
-test "retained field arrow owns creation site receiver across sixty nine contexts" {
-    const Case = struct { name: []const u8, source: []const u8, native_generator: bool = false };
+test "retained field arrow owns creation site receiver across seventy three contexts" {
+    const Case = struct { name: []const u8, source: []const u8, native_generator: bool = false, native_block_scoping: bool = false };
     const cases = [_]Case{
         .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
         .{ .name = "constructor before fields", .source = "class Box{constructor(){this.other=2}value=7;read=()=>this.value}const box=new Box();console.log(box.read(),box.other);" },
@@ -70,6 +70,10 @@ test "retained field arrow owns creation site receiver across sixty nine context
         .{ .name = "function key and super compound temps", .source = "function make(){class P{get value(){return this.own}set value(v){this.own=v}}return class C extends P{own=1;[\"read\"]=()=>++super.value}}const C=make(),x=new C();console.log(x.read.name,x.read(),x.read());" },
         .{ .name = "native generator mutable arguments", .source = "function* make(){const all=[];for(let i=0;i<2;i++){yield i;arguments=[\"changed\"];all.push(class{[yield arguments[0]+i]=()=>this})}return all}const g=make(\"initial\");console.log(g.next().value,g.next().value,g.next(\"first\").value,g.next().value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true },
         .{ .name = "implicit field capture async order", .source = "const trace=[];async function make(){const all=[];for(let i=0;i<2;i++){await Promise.resolve();all.push(class{value=i;read=()=>this});trace.push(i)}trace.push(\"done\");console.log(all.map(C=>new C().value).join(\",\"))}make();Promise.resolve().then(()=>trace.push(\"a\")).then(()=>trace.push(\"b\")).then(()=>trace.push(\"c\")).then(()=>trace.push(\"d\"));setTimeout(()=>console.log(trace.join(\",\")),0);" },
+        .{ .name = "native block async key loop", .source = "async function make(){const all=[];for(let i=0;i<2;i++)all.push(class{[await Promise.resolve(\"read\"+i)]=()=>this});return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));", .native_block_scoping = true },
+        .{ .name = "native block yield key loop", .source = "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}const g=make();console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true, .native_block_scoping = true },
+        .{ .name = "native block while async key", .source = "async function make(){const all=[];let i=0;while(i<2){class C{[await Promise.resolve(\"read\"+i++)]=()=>this}all.push(C)}return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));", .native_block_scoping = true },
+        .{ .name = "native block for of async key", .source = "async function make(){const all=[];for(const key of [\"first\",\"second\"]){all.push(class{[await Promise.resolve(key)]=()=>this})}return all}make().then(all=>console.log(new all[0]().first.name,new all[1]().second.name));", .native_block_scoping = true },
         .{ .name = "await loop function declaration identity", .source = "\"use strict\";async function make(){for(let i=0;i<1;i++){function read(){return i}const saved=read;class C{[await Promise.resolve(\"field\")]=()=>this}console.log(saved===read,read(),new C().field.name)}}make();" },
         .{ .name = "multiple key cells in class", .source = "class C{[\"left\"]=()=>this;[\"right\"]=()=>this}const box=new C();console.log(box.left.name,box.right.name,box.left()===box,box.right()===box);" },
     };
@@ -84,6 +88,7 @@ test "retained field arrow owns creation site receiver across sixty nine context
             std.debug.print("field capture running {s} define={any} minify={any}\n", .{ case.name, define, minify });
             var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
             if (case.native_generator) unsupported.generator = false;
+            if (case.native_block_scoping) unsupported.block_scoping = false;
             const result = try @import("../transpile.zig").transpile(a, case.source, "input.cjs", .{
                 .unsupported = unsupported,
                 .use_define_for_class_fields = define,
@@ -261,6 +266,9 @@ test "retained loop key cells retain exact owners before final output walk" {
         "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve('read'+i)]=()=>this})}return all}",
         "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}",
         "async function make(){const all=[];for(let i=0;i<2;i++){for(let j=0;j<2;j++){all.push(class{[await Promise.resolve('read'+i+j)]=()=>[this,i]})}}return all}",
+        "async function make(){const all=[];for(let i=0;i<2;i++)all.push(class{[await Promise.resolve('read'+i)]=()=>this});return all}",
+        "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}",
+        "async function make(){const all=[];for(const key of ['first','second']){all.push(class{[await Promise.resolve(key)]=()=>this})}return all}",
     };
     for (sources, 0..) |source, profile| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -274,7 +282,8 @@ test "retained loop key cells retain exact owners before final output walk" {
         try analyzer.analyze();
         const source_symbols = analyzer.symbols.items.len;
         var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
-        if (profile == 2 or profile == 3) unsupported.generator = false;
+        if (profile == 2 or profile == 3 or profile == 6) unsupported.generator = false;
+        if (profile >= 5) unsupported.block_scoping = false;
         var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{
             .unsupported = unsupported,
             .use_define_for_class_fields = true,
@@ -315,7 +324,7 @@ test "retained loop key cells retain exact owners before final output walk" {
             }
             if (t.getSymbolIdAt(work.node) == sid) {
                 if (node.tag == .binding_identifier) {
-                    try std.testing.expectEqual(t.nearestVarScope(scope), editor.symbols.items[sid].scope_id);
+                    try std.testing.expectEqual(if (editor.symbols.items[sid].kind == .variable_let) scope else t.nearestVarScope(scope), editor.symbols.items[sid].scope_id);
                     bindings += 1;
                 } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
                     const reference = (try editor.referenceForNode(work.node)) orelse return error.MissingLoopKeyReferenceAtBirth;

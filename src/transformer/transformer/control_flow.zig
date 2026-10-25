@@ -244,7 +244,10 @@ pub fn visitWithStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 /// 경로 자체가 없었다 — 모든 클로저가 마지막 값을 봤다.
 pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
-    if (!self.options.unsupported.block_scoping) return visitBinaryStatementBody(self, idx);
+    if (!self.options.unsupported.block_scoping) {
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, node.data.binary.right);
+        return visitBinaryStatementBody(self, idx);
+    }
     const orig_body = node.data.binary.right;
     var capture = try LoopCapture.init(self, &.{}, orig_body);
     defer capture.deinit(self);
@@ -304,6 +307,8 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
 /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
 pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
+    if (!self.options.unsupported.block_scoping)
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, node.data.ternary.c);
     if (self.options.unsupported.block_scoping) {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, node.data.ternary.a);
@@ -536,6 +541,8 @@ fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: 
 pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const init_idx = self.readNodeIdx(e, 0);
+    if (!self.options.unsupported.block_scoping)
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, self.readNodeIdx(e, 3));
 
     // ES2015 block scoping: let/const 변수 캡처 감지
     if (self.options.unsupported.block_scoping) {
