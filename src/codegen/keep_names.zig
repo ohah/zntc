@@ -137,7 +137,11 @@ pub fn emitNameStatement(self: anytype, target: NodeIndex, original: []const u8)
     try self.emitNode(target);
     try self.writeByte(',');
     try self.writeSpace();
-    try writeQuoted(self, original);
+    // Source IdentifierName escapes must also honor the target inside the
+    // reflected string (in particular ES5 brace escapes and ascii_only).
+    try self.writeByte('"');
+    try self.writeIdentifierText(original);
+    try self.writeByte('"');
     try self.write(");");
     self.keep_names_used = true;
 }

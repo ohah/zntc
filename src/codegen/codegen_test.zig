@@ -14,6 +14,7 @@
 //   new_callee_chain.zig   — new callee 의 member/tagged-template 체인 방출 + idempotency (#4500)
 
 comptime {
+    _ = @import("codegen_test/selected_keep_names.zig");
     _ = @import("codegen_test/helpers.zig");
     _ = @import("codegen_test/basic.zig");
     _ = @import("codegen_test/features.zig");

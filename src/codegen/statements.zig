@@ -433,14 +433,17 @@ fn emitLoweredBlockFunction(self: anytype, idx: NodeIndex) !void {
 
 /// --keep-names: function declarations exist from the start of their
 /// statement list, so their names are restored there (keep_names.zig).
-fn emitHoistedFunctionNames(self: anytype, indices: []const u32) !void {
+pub fn emitHoistedFunctionNames(self: anytype, indices: []const u32, leading_newline: bool) !bool {
+    var emitted = false;
     for (indices) |raw| {
         if (isElidedStmt(self, @fromBackingInt(@intCast(raw)))) continue;
         const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
-        try writeNewline(self);
+        if (leading_newline or emitted) try writeNewline(self);
         try writeIndent(self);
         try keep_names.emitNameStatement(self, target.name, target.original);
+        emitted = true;
     }
+    return emitted;
 }
 
 pub fn emitBracedList(self: anytype, node: Node) !void {
@@ -489,7 +492,7 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
             const idx: NodeIndex = @fromBackingInt(@intCast(indices[i]));
             if (isElidedStmt(self, idx)) continue;
             if (!names_emitted and self.ast.getNode(idx).tag != .directive) {
-                try emitHoistedFunctionNames(self, indices);
+                _ = try emitHoistedFunctionNames(self, indices, true);
                 names_emitted = true;
             }
             if (lower_functions and isLowerableBlockFunction(self, idx)) continue;
