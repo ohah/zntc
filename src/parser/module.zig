@@ -39,13 +39,18 @@ pub const ImportPhase = enum(u4) {
 /// 모든 read 사이트는 `(flags & SPEC_FLAG_TYPE_ONLY) != 0` 형태로 검사.
 pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
 
+/// Initial source declaration semantics survive a class lowering that replaces
+/// the declaration operand with its exact binding reference.
+pub const EXPORT_DEFAULT_NAMED_DECLARATION: u16 = 1;
+
 /// Whether `export default` needs the analyzer's synthetic `_default` facade.
 /// Named function/class declarations keep their declaration binding. Every
 /// expression, including an identifier reference, evaluates a default value
 /// snapshot and therefore needs a distinct export identity.
 /// Keep this decision shared by parsing, semantic analysis, and bundler export
 /// metadata so a real source binding named `_default` is never used as a proxy.
-pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex) bool {
+pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex, export_flags: u16) bool {
+    if (export_flags & EXPORT_DEFAULT_NAMED_DECLARATION != 0) return false;
     if (inner_idx.isNone() or @backingInt(inner_idx) >= ast.nodes.items.len) return true;
 
     const inner = ast.getNode(inner_idx);
@@ -696,16 +701,17 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         // TS type-only default export (interface) → 전체 제거
         if (decl.isNone()) return NodeIndex.none;
 
+        const export_flags: u16 = if (defaultExportNeedsFacade(&self.ast, decl, 0)) 0 else EXPORT_DEFAULT_NAMED_DECLARATION;
         const export_node = try self.ast.addNode(.{
             .tag = .export_default_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
+            .data = .{ .unary = .{ .operand = decl, .flags = export_flags } },
         });
 
         // Inline scan: export default
         if (self.enable_scan and !self.ctx.in_ambient) {
             self.scan_result.has_esm_syntax = true;
-            const has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl);
+            const has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl, export_flags);
             var local_name: []const u8 = "_default";
             var local_symbol_node_index: ?u32 = null;
             if (!decl.isNone()) {

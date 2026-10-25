@@ -39,7 +39,7 @@ fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: B
     // Source local exports retain the metadata producer's eager policy. Use
     // exact local anchors, never a spelling lookup to select an identity.
     for (module.export_bindings) |exported| {
-        if (exported.kind != .local) continue;
+        if (exported.has_default_export_facade) continue;
         const anchor = exported.local_symbol_node orelse continue;
         if (!anchor.isNone() and @backingInt(anchor) < ast.nodes.items.len and @backingInt(anchor) < sem.symbol_ids.len and sem.symbol_ids[@backingInt(anchor)] == sid) return null;
     }

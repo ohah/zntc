@@ -877,6 +877,7 @@ test "Default: export default from namespace import assigns ns var" {
         std.mem.indexOf(u8, result.output, "_default=") != null) and
         std.mem.indexOf(u8, result.output, "_ns;") != null;
     try std.testing.expect(has_assign);
+    try expectDefaultRuntimeOutput(result.output, "barvalue\n");
 }
 
 test "Default: export default namespace — IIFE bundle resolves member access" {
@@ -943,6 +944,7 @@ test "Default: shared namespace preamble has no runtime helper overhead (#1940)"
     try std.testing.expect(std.mem.startsWith(u8, result.output, "var lib_ns = {get bar()"));
     try std.testing.expect(std.mem.count(u8, result.output, "var lib_ns = {get bar()") == 1);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(_default.foo)") != null);
+    try expectDefaultRuntimeOutput(result.output, "1\n");
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") == null);
@@ -1550,4 +1552,92 @@ test "Default: export default rename survives post-link resync (#4804)" {
     const first = std.mem.indexOf(u8, result.output, "var _default = ") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, result.output[first + 1 ..], "var _default = ") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var _default$1 = ") != null);
+}
+
+fn expectDefaultRuntimeOutput(source: []const u8, expected: []const u8) !void {
+    const execution = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "--input-type=module", "-e", source },
+        .stdout_limit = .limited(16384),
+        .stderr_limit = .limited(16384),
+    });
+    defer std.testing.allocator.free(execution.stdout);
+    defer std.testing.allocator.free(execution.stderr);
+    switch (execution.term) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings(expected, execution.stdout);
+}
+
+test "Default: named class declaration remains live through actual ES5 lowering" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import Value,{change}from'./value.mjs';console.log(new Value().run());change();console.log(new Value().run());");
+    try writeFile(tmp.dir, "value.mjs", "export default class Value{run(){return 42;}}export function change(){Value=class{run(){return 43;}};}");
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .react_native });
+    defer bundler.deinit();
+    const output = try bundler.bundle(std.testing.io);
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expect(!output.hasErrors());
+    try expectDefaultRuntimeOutput(output.output, "42\n43\n");
+}
+
+test "Default: facade-name import snapshots stay separate from lexical export admission" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+    try writeFile(tmp.dir, "entry.mjs", "import{helper}from'./shared.mjs';import{value as _default,change}from'./dep.mjs';export default _default;export{change};globalThis.helper=helper;");
+    try writeFile(tmp.dir, "second.mjs", "import{helper}from'./shared.mjs';globalThis.second=helper;");
+    try writeFile(tmp.dir, "shared.mjs", "export function helper(){return 42;}");
+    try writeFile(tmp.dir, "dep.mjs", "export let value=42;export function change(){value=43;}");
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const second = try absPath(&tmp, "second.mjs");
+    defer std.testing.allocator.free(second);
+    const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .format = .esm, .code_splitting = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = true, .minify_syntax = true, .minify_whitespace = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+    defer bundler.deinit();
+    const output = try bundler.bundle(std.testing.io);
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expect(!output.hasErrors());
+    const source_module = graph.getModule(graph.path_to_module.get(entry).?).?;
+    try std.testing.expect(source_module.import_bindings[1].guarded_lazy_calls_lowered);
+    try std.testing.expect(!source_module.import_bindings[2].guarded_lazy_calls_lowered);
+    const source_semantic = source_module.semantic.?;
+    var live_aliases: usize = 0;
+    for (source_module.export_bindings) |exported| {
+        if (exported.has_default_export_facade) continue;
+        const anchor = exported.local_symbol_node orelse continue;
+        if (source_semantic.symbol_ids[@backingInt(anchor)] != source_module.import_bindings[2].local_symbol.semanticIndex()) continue;
+        try std.testing.expectEqual(@TypeOf(source_module.ast.?.getNode(anchor).tag).identifier_reference, source_module.ast.?.getNode(anchor).tag);
+        live_aliases += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), live_aliases);
+    var guard_reads: usize = 0;
+    for (source_module.import_bindings) |binding| {
+        const target = binding.callsite_target orelse continue;
+        if (target.role != .entry_guard) continue;
+        try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+        const local = binding.local_symbol.semanticIndex().?;
+        for (source_semantic.references) |reference| {
+            if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+            try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+            guard_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), guard_reads);
+    for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+    const emitted = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(emitted);
+    const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{configurable:true,get(){{reads++;return undefined;}}}});const ns=await import('file://{s}');console.log(ns.default);ns.change();console.log(ns.default);console.log(reads);", .{emitted});
+    defer std.testing.allocator.free(script);
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "42\n42\n{d}\n", .{guard_reads + 1});
+    defer std.testing.allocator.free(expected);
+    try expectDefaultRuntimeOutput(script, expected);
 }

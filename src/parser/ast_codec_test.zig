@@ -242,3 +242,60 @@ test "ast_codec: type_only_binding_names + jsx_pragma round-trip 보존" {
         try testing.expectEqualStrings(fr, ast2.jsx_pragma_fragment.?);
     }
 }
+
+test "ast_codec: default named-declaration role survives lowering and codec restoration" {
+    const alloc = testing.allocator;
+    var scanner = try Scanner.init(alloc, "export default class Live{}");
+    defer scanner.deinit();
+    scanner.is_module = true;
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    const root = try parser.parse();
+    const parser_module = @import("module.zig");
+    var statements = parser.ast.iterateExtraList(parser.ast.getNode(root).data.list);
+    const exported = statements.next().?;
+    const declaration = parser.ast.getNode(exported).data.unary.operand;
+    const name = parser.ast.readExtraNode(parser.ast.getNode(declaration).data.extra, 0);
+    try testing.expect(parser.ast.getNode(exported).data.unary.flags & parser_module.EXPORT_DEFAULT_NAMED_DECLARATION != 0);
+    const reference = try parser.ast.addNode(.{ .tag = .identifier_reference, .span = parser.ast.getNode(name).span, .data = .{ .string_ref = parser.ast.getNode(name).data.string_ref } });
+    parser.ast.nodes.items[@backingInt(exported)].data.unary.operand = reference;
+    const replacement = try parser.ast.addNodeList(&.{ declaration, exported });
+    parser.ast.nodes.items[@backingInt(root)].data.list = replacement;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(alloc);
+    try codec.serialize(&parser.ast, &bytes, alloc);
+    var restored = try codec.deserialize(bytes.items, alloc);
+    defer {
+        alloc.free(restored.source);
+        restored.deinit();
+    }
+    const node = restored.getNode(exported);
+    try testing.expectEqual(parser_module.EXPORT_DEFAULT_NAMED_DECLARATION, node.data.unary.flags);
+    try testing.expect(!parser_module.defaultExportNeedsFacade(&restored, node.data.unary.operand, node.data.unary.flags));
+    try testing.expect(parser_module.defaultExportNeedsFacade(&restored, node.data.unary.operand, 0));
+    var cg = Codegen.init(alloc, &restored);
+    defer cg.deinit();
+    const code = try cg.generate(root);
+    try testing.expect(std.mem.indexOf(u8, code, "export{Live as default};") != null);
+    const live_module = try std.mem.concat(alloc, u8, &.{ code, "export function change(){Live=class{};}" });
+    defer alloc.free(live_module);
+    const literal = try std.json.Stringify.valueAlloc(alloc, live_module, .{});
+    defer alloc.free(literal);
+    const script = try std.fmt.allocPrint(alloc, "const ns=await import('data:text/javascript,'+encodeURIComponent({s}));const initial=ns.default;ns.change();console.log(initial===ns.default);", .{literal});
+    defer alloc.free(script);
+    const execution = try std.process.run(alloc, testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer alloc.free(execution.stdout);
+    defer alloc.free(execution.stderr);
+    try testing.expectEqualStrings("false\n", execution.stdout);
+    // v4 did not preserve this source role for transformed default operands.
+    var previous_version: [4]u8 = undefined;
+    std.mem.writeInt(u32, &previous_version, 4, .little);
+    @memcpy(bytes.items[4..8], &previous_version);
+    if (codec.deserialize(bytes.items, alloc)) |unexpected| {
+        var accepted = unexpected;
+        alloc.free(accepted.source);
+        accepted.deinit();
+        return error.AcceptedPreviousDefaultRoleVersion;
+    } else |err| try testing.expectEqual(error.UnsupportedVersion, err);
+}

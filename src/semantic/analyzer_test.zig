@@ -1623,6 +1623,8 @@ test "#4819 direct local default identifier keeps source and facade SymbolIds di
     const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
     try std.testing.expect(facade_id != local_id);
     try std.testing.expectEqualStrings("_default", r.analyzer.symbols.items[facade_id].synthetic_name);
+    try std.testing.expect(r.analyzer.symbols.items[facade_id].decl_flags.is_default_export);
+    try std.testing.expect(!r.analyzer.symbols.items[local_id].decl_flags.is_default_export);
 }
 
 test "#4819 escaped unresolved default identifier does not bind to its facade" {
@@ -1698,6 +1700,8 @@ test "#4819 local `_default` default expression keeps a distinct facade identity
     const facade_id = default_export_id orelse return error.MissingDefaultExportFacade;
     try std.testing.expect(facade_id != local_id);
     try std.testing.expectEqualStrings("_default", r.analyzer.symbols.items[facade_id].synthetic_name);
+    try std.testing.expect(r.analyzer.symbols.items[facade_id].decl_flags.is_default_export);
+    try std.testing.expect(!r.analyzer.symbols.items[local_id].decl_flags.is_default_export);
 }
 
 test "Enum: mixed re-export with class and var" {
@@ -3501,5 +3505,68 @@ test "initial import source propagates await and eval metadata from both operand
         try analyzer.analyze();
         try std.testing.expectEqual(fixture.await_top, analyzer.has_top_level_await);
         try std.testing.expectEqual(fixture.eval_direct, analyzer.scopes.items[0].subtree_has_direct_eval);
+    }
+}
+
+test "default expression snapshots own distinct initial facade identities across ten source bindings" {
+    for ([_][]const u8{
+        "let value=42;export default value;value=43;",
+        "var value=42;export default value;value=43;",
+        "let _default=42;export default _default;_default=43;",
+        "let v\\u0061lue=42;export default value;value=43;",
+        "let value=()=>42;export default value;value=()=>43;",
+        "let value=class{};export default value;value=class{};",
+        "let value={n:42};export default value;value={n:43};",
+        "let value=[42];export default value;value=[43];",
+        "import{value}from'./dep';export default value;",
+        "import value from'./dep';export default value;",
+    }) |source| {
+        // Match the module producer's parse-arena lifetime for name keys.
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        scanner.is_module = true;
+        var parser = Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        const r = .{ .parser = parser, .analyzer = analyzer };
+        try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+        try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+        var exports: usize = 0;
+        for (r.parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .export_default_declaration) continue;
+            exports += 1;
+            const operand = node.data.unary.operand;
+            try std.testing.expectEqual(@TypeOf(node.tag).identifier_reference, r.parser.ast.getNode(operand).tag);
+            const source_id = r.analyzer.symbol_ids.items[@backingInt(operand)] orelse return error.MissingSourceIdentity;
+            const facade_id = r.analyzer.symbol_ids.items[raw] orelse return error.MissingFacadeIdentity;
+            try std.testing.expect(source_id != facade_id);
+            const facade = r.analyzer.symbols.items[facade_id];
+            try std.testing.expectEqual(SymbolKind.variable_const, facade.kind);
+            try std.testing.expectEqual(@as(usize, 0), facade.scope_id.toIndex());
+            try std.testing.expect(facade.decl_flags.is_default_export and facade.decl_flags.is_exported and facade.decl_flags.is_const);
+            try std.testing.expect(!r.analyzer.symbols.items[source_id].decl_flags.is_default_export);
+            var reads: usize = 0;
+            var declarations: usize = 0;
+            for (r.analyzer.references.items) |reference| {
+                if (reference.node_index == operand and reference.flags.read) {
+                    try std.testing.expectEqual(source_id, @backingInt(reference.symbol_id));
+                    try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+                    reads += 1;
+                }
+                if (@backingInt(reference.symbol_id) == facade_id and reference.flags.declare) {
+                    try std.testing.expectEqual(facade.scope_id, reference.scope_id);
+                    declarations += 1;
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), reads);
+            try std.testing.expectEqual(@as(usize, 1), declarations);
+        }
+        try std.testing.expectEqual(@as(usize, 1), exports);
     }
 }

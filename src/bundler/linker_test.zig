@@ -3099,9 +3099,14 @@ test "re-export alias: export { default as X } — identifier default uses snaps
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
-    // The canonical default value is the synthetic facade, not the source local.
-    const local = r.linker.resolveToLocalName(binding.?.canonical);
-    try std.testing.expectEqualStrings("_default", local);
+    const target = r.graph.getModule(binding.?.canonical.module_index).?;
+    const exported = target.export_bindings[0];
+    try std.testing.expect(exported.has_default_export_facade);
+    const facade_sid = exported.symbol.semanticIndex().?;
+    const operand = target.ast.?.getNode(exported.default_export_node.?).data.unary.operand;
+    const source_sid = target.semantic.?.symbol_ids[@backingInt(operand)].?;
+    try std.testing.expect(facade_sid != source_sid);
+    try std.testing.expectEqualStrings(r.linker.getCanonicalByRef(exported.symbol).?, r.linker.resolveToLocalName(binding.?.canonical));
 }
 
 // ============================================================
@@ -3128,6 +3133,7 @@ test "rename: multiple export default identifiers use separate facades without c
         if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 2), rename_count);
+    try expectDistinctDefaultFacadeNames(&r, 3);
 }
 
 // ============================================================
@@ -3304,6 +3310,7 @@ test "rename: default identifier snapshots use unique _default facades" {
         if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 1), rename_count);
+    try expectDistinctDefaultFacadeNames(&r, 2);
 }
 
 // ============================================================
@@ -5756,4 +5763,19 @@ test "cross-module mutable const facts require a valid nondynamic provider Scope
     var facts = try r.linker.buildCrossModuleConstValues(entry, entry.semantic.?);
     defer facts.deinit(std.testing.allocator);
     try std.testing.expect(facts.get(local) != null);
+}
+
+fn expectDistinctDefaultFacadeNames(result: anytype, expected: usize) !void {
+    var names = std.StringHashMap(void).init(std.testing.allocator);
+    defer names.deinit();
+    var modules = result.graph.modulesIterator();
+    while (modules.next()) |module| {
+        for (module.export_bindings) |exported| {
+            if (!exported.has_default_export_facade) continue;
+            const name = result.linker.getCanonicalByRef(exported.symbol) orelse return error.MissingFacadeName;
+            const entry = try names.getOrPut(name);
+            try std.testing.expect(!entry.found_existing);
+        }
+    }
+    try std.testing.expectEqual(expected, names.count());
 }

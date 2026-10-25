@@ -522,7 +522,7 @@ pub fn extractExportBindings(
                 // get a separate default facade; identifier expressions retain their
                 // source node only for value/member-use analysis.
                 const inner_idx = node.data.unary.operand;
-                const has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx);
+                const has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx, node.data.unary.flags);
                 var local_name: []const u8 = "_default";
                 var local_symbol_node: ?NodeIndex = null;
                 if (!inner_idx.isNone()) {
