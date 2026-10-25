@@ -5618,6 +5618,151 @@ test "#4819 generator for-in control references reserve their output scope acros
     for (sources) |source| try expectForInProducerOutputScopes(source);
 }
 
+test "#4819 deferred generator for-in body references move to an extracted callback switch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function* g(object) { for (const key in object) yield () => key; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var loop: AstNodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .for_in_statement) loop = @fromBackingInt(@intCast(raw));
+    }
+    if (loop.isNone()) return error.MissingForInLoop;
+    const source_scope: ScopeId = @fromBackingInt(@intCast(analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForInScope));
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = source_scope;
+    transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(source_scope);
+    const outer_switch = try transformer.ast.addNode(.{
+        .tag = .switch_statement,
+        .span = parser.ast.getNode(loop).span,
+        .data = .{ .extra = try transformer.ast.addExtras(&.{ @backingInt(AstNodeIndex.none), 0, 0 }) },
+    });
+    const outer_switch_scope = try transformer.addGeneratedScope(
+        transformer.generator_state_machine_scope,
+        outer_switch,
+        .switch_block,
+    );
+    transformer.generator_native_var_scope = outer_switch_scope;
+    const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+    const rewritten = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
+    try std.testing.expectEqual(@as(usize, 2), transformer.deferred_generator_for_in_body_ref_scopes.count());
+    try std.testing.expectEqual(@as(usize, 9), transformer.exact_output_ref_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 7), transformer.exact_output_ref_scope_ids.count());
+
+    var pending_refs: [2]u32 = undefined;
+    var pending_count: usize = 0;
+    var deferred = transformer.deferred_generator_for_in_body_ref_scopes.iterator();
+    while (deferred.next()) |entry| {
+        try std.testing.expectEqual(@backingInt(transformer.generator_state_machine_scope), entry.value_ptr.*);
+        pending_refs[pending_count] = entry.key_ptr.*;
+        pending_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), pending_count);
+
+    const clone_source: AstNodeIndex = @fromBackingInt(@intCast(pending_refs[0]));
+    const clone_source_node = transformer.ast.getNode(clone_source);
+    const clone_ref = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = clone_source_node.span,
+        .data = .{ .string_ref = clone_source_node.data.string_ref },
+    });
+    try transformer.propagateSymbolId(clone_source, clone_ref);
+    const clone_ref_raw = @backingInt(clone_ref);
+    try std.testing.expectEqual(
+        transformer.exact_output_ref_symbol_ids.get(pending_refs[0]).?,
+        transformer.exact_output_ref_symbol_ids.get(clone_ref_raw).?,
+    );
+    try std.testing.expectEqual(
+        transformer.generator_state_machine_scope,
+        @as(ScopeId, @fromBackingInt(@intCast(transformer.deferred_generator_for_in_body_ref_scopes.get(clone_ref_raw).?))),
+    );
+    const copy_source: AstNodeIndex = @fromBackingInt(@intCast(pending_refs[1]));
+    const copy_source_node = transformer.ast.getNode(copy_source);
+    const copied_ref = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = copy_source_node.span,
+        .data = .{ .string_ref = copy_source_node.data.string_ref },
+    });
+    try transformer.copySymbolId(copy_source, copied_ref);
+    const copied_ref_raw = @backingInt(copied_ref);
+    try std.testing.expectEqual(
+        transformer.exact_output_ref_symbol_ids.get(pending_refs[1]).?,
+        transformer.exact_output_ref_symbol_ids.get(copied_ref_raw).?,
+    );
+    try std.testing.expectEqual(
+        transformer.generator_state_machine_scope,
+        @as(ScopeId, @fromBackingInt(@intCast(transformer.deferred_generator_for_in_body_ref_scopes.get(copied_ref_raw).?))),
+    );
+    const clone_statement = try transformer.ast.addUnaryNode(.expression_statement, clone_source_node.span, clone_ref, 0);
+    const copied_statement = try transformer.ast.addUnaryNode(.expression_statement, copy_source_node.span, copied_ref, 0);
+    const combined_body = try transformer.ast.addListNode(
+        .block_statement,
+        clone_source_node.span,
+        try transformer.ast.addNodeList(&.{ rewritten, clone_statement, copied_statement }),
+    );
+
+    const function_extra = try transformer.ast.addExtras(&.{
+        @backingInt(AstNodeIndex.none), @backingInt(AstNodeIndex.none),
+        @backingInt(AstNodeIndex.none), 0,
+        @backingInt(AstNodeIndex.none),
+    });
+    const callback_owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = parser.ast.getNode(loop).span,
+        .data = .{ .extra = function_extra },
+    });
+    const callback_scope = try transformer.addGeneratedFunctionScope(
+        transformer.generator_state_machine_scope,
+        callback_owner,
+    );
+    const callback_switch = try transformer.ast.addNode(.{
+        .tag = .switch_statement,
+        .span = parser.ast.getNode(loop).span,
+        .data = .{ .extra = try transformer.ast.addExtras(&.{ @backingInt(AstNodeIndex.none), 0, 0 }) },
+    });
+    const callback_switch_scope = try transformer.addGeneratedScope(callback_scope, callback_switch, .switch_block);
+
+    try transformer.retargetDeferredGeneratorForInBodyReferences(
+        combined_body,
+        transformer.generator_state_machine_scope,
+        callback_scope,
+    );
+    deferred = transformer.deferred_generator_for_in_body_ref_scopes.iterator();
+    while (deferred.next()) |entry| try std.testing.expectEqual(@backingInt(callback_scope), entry.value_ptr.*);
+    try transformer.bindDeferredGeneratorForInBodyReferences(combined_body, callback_scope, callback_switch_scope);
+    try std.testing.expectEqual(@as(usize, 0), transformer.deferred_generator_for_in_body_ref_scopes.count());
+    try std.testing.expectEqual(@as(usize, 11), transformer.exact_output_ref_scope_ids.count());
+    for (pending_refs) |raw| {
+        try std.testing.expectEqual(@backingInt(callback_switch_scope), transformer.exact_output_ref_scope_ids.get(raw).?);
+    }
+    try std.testing.expectEqual(@backingInt(callback_switch_scope), transformer.exact_output_ref_scope_ids.get(clone_ref_raw).?);
+    try std.testing.expectEqual(@backingInt(callback_switch_scope), transformer.exact_output_ref_scope_ids.get(copied_ref_raw).?);
+    var planned_scopes = transformer.exact_output_ref_scope_ids.iterator();
+    while (planned_scopes.next()) |entry| {
+        if (entry.key_ptr.* == pending_refs[0] or entry.key_ptr.* == pending_refs[1] or
+            entry.key_ptr.* == clone_ref_raw or entry.key_ptr.* == copied_ref_raw) continue;
+        try std.testing.expectEqual(@backingInt(outer_switch_scope), entry.value_ptr.*);
+    }
+}
+
 test "#4819 pending extracted for-of producers assign temp identities immediately" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

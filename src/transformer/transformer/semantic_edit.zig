@@ -1192,6 +1192,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             }
         }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
+            if (self.deferred_generator_for_in_body_ref_scopes.contains(raw))
+                std.debug.panic("live generator for-in body reference reached output binding without a reserved ScopeId", .{});
             if (self.tracked_runtime_helper_ref_index.get(raw)) |tracked_index| {
                 // The helper call already owns its exact SymbolId. Lowering
                 // may move it under generated blocks/functions, so update the
@@ -4555,6 +4557,96 @@ pub fn trackExactOutputReferenceInScope(
         return;
     }
     try self.exact_output_ref_scope_ids.put(self.allocator, raw, raw_scope);
+}
+
+/// Record an exact for-in body-read identity while its eventual generator
+/// switch owner is still unknown. The owner is the state-machine function
+/// whose lowering may later extract this read into a per-iteration callback.
+pub fn trackDeferredGeneratorForInBodyReference(
+    self: *Transformer,
+    target: NodeIndex,
+    symbol_id: u32,
+    owner_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (owner_scope.isNone()) std.debug.panic("deferred generator for-in reference has no owner ScopeId", .{});
+    try trackExactOutputReference(self, target, symbol_id);
+    const raw = @backingInt(target);
+    const raw_owner = @backingInt(owner_scope);
+    if (self.deferred_generator_for_in_body_ref_scopes.get(raw)) |existing| {
+        if (existing != raw_owner)
+            std.debug.panic("generator for-in body reference has conflicting deferred owners", .{});
+        return;
+    }
+    try self.deferred_generator_for_in_body_ref_scopes.put(self.allocator, raw, raw_owner);
+}
+
+/// Retarget pending body reads that are actually contained in an extracted
+/// generator body. Nested generators retain their own owner because their
+/// pending references carry a different ScopeId.
+pub fn retargetDeferredGeneratorForInBodyReferences(
+    self: *Transformer,
+    body: NodeIndex,
+    source_owner: ScopeId,
+    target_owner: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or body.isNone()) return;
+    if (source_owner.isNone() or target_owner.isNone())
+        std.debug.panic("deferred generator for-in body retarget has no exact owner", .{});
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, body);
+    while (stack.pop()) |node_idx| {
+        if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node_idx);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        if (self.deferred_generator_for_in_body_ref_scopes.get(raw)) |owner| {
+            if (owner == @backingInt(source_owner)) {
+                if (!self.exact_output_ref_symbol_ids.contains(raw))
+                    std.debug.panic("deferred generator for-in reference lost its exact SymbolId", .{});
+                try self.deferred_generator_for_in_body_ref_scopes.put(self.allocator, raw, @backingInt(target_owner));
+            }
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(node_idx));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+}
+
+/// Once the matching generator switch exists, reserve its producer-selected
+/// ScopeId on every pending body read in that emitted switch tree.
+pub fn bindDeferredGeneratorForInBodyReferences(
+    self: *Transformer,
+    switch_root: NodeIndex,
+    owner_scope: ScopeId,
+    output_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or switch_root.isNone()) return;
+    if (owner_scope.isNone() or output_scope.isNone())
+        std.debug.panic("deferred generator for-in reference has no final switch owner", .{});
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, switch_root);
+    while (stack.pop()) |node_idx| {
+        if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node_idx);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        if (self.deferred_generator_for_in_body_ref_scopes.get(raw)) |owner| {
+            if (owner == @backingInt(owner_scope)) {
+                const symbol_id = self.exact_output_ref_symbol_ids.get(raw) orelse
+                    std.debug.panic("deferred generator for-in reference lost its exact SymbolId", .{});
+                try trackExactOutputReferenceInScope(self, node_idx, symbol_id, output_scope);
+                _ = self.deferred_generator_for_in_body_ref_scopes.remove(raw);
+            }
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(node_idx));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
 }
 
 /// A named class expression's self binding becomes the implementation

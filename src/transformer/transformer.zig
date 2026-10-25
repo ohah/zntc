@@ -419,6 +419,9 @@ pub const Transformer = struct {
     private_helper_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty,
     exact_output_ref_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     exact_output_ref_scope_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Generator for-in body reads whose final switch scope is selected only
+    /// after an extracted callback's state machine has been built.
+    deferred_generator_for_in_body_ref_scopes: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,
     /// Exact name Span to the first SymbolId allocated for that transform temp.
@@ -1155,6 +1158,9 @@ pub const Transformer = struct {
     pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;
     pub const trackExactOutputReference = @import("transformer/semantic_edit.zig").trackExactOutputReference;
     pub const trackExactOutputReferenceInScope = @import("transformer/semantic_edit.zig").trackExactOutputReferenceInScope;
+    pub const trackDeferredGeneratorForInBodyReference = @import("transformer/semantic_edit.zig").trackDeferredGeneratorForInBodyReference;
+    pub const retargetDeferredGeneratorForInBodyReferences = @import("transformer/semantic_edit.zig").retargetDeferredGeneratorForInBodyReferences;
+    pub const bindDeferredGeneratorForInBodyReferences = @import("transformer/semantic_edit.zig").bindDeferredGeneratorForInBodyReferences;
     pub const moveBindingToOutputScope = @import("transformer/semantic_edit.zig").moveBindingToOutputScope;
     pub const moveSymbolToOutputScope = @import("transformer/semantic_edit.zig").moveSymbolToOutputScope;
     pub const setGeneratedSymbolId = @import("transformer/semantic_edit.zig").setGeneratedSymbolId;

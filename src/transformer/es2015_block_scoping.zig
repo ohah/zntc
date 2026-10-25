@@ -843,6 +843,17 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         try renames.put(self.allocator, parameter_id, emitted);
                     }
                 }
+                // for-in's computed key/index reads are created before this
+                // extracted generator has an output switch. Reassign their
+                // pending owner only when the exact refs are in this body;
+                // the nested generator will reserve its real switch scope.
+                if (!self.generator_state_machine_scope.isNone()) {
+                    try self.retargetDeferredGeneratorForInBodyReferences(
+                        transformed_body,
+                        self.generator_state_machine_scope,
+                        function_scope,
+                    );
+                }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
                 try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,

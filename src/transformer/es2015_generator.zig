@@ -380,6 +380,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // Phase 2: 연산을 switch case로 변환
             const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope, reserved_switch);
+            if (self.semantic_edit_enabled) {
+                try self.bindDeferredGeneratorForInBodyReferences(
+                    switch_node,
+                    wrapper_scope,
+                    self.generator_native_var_scope,
+                );
+            }
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
             const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps, wrapper_scope);

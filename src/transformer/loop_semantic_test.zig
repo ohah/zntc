@@ -728,6 +728,121 @@ test "#4819 generator for-in lowering extracts captured body binding" {
     , 0);
 }
 
+fn expectGeneratorForInBodyReadScopes(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+
+    const ForInBodyReads = struct { keys: NodeIndex, index: NodeIndex };
+    var body_reads: std.ArrayList(ForInBodyReads) = .empty;
+    defer body_reads.deinit(allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(allocator);
+    try stack.append(allocator, root);
+    while (stack.pop()) |node_idx| {
+        if (node_idx.isNone() or @backingInt(node_idx) >= transformer.ast.nodes.items.len) continue;
+        const raw = @backingInt(node_idx);
+        if (seen.contains(raw)) continue;
+        try seen.put(allocator, raw, {});
+        const node = transformer.ast.getNode(node_idx);
+        if (node.tag == .computed_member_expression) {
+            const base: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[node.data.extra]));
+            const property: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[node.data.extra + 1]));
+            if (!base.isNone() and !property.isNone() and
+                transformer.ast.getNode(base).tag == .identifier_reference and
+                transformer.ast.getNode(property).tag == .identifier_reference and
+                std.mem.startsWith(u8, transformer.ast.getText(transformer.ast.getNode(base).data.string_ref), "_keys") and
+                std.mem.startsWith(u8, transformer.ast.getText(transformer.ast.getNode(property).data.string_ref), "_idx"))
+            {
+                try body_reads.append(allocator, .{ .keys = base, .index = property });
+            }
+        }
+        var children = ast_walk.children(transformer.ast, node);
+        while (children.next()) |child| try stack.append(allocator, child);
+    }
+    try std.testing.expect(body_reads.items.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), transformer.deferred_generator_for_in_body_ref_scopes.count());
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    for (body_reads.items) |reads| {
+        const keys_raw = @backingInt(reads.keys);
+        const index_raw = @backingInt(reads.index);
+        const keys_id = edited.symbol_ids[keys_raw] orelse return error.MissingExactForInBodyReadId;
+        const index_id = edited.symbol_ids[index_raw] orelse return error.MissingExactForInBodyReadId;
+        var keys_scope: ?u32 = null;
+        var index_scope: ?u32 = null;
+        var keys_ref_count: usize = 0;
+        var index_ref_count: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.node_index == reads.keys) {
+                try std.testing.expectEqual(keys_id, @backingInt(reference.symbol_id));
+                keys_scope = @backingInt(reference.scope_id);
+                keys_ref_count += 1;
+            }
+            if (reference.node_index == reads.index) {
+                try std.testing.expectEqual(index_id, @backingInt(reference.symbol_id));
+                index_scope = @backingInt(reference.scope_id);
+                index_ref_count += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), keys_ref_count);
+        try std.testing.expectEqual(@as(usize, 1), index_ref_count);
+        try std.testing.expect(keys_scope != null and index_scope != null);
+        try std.testing.expectEqual(keys_scope.?, index_scope.?);
+        try std.testing.expectEqual(.switch_block, edited.scopes[keys_scope.?].kind);
+
+        var has_other_owner_scope = false;
+        for (edited.references) |reference| {
+            const id = @backingInt(reference.symbol_id);
+            if (id != keys_id and id != index_id) continue;
+            const scope = @backingInt(reference.scope_id);
+            if (scope != keys_scope.? and reference.node_index != reads.keys and reference.node_index != reads.index)
+                has_other_owner_scope = true;
+        }
+        try std.testing.expect(has_other_owner_scope);
+    }
+}
+
+test "#4819 extracted generator for-in body reads reserve the callback switch scope across hostile inputs" {
+    const sources = [_][]const u8{
+        "export function* collect(object) { for (const key in object) yield () => key; }",
+        "export function* collect(object) { for (let key in object) { yield key; yield () => key; } }",
+        "export function* collect(object) { for (const key in object) { if (key) { yield () => key; continue; } yield key; } }",
+        "export function* collect(object) { for (const key in object) yield function read() { return key; }; }",
+        "export function* collect(object) { for (const key in object) { yield () => key; return key; } }",
+        "export function* collect(object) { for (const key in object) { try { yield () => key; } finally { tick(); } } }",
+        "export function* collect(object) { loop: for (const key in object) { yield () => key; if (key) continue loop; } }",
+        "export function* collect(object) { for (const key in object) { let captured = key; yield () => captured; yield key; } }",
+        "export function* collect(object) { const _keys = 1, _idx = 2; for (const key in object) yield () => key; }",
+        "export function* collect(object) { for (const key in object) { yield* [key]; yield () => key; } }",
+    };
+    for (sources) |source| try expectGeneratorForInBodyReadScopes(source);
+}
+
 test "#4819 generator for-of extracts captured body binding" {
     try expectExtractedLoopArgumentsVisible(
         \\export function* collect(values) {
