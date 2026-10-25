@@ -100,7 +100,9 @@ pub const Builder = struct {
         const declaration = try self.ast.addNode(.{ .tag = .import_declaration, .span = span, .data = .{ .extra = extra } });
         try self.declarations.append(self.allocator, declaration);
         const record_index: u32 = @intCast(self.records.items.len);
-        self.records.appendAssumeCapacity(.{ .specifier = foreign.path, .kind = .static_import, .span = source_span, .resolved = target.module });
+        // Binding-only dependency: executable work belongs to the actual AST
+        // caller. Eager metadata must not synthesize another initializer.
+        self.records.appendAssumeCapacity(.{ .specifier = foreign.path, .kind = .static_import, .span = source_span, .resolved = target.module, .callsite_lowered = true });
         self.bindings.appendAssumeCapacity(.{
             .kind = .named,
             .local_name = name,
