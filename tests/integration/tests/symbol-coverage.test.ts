@@ -264,6 +264,69 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       'declare namespace Ambient { export const value: number; } console.log(typeof Ambient);',
     graph: 'retained',
   },
+  {
+    name: 'ambient-string-module',
+    source:
+      'declare module "ambient" { export const value: number; } const result = 42; console.log(result);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-runtime-name-collision',
+    source:
+      'declare module "ambient" { export const value: number; } const ambient = 42; console.log(ambient);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-global-namespace',
+    source:
+      'declare namespace global { export const value: number; } const result = 42; console.log(result);',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-string-module-shorthand',
+    source: 'declare module "ambient"; const result = 43; console.log(result);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-multiple',
+    source: [
+      'declare module "ambient-a" { export const first: number; }',
+      'declare module "ambient-b" { export const second: number; }',
+      'const result = 44;',
+      'console.log(result);',
+    ].join('\n'),
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-nested-namespace',
+    source:
+      'declare module "ambient" { export namespace API { export const value: number; } } const result = 45; console.log(result);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-global-name',
+    source:
+      'declare module "global" { export const value: number; } const global = 46; console.log(global);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-erased-const-enum',
+    source:
+      'declare module "ambient" { export const value: number; } const enum Local { A = 1 } console.log(Local.A);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-type-import',
+    source:
+      'declare module "ambient" { import type { Value } from "./types"; export const value: Value; } const result = 47; console.log(result);',
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-string-module-with-export-equals',
+    source:
+      'declare module "ambient" { const value: number; export = value; } const result = 48; console.log(result);',
+    graph: 'reanalyzed',
+  },
 ] as const;
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
@@ -2668,6 +2731,36 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           'declare namespace AmbientNamespace { export const value: number; } console.log(AmbientNamespace.value);',
         setup: 'globalThis.AmbientNamespace = { value: 13 };',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-string-module',
+        source: [
+          'declare module "ambient" {',
+          '  export const value: number;',
+          '  export namespace API { export const version: string; }',
+          '}',
+          'const ambient = 42;',
+          'console.log(ambient);',
+        ].join('\n'),
+        setup: '',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-string-module-shorthand',
+        source: 'declare module "ambient"; const result = 43; console.log(result);',
+        setup: '',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-string-module-multiple',
+        source: [
+          'declare module "ambient-a" { export const first: number; }',
+          'declare module "ambient-b" { export const second: number; }',
+          'const result = 44;',
+          'console.log(result);',
+        ].join('\n'),
+        setup: '',
         graph: 'retained',
       },
       {
