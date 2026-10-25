@@ -101,6 +101,7 @@ pub fn serialize(
     out: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
 ) !void {
+    try @import("strict_function_context.zig").validateContext(ast, sem.*, alloc);
     try putU32(out, alloc, MAGIC);
     try putU32(out, alloc, FORMAT_VERSION);
 
@@ -136,6 +137,10 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!Deserialize
     // arena 에서 no-op 이고, ast 가 성공한 뒤 semantic 이 실패해도 caller 의 arena.deinit 이 회수.
     const ast = try ast_codec.deserialize(ast_block, arena);
     const semantic = try semantic_codec.deserialize(sem_block, arena);
+    @import("strict_function_context.zig").validateContext(&ast, semantic, arena) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Truncated,
+    };
 
     return .{ .ast = ast, .semantic = semantic };
 }

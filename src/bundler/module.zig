@@ -356,6 +356,9 @@ pub const ModuleSemanticData = struct {
     /// parse arena owns this record together with its symbols and scopes.
     runtime_identities: ?*RuntimeIdentitySnapshot = null,
 
+    /// Exact AST/SID/Scope roles for strict ESM functions emitted outside their initializer.
+    strict_output_context: @import("strict_function_context.zig").OutputContext = .{},
+
     pub fn ensureRuntimeIdentities(self: *ModuleSemanticData, allocator: std.mem.Allocator) std.mem.Allocator.Error!*RuntimeIdentitySnapshot {
         if (self.runtime_identities) |identities| return identities;
         const identities = try allocator.create(RuntimeIdentitySnapshot);

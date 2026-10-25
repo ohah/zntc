@@ -135,6 +135,7 @@ test {
     _ = @import("bundler_test.zig");
     _ = @import("runtime_interop_ast.zig");
     _ = @import("interop_callsite.zig");
+    _ = @import("strict_function_context.zig");
     _ = @import("static_import_callsite.zig");
     _ = @import("static_import_source_anchor_test.zig");
     _ = @import("module_map_binding_semantic_test.zig");

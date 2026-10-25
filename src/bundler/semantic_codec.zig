@@ -30,7 +30,7 @@ const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v19: HMR runtime roles persist with their owning semantic graph.
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -191,7 +191,7 @@ comptime {
     const parameter_copy_sig = "parameter_source:semantic.symbol.SymbolId;state:semantic.symbol.ParameterBodyVarCopy.State;";
     if (!std.mem.eql(u8, fieldSig(symbol_mod.ParameterBodyVarCopy), parameter_copy_sig))
         @compileError("Parameter/body-var role changed; update the explicit semantic wire layout/version.");
-    if (@bitSizeOf(symbol_mod.BindingInstantiation) != 8 or !std.mem.eql(u8, fieldSig(symbol_mod.BindingInstantiation), "annex_b:bool;parameter_copy:bool;reserved:u6;"))
+    if (@bitSizeOf(symbol_mod.BindingInstantiation) != 8 or !std.mem.eql(u8, fieldSig(symbol_mod.BindingInstantiation), "annex_b:bool;parameter_copy:bool;strict_output_function:bool;reserved:u5;"))
         @compileError("Binding instantiation presence bits changed; update the semantic wire layout/version.");
     const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
         "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
@@ -206,7 +206,20 @@ comptime {
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
     if (@typeInfo(@import("../semantic/node_scope_provenance.zig").Entry).@"struct".field_names.len != 3) @compileError("expression provenance fields changed; update semantic codec");
-    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 16) {
+    const StrictRole = @import("strict_function_context.zig").Role;
+    const strict_names = [_][]const u8{ "kind", "body", "directive", "name_role", "declaration", "binding", "symbol", "returned_function", "factory", "factory_scope", "source_scope", "lexical_root" };
+    const strict_fields = @typeInfo(StrictRole).@"struct".field_names;
+    if (strict_fields.len != strict_names.len) @compileError("strict role wire fields changed; update codec/version");
+    for (strict_names, strict_fields) |expected, actual| {
+        if (!std.mem.eql(u8, expected, actual) or @bitSizeOf(@FieldType(StrictRole, actual)) != 32)
+            @compileError("strict role wire order/type changed; update codec/version");
+    }
+    const StrictKind = @import("strict_function_context.zig").RoleKind;
+    const StrictName = @import("strict_function_context.zig").NameRole;
+    if (@backingInt(StrictKind.factory) != 0 or @backingInt(StrictKind.body_directive) != 1 or
+        @backingInt(StrictName.binding) != 0 or @backingInt(StrictName.anonymous_default) != 1)
+        @compileError("strict role wire tags changed; update codec/version");
+    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 17) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -442,6 +455,14 @@ pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc:
         try putRuntimeGroup(&INTEROP_INTERNAL_FIELDS, &payload, alloc, ids.interop_internal);
         try putRuntimeGroup(&HMR_RUNTIME_FIELDS, &payload, alloc, ids.hmr_internal);
     }
+
+    try putU32(&payload, alloc, @intCast(sem.strict_output_context.functions.len));
+    for (sem.strict_output_context.functions) |role| {
+        inline for (@typeInfo(@TypeOf(role)).@"struct".field_names) |name| try putU32(&payload, alloc, @backingInt(@field(role, name)));
+    }
+
+    try putU32(&payload, alloc, @backingInt(sem.strict_output_context.program));
+    try putU32(&payload, alloc, @backingInt(sem.strict_output_context.directive));
 
     const checksum = wyhash.hashU64(payload.items);
     try putU32(out, alloc, MAGIC);
@@ -698,6 +719,21 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         runtime_identities = try arena.create(module.RuntimeIdentitySnapshot);
         runtime_identities.?.* = snapshot;
     }
+    const strict_count = try r.u32v();
+    if (strict_count > r.remaining() / (@typeInfo(@import("strict_function_context.zig").Role).@"struct".field_names.len * 4)) return error.Truncated;
+    const strict_roles = try arena.alloc(@import("strict_function_context.zig").Role, strict_count);
+    for (strict_roles) |*role| {
+        inline for (@typeInfo(@TypeOf(role.*)).@"struct".field_names) |name| @field(role, name) = @fromBackingInt(try r.u32v());
+        if ((role.kind != .factory and role.kind != .body_directive) or
+            (role.name_role != .binding and role.name_role != .anonymous_default) or
+            role.symbol.isNone() or @backingInt(role.symbol) >= symbols_len or
+            role.source_scope.isNone() or role.source_scope.toIndex() >= scopes.len or role.lexical_root.isNone() or role.lexical_root.toIndex() >= scopes.len) return error.Truncated;
+        if (role.kind == .factory and (role.factory_scope.isNone() or role.factory_scope.toIndex() >= scopes.len)) return error.Truncated;
+        if (role.kind == .body_directive and !role.factory_scope.isNone()) return error.Truncated;
+    }
+    const strict_program: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(try r.u32v());
+    const strict_directive: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(try r.u32v());
+    if (strict_program.isNone() != strict_directive.isNone() or (strict_program.isNone() and strict_roles.len != 0)) return error.Truncated;
     if (r.remaining() != 0) return error.Truncated;
 
     return .{
@@ -717,5 +753,6 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
         .namespace_member_owners = namespace_member_owners,
         .namespace_declaration_owners = namespace_declaration_owners,
         .runtime_identities = runtime_identities,
+        .strict_output_context = .{ .program = strict_program, .directive = strict_directive, .functions = strict_roles },
     };
 }

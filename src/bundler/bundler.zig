@@ -1898,6 +1898,9 @@ pub const Bundler = struct {
             if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
             if (linker) |*l| try @import("static_import_callsite.zig").lower(graph, l);
             if (linker) |*l| try @import("guarded_import_callsite.zig").lower(graph, l, &s);
+            if (!self.options.code_splitting and self.options.format != .esm) {
+                if (try @import("strict_function_context.zig").lower(graph, &s)) s.ast_mutated_after_link = true;
+            }
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
             // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
@@ -1946,7 +1949,8 @@ pub const Bundler = struct {
                 try @import("interop_callsite.zig").lower(graph, l, null);
                 try @import("static_import_callsite.zig").lower(graph, l);
                 try @import("guarded_import_callsite.zig").lower(graph, l, null);
-                if (graph.dynamic_import_ast_provider) |provider| if (provider.active) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
+                const strict_changed = if (!self.options.code_splitting and self.options.format != .esm) try @import("strict_function_context.zig").lower(graph, null) else false;
+                if (strict_changed or (graph.dynamic_import_ast_provider != null and graph.dynamic_import_ast_provider.?.active)) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
             }
         }
         // tree_shaker pointer 를 linker 로 전달 — namespace force_inline 결정 (3 caller
