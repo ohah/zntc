@@ -7,6 +7,10 @@ import { createFixture, ZNTC_BIN } from './helpers';
 
 const cases = [
   [
+    'generator header names and shorthand keys',
+    'const reads=[];function* nested(){for (let index=0;index<2;index++){const value=index+41;yield 0;reads.push(()=>({index,value}));}}for(const ignored of nested()){}events.push(reads.map(read=>JSON.stringify(read())).join(":"));',
+  ],
+  [
     'body cell closures',
     'const reads=[];for(const value of [20,21]){const copy=value*2;reads.push(()=>copy);}events.push(reads.map(read=>read()).join(":"));',
   ],

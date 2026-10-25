@@ -190,3 +190,36 @@ test "loop body lexical owner source 13 direct head default before visiting outp
 test "loop body lexical owner source 14 captured body cell before visiting output" {
     try checkModes("function run(source){for(const value of source){const copy=value*2;use(()=>copy);}}");
 }
+
+test "loop body oracle generator references keep their selected names" {
+    const coverage = @import("symbol_coverage.zig");
+    for ([_]bool{ false, true }) |late_names| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "const log=[];function* run(){for(let index=0;index<2;index++){const value=index;yield 0;log.push(()=>value);}}for(const unused of run());";
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5), .defer_runtime_helper_name_resolution = late_names });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.node_scope_provenance = analyzer.node_scope_provenance;
+        t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+        t.semantic_edit_enabled = true;
+        const root = try t.transform();
+        const sem = (try t.finishSemanticEdit()).?;
+        var exact = try coverage.checkExact(a, t.ast, root, t.parser_node_count, t.symbol_ids.items, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, t.helper_ref_nodes.items, &sem.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+        try std.testing.expectEqual(@as(usize, 0), exact.scope_resolution_mismatch);
+        try std.testing.expect(exact.isClean());
+    }
+}

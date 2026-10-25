@@ -6,6 +6,8 @@ for-of, 상태 기계용 for-in, for-await의 공통 본문 producer는 새 bloc
 
 직접 검사는 서로 다른 14개 source를 각각 독립된 Zig test로 실행합니다. 각 test는 for-of, for-in, for-await 세 경로를 전체 방문/finish 전에 호출합니다. 본문 노드 도달성, 실제 Scope 부모, 원본 block ScopeId 보존, lexical/var 저장소, 기존 SID, 실제 Reference Scope, 중첩 클로저 부모와 import provenance를 확인합니다. 원래 구현에서는 14개 test 모두 실패합니다.
 
-실행 비교는 11개 원본 프로그램에 대해 for-of/for-await, 5개 target, single/bundle, plain/minify의 440개 CLI 입력과 native API transpile/buildSync의 176개 입력을 사용합니다. 원본 Node 출력과 비교하며 실패 예상으로 입력을 제외하지 않습니다.
+실행 비교는 12개 원본 프로그램에 대해 for-of/for-await, 5개 target, single/bundle, plain/minify의 480개 CLI 입력과 native API transpile/buildSync의 192개 입력을 사용합니다. 원본 Node 출력과 비교하며 실패 예상으로 입력을 제외하지 않습니다.
 
 이 변경은 공통 본문 producer만 다룹니다. iterator cleanup의 다른 try/catch/finally wrapper와 for-in의 다른 생성 owner, 상태 기계의 다른 수명/Scope 보정은 별도 완료 조건으로 남습니다. #4819/#6193 전체 완료를 뜻하지 않습니다.
+
+추출한 매개변수의 SID로 참조를 먼저 연결할 때 이미 선택된 출력 이름도 같은 SID로 일반 방문에 전달합니다. 기존 shorthand key 보존 규약을 재사용하며, generator header의 원래 프로퍼티 키를 바꾸지 않습니다. 전체 generator 변환의 이름 연결은 helper 이름 지연 여부 두 모드의 별도 exact 검사로 확인합니다.
