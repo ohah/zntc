@@ -52,28 +52,31 @@ The native-derived constructor fix is merged separately and still needs composed
 validation here. Engine-retained fields that call an earlier body closure inside
 `super()` have a separate earlier-initialization requirement.
 
-The current runtime matrix has seventy-three inputs, each checked in plain/minified
-output. The complete matrix is not passing: mutable arguments reads differ from
-native output, and the loop function-declaration identity case aborts during
-exact reference relocation. These failures remain required work. It covers source await ordering, rejection/finally, abrupt loop flow,
-nested/unbraced loops and a native-generator partial profile. A separate probe
-checks function-hoisted key storage before the final output walk. A loop-specific probe checks storage and references before the final walk
-across eight source/profile combinations, including retained block scoping and
-native generator capability combinations.
+The composed local snapshot checks seventy-three source inputs in plain/minified
+output: all 146 native comparisons now pass after the generator-function-cell
+and live-arguments dependencies are composed. Before the latter dependency,
+the native-generator mutable-arguments input failed in both modes. The factory
+binding/reference birth probe and semantic-less controls also pass (23 selected
+unit tests), and the separate loop-key birth probe passes across eight profiles
+(21 selected unit tests). These are local composed results, not merged-main or
+final public-API/cache validation of this feature.
+
 The callback producer moves exact reference rows only after its hoisted storage
 is bound; source lexical storage is handed to the actual wrapper declaration.
-Driver storage still needs its own complete producer-boundary probes.
-
-Mutable source arguments, dynamic eval/with, partial capability combinations,
-external wrapped class declaration block-scoping, cache/import/export boundaries,
-final public API oracles, compileable implementation mutants and normal push
-checks remain due. In particular, a capture snapshot cannot establish mutable
-arguments-binding semantics across a suspension.
+Driver storage, dynamic eval/with, partial capability combinations, wrapped class
+declaration block-scoping, cache/import/export boundaries, final public API
+oracles, final-state implementation mutants and normal push checks remain due.
+The generator dependency has separately exposed a bundled sloppy Annex B alias
+spelling regression during fair native/baseline/candidate validation; that result
+is not covered by the direct-transpile field matrix above. Native non-simple
+arguments environments and captured IIFE argument lifetimes remain separate
+uncompleted obligations of the arguments dependency.
 
 The separate constructor callback regression now has eleven native inputs in
-plain/minified output. Ten of those twenty-two comparisons fail: callbacks run by
+plain/minified output. The last frozen run failed ten of those twenty-two comparisons: callbacks run by
 native fields, replacement super objects, fields that throw, reentrant
 construction, and a failed construction followed by a successful one. The
 before/after-super, inferred function/class-name, and native-parameter
-super-call reentrancy controls pass. The test
-remains failing until the native-field timing producer is implemented.
+super-call reentrancy controls pass. No native-field timing producer has been implemented here. Handwritten
+parameter-environment prototypes match two native reentry/private-brand examples;
+they do not establish complete FDI, naming, scope, eval or target support.
