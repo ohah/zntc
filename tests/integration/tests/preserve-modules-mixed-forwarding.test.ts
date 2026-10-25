@@ -125,9 +125,10 @@ async function execute(command: string, args: string[]) {
 describe('mixed forwarded imports keep exact value identities and own eager evaluation', () => {
   for (const entry of cases)
     for (const format of ['esm', 'cjs'] as const)
-      for (const guarded of [false, true])
+      for (const policy of ['api-guarded', 'api-plain', 'native-cli'] as const)
         for (const minify of [false, true])
-          test(`${entry.name} ${format} guard=${guarded} minify=${minify}`, async () => {
+          test(`${entry.name} ${format} ${policy} minify=${minify}`, async () => {
+            const guarded = policy === 'api-guarded';
             const { dir, cleanup } = await createFixture({
               'package.json': JSON.stringify({ type: format === 'esm' ? 'module' : 'commonjs' }),
               ...entry.files,
@@ -142,7 +143,7 @@ describe('mixed forwarded imports keep exact value identities and own eager eval
               expect(native.stderr).toBe('');
               expect(native.stdout).toBe('[42,42]\n');
               const outdir = join(dir, 'out');
-              if (guarded) {
+              if (policy !== 'native-cli') {
                 await init();
                 try {
                   const result = await build({
@@ -156,7 +157,7 @@ describe('mixed forwarded imports keep exact value identities and own eager eval
                     splitting: true,
                     preserveModules: true,
                     strictExecutionOrder: true,
-                    entryErrorGuard: true,
+                    entryErrorGuard: guarded,
                     minify,
                   });
                   expect(result.errors).toEqual([]);
@@ -164,7 +165,7 @@ describe('mixed forwarded imports keep exact value identities and own eager eval
                   close();
                 }
               } else {
-                // Native CLI has a real false guard policy. NAPI RN currently ORs false with its preset.
+                // Exercise native CLI false separately from both explicit API policies.
                 const result = await execute(ZNTC_BIN, [
                   '--bundle',
                   join(dir, 'entry.mjs'),
