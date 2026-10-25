@@ -911,7 +911,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .exported_name = exported_name,
                         .local_name = re.local_name,
                         .local_span = local_node.span,
-                        .local_symbol_node_index = if (re.kind == .local) @backingInt(local_idx) else null,
+                        .local_symbol_node_index = @backingInt(local_idx),
                         .kind = re.kind,
                         .import_record_index = re.import_record_index,
                     }) catch {};

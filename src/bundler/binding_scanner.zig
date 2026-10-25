@@ -506,7 +506,7 @@ pub fn extractExportBindings(
                             .exported_name = exported_name,
                             .local_name = final_local_name,
                             .local_span = local_node.span,
-                            .local_symbol_node = if (kind == .local) local_idx else null,
+                            .local_symbol_node = if (!has_source) local_idx else null,
                             .kind = kind,
                             .import_record_index = final_rec_idx,
                         });

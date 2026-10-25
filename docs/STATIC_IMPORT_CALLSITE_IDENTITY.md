@@ -15,7 +15,7 @@
 - bare import는 source literal NodeIndex로 record를 선택한다. spelling/span/cached local SID로 source binding을 재선택하지 않는다. missing/out-of-range/wrong-kind/duplicate anchor는 명시적으로 실패한다.
 - named non-default read는 original/current local binding anchor의 SID로 선택하고, 원래 Reference의 ScopeId에서 require/member/callee AST를 만든다. 기존 Reference는 일괄 제거한다.
 - default/namespace는 기존 source SID와 Module Scope를 유지하며 실제 var binding/declarator/initializer를 생성한다. kind/decl_flags를 physical storage에 맞게 전환하고 declaration Reference를 새 binding node에 reanchor한다. 기존 read/export Reference의 SID는 바꾸지 않는다.
-- `ImportBinding.local_role.materialized_var`와 현재 binding node를 생성 시 보존한다. 공통 exact helper는 role에 맞는 kind와 node shape를 검증하며, 새 role에는 semantic-less name fallback이 없다. 기존 original-import low-level 계약은 유지한다. export getter도 materialized record의 exact export node→local SID를 우선 사용한다.
+- `ImportBinding.local_role.materialized_var`와 현재 binding node를 생성 시 보존한다. 공통 exact helper는 role에 맞는 kind와 node shape를 검증하며, 새 role에는 semantic-less name fallback이 없다. 기존 original-import low-level 계약은 유지한다. local-syntax export는 barrel 분류와 무관하게 실제 local reference node를 보존하여 storage와 동일한 SID handoff를 검증한다. 기존 namespace/export 출력 경로 전체의 이름 복구 제거를 뜻하지 않는다.
 
 ## 실행과 이름의 소유권
 
