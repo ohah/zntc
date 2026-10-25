@@ -289,6 +289,7 @@ function parseArgs(argv) {
     treeShaking: true,
     // 엔진 기본값 true — `--no-*` / `--*=false` 또는 config false 로만 끈다.
     scopeHoist: true,
+    moduleSpecifierMap: undefined,
     emitDiskSourcemap: true,
     fallback: {},
     blockList: [],
@@ -1402,6 +1403,7 @@ function mergeConfigIntoOpts(opts, config) {
     'platform',
     'target',
     'rnVersion',
+    'moduleSpecifierMap',
     'cacheDir', // #4438 디스크 캐시 경로 (NAPI 가 disk_cache_dir 로 해석)
     'banner',
     'footer',
@@ -1660,6 +1662,7 @@ async function buildBundleOptions(opts, config, { filterCallerPreWarmCss = false
     sourceRoot: opts.sourceRoot,
     treeShaking: opts.treeShaking,
     scopeHoist: opts.scopeHoist,
+    moduleSpecifierMap: opts.moduleSpecifierMap,
     emitDiskSourcemap: opts.emitDiskSourcemap,
     fallback: normalizeFallback(opts.fallback),
     blockList: opts.blockList.length > 0 ? opts.blockList : undefined,
