@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const Case = struct { name: []const u8, source: []const u8, capture: bool = true };
+const Case = struct { name: []const u8, source: []const u8, capture: bool = true, super_writes: usize = 0 };
 const cases = [_]Case{
-    .{ .name = "derived body capture before and after super", .source = "class Parent{};class Box extends Parent{value=7;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
-    .{ .name = "derived shared capture before and after super", .source = "class Parent{};class Box extends Parent{value=7;read=()=>this.value;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
+    .{ .name = "derived body capture before and after super", .super_writes = 1, .source = "class Parent{};class Box extends Parent{value=7;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
+    .{ .name = "derived shared capture before and after super", .super_writes = 1, .source = "class Parent{};class Box extends Parent{value=7;read=()=>this.value;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();" },
     .{ .name = "global alias collision", .source = "const _this=11;class Box{value=7;read=()=>[this.value,_this]}console.log(JSON.stringify(new Box().read()));" },
     .{ .name = "native non-simple constructor collision", .source = "class Box{value=7;read=()=>this.value;constructor(_this=11){this.other=_this}}const box=new Box();console.log(box.read(),box.other);" },
     .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
@@ -96,11 +96,12 @@ test "native field capture owns exact constructor storage and references before 
             if (constructors.contains(@backingInt(t.semantic_editor.?.symbols.items[id.*].scope_id))) try captures.put(a, id.*, {});
         }
         try std.testing.expectEqual(@as(usize, if (case.capture) 1 else 0), captures.count());
-        const Work = struct { node: ast.NodeIndex, scope: ScopeId };
+        const Work = struct { node: ast.NodeIndex, scope: ScopeId, parent: ast.NodeIndex = .none };
         var stack: std.ArrayList(Work) = .empty;
         try stack.append(a, .{ .node = output, .scope = @fromBackingInt(0) });
         var bindings: usize = 0;
         var references: usize = 0;
+        var super_writes: usize = 0;
         while (stack.pop()) |work| {
             if (work.node.isNone()) continue;
             const node = t.ast.getNode(work.node);
@@ -108,21 +109,35 @@ test "native field capture owns exact constructor storage and references before 
             if (t.getSymbolIdAt(work.node)) |id| if (captures.contains(id)) {
                 if (node.tag == .binding_identifier) {
                     try std.testing.expectEqual(scope, t.semantic_editor.?.symbols.items[id].scope_id);
+                    if (case.super_writes > 0) {
+                        const declarator = t.ast.getNode(work.parent);
+                        try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 1).isNone());
+                    }
                     bindings += 1;
                 } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
                     const ref = (try t.semantic_editor.?.referenceForNode(work.node)) orelse return error.MissingCaptureReferenceAtBirth;
                     try std.testing.expectEqual(id, @backingInt(ref.symbol_id));
                     try std.testing.expectEqual(scope, ref.scope_id);
-                    try std.testing.expect(ref.flags.read and !ref.flags.write);
+                    if (ref.flags.write) {
+                        try std.testing.expect(!ref.flags.read);
+                        const assignment = t.ast.getNode(work.parent);
+                        try std.testing.expectEqual(ast.Node.Tag.assignment_expression, assignment.tag);
+                        try std.testing.expectEqual(work.node, assignment.data.binary.left);
+                        const call = t.ast.getNode(assignment.data.binary.right);
+                        try std.testing.expectEqual(ast.Node.Tag.call_expression, call.tag);
+                        try std.testing.expectEqual(ast.Node.Tag.super_expression, t.ast.getNode(t.ast.readExtraNode(call.data.extra, 0)).tag);
+                        super_writes += 1;
+                    } else try std.testing.expect(ref.flags.read);
                     references += 1;
                 }
             };
             var children = @import("../parser/ast_walk.zig").children(t.ast, node);
             while (children.next()) |child| {
                 const outside = node.tag == .method_definition and child == t.ast.readExtraNode(node.data.extra, ast.MethodExtra.key);
-                try stack.append(a, .{ .node = child, .scope = if (outside) work.scope else scope });
+                try stack.append(a, .{ .node = child, .scope = if (outside) work.scope else scope, .parent = work.node });
             }
         }
+        try std.testing.expectEqual(case.super_writes, super_writes);
         try std.testing.expectEqual(captures.count(), bindings);
         try std.testing.expect((references > 0) == case.capture);
     }

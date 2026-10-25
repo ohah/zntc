@@ -298,7 +298,23 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     defer self.current_super_static_receiver = saved_super_static_receiver_v7;
     defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn_v7;
 
+    var derived_capture: @import("../transformer.zig").NativeFieldCapturePlan = .{};
+    const saved_native_capture = self.native_field_capture_plan;
+    defer self.native_field_capture_plan = saved_native_capture;
+    const owns_derived_capture = try @import("../native_derived_this.zig").needsCell(self, source_owner, node);
+    if (owns_derived_capture) {
+        const plan = if (saved_native_capture) |existing| if (existing.scope == self.capture_scope) existing else &derived_capture else &derived_capture;
+        plan.scope = self.capture_scope;
+        plan.derived = true;
+        plan.initialize_on_super = true;
+        self.native_field_capture_plan = plan;
+        try @import("semantic_edit.zig").ensureNativeConstructorCaptureBinding(self, plan, node.span);
+    }
+
     var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 2));
+
+    if (owns_derived_capture and self.native_field_capture_plan.? == &derived_capture)
+        new_body = try self.prependStatementsToBody(new_body, &.{derived_capture.this_declaration});
 
     // parameter property: derived class constructor 는 super() 후에, 그 외에는 body 앞에 prepend.
     // 전자에서 prepend 하면 `this` 가 super() 전 접근되어 ReferenceError.

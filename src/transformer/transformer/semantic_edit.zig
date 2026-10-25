@@ -3032,6 +3032,24 @@ pub fn nativeFieldCaptureOwner(self: *Transformer) ?*@import("../transformer.zig
     return plan;
 }
 
+pub fn ensureNativeConstructorCaptureBinding(self: *Transformer, plan: *@import("../transformer.zig").NativeFieldCapturePlan, span: @import("../../lexer/token.zig").Span) Transformer.Error!void {
+    if (plan.this_declaration.isNone()) {
+        const saved_scope = self.current_scope;
+        self.current_scope = plan.scope;
+        defer self.current_scope = saved_scope;
+        const initializer = if (plan.initialize_on_super) NodeIndex.none else try es_helpers.makeThisExpr(self, span);
+        plan.this_declaration = try self.buildVarDecl("_this", initializer, span);
+        try self.bindLexicalCapture(plan.this_declaration, .this_value);
+        plan.symbol_id = self.capture_binding_ids.get(captureKey(self.capture_frame, .this_value)) orelse
+            std.debug.panic("constructor capture declaration has no exact identity", .{});
+    } else if (plan.initialize_on_super) {
+        const declaration = self.ast.getNode(plan.this_declaration);
+        const start = self.readU32(declaration.data.extra, 1);
+        const declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start]);
+        self.ast.extra_data.items[self.ast.getNode(declarator).data.extra + 1] = @backingInt(NodeIndex.none);
+    }
+}
+
 /// A generated lexical alias keeps its exact frame and source role. Moved
 /// fields with a known constructor owner create their Reference immediately.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
@@ -3039,16 +3057,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
     if (nativeFieldCaptureOwner(self)) |plan| {
         if (kind == .this_value) {
             if (plan.scope != self.capture_scope) std.debug.panic("field capture lost its actual constructor scope", .{});
-            if (plan.this_declaration.isNone()) {
-                const saved_scope = self.current_scope;
-                self.current_scope = plan.scope;
-                defer self.current_scope = saved_scope;
-                const initializer = try es_helpers.makeThisExpr(self, source_span);
-                plan.this_declaration = try self.buildVarDecl("_this", initializer, source_span);
-                try self.bindLexicalCapture(plan.this_declaration, .this_value);
-                plan.symbol_id = self.capture_binding_ids.get(captureKey(self.capture_frame, .this_value)) orelse
-                    std.debug.panic("field capture declaration has no exact identity", .{});
-            }
+            try ensureNativeConstructorCaptureBinding(self, plan, source_span);
             const id = plan.symbol_id orelse std.debug.panic("field capture lost its declaration identity", .{});
             try self.bindLexicalCaptureToExistingSymbol(.this_value, @fromBackingInt(id));
             try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
