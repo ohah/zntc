@@ -141,7 +141,7 @@ inline fn shouldSkipTreeShakenReExportSource(l: *const Linker, m: *const Module,
 /// Its namespace getter must read the live provider value, not a legacy
 /// synthetic-default snapshot or a second initializer expression.
 fn ownedLiveReExportTarget(l: *const Linker, module: *const Module, exported: ExportBinding, options: *const EmitOptions) ?ReExportTarget {
-    if (!options.preserve_modules or options.format != .esm or exported.has_default_export_facade or !isReExportLike(exported)) return null;
+    if (!options.preserve_modules or (options.format != .esm and options.format != .cjs) or exported.has_default_export_facade or !isReExportLike(exported)) return null;
     const record_index = exported.import_record_index orelse return null;
     if (record_index >= module.import_records.len) return null;
     const record = module.import_records[record_index];

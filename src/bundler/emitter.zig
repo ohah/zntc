@@ -2478,6 +2478,17 @@ pub fn emitModule(
                 }
             };
         }
+        if (is_entry and options.preserve_modules and options.format == .cjs and options.output_exports == .named) {
+            if (metadata) |md| if (md.final_export_entries) |entries| {
+                _ = try module.esmNamespaceSymbol();
+                const namespace_name = try module.allocExportsName(allocator, if (linker) |l| &l.rename_table else null);
+                defer allocator.free(namespace_name);
+                if (try entry_exports.appendWrappedCjsNamedEntryExports(allocator, wrapped_code, namespace_name, entries)) |combined| {
+                    allocator.free(wrapped_code);
+                    wrapped_code = combined;
+                }
+            };
+        }
         // ESM 모듈의 소스맵 매핑을 결과에 반영
         if (mappings_out) |mout| {
             mout.* = esm_result.mappings;
