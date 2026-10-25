@@ -3702,8 +3702,7 @@ pub const CaptureFrameSnapshot = struct {
     active_frame: u32,
     scope: @import("../semantic/scope.zig").ScopeId,
     outermost_arrow_scope: @import("../semantic/scope.zig").ScopeId,
-    native_parameter_arrow_depth: u32,
-    native_parameter_arrow_owner: NodeIndex,
+    native_parameter_arrow_capture: ?TempIdentityCapture,
 };
 
 pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
@@ -3712,15 +3711,13 @@ pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
         .active_frame = self.next_capture_frame,
         .scope = self.capture_scope,
         .outermost_arrow_scope = self.outermost_lowered_arrow_scope,
-        .native_parameter_arrow_depth = self.native_parameter_arrow_depth,
-        .native_parameter_arrow_owner = self.native_parameter_arrow_owner,
+        .native_parameter_arrow_capture = self.native_parameter_arrow_capture,
     };
     self.capture_frame = self.next_capture_frame;
     self.next_capture_frame += 1;
     self.capture_scope = self.current_scope;
     self.outermost_lowered_arrow_scope = .none;
-    self.native_parameter_arrow_depth = 0;
-    self.native_parameter_arrow_owner = .none;
+    self.native_parameter_arrow_capture = null;
     return snap;
 }
 
@@ -3728,8 +3725,7 @@ pub fn popCaptureFrame(self: anytype, snap: CaptureFrameSnapshot) void {
     self.capture_frame = snap.frame;
     self.capture_scope = snap.scope;
     self.outermost_lowered_arrow_scope = snap.outermost_arrow_scope;
-    self.native_parameter_arrow_depth = snap.native_parameter_arrow_depth;
-    self.native_parameter_arrow_owner = snap.native_parameter_arrow_owner;
+    self.native_parameter_arrow_capture = snap.native_parameter_arrow_capture;
 }
 
 pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {

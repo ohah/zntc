@@ -1448,37 +1448,6 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
     }
 }
 
-/// Remember a generated `_newTarget` use with its lexical arrow owner. This
-/// allows an inner wrapper call's capture argument to bind to the outer
-/// wrapper even though that outer binding is created after visiting its body.
-pub fn trackNativeParameterArrowRef(self: *Transformer, owner: NodeIndex, node: NodeIndex) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
-    if (owner.isNone() or node.isNone()) std.debug.panic("native parameter arrow reference has no exact owner", .{});
-    try self.native_parameter_arrow_refs.append(self.allocator, .{ .owner = owner, .node = node });
-}
-
-/// Bind only refs recorded under this source arrow to its generated wrapper
-/// parameter SID. The final output walk supplies each use's actual ScopeId.
-pub fn bindNativeParameterArrowRefs(self: *Transformer, owner: NodeIndex, symbol: ?SymbolId) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
-    const id = symbol orelse return;
-    var index: usize = 0;
-    while (index < self.native_parameter_arrow_refs.items.len) {
-        const pending = self.native_parameter_arrow_refs.items[index];
-        if (pending.owner != owner) {
-            index += 1;
-            continue;
-        }
-        const raw = @backingInt(pending.node);
-        if (self.exact_output_ref_symbol_ids.get(raw)) |existing| {
-            if (existing != @backingInt(id)) std.debug.panic("native parameter reference was assigned to two wrapper symbols", .{});
-        } else {
-            try self.exact_output_ref_symbol_ids.put(self.allocator, raw, @backingInt(id));
-        }
-        _ = self.native_parameter_arrow_refs.swapRemove(index);
-    }
-}
-
 fn scopeVisibleFrom(scopes: []const @import("../../semantic/scope.zig").Scope, declared: ScopeId, use: ScopeId) bool {
     if (declared.isNone() or use.isNone() or declared.toIndex() >= scopes.len or use.toIndex() >= scopes.len) return false;
     var current = use;
