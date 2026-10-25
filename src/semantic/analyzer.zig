@@ -4547,8 +4547,10 @@ pub const SemanticAnalyzer = struct {
                     defer self.current_visit_node = saved_visit_node;
                     break :blk try self.enterScope(.block, self.is_strict_mode);
                 };
-                // Visit block body statements
-                try self.visitNodeList(body_node.data.list);
+                // This owned body has the same lexical instantiation and
+                // statement coordinates as an ordinary block.
+                try self.predeclareLexicalDecls(body_node.data.list);
+                try self.visitStmtList(body_node.data.list);
                 // Check for catch param conflicts with lexically-declared names in the block
                 try self.checkCatchBodyConflicts(catch_names.items);
                 self.exitScope(block_saved);
