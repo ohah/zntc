@@ -178,6 +178,17 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     expectedStdout: '[3,1,3,23]\n',
     observations: [{ report: 'exact', field: 'enum_iife_params', minimum: 1 }],
   },
+  {
+    file: '4819-native-parameter-arrow-cells.mjs',
+    target: TARGETS[1],
+    expectedStdout: '[{"n":7,"ignored":9},{"n":7,"ignored":9}]\n',
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 2 },
+      { report: 'exact', field: 'generated_references', minimum: 5 },
+      { report: 'exact', field: 'declaration_anchors_checked', minimum: 5 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
 ];
 // These fixtures use syntax that .unknown's legacy JS script mode rejects
 // before semantic analysis. Keep the exact rejected inputs visible so a new
@@ -1121,12 +1132,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(302);
+    expect(fixtureNames).toHaveLength(303);
     expect(fixtureInventory).toBe(
-      'fdadbf1a4ab11bab9c5ddd73cae07d5407134cd2a675538b8118ed4836a00b52',
+      'b8eb89e5ce54f834103c31965dd8f847878323453a16d71ea19e81f4d12e0e90',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      '79faf3127e06801d57f70e87b2ffd86871add4ecea7b483082a0de80c0290384',
+      'c5ad57c41752f19784d3c4195a7154c41d300468101d260de91f1f169e0d198d',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -1216,6 +1227,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
       '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=2',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
+      '4819-native-parameter-arrow-cells.mjs:es2015:exact.generated_bindings>=2,exact.generated_references>=5,exact.declaration_anchors_checked>=5,strict.marked_synthetic>=1',
     ]);
     expect(
       new Set(REQUIRED_PRODUCER_OBSERVATIONS.map((entry) => `${entry.file}:${entry.target.name}`))

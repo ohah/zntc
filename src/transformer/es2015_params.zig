@@ -161,11 +161,16 @@ pub fn ES2015Params(comptime Transformer: type) type {
                             const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_child));
                             if (child_idx.isNone() or @backingInt(child_idx) >= self.ast.nodes.items.len) continue;
                             const child = self.ast.getNode(child_idx);
-                            if (child.tag == .object_property) {
-                                const value = ast_mod.Ast.objectPropertyValue(child);
-                                if (!value.isNone()) try pending.append(self.allocator, value);
-                            } else {
-                                try pending.append(self.allocator, child_idx);
+                            switch (child.tag) {
+                                .object_property => {
+                                    const value = ast_mod.Ast.objectPropertyValue(child);
+                                    if (!value.isNone()) try pending.append(self.allocator, value);
+                                },
+                                .binding_property => {
+                                    const value = child.data.binary.right;
+                                    try pending.append(self.allocator, if (value.isNone()) child.data.binary.left else value);
+                                },
+                                else => try pending.append(self.allocator, child_idx),
                             }
                         }
                     },
