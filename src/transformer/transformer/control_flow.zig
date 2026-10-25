@@ -31,27 +31,9 @@ fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx:
 
 /// 함수 경계를 넘지 않고 `yield` 식이 있는지.
 fn bodyHasYield(self: *Transformer, root: NodeIndex) bool {
-    if (root.isNone()) return false;
-    var found = false;
-    ast_walk.walkPreorderIterative(self.allocator, self.ast, root, &found, yieldVisit) catch return true;
-    return found;
+    return @import("../loop_await_driver.zig").hasSuspension(self, root, .yield_expression) catch true;
 }
 
-fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
-    switch (node.tag) {
-        .yield_expression => {
-            found.* = true;
-            return .stop;
-        },
-        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => return .skip_children,
-        else => return .descend,
-    }
-}
-
-/// 루프 추출 판단에 쓰는 이름들 (#4743).
-/// - `names`: 헤더 let/const + 본문에서 선언한 let/const/class — 이 중 하나라도 클로저가
-///   캡처하면 반복별 추출이 필요하다.
-/// - `var_names`: 본문의 원래 `var` — 추출하면 바깥으로 끌어올린다.
 fn visitSuspendingLoopBody(self: *Transformer, body: NodeIndex, capture_source_values: bool) Error!NodeIndex {
     const saved = self.in_extracted_fn_body;
     self.in_extracted_fn_body = saved or capture_source_values;

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-test "retained field arrow owns creation site receiver across sixty two contexts" {
+test "retained field arrow owns creation site receiver across sixty nine contexts" {
     const Case = struct { name: []const u8, source: []const u8, native_generator: bool = false };
     const cases = [_]Case{
         .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
@@ -64,6 +64,13 @@ test "retained field arrow owns creation site receiver across sixty two contexts
         .{ .name = "native generator outer lexical key", .source = "function* make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[yield this.prefix+arguments[0]+i]=()=>this})}return all}const g=make.call({prefix:\"p\"},\"x\");console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true },
         .{ .name = "await key source arguments", .source = "async function make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(arguments[0]+i)]=()=>this})}return all}make(\"read\").then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));" },
         .{ .name = "await key source this and arguments", .source = "async function make(suffix){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(this.prefix+arguments[0]+i)]=()=>this})}return all}make.call({prefix:\"p\"},\"x\").then(all=>console.log(new all[0]().px0.name,new all[1]().px1.name));" },
+        .{ .name = "native generator helper async loop", .source = "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(\"read\"+i)]=()=>this})}return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().read1.name));", .native_generator = true },
+        .{ .name = "native generator helper method await key", .source = "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[\"read\"+i]=()=>this;[await Promise.resolve(\"method\")](){return 7}})}return all}make().then(all=>console.log(new all[0]().read0.name,new all[1]().method()));", .native_generator = true },
+        .{ .name = "nested loop field captures outer index", .source = "async function make(){const all=[];for(let i=0;i<2;i++){for(let j=0;j<2;j++){all.push(class{[await Promise.resolve(\"read\"+i+j)]=()=>[this,i]})}}return all}make().then(all=>console.log(all.map((C,n)=>{const x=new C(),f=x[\"read\"+Math.floor(n/2)+n%2];return f()[0]===x&&f()[1]===Math.floor(n/2)}).join(\",\")));" },
+        .{ .name = "function key and super compound temps", .source = "function make(){class P{get value(){return this.own}set value(v){this.own=v}}return class C extends P{own=1;[\"read\"]=()=>++super.value}}const C=make(),x=new C();console.log(x.read.name,x.read(),x.read());" },
+        .{ .name = "native generator mutable arguments", .source = "function* make(){const all=[];for(let i=0;i<2;i++){yield i;arguments=[\"changed\"];all.push(class{[yield arguments[0]+i]=()=>this})}return all}const g=make(\"initial\");console.log(g.next().value,g.next().value,g.next(\"first\").value,g.next().value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);", .native_generator = true },
+        .{ .name = "implicit field capture async order", .source = "const trace=[];async function make(){const all=[];for(let i=0;i<2;i++){await Promise.resolve();all.push(class{value=i;read=()=>this});trace.push(i)}trace.push(\"done\");console.log(all.map(C=>new C().value).join(\",\"))}make();Promise.resolve().then(()=>trace.push(\"a\")).then(()=>trace.push(\"b\")).then(()=>trace.push(\"c\")).then(()=>trace.push(\"d\"));setTimeout(()=>console.log(trace.join(\",\")),0);" },
+        .{ .name = "await loop function declaration identity", .source = "\"use strict\";async function make(){for(let i=0;i<1;i++){function read(){return i}const saved=read;class C{[await Promise.resolve(\"field\")]=()=>this}console.log(saved===read,read(),new C().field.name)}}make();" },
         .{ .name = "multiple key cells in class", .source = "class C{[\"left\"]=()=>this;[\"right\"]=()=>this}const box=new C();console.log(box.left.name,box.right.name,box.left()===box,box.right()===box);" },
     };
     var mismatches: usize = 0;
@@ -251,8 +258,11 @@ test "retained loop key cells retain exact owners before final output walk" {
     const sources = [_][]const u8{
         "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve('read'+i)]=()=>this})}return all}",
         "async function make(){const all=[];for(let i=0;i<2;i++)all.push(class{[await Promise.resolve('read'+i)]=()=>this});return all}",
+        "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve('read'+i)]=()=>this})}return all}",
+        "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}",
+        "async function make(){const all=[];for(let i=0;i<2;i++){for(let j=0;j<2;j++){all.push(class{[await Promise.resolve('read'+i+j)]=()=>[this,i]})}}return all}",
     };
-    for (sources) |source| {
+    for (sources, 0..) |source, profile| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -262,8 +272,11 @@ test "retained loop key cells retain exact owners before final output walk" {
         const root = try parser.parse();
         var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
         try analyzer.analyze();
+        const source_symbols = analyzer.symbols.items.len;
+        var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+        if (profile == 2 or profile == 3) unsupported.generator = false;
         var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{
-            .unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+            .unsupported = unsupported,
             .use_define_for_class_fields = true,
         });
         try t.initSymbolIds(analyzer.symbol_ids.items);
@@ -294,6 +307,12 @@ test "retained loop key cells retain exact owners before final output walk" {
             if (work.node.isNone()) continue;
             const node = t.ast.getNode(work.node);
             const scope = t.outputOwnedScope(work.node) orelse work.scope;
+            if (node.tag == .binding_identifier) {
+                if (t.getSymbolIdAt(work.node)) |binding_sid| {
+                    if (binding_sid >= source_symbols and editor.symbols.items[binding_sid].kind == .variable_var)
+                        try std.testing.expectEqual(t.nearestVarScope(scope), editor.symbols.items[binding_sid].scope_id);
+                }
+            }
             if (t.getSymbolIdAt(work.node) == sid) {
                 if (node.tag == .binding_identifier) {
                     try std.testing.expectEqual(t.nearestVarScope(scope), editor.symbols.items[sid].scope_id);

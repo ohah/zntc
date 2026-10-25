@@ -196,7 +196,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 defer children.deinit(self.allocator);
                 collectChildIndices(self, node, &children) catch return true;
                 for (children.items) |child_idx| {
-                    stack.append(self.allocator, .{ .idx = child_idx, .in_closure = in_closure }) catch return true;
+                    const outer = @import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(entry.idx), @backingInt(child_idx));
+                    const field_initializer = (node.tag == .property_definition or node.tag == .accessor_property) and
+                        self.ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init) == child_idx;
+                    stack.append(self.allocator, .{ .idx = child_idx, .in_closure = if (outer) entry.in_closure else in_closure or field_initializer }) catch return true;
                 }
             }
             return false;
@@ -549,11 +552,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
         /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
         pub fn hasAwaitExpression(self: *Transformer, body_idx: NodeIndex) bool {
-            return anyMatchInsideClosure(self, body_idx, {}, struct {
-                fn visit(_: void, node: Node, in_closure: bool) bool {
-                    return !in_closure and node.tag == .await_expression;
-                }
-            }.visit);
+            return @import("loop_await_driver.zig").hasSuspension(self, body_idx, .await_expression) catch true;
         }
 
         /// loop body 를 `_loop` 함수로 추출할 때 원래 body 의 lexical `this` /
@@ -612,6 +611,49 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 반환: { .loop_fn_decl, .call_stmt } — 호출부에서 조립.
         // Only the actual extracted body moves here. The source loop header and
         // its callsite retain their original owner outside the new function.
+        /// Transfer actual body var storage when its implementation function
+        /// is created. Source vars intentionally shared outside were removed by
+        /// hoistVarsOutOfBody; nested functions/classes own their declarations.
+        fn bindExtractedBodyVarStorage(self: *Transformer, body: NodeIndex, owner: ScopeId) Transformer.Error!void {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, body);
+            while (stack.pop()) |idx| {
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                    .variable_declaration => {
+                        if (self.ast.variableDeclarationKind(node) == .@"var") {
+                            var declared: std.ArrayList(NodeIndex) = .empty;
+                            defer declared.deinit(self.allocator);
+                            const start = self.readU32(node.data.extra, 1);
+                            const len = self.readU32(node.data.extra, 2);
+                            for (0..len) |i| {
+                                const declarator = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                                try collectBindingNodes(self, self.ast.readExtraNode(declarator.data.extra, 0), &declared);
+                            }
+                            for (declared.items) |binding| {
+                                const id = self.getSymbolIdAt(binding) orelse std.debug.panic("extracted body var has no producer SID", .{});
+                                try self.relocateOutputSymbolAs(id, owner, binding);
+                                const symbol = &self.semantic_editor.?.symbols.items[id];
+                                symbol.kind = .variable_var;
+                                symbol.decl_flags = symbol.kind.declFlags();
+                                var planned = self.retained_loop_key_cells.valueIterator();
+                                while (planned.next()) |cells| for (cells.*) |*cell| {
+                                    if (cell.capture.symbol_id != null and @backingInt(cell.capture.symbol_id.?) == id)
+                                        cell.capture.owner_scope = owner;
+                                };
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+        }
+
         fn prepareExtractedGeneratorBody(self: *Transformer, body: NodeIndex, source: ScopeId, target: ScopeId, headers: []const u32, parameters: []const u32) Transformer.Error!void {
             try self.reparentGeneratedBodyScopes(source, target, body);
             var stack: std.ArrayList(NodeIndex) = .empty;
@@ -820,6 +862,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     );
                 }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
+                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
                 if (!await_driver and self.options.unsupported.generator) try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,
@@ -828,6 +871,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .header_symbol_ids = try self.allocator.dupe(u32, header_symbol_ids.items),
                     .parameter_symbol_ids = try self.allocator.dupe(u32, parameter_symbol_ids.items),
                 });
+            }
+
+            if (!is_generator and self.semantic_edit_enabled) {
+                const function_scope = self.outputOwnedScope(func_expr) orelse try self.addGeneratedFunctionScope(call_scope, func_expr);
+                try self.reparentGeneratedBodyScopes(call_scope, function_scope, transformed_body);
+                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
             }
 
             // The body temps were allocated before this extracted function

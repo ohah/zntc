@@ -34,22 +34,58 @@ fn invoke(self: anytype, iterator: Slot, scope: ScopeId, method: []const u8, arg
     return helpers.makeCallExpr(self, try property(self, iterator, scope, method, span), args, span);
 }
 
-/// This rewrite consumes the already visited body, skipping nested functions.
-/// Class heritage and computed keys remain in the enclosing suspension region.
-pub fn awaitToYield(self: anytype, root: ast.NodeIndex) !void {
+/// Traverse only evaluation belonging to the enclosing source function.
+/// Method keys/decorators execute outside the method; field initializers do not.
+fn enqueueSourceChildren(self: anytype, stack: *std.ArrayList(ast.NodeIndex), idx: ast.NodeIndex) !void {
+    const node = self.ast.getNode(idx);
+    switch (node.tag) {
+        .function_declaration, .function_expression, .function, .arrow_function_expression, .static_block => return,
+        .method_definition => {
+            var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+            while (children.next()) |child| {
+                if (@import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(idx), @backingInt(child)))
+                    try stack.append(self.allocator, child);
+            }
+            return;
+        },
+        .property_definition, .accessor_property => {
+            try stack.append(self.allocator, self.ast.readExtraNode(node.data.extra, ast.PropertyExtra.key));
+            const start = self.ast.readExtra(node.data.extra, ast.PropertyExtra.deco_start);
+            const len = self.ast.readExtra(node.data.extra, ast.PropertyExtra.deco_len);
+            for (0..len) |i| try stack.append(self.allocator, @fromBackingInt(self.ast.extra_data.items[start + i]));
+            return;
+        },
+        else => {},
+    }
+    var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+    while (children.next()) |child| try stack.append(self.allocator, child);
+}
+
+pub fn hasSuspension(self: anytype, root: ast.NodeIndex, tag: ast.Node.Tag) !bool {
     var stack: std.ArrayList(ast.NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
         const node = self.ast.getNode(idx);
-        switch (node.tag) {
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => continue,
-            .await_expression => self.ast.nodes.items[@backingInt(idx)].tag = .yield_expression,
-            else => {},
-        }
-        var children = @import("../parser/ast_walk.zig").children(self.ast, node);
-        while (children.next()) |child| try stack.append(self.allocator, child);
+        if (node.tag == tag) return true;
+        if (tag == .await_expression and (node.tag == .for_await_of_statement or
+            (node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .await_using))) return true;
+        try enqueueSourceChildren(self, &stack, idx);
+    }
+    return false;
+}
+
+/// Consume visited source awaits without entering another function's body.
+pub fn awaitToYield(self: anytype, root: ast.NodeIndex) !void {
+    var stack: std.ArrayList(ast.NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        if (self.ast.getNode(idx).tag == .await_expression)
+            self.ast.nodes.items[@backingInt(idx)].tag = .yield_expression;
+        try enqueueSourceChildren(self, &stack, idx);
     }
 }
 
