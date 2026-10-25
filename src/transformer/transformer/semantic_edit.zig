@@ -3046,7 +3046,8 @@ pub fn ensureNativeConstructorCaptureBinding(self: *Transformer, plan: *@import(
         const declaration = self.ast.getNode(plan.this_declaration);
         const start = self.readU32(declaration.data.extra, 1);
         const declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start]);
-        self.ast.extra_data.items[self.ast.getNode(declarator).data.extra + 1] = @backingInt(NodeIndex.none);
+        // variable_declarator: [binding, type annotation, initializer].
+        self.ast.extra_data.items[self.ast.getNode(declarator).data.extra + 2] = @backingInt(NodeIndex.none);
     }
 }
 

@@ -111,7 +111,7 @@ test "native field capture owns exact constructor storage and references before 
                     try std.testing.expectEqual(scope, t.semantic_editor.?.symbols.items[id].scope_id);
                     if (case.super_writes > 0) {
                         const declarator = t.ast.getNode(work.parent);
-                        try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 1).isNone());
+                        try std.testing.expect(t.ast.readExtraNode(declarator.data.extra, 2).isNone());
                     }
                     bindings += 1;
                 } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
