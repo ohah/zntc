@@ -68,6 +68,7 @@ pub fn materialize(
                     .imported_name = sb.imported_name,
                     .local_span = sb.local_span,
                     .local_symbol_node = if (sb.local_symbol_node_index) |index| @fromBackingInt(@intCast(index)) else null,
+                    .local_declaration_node = if (sb.local_declaration_node_index) |index| @fromBackingInt(index) else null,
                     .import_record_index = sb.import_record_index,
                 };
             }

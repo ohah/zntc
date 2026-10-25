@@ -110,6 +110,7 @@ pub const Builder = struct {
             .local_span = span,
             .import_record_index = record_index,
             .local_symbol_node = binding,
+            .local_declaration_node = declaration,
             .local_symbol = @import("symbol.zig").SymbolRef.makeSemantic(self.module.index, @backingInt(sid)),
             .symbol = target.toRef(),
             .source_type_only = false,
