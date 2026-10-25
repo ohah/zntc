@@ -83,3 +83,33 @@ test "constant materialization preserves export lexical edges in ten source form
     }
     try std.testing.expectEqual(@as(usize, 0), bad_cases);
 }
+
+test "constant materialization keeps shorthand grammar while folding ordinary reads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const value=42;use({value},value);");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var shorthand: ?NodeIndex = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .object_property and node.data.binary.right.isNone()) shorthand = node.data.binary.left;
+    }
+    const key = shorthand orelse return error.MissingShorthand;
+    const sid = analyzer.symbol_ids.items[@backingInt(key)].?;
+    var values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .empty;
+    try values.put(allocator, sid, .{ .kind = .number, .number_text = "42" });
+    var eligible = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len);
+    var runtime: ?NodeIndex = null;
+    for (analyzer.references.items) |reference| {
+        if (!reference.isValueUse() or reference.node_index.isNone()) continue;
+        eligible.set(@backingInt(reference.node_index));
+        if (@backingInt(reference.symbol_id) == sid and reference.node_index != key) runtime = reference.node_index;
+    }
+    const result = facts.materializeWithScratchDetailed(allocator, &parser.ast, analyzer.symbol_ids.items, &values, null, 0, .{}, false, &eligible, null);
+    try std.testing.expect(result.changed);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, parser.ast.getNode(key).tag);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.numeric_literal, parser.ast.getNode(runtime.?).tag);
+}
