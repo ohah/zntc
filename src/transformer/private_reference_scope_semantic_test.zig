@@ -208,6 +208,10 @@ test "#4819 private reference creation static block owner" {
 }
 
 fn expectES5PrivateReferencesAtCreation(source: []const u8) !void {
+    return expectLoweredClassPrivateReferencesAtCreation(source, false);
+}
+
+fn expectLoweredClassPrivateReferencesAtCreation(source: []const u8, native_class: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -218,7 +222,7 @@ fn expectES5PrivateReferencesAtCreation(source: []const u8) !void {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     try analyzer.analyze();
     var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .unsupported = TransformOptions.compat.fromESTarget(if (native_class) .es2015 else .es5),
         .use_define_for_class_fields = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -248,7 +252,10 @@ fn expectES5PrivateReferencesAtCreation(source: []const u8) !void {
     transformer.current_class_name_node = binding;
     transformer.current_class_self_symbol_id = self_id;
     try transformer.buildBlockRenameMap();
-    const root = try @import("es2015_class.zig").ES2015Class(Transformer).lowerClassDeclaration(&transformer, owner, class);
+    const root = if (native_class)
+        try transformer.visitNode(owner)
+    else
+        try @import("es2015_class.zig").ES2015Class(Transformer).lowerClassDeclaration(&transformer, owner, class);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_exact_symbol_refs.items.len);
     const ScopeId = @import("../semantic/scope.zig").ScopeId;
     const Work = struct { node: ast.NodeIndex, scope: ScopeId };
@@ -262,6 +269,13 @@ fn expectES5PrivateReferencesAtCreation(source: []const u8) !void {
         if (work.node.isNone()) continue;
         const node = transformer.ast.getNode(work.node);
         const scope = transformer.outputOwnedScope(work.node) orelse work.scope;
+        if (@backingInt(work.node) >= transformer.parser_node_count and
+            (node.tag == .function_expression or node.tag == .function_declaration or
+                node.tag == .arrow_function_expression or node.tag == .method_definition))
+        {
+            const function_scope = transformer.outputOwnedScope(work.node) orelse return error.MissingGeneratedFunctionScope;
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[function_scope.toIndex()].kind);
+        }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             if (transformer.getSymbolIdAt(work.node)) |id| {
                 if (transformer.private_helper_symbol_ids.contains(id)) {
@@ -425,4 +439,28 @@ test "#4819 private reference creation ES5 static method called before initializ
 
 test "#4819 private reference creation ES5 private field calls static method" {
     try expectES5PrivateReferencesAtCreation("class Box{static #value=this.#method();static #method(){return 9;}static read(){return this.#value;}}console.log(Box.read());");
+}
+
+test "#4819 private reference creation ES5 generated auto-accessor getter" {
+    try expectES5PrivateReferencesAtCreation("function build(start){class Counter{accessor value=start;add(value){this.value+=value;return this.value;}}return new Counter().add(2);}console.log(build(40));");
+}
+
+test "#4819 private reference creation ES5 generated static auto-accessor getter" {
+    try expectES5PrivateReferencesAtCreation("class Counter{static accessor value=1;static add(value){this.value+=value;return this.value;}}console.log(Counter.add(2));");
+}
+
+test "#4819 private reference creation ES5 generated computed auto-accessor getter" {
+    try expectES5PrivateReferencesAtCreation("const key='value';class Counter{accessor [key]=1;add(value){this[key]+=value;return this[key];}}console.log(new Counter().add(2));");
+}
+
+test "#4819 private reference creation native generated auto-accessor getter" {
+    try expectLoweredClassPrivateReferencesAtCreation("class Counter{accessor value=1;add(value){this.value+=value;return this.value;}}console.log(new Counter().add(2));", true);
+}
+
+test "#4819 private reference creation native generated static auto-accessor getter" {
+    try expectLoweredClassPrivateReferencesAtCreation("class Counter{static accessor value=1;static add(value){this.value+=value;return this.value;}}console.log(Counter.add(2));", true);
+}
+
+test "#4819 private reference creation native generated computed auto-accessor getter" {
+    try expectLoweredClassPrivateReferencesAtCreation("const key='value';class Counter{accessor [key]=1;add(value){this[key]+=value;return this[key];}}console.log(new Counter().add(2));", true);
 }
