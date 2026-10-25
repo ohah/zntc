@@ -137,6 +137,7 @@ test {
     _ = @import("static_import_callsite.zig");
     _ = @import("static_import_source_anchor_test.zig");
     _ = @import("module_map_binding_semantic_test.zig");
+    _ = @import("export_lexical_const_test.zig");
     _ = @import("guarded_import_callsite.zig");
     _ = @import("runtime_dynamic_import_ast.zig");
     _ = @import("runtime_entry_guard_ast.zig");
