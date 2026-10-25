@@ -336,6 +336,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return buildExpressionBodyStateMachine(self, body_idx, body, span, wrapper_scope);
             }
 
+            // Reserve the actual native write scope before operation collection.
+            const reserved_extra = try self.ast.addExtras(&.{ @backingInt(NodeIndex.none), 0, 0 });
+            const reserved_switch = try self.ast.addNode(.{ .tag = .switch_statement, .span = span, .data = .{ .extra = reserved_extra } });
+            const saved_operation_scope = self.generator_operation_scope;
+            self.generator_operation_scope = wrapper_scope;
+            defer self.generator_operation_scope = saved_operation_scope;
+            const saved_native_scope = self.generator_native_var_scope;
+            self.generator_native_var_scope = if (self.semantic_edit_enabled)
+                try self.addGeneratedScope(wrapper_scope, reserved_switch, .switch_block)
+            else
+                .none;
+            defer self.generator_native_var_scope = saved_native_scope;
+
             const body_list = try rewriteUsingForStateMachine(self, body.data.list);
             const stmts_start = body_list.statements.start;
             const stmts_len = body_list.statements.len;
@@ -366,7 +379,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // Phase 2: 연산을 switch case로 변환
-            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope);
+            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope, reserved_switch);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
             const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps, wrapper_scope);
@@ -658,7 +671,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 같은 이름을 두 번 선언하지 않는다 — 합성 선언 등록(#4722)이 소스 선언과 겹칠 수 있다.
             var seen: std.StringHashMapUnmanaged(void) = .empty;
             defer seen.deinit(self.allocator);
+            var source_identities: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer source_identities.deinit(self.allocator);
             for (hoisted_vars) |binding| {
+                if (self.getSymbolIdAt(binding)) |id| {
+                    const identity = try source_identities.getOrPut(self.allocator, id);
+                    if (identity.found_existing) continue;
+                }
                 const bnode = self.ast.getNode(binding);
                 if (bnode.tag == .binding_identifier) {
                     try seen.put(self.allocator, self.ast.getText(bnode.data.string_ref), {});
@@ -929,7 +948,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try ForOf.rewriteForOf(self, stmt_idx, stmt, .none, true);
                         try collectOperations(self, rewritten, ops, next_label);
                     } else {
-                        const new_stmt = try self.visitNode(stmt_idx);
+                        const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                         if (!new_stmt.isNone()) {
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                         }
@@ -966,6 +985,155 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 else => try appendVisitedStatement(self, stmt_idx, ops, next_label),
             }
+        }
+
+        /// Visit a retained native statement after removing source var declarations.
+        /// Their exact binding nodes were already moved into the wrapper declaration.
+        fn visitNativeStateRegion(self: *Transformer, statement: NodeIndex) Transformer.Error!NodeIndex {
+            const inherited = if (self.generator_operation_scope.isNone()) self.generator_state_machine_scope else self.generator_operation_scope;
+            return self.visitNode(try rewriteNativeStateVars(self, statement, inherited));
+        }
+
+        fn nativeWriteScope(self: *Transformer, inherited: ScopeId) ScopeId {
+            if (inherited.isNone() or inherited == self.generator_state_machine_scope) return self.generator_native_var_scope;
+            return inherited;
+        }
+
+        fn nativeAssignmentPattern(self: *Transformer, binding: NodeIndex, scope: ScopeId, assignment_form: bool) Transformer.Error!NodeIndex {
+            if (binding.isNone()) return binding;
+            var node = self.ast.getNode(binding);
+            switch (node.tag) {
+                .binding_identifier => {
+                    const ref = try self.makeIdentifierRefWithSymbol(node.data.string_ref, binding);
+                    try self.trackUserWriteFromBinding(ref, binding, scope);
+                    return ref;
+                },
+                .array_pattern, .object_pattern => {
+                    const list = node.data.list;
+                    var items: std.ArrayList(NodeIndex) = .empty;
+                    defer items.deinit(self.allocator);
+                    for (0..list.len) |i| {
+                        const child: NodeIndex = @fromBackingInt(self.ast.extra_data.items[list.start + i]);
+                        try items.append(self.allocator, try nativeAssignmentPattern(self, child, scope, assignment_form));
+                    }
+                    node.data.list = try self.ast.addNodeList(items.items);
+                    if (assignment_form) node.tag = if (node.tag == .array_pattern) .array_assignment_target else .object_assignment_target;
+                },
+                .binding_property => {
+                    const key = self.ast.getNode(node.data.binary.left);
+                    const target = if (node.data.binary.right.isNone()) node.data.binary.left else node.data.binary.right;
+                    node.data.binary.right = try nativeAssignmentPattern(self, target, scope, assignment_form);
+                    if (key.tag == .binding_identifier) node.data.binary.left = try es_helpers.makePropertyNameFromSpan(self, key.data.string_ref);
+                    if (assignment_form) node.tag = .assignment_target_property_property;
+                },
+                .assignment_pattern => {
+                    node.data.binary.left = try nativeAssignmentPattern(self, node.data.binary.left, scope, assignment_form);
+                    if (assignment_form) node.tag = .assignment_target_with_default;
+                },
+                .binding_rest_element => {
+                    node.data.unary.operand = try nativeAssignmentPattern(self, node.data.unary.operand, scope, assignment_form);
+                    if (assignment_form) node.tag = .assignment_target_rest;
+                },
+                else => return binding,
+            }
+            return self.ast.addNode(node);
+        }
+
+        fn nativeDeclarationExpression(self: *Transformer, declaration: NodeIndex, scope: ScopeId) Transformer.Error!NodeIndex {
+            const node = self.ast.getNode(declaration);
+            const start = self.readU32(node.data.extra, 1);
+            const len = self.readU32(node.data.extra, 2);
+            var expressions: std.ArrayList(NodeIndex) = .empty;
+            defer expressions.deinit(self.allocator);
+            for (0..len) |i| {
+                const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                const initializer = self.readNodeIdx(item.data.extra, 2);
+                if (initializer.isNone()) continue;
+                const binding = self.readNodeIdx(item.data.extra, 0);
+                const target = try nativeAssignmentPattern(self, binding, scope, false);
+                const saved_scope = self.current_scope;
+                self.current_scope = scope;
+                const statement = makeDestructuringAssignStmt(self, target, initializer, node.span, self.generator_state_machine_scope) catch |err| {
+                    self.current_scope = saved_scope;
+                    return err;
+                };
+                self.current_scope = saved_scope;
+                try expressions.append(self.allocator, self.ast.getNode(statement).data.unary.operand);
+            }
+            if (expressions.items.len == 0) return .none;
+            if (expressions.items.len == 1) return expressions.items[0];
+            return self.ast.addNode(.{ .tag = .sequence_expression, .span = node.span, .data = .{ .list = try self.ast.addNodeList(expressions.items) } });
+        }
+
+        fn isNativeSourceVar(self: *Transformer, index: NodeIndex) bool {
+            if (index.isNone() or @backingInt(index) >= self.parser_node_count) return false;
+            const node = self.ast.getNode(index);
+            return node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var";
+        }
+
+        fn rewriteNativeStateVars(self: *Transformer, index: NodeIndex, inherited: ScopeId) Transformer.Error!NodeIndex {
+            if (index.isNone()) return index;
+            var node = self.ast.getNode(index);
+            const scope = self.outputOwnedScope(index) orelse inherited;
+            switch (node.tag) {
+                .variable_declaration => {
+                    if (!isNativeSourceVar(self, index)) return index;
+                    const expression = try nativeDeclarationExpression(self, index, nativeWriteScope(self, scope));
+                    return if (expression.isNone()) self.ast.addNode(.{ .tag = .empty_statement, .span = node.span, .data = .{ .none = 0 } }) else es_helpers.makeExprStmt(self, expression, node.span);
+                },
+                .block_statement, .function_body => {
+                    const list = node.data.list;
+                    for (0..list.len) |i| {
+                        const child: NodeIndex = @fromBackingInt(self.ast.extra_data.items[list.start + i]);
+                        const replacement = try rewriteNativeStateVars(self, child, scope);
+                        self.ast.extra_data.items[list.start + i] = @backingInt(replacement);
+                    }
+                },
+                .if_statement, .try_statement => {
+                    node.data.ternary.a = if (node.tag == .try_statement) try rewriteNativeStateVars(self, node.data.ternary.a, scope) else node.data.ternary.a;
+                    node.data.ternary.b = try rewriteNativeStateVars(self, node.data.ternary.b, scope);
+                    node.data.ternary.c = try rewriteNativeStateVars(self, node.data.ternary.c, scope);
+                },
+                .while_statement, .do_while_statement, .labeled_statement, .catch_clause, .with_statement => node.data.binary.right = try rewriteNativeStateVars(self, node.data.binary.right, scope),
+                .for_statement => {
+                    const extra = node.data.extra;
+                    const head = self.readNodeIdx(extra, 0);
+                    if (isNativeSourceVar(self, head)) self.ast.extra_data.items[extra] = @backingInt(try nativeDeclarationExpression(self, head, nativeWriteScope(self, scope)));
+                    const body = try rewriteNativeStateVars(self, self.readNodeIdx(extra, 3), scope);
+                    self.ast.extra_data.items[extra + 3] = @backingInt(body);
+                },
+                .for_in_statement, .for_of_statement => {
+                    const head = node.data.ternary.a;
+                    if (isNativeSourceVar(self, head)) {
+                        const declaration = self.ast.getNode(head);
+                        const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(declaration.data.extra, 1)]));
+                        node.data.ternary.a = try nativeAssignmentPattern(self, self.readNodeIdx(item.data.extra, 0), nativeWriteScope(self, scope), true);
+                    }
+                    const body = try rewriteNativeStateVars(self, node.data.ternary.c, scope);
+                    // The for-of producer prepends its head assignment and merges
+                    // a block's children. Keep the original source block as a child
+                    // so its existing lexical scope remains an actual output owner.
+                    node.data.ternary.c = if (!body.isNone() and self.ast.getNode(body).tag == .block_statement)
+                        try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{body}) } })
+                    else
+                        body;
+                },
+                .switch_statement, .switch_case => {
+                    const extra = node.data.extra;
+                    const start = self.readU32(extra, 1);
+                    const len = self.readU32(extra, 2);
+                    for (0..len) |i| {
+                        const child: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start + i]);
+                        const replacement = try rewriteNativeStateVars(self, child, scope);
+                        self.ast.extra_data.items[start + i] = @backingInt(replacement);
+                    }
+                },
+                // A nested function or class owns its own declarations. Expressions
+                // also retain their source owner and are visited by the ordinary pass.
+                else => return index,
+            }
+            self.ast.nodes.items[@backingInt(index)] = node;
+            return index;
         }
 
         /// 문장을 visit 해 op 로 넣되, visit 이 `pending_nodes`/`trailing_nodes` 로 **보류한
@@ -1035,7 +1203,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // condition 은 expression → return 불가, containsYield 만.
             const has_yield_in_cond = es2015_scan.containsYield(self, condition);
             if (!es2015_scan.hasYieldOrReturn(self, then_body) and !es2015_scan.hasYieldOrReturn(self, else_body) and !has_yield_in_cond) {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -1356,7 +1524,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 !es2015_scan.containsYield(self, init_idx) and
                 !es2015_scan.containsYield(self, update_idx))
             {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -1467,7 +1635,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // body 는 statement → hasYieldOrReturn, condition 은 expression → containsYield 만.
             if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -1679,7 +1847,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const cases_len_val = self.readU32(e, 2);
 
             if (!es2015_scan.hasYieldOrReturn(self, stmt_idx)) {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -1795,7 +1963,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // body 는 statement → hasYieldOrReturn, condition 은 expression → containsYield 만.
             if (!es2015_scan.hasYieldOrReturn(self, body_idx) and !es2015_scan.containsYield(self, condition)) {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -1884,7 +2052,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 남으면 안 된다. __generator body는 [op, value] instruction을 반환해야
             // 하므로 try/catch/finally 안 return도 state-machine op로 수집한다.
             if (!requires_lowering) {
-                const new_stmt = try self.visitNode(stmt_idx);
+                const new_stmt = try visitNativeStateRegion(self, stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                 }
@@ -2111,7 +2279,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
                 }
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
-            } else if (node.tag == .switch_statement) {
+            } else if (node.tag == .switch_statement or node.tag == .switch_case) {
                 // switch_statement: extra = [discriminant, cases.start, cases.len].
                 // 이전엔 `node.data.binary.right` 로 access 했지만 switch_statement 의 data
                 // kind 는 .extra — binary.right 는 union padding 영역의 undefined 값. main
@@ -2879,7 +3047,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
             }
 
-            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope);
+            const switch_node = try buildSwitchFromOps(self, ops.items, span, wrapper_scope, .none);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
             const var_decl_node = try buildHoistedVarDecl(self, &.{}, span, &state_temps, wrapper_scope);
@@ -2950,7 +3118,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return false;
         }
 
-        fn buildSwitchFromOps(self: *Transformer, ops: []const Operation, span: Span, wrapper_scope: ScopeId) Transformer.Error!NodeIndex {
+        fn buildSwitchFromOps(self: *Transformer, ops: []const Operation, span: Span, wrapper_scope: ScopeId, reserved: NodeIndex) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -3057,13 +3225,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 cases_list.start,
                 cases_list.len,
             });
-            const result = try self.ast.addNode(.{
-                .tag = .switch_statement,
-                .span = span,
-                .data = .{ .extra = switch_extra },
-            });
+            const completed: Node = .{ .tag = .switch_statement, .span = span, .data = .{ .extra = switch_extra } };
+            const result = if (reserved.isNone()) try self.ast.addNode(completed) else blk: {
+                self.ast.nodes.items[@backingInt(reserved)] = completed;
+                break :blk reserved;
+            };
             if (self.semantic_edit_enabled) {
-                const scope = try self.addGeneratedScope(wrapper_scope, result, .switch_block);
+                const scope = if (reserved.isNone()) try self.addGeneratedScope(wrapper_scope, result, .switch_block) else self.outputOwnedScope(reserved) orelse std.debug.panic("reserved generator switch lost its ScopeId", .{});
                 // Native lexical declarations and classes inside the cases
                 // belong to this switch environment, not its future callback
                 // parent. Claim it before callback assembly or finalization.
@@ -4933,4 +5101,107 @@ test "#4819 generated using cleanup has one state storage identity before output
     };
     for (sources) |source| try checkUsingCleanupStateStorage(source, false);
     try checkUsingCleanupStateStorage("function* run() { try { work(); } finally { done(); } yield 0; }", true);
+}
+
+test "native generator var writes retain their wrapper SID and exact producer scope before callback assembly" {
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("transformer.zig").Transformer;
+    const Options = @import("transformer.zig").TransformOptions;
+    const walk = @import("../parser/ast_walk.zig");
+    const Fixture = struct { body: []const u8, native_write: bool = true };
+    const bodies = [_]Fixture{
+        .{ .body = "if(true) var shared=42;yield 0;return shared;" },
+        .{ .body = "for(var value of [42]){var shared=value;}yield 0;return[value,shared];" },
+        .{ .body = "for(var i=0;i<2;i++){var shared=40+i;}yield 0;return[shared,i];" },
+        .{ .body = "var i=0;while(i++<1){var shared=42;}yield 0;return shared;" },
+        .{ .body = "var i=0;do{var shared=42;}while(i++<0);yield 0;return shared;" },
+        .{ .body = "switch(1){case 1:var shared=42;break;}yield 0;return shared;" },
+        .{ .body = "try{var shared=40;throw 2;}catch(e){shared+=e;var caught=7;}finally{var cleanup=9;}yield 0;return[shared,caught,cleanup];" },
+        .{ .body = "if(true){var {x:shared,...rest}={x:42,y:7};}yield 0;return[shared,rest.y];" },
+        .{ .body = "for(var {value:shared} of [{value:42}]){}yield 0;return shared;" },
+        .{ .body = "if(true){var shared=42;function inner(){var shared=9;return shared;}class Box{static get(){var shared=7;return shared;}}var fn=inner;var klass=Box;}yield 0;return[shared,fn(),klass.get()];" },
+        .{ .body = "var shared=42;if(true){var shared;}yield 0;return shared;", .native_write = false },
+        .{ .body = "if(true){let local=9;var get=()=>local;var shared=42;}yield 0;return[get(),shared];" },
+    };
+    for (bodies) |fixture| {
+        const body_source = fixture.body;
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = try std.fmt.allocPrint(a, "function* f(){{{s}}}", .{body_source});
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.is_module = true;
+        scanner.is_module = true;
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var function: NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .function_declaration and parser.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.flags] & ast_mod.FunctionFlags.is_generator != 0) {
+                function = @fromBackingInt(@as(u32, @intCast(raw)));
+                break;
+            }
+        }
+        try std.testing.expect(!function.isNone());
+        const wrapper_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(function)).?);
+        const expected_sid: u32 = @intCast(analyzer.scope_maps.items[wrapper_scope.toIndex()].get("shared").?);
+        var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = Options.compat.fromESTarget(.es5) });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.semantic_edit_enabled = true;
+        transformer.current_scope = wrapper_scope;
+        const Generator = ES2015Generator(Transformer);
+        var frame = try Generator.enterStateMachineTempsForScope(&transformer, wrapper_scope);
+        defer Generator.leaveStateMachineTemps(&transformer, &frame);
+        const node = parser.ast.getNode(function);
+        const result = try Generator.buildStateMachine(&transformer, transformer.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.body), node.span, wrapper_scope);
+        try std.testing.expect(!result.body.isNone() and !result.var_decl.isNone());
+        const editor = &transformer.semantic_editor.?;
+        try std.testing.expectEqual(wrapper_scope, editor.symbols.items[expected_sid].scope_id);
+        var wrapper_bindings: usize = 0;
+        var stack: std.ArrayList(NodeIndex) = .empty;
+        try stack.append(a, result.var_decl);
+        while (stack.pop()) |index| {
+            const output = transformer.ast.getNode(index);
+            if (output.tag == .binding_identifier and transformer.getSymbolIdAt(index) == expected_sid) wrapper_bindings += 1;
+            var children = walk.children(transformer.ast, output);
+            while (children.next()) |child| if (!child.isNone()) try stack.append(a, child);
+        }
+        try std.testing.expectEqual(@as(usize, 1), wrapper_bindings);
+        const Work = struct { node: NodeIndex, scope: ScopeId };
+        var pending: std.ArrayList(Work) = .empty;
+        try pending.append(a, .{ .node = result.body, .scope = wrapper_scope });
+        var writes: usize = 0;
+        while (pending.pop()) |item| {
+            const output = transformer.ast.getNode(item.node);
+            const scope = transformer.outputOwnedScope(item.node) orelse item.scope;
+            if (transformer.getSymbolIdAt(item.node) == expected_sid) {
+                try std.testing.expect(output.tag != .binding_identifier);
+                if (fixture.native_write and @backingInt(item.node) >= transformer.parser_node_count) {
+                    const reference = try editor.referenceForNode(item.node) orelse return error.MissingNativeVarReference;
+                    if (reference.flags.write) {
+                        if (scope != reference.scope_id) std.debug.print("native scope fixture={s} node={d} expected={d} actual={d}\n", .{ body_source, @backingInt(item.node), @backingInt(scope), @backingInt(reference.scope_id) });
+                        try std.testing.expectEqual(scope, reference.scope_id);
+                        try std.testing.expect(scope != wrapper_scope);
+                        try std.testing.expectEqual(expected_sid, @backingInt(reference.symbol_id));
+                        writes += 1;
+                    }
+                }
+            }
+            var children = walk.children(transformer.ast, output);
+            while (children.next()) |child| if (!child.isNone()) try pending.append(a, .{ .node = child, .scope = scope });
+        }
+        if (fixture.native_write) try std.testing.expect(writes > 0);
+    }
 }

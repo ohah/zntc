@@ -347,6 +347,8 @@ pub const Transformer = struct {
     /// Source-node scope owners can still point outside extracted generator
     /// loops, so generated wrapper temps must use this scope when available.
     generator_state_machine_scope: ScopeId = .none,
+    /// Reserved switch lexical owner for native-region writes before operation collection.
+    generator_native_var_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
     semantic_editor: ?SemanticEditor = null,
