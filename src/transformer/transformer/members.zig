@@ -15,6 +15,13 @@ const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 fn methodComputedKeyScope(self: *Transformer, source_owner: NodeIndex, fallback: ScopeId) ScopeId {
     if (!self.semantic_edit_enabled) return .none;
+    // A non-simple method has a separate parameter environment above its
+    // body scope. Computed keys execute outside both environments.
+    const method = self.ast.getNode(source_owner);
+    const params = self.readNodeIdx(method.data.extra, ast_mod.MethodExtra.params);
+    if (!params.isNone()) {
+        if (self.outputOwnedScope(params)) |parameter_scope| return self.outputScopeParent(parameter_scope);
+    }
     if (self.outputOwnedScope(source_owner)) |method_scope| return self.outputScopeParent(method_scope);
     return fallback;
 }

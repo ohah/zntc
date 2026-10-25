@@ -34,8 +34,26 @@ fn captureClassComputedKey(self: *Transformer, value: NodeIndex, span: Span) Err
     return es_helpers.captureToTrackedTemp(self, value, span);
 }
 
+fn captureHoistedClassComputedKey(self: *Transformer, value: NodeIndex, span: Span) Error!es_helpers.TempCapture {
+    const saved_scope = self.current_scope;
+    defer self.current_scope = saved_scope;
+    if (self.semantic_edit_enabled) {
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (!saved_scope.isNone() and scopes[saved_scope.toIndex()].kind == .class_body)
+            self.current_scope = self.outputScopeParent(saved_scope);
+    }
+    // This assignment executes before the class. Its read inside the class
+    // will use the same producer identity with that consumer's actual scope.
+    const capture = try captureClassComputedKey(self, value, span);
+    const target = self.ast.getNode(capture.paren_assign).data.binary.left;
+    self.ast.setTag(target, .assignment_target_identifier);
+    return capture;
+}
+
 fn makeClassComputedKeyRead(self: *Transformer, capture: es_helpers.TempCapture, span: Span) Error!NodeIndex {
-    return es_helpers.makeCapturedTempRef(self, capture, span, .{ .read = true });
+    var scoped = capture;
+    scoped.reference_scope = self.current_scope;
+    return es_helpers.makeCapturedTempRef(self, scoped, span, .{ .read = true });
 }
 
 pub const MovedFieldComputedKey = struct {
@@ -45,7 +63,7 @@ pub const MovedFieldComputedKey = struct {
 
 pub fn captureMovedFieldComputedKey(self: *Transformer, value: NodeIndex, span: Span) Error!MovedFieldComputedKey {
     const property_key = try es_helpers.makeToPropertyKey(self, value, span);
-    const capture = try captureClassComputedKey(self, property_key, span);
+    const capture = try captureHoistedClassComputedKey(self, property_key, span);
     return .{ .capture = capture, .read = try makeClassComputedKeyRead(self, capture, span) };
 }
 
@@ -1162,7 +1180,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
             try es_helpers.makeToPropertyKey(self, visited_key, key_node.span)
         else
             visited_key;
-        const captured = try captureClassComputedKey(self, value, key_node.span);
+        const captured = try captureHoistedClassComputedKey(self, value, key_node.span);
         const assign = captured.paren_assign;
         if (tag == .class_expression) {
             try key_assigns.append(self.allocator, assign);
