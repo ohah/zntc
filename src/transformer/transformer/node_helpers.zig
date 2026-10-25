@@ -80,7 +80,9 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     const lower_block_scoping = self.options.unsupported.block_scoping;
     const lower_parameter_object_rest = self.options.unsupported.object_spread;
     const lower_class_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
-    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields and
+    const lower_lexical_arguments = self.options.unsupported.arrow or self.options.unsupported.generator or
+        self.options.unsupported.async_await or self.options.unsupported.async_generator;
+    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields and !lower_lexical_arguments and
         !@import("../native_parameter_cells.zig").hasPotentialClassWork(self)) return;
     if (self.scopes.len == 0) return;
     var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
@@ -133,6 +135,9 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         var globals = unresolved.keyIterator();
         while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
     }
+    const LivePlan = struct { id: u32, name: []const u8, owner: NodeIndex };
+    var live_plans: std.ArrayList(LivePlan) = .empty;
+    defer live_plans.deinit(self.allocator);
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
     for (symbols, 0..) |sym, i| {
         const annex_role = @import("../../semantic/annex_b_function.zig").forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(i)))) catch
@@ -146,7 +151,21 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         const parameter_rename = parameter_renames.contains(@intCast(i));
         const block_rename = lower_block_scoping and table.contains(@intCast(i));
-        if (!block_rename and !parameter_rename) continue;
+        // Explicit lexical bindings do not use a function's implicit arguments
+        // object. Give that exact binding a non-special spelling so generated
+        // ordinary functions can close over its live cell, including writes.
+        const engine_owner = if (self.semantic_edit_enabled and lower_lexical_arguments and sym.synthetic_kind == .implicit_arguments and
+            sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling())
+            @import("../live_arguments.zig").unsplitOwner(self, sym.scope_id)
+        else
+            null;
+        const namespace_property = if (self.namespace_member_owners) |members| members.contains(@intCast(i)) else false;
+        const arguments_rename = engine_owner != null or (lower_lexical_arguments and sym.synthetic_kind == null and !namespace_property and
+            (sym.kind == .parameter or sym.kind == .variable_let or sym.kind == .variable_const or
+                (sym.kind == .variable_var and @import("../live_arguments.zig").isArrowLocal(self, sym.scope_id))) and
+            sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling() and
+            std.mem.eql(u8, try canonicalIdentifier(arena, self.ast.getText(sym.name)), "arguments"));
+        if (!block_rename and !parameter_rename and !arguments_rename) continue;
         const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));
         const name = while (true) {
             self.block_rename_counter += 1;
@@ -155,6 +174,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         try reserved.put(self.allocator, name, {});
         try map.put(self.allocator, @intCast(i), name);
+        if (engine_owner) |owner| try live_plans.append(self.allocator, .{ .id = @intCast(i), .name = name, .owner = owner });
         if (parameter_rename) {
             if (sym.scope_id.toIndex() < scopes.len and scopes[sym.scope_id.toIndex()].blocksMangling()) {
                 try @import("semantic_edit.zig").renameParameterEnvironmentBindingForDynamicBody(self, @intCast(i), name);
@@ -163,6 +183,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
             }
         }
     }
+    for (live_plans.items) |plan| try @import("../live_arguments.zig").prepare(self, plan.id, plan.name, plan.owner);
     self.block_rename_map = map;
     try @import("../parameter_environment.zig").collectInferredNames(self, &parameter_renames);
 }

@@ -3035,6 +3035,16 @@ pub fn hasLexicalCaptureSince(self: *const Transformer, start: usize, frame: u32
 /// An `arguments` binding declared inside the lowered arrow already resolves
 /// inside its emitted function, without an outer capture alias.
 pub fn shouldCaptureArguments(self: *Transformer, source: NodeIndex) bool {
+    // TypeScript member proxies are property reads, not special arguments
+    // bindings. Let their exact namespace/enum owner emit the property access.
+    if (self.getSymbolIdAt(source)) |id| {
+        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+        if (id < symbols.len and symbols[id].synthetic_kind == .enum_iife_member) return false;
+        if (self.namespace_member_owners) |members| if (members.contains(id)) return false;
+    }
+    // A selected exact binding alias remains visible through generated
+    // functions; copying its current value would disconnect later writes.
+    if (self.tableRenameOf(source) != null) return false;
     if (!self.semantic_edit_enabled or self.outermost_lowered_arrow_scope.isNone()) return true;
     const raw_id = self.getSymbolIdAt(source) orelse return true;
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;

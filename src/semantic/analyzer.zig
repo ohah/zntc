@@ -95,6 +95,10 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프 (스코프 스택 대신 인덱스 하나로 추적)
     current_scope: ScopeId = .none,
 
+    /// Simple ordinary functions lazily materialize their engine binding at
+    /// the first source reference, before resolving any enclosing arguments.
+    implicit_arguments_owners: std.AutoHashMapUnmanaged(ScopeId, NodeIndex) = .empty,
+
     /// strict mode 여부 (파서에서 전달받음, 스코프 진입 시 전파)
     is_strict_mode: bool = false,
 
@@ -431,6 +435,7 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.implicit_arguments_owners.deinit(self.allocator);
         self.annex_b_variable_targets.deinit(self.allocator);
         self.parameter_environments.deinit(self.allocator);
         var parameter_maps = self.function_parameter_names.valueIterator();
@@ -1352,6 +1357,14 @@ pub const SemanticAnalyzer = struct {
             const idx = scope_id.toIndex();
             if (idx >= self.scope_maps.items.len) break;
 
+            if (std.mem.eql(u8, name, "arguments")) {
+                if (self.implicit_arguments_owners.get(scope_id)) |owner| {
+                    self.declareImplicitArguments(scope_id, owner) catch {
+                        self.alloc_failed = true;
+                        return;
+                    };
+                }
+            }
             if (self.findSymbolIndexInScope(scope_id, name)) |sym_idx| {
                 // reference_count / write_count 는 value 참조만 집계 (#1791 호환).
                 // mangler / tree-shaker 는 이 카운트를 "runtime 에 살아있는 참조 수" 로
@@ -3233,6 +3246,8 @@ pub const SemanticAnalyzer = struct {
         const saved_scope = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved_scope);
         const enum_parameter = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
+        if (enum_parameter != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (enum_parameter) |parameter| {
             const popped = self.enum_iife_param_names.pop() orelse unreachable;
             std.debug.assert(std.mem.eql(u8, popped, parameter.name));
@@ -3571,6 +3586,8 @@ pub const SemanticAnalyzer = struct {
         if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
         const namespace_iife_param_name = try self.declareNamespaceIifeParameter(name_idx, node);
+        if (namespace_iife_param_name != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (namespace_iife_param_name != null) {
             self.allocator.free(self.namespace_iife_param_names.pop() orelse unreachable);
         };
@@ -5451,7 +5468,43 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 함수 파라미터를 현재 스코프에 등록한다.
-    fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
+    /// FunctionDeclarationInstantiation creates this binding in an ordinary
+    /// function's parameter environment. Arrows inherit that exact identity.
+    /// Simple lists wait for body declaration instantiation so lexical/function
+    /// declarations called arguments can suppress the implicit object.
+    fn declareImplicitArguments(self: *SemanticAnalyzer, owner_scope: ScopeId, owner: NodeIndex) AllocError!void {
+        const map = &self.scope_maps.items[owner_scope.toIndex()];
+        if (map.get("arguments")) |id| {
+            // A source var redeclares the same native arguments binding.
+            // Parameters and lexical/function declarations supply their own.
+            if (self.symbols.items[id].kind == .variable_var and
+                !self.namespace_member_owners.contains(@intCast(id)))
+                self.symbols.items[id].synthetic_kind = .implicit_arguments;
+            return;
+        }
+        const name = try self.ast.addString("arguments");
+        const id = self.symbols.items.len;
+        // This engine-supplied name has static storage. Unlike source string
+        // table bindings it needs no separately owned name allocation.
+        // The parameter kind models an unknown value initialized at native
+        // function entry; implicit_arguments distinguishes it from a literal
+        // formal. Do not fabricate an AST parameter or count it in formal names.
+        try self.symbols.append(self.allocator, .{
+            .name = name,
+            .scope_id = owner_scope,
+            .origin_scope = owner_scope,
+            .kind = .parameter,
+            .decl_flags = SymbolKind.parameter.declFlags(),
+            .declaration_span = self.ast.getNode(owner).span,
+            .synthetic_kind = .implicit_arguments,
+            .synthetic_name = "arguments",
+        });
+        self.scopes.items[owner_scope.toIndex()].symbol_count += 1;
+        try self.scope_maps.items[owner_scope.toIndex()].put(self.allocator, "arguments", id);
+        self.recordDeclareRef(@intCast(id), owner_scope, null);
+    }
+
+    fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList, implicit_arguments: bool) AllocError!void {
         const split = self.ast.nodeListSplitRest(params);
         // Parameter initializers can refer to later parameters (and must hit
         // their TDZ binding), so install every parameter identity before
@@ -5462,6 +5515,7 @@ pub const SemanticAnalyzer = struct {
         if (split.rest_operand) |op| {
             try self.predeclareBindingNames(op, .parameter);
         }
+        if (implicit_arguments) try self.declareImplicitArguments(self.current_scope, self.current_visit_node);
         for (split.elements) |raw_idx| {
             try self.visitBindingPatternExpressions(@fromBackingInt(@intCast(raw_idx)));
         }
@@ -5516,7 +5570,8 @@ pub const SemanticAnalyzer = struct {
         errdefer names.deinit(self.allocator);
         var parameters = self.scope_maps.items[parameter_scope.toIndex()].iterator();
         while (parameters.next()) |entry| {
-            if (self.symbols.items[entry.value_ptr.*].kind == .parameter)
+            if (self.symbols.items[entry.value_ptr.*].kind == .parameter and
+                self.symbols.items[entry.value_ptr.*].synthetic_kind != .implicit_arguments)
                 try names.put(self.allocator, entry.key_ptr.*, @fromBackingInt(@as(u32, @intCast(entry.value_ptr.*))));
         }
         try self.function_parameter_names.put(self.allocator, body_scope, names);
@@ -5533,11 +5588,12 @@ pub const SemanticAnalyzer = struct {
         const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions, function_strict);
         if (parameter_scope_saved == null) {
             const body_scope_saved = try self.enterScope(.function, function_strict);
-            try self.registerParams(params);
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
+            try self.registerParams(params, false);
             try self.captureFunctionParameterNames(self.current_scope, self.current_scope);
             return .{ .body_scope_saved = body_scope_saved };
         }
-        try self.registerParams(params);
+        try self.registerParams(params, true);
         const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
         try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);

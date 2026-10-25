@@ -54,6 +54,7 @@ pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
         .standalone_generated_binding,
         => true,
 
+        .implicit_arguments,
         .default_export,
         .enum_iife_member,
         .cjs_exports,
@@ -3798,9 +3799,7 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[3]NodeIndex, span: Span) 
         count += 1;
     }
     if (self.needs_arguments_var) {
-        const args_init = try self.makeCapturedArgumentsInit();
-        buf[count] = try self.buildVarDecl("_arguments", args_init, span);
-        try self.bindLexicalCapture(buf[count], .arguments_value);
+        buf[count] = try makeArgumentsCaptureDeclaration(self, span);
         count += 1;
     }
     if (self.hasLexicalCapture(self.capture_frame, .new_target_value)) {
@@ -3811,6 +3810,14 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[3]NodeIndex, span: Span) 
         }
     }
     return count;
+}
+
+pub fn makeArgumentsCaptureDeclaration(self: anytype, span: Span) !NodeIndex {
+    if (try @import("live_arguments.zig").makeDeclaration(self, span)) |declaration| return declaration;
+    const initializer = try self.makeCapturedArgumentsInit();
+    const declaration = try self.buildVarDecl("_arguments", initializer, span);
+    try self.bindLexicalCapture(declaration, .arguments_value);
+    return declaration;
 }
 
 pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {

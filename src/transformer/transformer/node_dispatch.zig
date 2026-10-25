@@ -1136,6 +1136,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
+            @import("../live_arguments.zig").noteReference(self, idx);
             if (try @import("../static_class_capture.zig").makeClassSelfReference(self, idx)) |ref| return ref;
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
@@ -1175,6 +1176,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.copyNodeDirect(idx);
         },
         .assignment_target_identifier => {
+            @import("../live_arguments.zig").noteReference(self, idx);
             // Native static postludes must keep the inner class binding's
             // readonly semantics. ES5 already uses its exact setter target.
             if (!self.options.unsupported.class) {

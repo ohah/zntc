@@ -436,7 +436,7 @@ test "#4819 class field arrows share their exact constructor capture binding" {
     }
 }
 
-test "#4819 explicit arguments binding moves to the exact capture initializer" {
+test "#4819 explicit arguments binding keeps one live identity through the lowered arrow" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -483,31 +483,31 @@ test "#4819 explicit arguments binding moves to the exact capture initializer" {
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (reachable) |raw| try live.put(allocator, raw, {});
 
-    var capture_id: ?u32 = null;
-    for (edited.symbols.items[old_count..], old_count..) |symbol, id| {
-        if (!std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) continue;
-        try std.testing.expect(capture_id == null);
-        try std.testing.expectEqual(outer, @backingInt(symbol.scope_id));
-        capture_id = @intCast(id);
+    // This is the source parameter's live binding, not a value snapshot.
+    // Its selected output spelling avoids the generated function's implicit
+    // arguments binding while every use keeps the original parameter SID.
+    try std.testing.expectEqual(old_count, edited.symbols.items.len);
+    try std.testing.expectEqual(outer, @backingInt(edited.symbols.items[parameter_id].scope_id));
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, edited.symbols.items[parameter_id].kind);
+    var parameter_bindings: usize = 0;
+    for (reachable) |raw| {
+        if (transformer.ast.nodes.items[raw].tag != .binding_identifier or edited.symbol_ids[raw] != parameter_id) continue;
+        const selected = transformer.block_rename_map.?.get(parameter_id) orelse return error.MissingSelectedArgumentsAlias;
+        try std.testing.expect(!std.mem.eql(u8, selected, "arguments"));
+        try std.testing.expectEqualStrings(selected, transformer.ast.getText(transformer.ast.nodes.items[raw].data.string_ref));
+        parameter_bindings += 1;
     }
-    const alias = capture_id orelse return error.TestUnexpectedResult;
-    var source_reads: usize = 0;
-    var alias_reads: usize = 0;
+    try std.testing.expectEqual(@as(usize, 1), parameter_bindings);
+    var live_reads: usize = 0;
     for (edited.references) |ref| {
-        if (ref.node_index.isNone() or !live.contains(@backingInt(ref.node_index))) continue;
-        if (@backingInt(ref.symbol_id) == parameter_id) {
-            try std.testing.expectEqual(outer, @backingInt(ref.scope_id));
-            source_reads += 1;
-        }
-        if (@backingInt(ref.symbol_id) == alias) {
-            try std.testing.expectEqual(arrow, @backingInt(ref.scope_id));
-            alias_reads += 1;
-        }
+        if (ref.node_index.isNone() or !live.contains(@backingInt(ref.node_index)) or @backingInt(ref.symbol_id) != parameter_id) continue;
+        try std.testing.expectEqual(arrow, @backingInt(ref.scope_id));
+        try std.testing.expect(ref.flags.read and !ref.flags.write);
+        live_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), source_reads);
-    try std.testing.expectEqual(@as(usize, 1), alias_reads);
+    try std.testing.expectEqual(@as(usize, 1), live_reads);
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[parameter_id].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[alias].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[parameter_id].write_count);
 }
 
 test "#4819 nested source functions keep distinct capture symbol IDs and scopes" {

@@ -363,6 +363,12 @@ pub const SyntheticKind = enum(u8) {
     /// Top-level lexical locals declared by the raw bundler HMR runtime.
     /// Keep appended so serialized SyntheticKind tags remain stable.
     hmr_runtime_internal_local,
+    /// Engine-owned ordinary-function arguments binding, with no explicit
+    /// parameter declaration. Native syntax supplies its value and spelling.
+    /// A virtual binding uses parameter kind for its native unknown initial
+    /// value, not an AST formal; a source var can share this native binding.
+    /// Keep appended so serialized SyntheticKind tags remain stable.
+    implicit_arguments,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

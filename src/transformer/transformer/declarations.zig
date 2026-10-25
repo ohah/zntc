@@ -295,7 +295,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
     // var _this = this; / var _arguments = arguments; 를 바디 앞에 삽입.
     const needs_new_target_capture = self.hasLexicalCapture(capture_frame.active_frame, .new_target_value);
-    if (self.options.unsupported.arrow and !new_body.isNone() and
+    if ((self.options.unsupported.arrow or @import("../live_arguments.zig").ownerCell(self) != null) and !new_body.isNone() and
         (self.needs_this_var or self.needs_arguments_var or needs_new_target_capture))
     {
         var capture_stmts: [3]NodeIndex = undefined;
@@ -312,9 +312,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_init = try self.makeCapturedArgumentsInit();
-            capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
-            try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
+            capture_stmts[capture_count] = try es_helpers.makeArgumentsCaptureDeclaration(self, node.span);
             capture_count += 1;
         }
         if (needs_new_target_capture) {

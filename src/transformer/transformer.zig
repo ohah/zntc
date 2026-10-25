@@ -399,6 +399,7 @@ pub const Transformer = struct {
     }) = .empty,
     capture_ref_by_origin: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    live_arguments_cells: std.AutoHashMapUnmanaged(u32, @import("live_arguments.zig").Cell) = .empty,
     capture_frame: u32 = 0,
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
     retained_loop_key_cells: std.AutoHashMapUnmanaged(u32, []@import("retained_class_keys.zig").Cell) = .empty,

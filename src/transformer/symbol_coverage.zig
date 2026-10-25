@@ -2333,6 +2333,13 @@ const ExactCtx = struct {
                 }
             }
         }
+        if (ctx.symbols[raw_id].synthetic_kind == .implicit_arguments) {
+            const native_owner = nativeArgumentsOwnerScope(ctx.ast, raw, ctx.scope_owner_map, ctx.parent_by_node, ctx.symbols);
+            if (native_owner == null or native_owner.? != @backingInt(ctx.symbols[raw_id].scope_id)) {
+                ctx.report.scope_resolution_mismatch += 1;
+                std.debug.print("zntc: implicit-arguments-native-owner node={d} symbol={d} symbol_scope={d} actual_owner={any}\n", .{ raw, raw_id, @backingInt(ctx.symbols[raw_id].scope_id), native_owner });
+            }
+        }
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
             if (ctx.helper_scope_map.get(name)) |sid| break :blk @intCast(sid);
             break :blk null;
@@ -4965,6 +4972,7 @@ const StrictCtx = struct {
     scopes: []const Scope,
     node_scopes: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
     parent_traces: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     external_evidence: ?StrictExternalEvidence,
@@ -5078,6 +5086,10 @@ const StrictCtx = struct {
         const expected_scope = expected.scope_id orelse return .scope_unknown;
         if (@backingInt(evidence.reference.scope_id) != expected_scope) return .scope_mismatch;
         if (!visibleFrom(symbol.scope_id, evidence.reference.scope_id, self.scopes)) return .invisible_reference;
+        if (symbol.synthetic_kind == .implicit_arguments) {
+            const native_owner = nativeArgumentsOwnerScope(self.ast, raw, self.scope_owner_map, self.parent_traces, self.symbols) orelse return .scope_unknown;
+            if (native_owner != @backingInt(symbol.scope_id)) return .invisible_reference;
+        }
         return .bound;
     }
 };
@@ -5307,6 +5319,113 @@ fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.Walk
     return .descend;
 }
 
+/// Enum/namespace IIFEs are emitted by their TypeScript creators. Their one
+/// real IIFE parameter role independently witnesses the ordinary native frame.
+fn nativeArgumentsFrameScope(
+    ast: *const Ast,
+    raw: u32,
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    symbols: []const Symbol,
+) ?u32 {
+    if (raw >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[raw];
+    const body_scope = owners.get(raw) orelse return null;
+    switch (node.tag) {
+        .function_declaration, .function_expression, .function, .method_definition => {
+            if (!ast.hasExtra(node.data.extra, 1)) return null;
+            const params = ast.readExtraNode(node.data.extra, 1);
+            return if (!params.isNone()) owners.get(@backingInt(params)) orelse body_scope else body_scope;
+        },
+        .ts_enum_declaration, .ts_module_declaration => {
+            const required: SyntheticKind = if (node.tag == .ts_enum_declaration) .enum_iife_parameter else .namespace_iife_parameter;
+            var parameter: ?*const Symbol = null;
+            for (symbols) |*symbol| {
+                if (symbol.synthetic_kind != required or @backingInt(symbol.scope_id) != body_scope) continue;
+                if (parameter != null or symbol.kind != .parameter) return null;
+                parameter = symbol;
+            }
+            const actual = parameter orelse return null;
+            const name = if (actual.synthetic_name.len > 0) actual.synthetic_name else ast.getText(actual.name);
+            if (@import("../lexer/scanner.zig").Scanner.identifierNamesEqual(name, "arguments")) return null;
+            return body_scope;
+        },
+        else => return null,
+    }
+}
+
+/// Select native arguments storage from actual AST evaluation boundaries.
+/// Arrows inherit it; method keys/decorators evaluate outside the method.
+fn nativeArgumentsOwnerScope(
+    ast: *const Ast,
+    raw: u32,
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    parents: anytype,
+    symbols: []const Symbol,
+) ?u32 {
+    var child = raw;
+    var decorator = false;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        const entry = parents.get(child) orelse return null;
+        const parent: u32 = if (@TypeOf(entry) == u32) entry else blk: {
+            if (entry.ambiguous) return null;
+            break :blk entry.parent;
+        };
+        if (parent >= ast.nodes.items.len) return null;
+        const node = ast.nodes.items[parent];
+        if (node.tag == .decorator) decorator = true;
+        if (node.tag == .static_block) return null;
+        if (node.tag == .property_definition or node.tag == .accessor_property) {
+            if (!ast.hasExtra(node.data.extra, ast_mod.PropertyExtra.init)) return null;
+            if (child == @backingInt(ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init))) return null;
+            decorator = false;
+        }
+        switch (node.tag) {
+            .ts_enum_declaration, .ts_module_declaration => return nativeArgumentsFrameScope(ast, parent, owners, symbols),
+            .function_declaration, .function_expression, .function, .method_definition => {
+                if (!ast.hasExtra(node.data.extra, 2)) return null;
+                const params = ast.readExtraNode(node.data.extra, 1);
+                if (node.tag == .method_definition) {
+                    const body = ast.readExtraNode(node.data.extra, 2);
+                    if (decorator or (child != @backingInt(params) and child != @backingInt(body))) {
+                        decorator = false;
+                        child = parent;
+                        continue;
+                    }
+                }
+                return nativeArgumentsFrameScope(ast, parent, owners, symbols);
+            },
+            else => {},
+        }
+        child = parent;
+    }
+    return null;
+}
+
+/// Native ordinary functions supply this binding without an AST formal.
+/// Validate its actual function/parameter owner instead of accepting a marker
+/// alone; an arrow or a sibling/global scope cannot supply native arguments.
+fn hasNativeArgumentsOwner(
+    ast: *const Ast,
+    symbol: *const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
+    symbols: []const Symbol,
+) bool {
+    if (symbol.synthetic_kind != .implicit_arguments or
+        (symbol.kind != .parameter and symbol.kind != .variable_var) or
+        symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= scopes.len or
+        scopes[symbol.scope_id.toIndex()].kind != .function or
+        !exactScopeMapKeyMatchesSymbol(ast, symbol, "arguments")) return false;
+    var nodes = reachable.keyIterator();
+    while (nodes.next()) |raw| {
+        const arguments_scope = nativeArgumentsFrameScope(ast, raw.*, scope_owner_map, symbols) orelse continue;
+        if (arguments_scope == @backingInt(symbol.scope_id)) return true;
+    }
+    return false;
+}
+
 pub fn checkStrict(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -5401,6 +5520,7 @@ fn checkStrictImpl(
         .scopes = scopes,
         .node_scopes = &node_scopes,
         .parent_traces = &parent_traces,
+        .scope_owner_map = scope_owner_map,
         .references = &reference_evidence,
         .synthetic = synthetic,
         .external_evidence = external_evidence,
@@ -5425,6 +5545,7 @@ fn checkStrictImpl(
             symbol.synthetic_kind != null or
             symbol.name.start & Ast.STRING_TABLE_BIT != 0;
         if (!has_generated_name_provenance or raw_id > std.math.maxInt(u32)) continue;
+        if (hasNativeArgumentsOwner(ast, &symbol, scopes, scope_owner_map, &node_scopes, symbols)) continue;
         // Virtual namespace/enum IIFE parameters have no emitted AST binding
         // node; checkExact validates them against reachable owner scopes.
         if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter or
