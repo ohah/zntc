@@ -873,16 +873,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.native_parameter_initializer_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame)
             {
-                // The wrapper created for this native-parameter environment
-                // later supplies the exact SymbolId. Keep a neutral spelling
-                // until then; semantic-less callers retain the old resolver.
-                const ref = if (self.semantic_edit_enabled) blk: {
-                    const arrow_scope = self.outputOwnedScope(self.native_parameter_arrow_owner) orelse self.current_scope;
-                    const output_name = try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", arrow_scope);
-                    break :blk try es_helpers.makeExactSyntheticRef(self, output_name.name);
-                } else try es_helpers.makeSyntheticRef(self, "_newTarget");
-                try self.trackNativeParameterArrowRef(self.native_parameter_arrow_owner, ref);
-                return ref;
+                var capture = self.native_parameter_arrow_capture orelse
+                    std.debug.panic("native parameter new.target has no prepared wrapper", .{});
+                capture.reference_scope = self.current_scope;
+                return es_helpers.makeTempRefFromIdentity(self, capture, node.span, .{ .read = true });
             }
             // An arrow has no own new.target. When lowering it to an ordinary
             // function, capture the enclosing function's value in its lexical

@@ -609,7 +609,10 @@ pub fn visitParameterNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const left = node.data.binary.left;
     self.native_parameter_initializer_frame = self.capture_frame;
     self.native_parameter_default_root = node.data.binary.right;
-    self.native_parameter_name_hint = if (!left.isNone() and self.ast.getNode(left).tag == .binding_identifier)
+    // Arrow cover grammar retains an assignment-target identifier for the
+    // binding position even after its assignment becomes a parameter pattern.
+    self.native_parameter_name_hint = if (!left.isNone() and
+        (self.ast.getNode(left).tag == .binding_identifier or self.ast.getNode(left).tag == .assignment_target_identifier))
         self.ast.getText(self.ast.getNode(left).data.string_ref)
     else
         null;

@@ -401,15 +401,9 @@ pub const Transformer = struct {
     lowered_parameter_temp_output_owner: NodeIndex = .none,
     native_parameter_default_root: NodeIndex = .none,
     native_parameter_name_hint: ?[]const u8 = null,
-    native_parameter_arrow_depth: u32 = 0,
-    /// Exact source arrow whose native-parameter `new.target` uses are being
-    /// lowered. Nested factory capture arguments are attributed to their
-    /// lexical parent arrow until that parent's wrapper binding is created.
-    native_parameter_arrow_owner: NodeIndex = .none,
-    native_parameter_arrow_refs: std.ArrayListUnmanaged(struct {
-        owner: NodeIndex,
-        node: NodeIndex,
-    }) = .empty,
+    /// Prepared wrapper parameter for lexical new.target in native defaults.
+    /// Its binding and scope exist before any arrow child is visited.
+    native_parameter_arrow_capture: ?@import("es_helpers.zig").TempIdentityCapture = null,
     /// Generated refs whose producer already selected an exact SymbolId are
     /// bound by node handle after the final output-scope walk; output spelling
     /// is never used to select their identity. Some producers also reserve the
@@ -1100,8 +1094,6 @@ pub const Transformer = struct {
     pub const migrateGeneratorLoopBody = @import("transformer/semantic_edit.zig").migrateGeneratorLoopBody;
     pub const registerGeneratedFunctionScopes = @import("transformer/semantic_edit.zig").registerGeneratedFunctionScopes;
     pub const bindOutputScopesAndReferences = @import("transformer/semantic_edit.zig").bindOutputScopesAndReferences;
-    pub const trackNativeParameterArrowRef = @import("transformer/semantic_edit.zig").trackNativeParameterArrowRef;
-    pub const bindNativeParameterArrowRefs = @import("transformer/semantic_edit.zig").bindNativeParameterArrowRefs;
     pub const completeGeneratedStateSymbols = @import("transformer/semantic_edit.zig").completeGeneratedStateSymbols;
     pub const bindGeneratedFunctionTemps = @import("transformer/semantic_edit.zig").bindGeneratedFunctionTemps;
     pub const moveGeneratedFunctionBodyBindings = @import("transformer/semantic_edit.zig").moveGeneratedFunctionBodyBindings;

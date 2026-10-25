@@ -677,3 +677,153 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
     try std.testing.expectEqual(@as(usize, 1), this_count);
     try std.testing.expectEqual(@as(usize, 1), arguments_count);
 }
+
+const NativeArrowBirthAst = @import("../parser/ast.zig");
+const NativeArrowBirthWalker = struct {
+    transformer: *Transformer,
+    captures: []const u32,
+    stack: std.ArrayList(u32) = .empty,
+    reads: usize = 0,
+
+    fn captureInScope(self: *@This(), scope: ScopeId) ?u32 {
+        const editor = &self.transformer.semantic_editor.?;
+        for (self.captures) |id| if (editor.symbols.items[id].scope_id == scope) return id;
+        return null;
+    }
+
+    fn walk(self: *@This(), owner: NativeArrowBirthAst.NodeIndex, expected_scope: ScopeId, parent_function: ?u32, capture_argument: bool) anyerror!void {
+        if (owner.isNone()) return;
+        const transformer = self.transformer;
+        const node = transformer.ast.getNode(owner);
+        const editor = &transformer.semantic_editor.?;
+        if (node.tag == .identifier_reference) {
+            const name = transformer.ast.identifierNameText(node);
+            var expected_symbol: ?u32 = null;
+            var index = self.stack.items.len;
+            while (index > 0) {
+                index -= 1;
+                const id = self.stack.items[index];
+                if (std.mem.eql(u8, editor.symbols.items[id].synthetic_name, name)) {
+                    expected_symbol = id;
+                    break;
+                }
+            }
+            if (expected_symbol == null and capture_argument) {
+                if (parent_function) |id| {
+                    const symbol = editor.symbols.items[id];
+                    if (std.mem.eql(u8, symbol.nameText(transformer.ast.source), name)) expected_symbol = id;
+                }
+            }
+            if (expected_symbol) |id| {
+                const reference = (try editor.referenceForNode(owner)) orelse return error.NativeArrowReferenceNotCreated;
+                try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+                try std.testing.expectEqual(expected_scope, reference.scope_id);
+                try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+                try std.testing.expectEqual(id, transformer.getSymbolIdAt(owner).?);
+                self.reads += 1;
+            }
+        }
+        switch (node.tag) {
+            .function, .function_declaration, .function_expression, .arrow_function_expression, .method_definition => {
+                const function_scope = transformer.outputOwnedScope(owner) orelse return error.NativeArrowFunctionScopeNotCreated;
+                const is_arrow = node.tag == .arrow_function_expression;
+                const parameters = transformer.ast.readExtraNode(node.data.extra, if (is_arrow) 0 else 1);
+                const body = transformer.ast.readExtraNode(node.data.extra, if (is_arrow) 1 else 2);
+                const parameter_scope = transformer.outputOwnedScope(parameters) orelse function_scope;
+                const source = transformer.scope_owner_origins.get(@backingInt(owner)) orelse @backingInt(owner);
+                const lowered_arrow = transformer.ast.nodes.items[source].tag == .arrow_function_expression;
+                const capture = self.captureInScope(function_scope);
+                if (capture != null or lowered_arrow) {
+                    const lexical_root = if (parameter_scope != function_scope) parameter_scope else function_scope;
+                    try std.testing.expectEqual(expected_scope, editor.scopes.items[lexical_root.toIndex()].parent);
+                    if (parameter_scope != function_scope)
+                        try std.testing.expectEqual(parameter_scope, editor.scopes.items[function_scope.toIndex()].parent);
+                }
+                var function_identity = parent_function;
+                if (capture == null and !lowered_arrow) {
+                    function_identity = if (node.tag == .method_definition) null else transformer.getSymbolIdAt(transformer.ast.readExtraNode(node.data.extra, 0));
+                }
+                const old_len = self.stack.items.len;
+                if (capture) |id| try self.stack.append(transformer.allocator, id);
+                defer self.stack.shrinkRetainingCapacity(old_len);
+                try self.walk(parameters, parameter_scope, function_identity, false);
+                try self.walk(body, function_scope, function_identity, false);
+                return;
+            },
+            .call_expression => {
+                const callee = transformer.ast.readExtraNode(node.data.extra, 0);
+                const callee_scope = transformer.outputOwnedScope(callee);
+                const wrapper_call = if (callee_scope) |scope| self.captureInScope(scope) != null else false;
+                try self.walk(callee, expected_scope, parent_function, capture_argument);
+                const start = transformer.ast.readExtra(node.data.extra, 1);
+                const len = transformer.ast.readExtra(node.data.extra, 2);
+                for (transformer.ast.extra_data.items[start .. start + len]) |argument|
+                    try self.walk(@fromBackingInt(argument), expected_scope, parent_function, capture_argument or wrapper_call);
+                return;
+            },
+            else => {},
+        }
+        const scope = transformer.outputOwnedScope(owner) orelse expected_scope;
+        var children = ast_walk.children(transformer.ast, node);
+        while (children.next()) |child| try self.walk(child, scope, parent_function, capture_argument);
+    }
+};
+
+fn checkNativeArrowReferenceBirth(source: []const u8, expected_captures: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromReactNativeVersion(0, 80) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const original_symbols = analyzer.symbols.items.len;
+    try transformer.buildBlockRenameMap();
+    try @import("parameter_environment.zig").collectClassInferredNames(&transformer);
+    try @import("native_parameter_cells.zig").normalize(&transformer);
+    const source_root: NativeArrowBirthAst.NodeIndex = @fromBackingInt(@as(u32, @intCast(transformer.parser_node_count - 1)));
+    const root = try transformer.visitNode(source_root);
+    // No generic function registration, output scope walk or finish has run.
+    const editor = &transformer.semantic_editor.?;
+    var captures: std.ArrayList(u32) = .empty;
+    for (editor.symbols.items[original_symbols..], original_symbols..) |symbol, raw| {
+        if (symbol.kind != .parameter or !std.mem.startsWith(u8, symbol.synthetic_name, "_newTarget")) continue;
+        try captures.append(allocator, @intCast(raw));
+        try std.testing.expect(!symbol.scope_id.isNone());
+    }
+    try std.testing.expectEqual(expected_captures, captures.items.len);
+    var walker: NativeArrowBirthWalker = .{ .transformer = &transformer, .captures = captures.items };
+    try walker.walk(root, @fromBackingInt(0), null, false);
+    try std.testing.expect(walker.reads >= expected_captures);
+}
+
+test "native parameter arrow references and lexical scopes exist before finalization" {
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>new.target){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>class extends(new.target||Object){}){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>class{[new.target===Parent?'yes':'no'](){return 7}}){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=(value=new.target)=>value){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>()=>new.target){return get}", 2);
+    try checkNativeArrowReferenceBirth("function Parent(get=(read=()=>new.target)=>read){return get}", 2);
+    try checkNativeArrowReferenceBirth("function Parent(get=(value=new.target)=>()=>value){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(_newTarget=11,get=()=>[new.target,_newTarget]){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=(_newTarget=11)=>[new.target,_newTarget]){return get}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>{let local=1;{const value=new.target;return[value,local]}}){return get}", 1);
+    try checkNativeArrowReferenceBirth("class Base{}class Box extends Base{constructor(get=()=>new.target){super();this.get=get}}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(get=()=>function Own(){return new.target}){return get}", 0);
+    try checkNativeArrowReferenceBirth("function Parent(__proto__=()=>new.target){return __proto__}", 1);
+    try checkNativeArrowReferenceBirth("function Parent(_newTarget=11,get=()=>{eval('1');return new.target}){return get}", 1);
+}
