@@ -10,140 +10,26 @@ const Editor = @import("../semantic/editor.zig").SemanticEditor;
 const SymbolID = @import("symbol.zig").SymbolID;
 const Module = @import("module.zig").Module;
 
-/// Validate an already selected typed foreign role. Neither its spelling nor
-/// another same-kind row can replace a missing producer-owned identity.
-pub fn validateTargetRole(graph: anytype, target: anytype) !void {
-    const module = graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
-    const expected: SymbolID = switch (target.role) {
-        .schedule => try @import("runtime_dynamic_import_ast.zig").exactBinding(graph),
-        .to_esm => blk: {
-            const provider = graph.interop_ast_provider orelse return error.InvalidCallsiteTarget;
-            const bindings = try @import("runtime_interop_ast.zig").resolveBindings(graph);
-            break :blk SymbolID.make(provider.module_index, @backingInt(bindings[7].?.symbol_id));
-        },
-        .require => blk: {
-            if (module.wrap_kind != .cjs) return error.InvalidCallsiteTarget;
-            const id = module.require_symbol orelse return error.InvalidCallsiteTarget;
-            const sem = module.semantic orelse return error.InvalidCallsiteTarget;
-            if (@backingInt(id) >= sem.symbols.items.len or sem.symbols.items[@backingInt(id)].synthetic_kind != .cjs_require) return error.InvalidCallsiteTarget;
-            break :blk SymbolID.make(module.index, @backingInt(id));
-        },
-        .esm_init => try module.esmInitSymbol(),
-        .esm_namespace => try module.esmNamespaceSymbol(),
-    };
-    if (expected.module != target.symbol.module or expected.inner != target.symbol.inner) return error.InvalidCallsiteTarget;
+pub const validateTargetRole = @import("runtime_callsite_targets.zig").validateTargetRole;
+const Builder = @import("runtime_callsite_builder.zig").Builder;
+
+const CallbackProof = struct { node: NodeIndex, scope: ScopeId, parent: ScopeId, call_node: NodeIndex, callee: NodeIndex };
+
+fn validateAll(builder: *Builder, callbacks: []const CallbackProof) !void {
+    try builder.validate();
+    const editor = builder.editor;
+    const ast = builder.ast;
+    for (callbacks) |expected| {
+        const provenance = editor.node_scope_provenance.get(expected.call_node) orelse return error.InvalidCallsiteScope;
+        if (provenance.scope != expected.parent or ast.getNode(expected.node).tag != .function_expression) return error.InvalidCallsiteScope;
+        if (expected.scope.isNone() or expected.scope.toIndex() >= editor.scopes.items.len) return error.InvalidCallsiteScope;
+        if (editor.scope_owner_map.get(@backingInt(expected.node)) != @as(?u32, @backingInt(expected.scope))) return error.InvalidCallsiteScope;
+        const scope = editor.scopes.items[expected.scope.toIndex()];
+        if (scope.kind != .function or scope.parent != expected.parent) return error.InvalidCallsiteScope;
+        const actual = ast.getNode(expected.call_node);
+        if (actual.tag != .call_expression or ast.readExtraNode(actual.data.extra, 0) != expected.callee) return error.InvalidCallsiteReference;
+    }
 }
-
-const Builder = struct {
-    allocator: std.mem.Allocator,
-    ast: *Ast,
-    editor: *Editor,
-    module: *Module,
-    graph: *@import("graph.zig").ModuleGraph,
-    declarations: std.ArrayList(NodeIndex) = .empty,
-    next_name: u32 = 0,
-    references: std.ArrayList(struct { node: NodeIndex, symbol: SymbolId, scope: ScopeId }) = .empty,
-    callbacks: std.ArrayList(struct { node: NodeIndex, scope: ScopeId, parent: ScopeId, call_node: NodeIndex, callee: NodeIndex }) = .empty,
-
-    fn validate(self: *Builder) !void {
-        for (self.references.items) |expected| {
-            const raw = @backingInt(expected.node);
-            if (raw >= self.editor.symbol_ids.items.len or self.editor.symbol_ids.items[raw] != @backingInt(expected.symbol)) return error.InvalidCallsiteReference;
-            const actual_reference = try self.editor.referenceForNode(expected.node) orelse return error.InvalidCallsiteReference;
-            if (actual_reference.flags.declare or !actual_reference.flags.read or actual_reference.symbol_id != expected.symbol or actual_reference.scope_id != expected.scope) return error.InvalidCallsiteReference;
-            if (self.editor.symbols.items[@backingInt(expected.symbol)].kind != .import_binding) return error.InvalidCallsiteReference;
-        }
-        for (self.callbacks.items) |expected| {
-            const provenance = self.editor.node_scope_provenance.get(expected.call_node) orelse return error.InvalidCallsiteScope;
-            if (provenance.scope != expected.parent or self.ast.getNode(expected.node).tag != .function_expression) return error.InvalidCallsiteScope;
-            if (expected.scope.isNone() or expected.scope.toIndex() >= self.editor.scopes.items.len) return error.InvalidCallsiteScope;
-            if (self.editor.scope_owner_map.get(@backingInt(expected.node)) != @as(?u32, @backingInt(expected.scope))) return error.InvalidCallsiteScope;
-            const scope = self.editor.scopes.items[expected.scope.toIndex()];
-            if (scope.kind != .function or scope.parent != expected.parent) return error.InvalidCallsiteScope;
-            const actual = self.ast.getNode(expected.call_node);
-            if (actual.tag != .call_expression or self.ast.readExtraNode(actual.data.extra, 0) != expected.callee) return error.InvalidCallsiteReference;
-        }
-        for (self.module.import_bindings) |binding| {
-            const target = binding.callsite_target orelse continue;
-            const foreign = self.graph.getModule(target.symbol.module) orelse return error.InvalidCallsiteTarget;
-            const foreign_sem = foreign.semantic orelse return error.InvalidCallsiteTarget;
-            if (target.owner == .unassigned or target.owner != foreign_sem.owner_token or @backingInt(target.symbol.inner) >= foreign_sem.symbols.items.len) return error.InvalidCallsiteTarget;
-            try validateTargetRole(self.graph, target);
-            const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = self.module.index, .ast = self.ast, .symbol_ids = self.editor.symbol_ids.items, .symbols = self.editor.symbols.items });
-            if (!local.isValid() or !local.eql(binding.local_symbol) or !binding.symbol.eql(target.symbol.toRef())) return error.InvalidCallsiteBinding;
-            const local_raw = local.semanticIndex().?;
-            const row = self.editor.symbols.items[local_raw];
-            if (row.scope_id.isNone() or row.scope_id.toIndex() >= self.editor.scope_maps.items.len or self.editor.scope_maps.items[row.scope_id.toIndex()].get(self.ast.getText(row.name)) != @as(?usize, local_raw)) return error.InvalidCallsiteBinding;
-        }
-    }
-
-    fn reference(self: *Builder, id: SymbolId, scope: ScopeId) !NodeIndex {
-        const name = self.editor.symbols.items[@backingInt(id)].name;
-        const node = try self.ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
-        try self.editor.addReference(node, id, scope, .{ .read = true }, Reference.NO_STMT, Reference.NO_STMT);
-        try self.references.append(self.allocator, .{ .node = node, .symbol = id, .scope = scope });
-        return node;
-    }
-
-    fn imported(self: *Builder, target: SymbolID, role: @import("binding_scanner.zig").CallsiteRole) !SymbolId {
-        const foreign = self.graph.moduleAtMut(target.module) orelse return error.InvalidCallsiteTarget;
-        const foreign_sem = if (foreign.semantic) |*value| value else return error.InvalidCallsiteTarget;
-        if (@backingInt(target.inner) >= foreign_sem.symbols.items.len) return error.InvalidCallsiteTarget;
-        const owner = foreign_sem.captureOwnerToken();
-        const root_scope: ScopeId = @fromBackingInt(@as(u32, 0));
-        var sequence = self.next_name;
-        var name: []const u8 = undefined;
-        while (true) : (sequence += 1) {
-            name = try std.fmt.allocPrint(self.allocator, "__import_callsite_{d}", .{sequence});
-            if (!self.editor.scope_maps.items[root_scope.toIndex()].contains(name)) break;
-        }
-        self.next_name = sequence + 1;
-        const span = try self.ast.addString(name);
-        const binding = try self.ast.addNode(.{ .tag = .binding_identifier, .span = span, .data = .{ .string_ref = span } });
-        const sid = try self.editor.declare(binding, span, span, root_scope, .import_binding, Reference.NO_STMT, Reference.NO_STMT);
-        const exported_span = try self.ast.addString("__exact_target");
-        const exported = try self.ast.addNode(.{ .tag = .identifier_reference, .span = exported_span, .data = .{ .string_ref = exported_span } });
-        const specifier = try self.ast.addNode(.{ .tag = .import_specifier, .span = span, .data = .{ .binary = .{ .left = exported, .right = binding, .flags = 0 } } });
-        const specs = try self.ast.addNodeList(&.{specifier});
-        const source_span = try self.ast.addString(try std.json.Stringify.valueAlloc(self.allocator, foreign.path, .{}));
-        const source = try self.ast.addNode(.{ .tag = .string_literal, .span = source_span, .data = .{ .string_ref = source_span } });
-        const extra = try self.ast.addExtras(&.{ specs.start, specs.len, @backingInt(source), 0, 0, 0 });
-        const declaration = try self.ast.addNode(.{ .tag = .import_declaration, .span = span, .data = .{ .extra = extra } });
-        try self.declarations.append(self.allocator, declaration);
-        const record_index: u32 = @intCast(self.module.import_records.len);
-        const records = try self.allocator.alloc(@import("types.zig").ImportRecord, self.module.import_records.len + 1);
-        @memcpy(records[0..self.module.import_records.len], self.module.import_records);
-        records[self.module.import_records.len] = .{ .specifier = foreign.path, .kind = .static_import, .span = source_span, .resolved = target.module };
-        self.module.import_records = records;
-        const bindings = try self.allocator.alloc(@import("binding_scanner.zig").ImportBinding, self.module.import_bindings.len + 1);
-        @memcpy(bindings[0..self.module.import_bindings.len], self.module.import_bindings);
-        bindings[self.module.import_bindings.len] = .{
-            .kind = .named,
-            .local_name = name,
-            .imported_name = "__exact_target",
-            .local_span = span,
-            .import_record_index = record_index,
-            .local_symbol_node = binding,
-            .local_symbol = @import("symbol.zig").SymbolRef.makeSemantic(self.module.index, @backingInt(sid)),
-            .symbol = target.toRef(),
-            .source_type_only = false,
-            .callsite_target = .{ .role = role, .symbol = target, .owner = owner, .declaration = declaration },
-        };
-        self.module.import_bindings = bindings;
-        try self.graph.linkDependency(self.module.index, target.module);
-        return sid;
-    }
-
-    fn call(self: *Builder, callee: NodeIndex, args: []const NodeIndex) !NodeIndex {
-        const list = try self.ast.addNodeList(args);
-        const extra = try self.ast.addExtras(&.{ @backingInt(callee), list.start, list.len, 0 });
-        return self.ast.addNode(.{ .tag = .call_expression, .span = .EMPTY, .data = .{ .extra = extra } });
-    }
-
-    fn use(self: *Builder, target: SymbolID, scope: ScopeId, role: @import("binding_scanner.zig").CallsiteRole) !NodeIndex {
-        return self.reference(try self.imported(target, role), scope);
-    }
-};
 
 /// Exact current source expressions after AST pruning. A detached import record
 /// cannot activate a provider merely because its former span has no statement.
@@ -192,6 +78,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
         var builder: Builder = .{ .allocator = a, .ast = ast, .editor = &editor, .module = module, .graph = graph };
+        var callbacks: std.ArrayList(CallbackProof) = .empty;
         const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(a, ast);
         var lowered = false;
         for (live) |raw| {
@@ -238,7 +125,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             } else ast.nodes.items[@backingInt(body)].data.list = try ast.addNodeList(&.{ret});
             const schedule_ref = try builder.use(schedule, provenance.scope, .schedule);
             const replacement = try builder.call(schedule_ref, &.{callback});
-            try builder.callbacks.append(a, .{ .node = callback, .scope = callback_scope, .parent = provenance.scope, .call_node = call_node, .callee = schedule_ref });
+            try callbacks.append(a, .{ .node = callback, .scope = callback_scope, .parent = provenance.scope, .call_node = call_node, .callee = schedule_ref });
             ast.nodes.items[raw] = ast.getNode(replacement);
             module.import_records[record_index].callsite_lowered = true;
             lowered = true;
@@ -253,7 +140,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         const root = try ast.addNode(.{ .tag = .program, .span = ast.getNode(old_root).span, .data = .{ .list = try ast.addNodeList(statements.items) } });
         try editor.remapScopeOwner(old_root, root);
         ast.transformed_root = root;
-        try builder.validate();
+        try validateAll(&builder, callbacks.items);
         sem.applyEdit(try editor.finish());
         if (module.transform_cache) |*cache| cache.symbol_ids = sem.symbol_ids;
         try @import("runtime_dynamic_import_ast.zig").activate(graph, shaker);
@@ -266,6 +153,7 @@ fn expectHostileRejection(graph: *@import("graph.zig").ModuleGraph, module: *Mod
     const a = module.parse_arena.?.allocator();
     var editor = try sem.beginEdit(a, ast);
     var builder: Builder = .{ .allocator = a, .ast = ast, .editor = &editor, .module = module, .graph = graph };
+    var callbacks: std.ArrayList(CallbackProof) = .empty;
     for (sem.references) |reference_row| {
         if (reference_row.flags.declare or reference_row.node_index.isNone()) continue;
         for (module.import_bindings) |binding| {
@@ -281,11 +169,11 @@ fn expectHostileRejection(graph: *@import("graph.zig").ModuleGraph, module: *Mod
         const start = ast.readExtra(call.data.extra, 1);
         const callback: NodeIndex = @fromBackingInt(ast.extra_data.items[start]);
         const scope = editor.scope_owner_map.get(@backingInt(callback)) orelse return error.MissingCallsiteScope;
-        try builder.callbacks.append(a, .{ .node = callback, .scope = @fromBackingInt(scope), .parent = entry.value_ptr.scope, .call_node = entry.key_ptr.*, .callee = ast.readExtraNode(call.data.extra, 0) });
+        try callbacks.append(a, .{ .node = callback, .scope = @fromBackingInt(scope), .parent = entry.value_ptr.scope, .call_node = entry.key_ptr.*, .callee = ast.readExtraNode(call.data.extra, 0) });
     }
-    try std.testing.expect(builder.references.items.len >= 3 and builder.callbacks.items.len > 0);
-    try builder.validate();
-    const callback = builder.callbacks.items[0];
+    try std.testing.expect(builder.references.items.len >= 3 and callbacks.items.len > 0);
+    try validateAll(&builder, callbacks.items);
+    const callback = callbacks.items[0];
     const reference_node = builder.references.items[0].node;
     const expected_error = switch (corruption) {
         0 => blk: {
@@ -330,7 +218,7 @@ fn expectHostileRejection(graph: *@import("graph.zig").ModuleGraph, module: *Mod
         },
         else => unreachable,
     };
-    try std.testing.expectError(expected_error, builder.validate());
+    try std.testing.expectError(expected_error, validateAll(&builder, callbacks.items));
 }
 
 test "single output import callsites own exact references through ten source contexts" {
@@ -549,4 +437,48 @@ test "single output import callsites preserve real clone creation origins" {
     try @import("../semantic/node_scope_provenance.zig").preserveSourceOrigins(ast, &fresh.node_scope_provenance, &edited.node_scope_provenance);
     try std.testing.expectEqual(original, fresh.node_scope_provenance.get(cloned).?.source_node);
     try std.testing.expectEqual(fresh_scope, fresh.node_scope_provenance.get(cloned).?.scope);
+}
+
+test "single output import callsites preserve source records across repeated alias growth" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "globalThis.pending=[");
+    for (0..20) |index| {
+        if (index != 0) try source.append(std.testing.allocator, ',');
+        try source.appendSlice(std.testing.allocator, "import('./dep.cjs')");
+    }
+    try source.appendSlice(std.testing.allocator, "];");
+    try helpers.writeFile(tmp.dir, "entry.mjs", source.items);
+    try helpers.writeFile(tmp.dir, "dep.cjs", "exports.answer=42;");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    var records: usize = 0;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |module| {
+        if (!std.mem.endsWith(u8, module.path, "entry.mjs")) continue;
+        for (module.import_records) |record| {
+            if (record.kind != .dynamic_import) continue;
+            try std.testing.expect(record.callsite_lowered);
+            records += 1;
+        }
+        const ast = &(module.ast orelse return error.MissingCallsiteAst);
+        const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(std.testing.allocator, ast);
+        defer std.testing.allocator.free(live);
+        for (live) |raw| try std.testing.expect(ast.nodes.items[raw].tag != .import_expression);
+    }
+    try std.testing.expectEqual(@as(usize, 20), records);
 }
