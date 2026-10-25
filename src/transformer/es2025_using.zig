@@ -230,6 +230,13 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const stack_id = try registerUsingVar(self, stack_binding, names.stack, zero_span, names.late_output_names);
             const err_id = try registerUsingVar(self, err_binding, names.err, zero_span, names.late_output_names);
             const has_err_id = try registerUsingVar(self, has_err_binding, names.has_err, zero_span, names.late_output_names);
+            // This emitted region owns a lexical boundary before any helper
+            // call/reference is created in its body.
+            const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const try_scope = if (self.semantic_edit_enabled)
+                try self.addGeneratedScope(self.current_scope, try_block, .block)
+            else
+                self.current_scope;
             const hoist_functions = kind == .program or self.options.unsupported.block_scoping;
             // 블록·함수 본문의 `using` 은 native let/const 가 되는 타겟이면 const 로 남긴다.
             const using_kind: VariableDeclarationKind = if (kind == .program or self.options.unsupported.block_scoping) .@"var" else .@"const";
@@ -248,7 +255,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3)) {
                     const vkind = self.ast.variableDeclarationKind(node);
                     if (vkind.isUsing()) {
-                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, stack_id, names.late_output_names, self.current_scope, using_kind, node.span);
+                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, stack_id, names.late_output_names, try_scope, using_kind, node.span);
                         continue;
                     }
                     if (kind == .program and (vkind == .let or vkind == .@"const")) {
@@ -345,7 +352,8 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, has_err_binding, try es_helpers.makeBoolLiteral(self, false), zero_span),
             }, .@"var", zero_span);
 
-            const try_block = try self.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(body.items) } });
+            self.ast.nodes.items[@backingInt(try_block)].data.list = try self.ast.addNodeList(body.items);
+            try moveUsingRegionToScope(self, try_block, self.current_scope, try_scope, kind == .program or self.options.unsupported.block_scoping);
             const catch_clause = try buildCatchClause(self, names, zero_span, err_id, has_err_id, self.current_scope);
             const finally_block = try buildFinallyBlock(self, names, has_await_using, zero_span, stack_id, err_id, has_err_id, self.current_scope);
             const try_stmt = try self.ast.addNode(.{
@@ -520,6 +528,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
             decl_kind: VariableDeclarationKind,
             span: Span,
         ) Transformer.Error!void {
+            const saved_scope = self.current_scope;
+            self.current_scope = reference_scope;
+            defer self.current_scope = saved_scope;
             var j: u32 = 0;
             while (j < decl_len) : (j += 1) {
                 const raw = self.ast.extra_data.items[decl_start + j];
@@ -578,26 +589,32 @@ pub fn ES2025Using(comptime Transformer: type) type {
             });
             if (self.semantic_edit_enabled) {
                 const catch_scope = try self.addGeneratedScope(parent_scope, clause, .catch_clause);
+                const body_scope = try self.addGeneratedScope(catch_scope, body, .block);
                 const catch_id = try self.declareSyntheticInScope(catch_param, span, .catch_binding, catch_scope);
                 if (names.late_output_names) es_helpers.markStandaloneLateSyntheticTemp(self, catch_id, catch_scope);
-                try registerUsingRef(self, err_target, err_id, catch_scope, .{ .write = true });
+                try registerUsingRef(self, err_target, err_id, body_scope, .{ .write = true });
                 // The catch binding already has an exact SymbolId and scope.
                 // Do not defer this use as a hoisted temp during state-machine
                 // collection: it belongs to this generated catch clause.
-                try self.addSyntheticRefInScope(caught_ref, catch_id, catch_scope, .{ .read = true });
-                try registerUsingRef(self, has_err_target, has_err_id, catch_scope, .{ .write = true });
+                try self.addSyntheticRefInScope(caught_ref, catch_id, body_scope, .{ .read = true });
+                try registerUsingRef(self, has_err_target, has_err_id, body_scope, .{ .write = true });
             }
             return clause;
         }
 
         /// finally { [await] __callDispose(_stack, _error, _hasError); }
         fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span, stack_id: ?SymbolId, err_id: ?SymbolId, has_err_id: ?SymbolId, reference_scope: ScopeId) Transformer.Error!NodeIndex {
+            const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const body_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(reference_scope, body, .block) else reference_scope;
+            const saved_scope = self.current_scope;
+            self.current_scope = body_scope;
+            defer self.current_scope = saved_scope;
             const stack_ref = try makeUsingRef(self, names.stack, names.late_output_names);
             const err_ref = try makeUsingRef(self, names.err, names.late_output_names);
             const has_err_ref = try makeUsingRef(self, names.has_err, names.late_output_names);
-            try registerUsingRef(self, stack_ref, stack_id, reference_scope, .{ .read = true });
-            try registerUsingRef(self, err_ref, err_id, reference_scope, .{ .read = true });
-            try registerUsingRef(self, has_err_ref, has_err_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, stack_ref, stack_id, body_scope, .{ .read = true });
+            try registerUsingRef(self, err_ref, err_id, body_scope, .{ .read = true });
+            try registerUsingRef(self, has_err_ref, has_err_id, body_scope, .{ .read = true });
             const call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__callDispose"), &.{
                 stack_ref,
                 err_ref,
@@ -605,7 +622,8 @@ pub fn ES2025Using(comptime Transformer: type) type {
             }, span);
             const expr = if (has_await) try es_helpers.makeAwaitExpression(self, call, span) else call;
             const expr_stmt = try es_helpers.makeExprStmt(self, expr, span);
-            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{expr_stmt}) } });
+            self.ast.nodes.items[@backingInt(body)].data.list = try self.ast.addNodeList(&.{expr_stmt});
+            return body;
         }
     };
 }
@@ -909,3 +927,40 @@ test "#4819 generator using refs retain their producer SymbolId" {
 }
 
 // readU32 헬퍼: Transformer에 이미 정의된 것을 사용 (mixin 패턴)
+
+fn moveUsingRegionToScope(self: anytype, root: NodeIndex, source: ScopeId, target: ScopeId, preserve_storage: bool) !void {
+    if (!self.semantic_edit_enabled or source == target) return;
+    try self.reparentGeneratedBodyScopes(source, target, root);
+    const editor = &self.semantic_editor.?;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |node| {
+        if (node.isNone()) continue;
+        const n = self.ast.getNode(node);
+        if (n.tag == .binding_identifier and !preserve_storage) {
+            if (self.getSymbolIdAt(node)) |raw| {
+                const symbol = editor.symbols.items[raw];
+                if (symbol.scope_id == source and symbol.kind != .variable_var and symbol.kind != .parameter and symbol.kind != .import_binding)
+                    try self.relocateOutputSymbolAs(raw, target, node);
+            }
+        }
+        const maybe = editor.referenceForNode(node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => std.debug.panic("using region lost a source reference: {s}", .{@errorName(err)}),
+        };
+        if (maybe) |reference| {
+            if (!reference.flags.declare and reference.scope_id == source) {
+                if (self.tracked_runtime_helper_ref_index.contains(@backingInt(node)))
+                    try self.relocateRuntimeHelperRef(node, target)
+                else
+                    editor.moveReference(node, target, reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => std.debug.panic("using region cannot move a source reference: {s}", .{@errorName(err)}),
+                    };
+            }
+        }
+        var children = @import("../parser/ast_walk.zig").children(self.ast, n);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+}
