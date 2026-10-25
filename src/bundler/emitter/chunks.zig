@@ -785,6 +785,9 @@ fn emitChunksImpl(
         // RSC: 디렉티브가 파일 첫 문장이어야 React/Next가 인식.
         var hoisted_directives: std.ArrayList(u8) = .empty;
         defer hoisted_directives.deinit(allocator);
+        var banner_js = options.banner_js;
+        var intro_js = options.intro_js;
+        var directive_start: usize = 0;
 
         // A preserve-modules file has its own strictness boundary. Preserve
         // the source program's strictness outside its initialization wrapper,
@@ -794,6 +797,18 @@ fn emitChunksImpl(
             if (graph.getModule(chunk.modules.items[0])) |module| {
                 if (module.semantic) |sem| {
                     if (sem.scopes.len > 0 and sem.scopes[0].is_strict) {
+                        // A prefix hashbang must remain the first physical line,
+                        // before both strict and subsequently hoisted RSC directives.
+                        const prefix = if (banner_js != null) &banner_js else &intro_js;
+                        if (prefix.*) |text| {
+                            if (std.mem.startsWith(u8, text, "#!")) {
+                                const end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+                                try chunk_output.appendSlice(allocator, text[0..end]);
+                                try chunk_output.append(allocator, '\n');
+                                directive_start = chunk_output.items.len;
+                                prefix.* = if (end < text.len) text[end + 1 ..] else null;
+                            }
+                        }
                         try chunk_output.appendSlice(allocator, "\"use strict\";\n");
                     }
                 }
@@ -812,7 +827,7 @@ fn emitChunksImpl(
         const dev_split_chunk = reg_split and options.dev_mode and graph.lazy_compilation;
 
         // banner 삽입 (각 청크 출력 앞)
-        if (options.banner_js) |banner| {
+        if (banner_js) |banner| {
             try chunk_output.appendSlice(allocator, banner);
             try chunk_output.append(allocator, '\n');
         }
@@ -820,7 +835,7 @@ fn emitChunksImpl(
         // 모듈 본문이 closure scope 로 접근 + chunk 별 module-scope 중복 redeclare 회피. 그 외
         // (preserve_modules / cjs / esm) 는 기존 위치(banner 다음, wrapper 밖) 유지.
         if (!reg_split) {
-            if (options.intro_js) |intro| {
+            if (intro_js) |intro| {
                 try chunk_output.appendSlice(allocator, intro);
                 try chunk_output.append(allocator, '\n');
             }
@@ -2621,7 +2636,7 @@ fn emitChunksImpl(
         errdefer allocator.free(filename);
 
         if (hoisted_directives.items.len > 0) {
-            try chunk_output.insertSlice(allocator, 0, hoisted_directives.items);
+            try chunk_output.insertSlice(allocator, directive_start, hoisted_directives.items);
         }
 
         // rolldown `chunk.moduleIds` 호환 — 이 chunk 에 포함된 모듈 경로 목록.
