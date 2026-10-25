@@ -26,54 +26,64 @@ const inputs = [
 ] as const;
 
 describe('preserve-modules CommonJS files preserve source strictness', () => {
-  for (const platform of ['node', 'react-native'] as const)
-    for (const [name, dep, expression] of inputs)
-      for (const minify of [false, true]) {
-        test(`${platform} ${name} minify=${minify}`, async () => {
-          const { dir, cleanup } = await createFixture({
-            'entry.mjs': `import {read} from './dep.mjs';import sloppy from './sloppy.cjs';console.log(${expression},(0,sloppy)())`,
-            'dep.mjs': `'use client';${dep}`,
-            'sloppy.cjs': 'module.exports=function(){return this===globalThis}',
+  for (const hashbang of ['banner', 'intro'] as const)
+    for (const platform of ['node', 'react-native'] as const)
+      for (const [name, dep, expression] of inputs)
+        for (const minify of [false, true]) {
+          test(`${hashbang} ${platform} ${name} minify=${minify}`, async () => {
+            const { dir, cleanup } = await createFixture({
+              'entry.mjs': `import {read} from './dep.mjs';import sloppy from './sloppy.cjs';console.log(${expression},(0,sloppy)())`,
+              'dep.mjs': `'use client';${dep}`,
+              'sloppy.cjs': 'module.exports=function(){return this===globalThis}',
+            });
+            try {
+              init();
+              const result = buildSync({
+                entryPoints: [join(dir, 'entry.mjs')],
+                rootDir: dir,
+                outdir: join(dir, 'out'),
+                write: true,
+                platform,
+                format: 'cjs',
+                splitting: true,
+                preserveModules: true,
+                strictExecutionOrder: true,
+                entryErrorGuard: false,
+                minify,
+                banner:
+                  hashbang === 'banner'
+                    ? '#!/usr/bin/env node\nglobalThis.pmStrictBanner=1;'
+                    : undefined,
+                intro:
+                  hashbang === 'intro'
+                    ? '#!/usr/bin/env node\nglobalThis.pmStrictIntro=1;'
+                    : 'globalThis.pmStrictIntro=1;',
+              });
+              expect(result.errors).toEqual([]);
+              const child = Bun.spawn(['node', join(dir, 'out/entry.js')], {
+                stdout: 'pipe',
+                stderr: 'pipe',
+              });
+              const [stdout, stderr, status] = await Promise.all([
+                new Response(child.stdout).text(),
+                new Response(child.stderr).text(),
+                child.exited,
+              ]);
+              expect(status).toBe(0);
+              expect(stderr).toBe('');
+              expect(stdout).toBe('true true\n');
+              const output = await readFile(join(dir, 'out/dep.js'), 'utf8');
+              expect(output.startsWith('#!/usr/bin/env node\n')).toBe(true);
+              expect(output.indexOf('"use strict";')).toBeGreaterThanOrEqual(0);
+              expect(output.indexOf('"use strict";')).toBeLessThan(
+                output.indexOf(
+                  hashbang === 'banner' ? 'globalThis.pmStrictBanner' : 'globalThis.pmStrictIntro',
+                ),
+              );
+            } finally {
+              close();
+              await cleanup();
+            }
           });
-          try {
-            init();
-            const result = buildSync({
-              entryPoints: [join(dir, 'entry.mjs')],
-              rootDir: dir,
-              outdir: join(dir, 'out'),
-              write: true,
-              platform,
-              format: 'cjs',
-              splitting: true,
-              preserveModules: true,
-              strictExecutionOrder: true,
-              entryErrorGuard: false,
-              minify,
-              banner: 'globalThis.pmStrictBanner=1;',
-              intro: 'globalThis.pmStrictIntro=1;',
-            });
-            expect(result.errors).toEqual([]);
-            const child = Bun.spawn(['node', join(dir, 'out/entry.js')], {
-              stdout: 'pipe',
-              stderr: 'pipe',
-            });
-            const [stdout, stderr, status] = await Promise.all([
-              new Response(child.stdout).text(),
-              new Response(child.stderr).text(),
-              child.exited,
-            ]);
-            expect(status).toBe(0);
-            expect(stderr).toBe('');
-            expect(stdout).toBe('true true\n');
-            const output = await readFile(join(dir, 'out/dep.js'), 'utf8');
-            expect(output.indexOf('"use strict";')).toBeGreaterThanOrEqual(0);
-            expect(output.indexOf('"use strict";')).toBeLessThan(
-              output.indexOf('globalThis.pmStrictBanner'),
-            );
-          } finally {
-            close();
-            await cleanup();
-          }
-        });
-      }
+        }
 });
