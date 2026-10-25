@@ -25,19 +25,23 @@ fn directArrow(self: anytype, value: ast.NodeIndex) ?ast.NodeIndex {
     return null;
 }
 
-/// These direct body statements execute at most once in an activation. If
-/// their evaluation throws, there is no enclosing catch that can replay them.
-/// Keep their cells in the existing function/module environment so await/yield
-/// remains in the original grammar context and adds no promise boundary.
-fn directBodyEvaluation(self: anytype, source: ast.NodeIndex, parent: @import("../semantic/scope.zig").ScopeId) !bool {
+/// Prove that this source site is not repeated in its enclosing activation.
+/// A loop/with/function/class boundary requires per-evaluation storage instead.
+fn singleEvaluationOwner(self: anytype, source: ast.NodeIndex, parent: @import("../semantic/scope.zig").ScopeId) !?@import("../semantic/scope.zig").ScopeId {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    if (parent.isNone()) return false;
-    const kind = scopes[parent.toIndex()].kind;
-    if (kind != .function and kind != .module) return false;
+    var owner_scope = parent;
+    while (!owner_scope.isNone()) {
+        switch (scopes[owner_scope.toIndex()].kind) {
+            .function, .module => break,
+            .block, .switch_block, .catch_clause => owner_scope = scopes[owner_scope.toIndex()].parent,
+            else => return null,
+        }
+    }
+    if (owner_scope.isNone()) return null;
     const source_origin = self.scope_owner_origins.get(@backingInt(source)) orelse @backingInt(source);
     var owners = self.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        if (entry.value_ptr.* != @backingInt(parent)) continue;
+        if (entry.value_ptr.* != @backingInt(owner_scope)) continue;
         const owner_idx: ast.NodeIndex = @fromBackingInt(entry.key_ptr.*);
         const owner = self.ast.getNode(owner_idx);
         const body_idx = switch (owner.tag) {
@@ -47,21 +51,31 @@ fn directBodyEvaluation(self: anytype, source: ast.NodeIndex, parent: @import(".
             else => continue,
         };
         if (body_idx.isNone()) continue;
-        const body = self.ast.getNode(body_idx);
-        if (body.tag != .block_statement and body.tag != .function_body and body.tag != .program) continue;
-        const list = body.data.list;
-        for (0..list.len) |offset| {
-            const statement: ast.NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + offset]));
-            switch (self.ast.getNode(statement).tag) {
-                .return_statement, .throw_statement, .variable_declaration, .expression_statement, .class_declaration, .export_default_declaration, .export_named_declaration => {},
-                else => continue,
+        var stack: std.ArrayList(ast.NodeIndex) = .empty;
+        defer stack.deinit(self.allocator);
+        try stack.append(self.allocator, body_idx);
+        while (stack.pop()) |idx| {
+            if (idx.isNone()) continue;
+            if (@backingInt(idx) == source_origin) return owner_scope;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement, .do_while_statement, .with_statement, .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                else => {},
             }
-            const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(self.allocator, self.ast, statement);
-            defer self.allocator.free(reachable);
-            for (reachable) |raw| if (raw == source_origin) return true;
+            var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+            while (children.next()) |child| try stack.append(self.allocator, child);
         }
     }
-    return false;
+    return null;
+}
+
+fn reserveHoistedCell(self: anytype, anchor: Span, owner: @import("../semantic/scope.zig").ScopeId) !helpers.TempIdentityCapture {
+    const name = try helpers.makeTempVarSpan(self);
+    const counter = self.temp_var_counter - 1;
+    const producer = self.temp_producer_id_by_counter.get(counter) orelse @panic("field key has no temp producer");
+    const id = (try self.reserveSyntheticTempSymbolForProducerInScope(producer, name, anchor, owner)) orelse @panic("field key has no exact temp SID");
+    try self.temp_symbol_ids_by_counter.put(self.allocator, counter, @backingInt(id));
+    return .{ .span = name, .symbol_id = id, .owner_scope = owner, .temp_producer_id = producer };
 }
 
 pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast.NodeIndex {
@@ -95,8 +109,9 @@ pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast
     const empty = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
     const wrapper_extra = try self.ast.addExtras(&.{ @backingInt(params), @backingInt(empty), 0 });
     const wrapper = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
-    const single_evaluation = try directBodyEvaluation(self, source, parent);
-    const wrapper_scope = if (single_evaluation) parent else try self.addGeneratedFunctionScope(parent, wrapper);
+    const single_owner = try singleEvaluationOwner(self, source, parent);
+    const single_evaluation = single_owner != null;
+    const wrapper_scope = single_owner orelse try self.addGeneratedFunctionScope(parent, wrapper);
     if (!single_evaluation) {
         const editor = &self.semantic_editor.?;
         editor.scopes.items[wrapper_scope.toIndex()].subtree_has_direct_eval = editor.scopes.items[class_scope.toIndex()].subtree_has_direct_eval;
@@ -106,8 +121,18 @@ pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast
     var statements: std.ArrayList(ast.NodeIndex) = .empty;
     defer statements.deinit(self.allocator);
     const declaration_anchor = Span{ .start = span.start, .end = span.start };
+    var key_name_counter: u32 = 0;
     for (cells.items) |*cell| {
-        const output = try helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_fieldKey", wrapper_scope);
+        if (single_owner) |actual_owner| {
+            // The ordinary temp hoister emits this producer's exact binding
+            // in its actual var owner, never in a surrounding argument list.
+            cell.capture = try reserveHoistedCell(self, declaration_anchor, actual_owner);
+            continue;
+        }
+        const output = helpers.ScopedSyntheticOutputName{
+            .name = try self.buildUniqueNameAvoidingDynamicEval("_fieldKey", &key_name_counter, wrapper_scope),
+            .late = helpers.canUseLateStandaloneOutputName(self, wrapper_scope) or helpers.canUseLateGraphOutputName(self, wrapper_scope),
+        };
         const binding = try helpers.makeExactSyntheticBinding(self, output.name);
         const id = try self.declareSyntheticInScope(binding, declaration_anchor, if (single_evaluation) .variable_var else .variable_let, wrapper_scope);
         if (output.late) helpers.markStandaloneLateSyntheticTemp(self, id.?, wrapper_scope);
@@ -121,7 +146,6 @@ pub fn maybeWrap(self: anytype, source: ast.NodeIndex, original: ast.Node) !?ast
         self.retained_class_key_plan = &plan;
         defer self.retained_class_key_plan = previous;
         const value = try self.visitNode(source);
-        try self.pending_nodes.appendSlice(self.allocator, statements.items);
         return value;
     }
     const is_declaration = original.tag == .class_declaration;

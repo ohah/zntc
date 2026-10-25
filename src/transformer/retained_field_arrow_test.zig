@@ -1,6 +1,6 @@
 const std = @import("std");
 
-test "retained field arrow owns creation site receiver across forty two contexts" {
+test "retained field arrow owns creation site receiver across forty nine contexts" {
     const Case = struct { name: []const u8, source: []const u8 };
     const cases = [_]Case{
         .{ .name = "implicit base", .source = "class Box{value=7;read=()=>this.value}console.log(new Box().read());" },
@@ -45,6 +45,13 @@ test "retained field arrow owns creation site receiver across forty two contexts
         .{ .name = "await key in direct variable initialization", .source = "async function make(){const C=class{[await Promise.resolve(\"read\")]=()=>this};return C}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
         .{ .name = "await key in direct class declaration", .source = "async function make(){class C{[await Promise.resolve(\"read\")]=()=>this}return C}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
         .{ .name = "await key microtask order", .source = "const trace=[];async function make(){const C=class{[await Promise.resolve(\"read\")]=()=>this};trace.push(\"class\");return C}make().then(C=>{trace.push(new C().read.name)});Promise.resolve().then(()=>trace.push(\"a\")).then(()=>trace.push(\"b\")).then(()=>trace.push(\"c\"));setTimeout(()=>console.log(trace.join(\",\")),0);" },
+        .{ .name = "await key inside single lexical block", .source = "async function make(){{const C=class{[await Promise.resolve(\"read\")]=()=>this};return C}}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
+        .{ .name = "await key in class argument", .source = "async function make(){const all=[class{[await Promise.resolve(\"read\")]=()=>this}];return all[0]}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
+        .{ .name = "await key in switch case", .source = "async function make(){switch(1){case 1:return class{[await Promise.resolve(\"read\")]=()=>this}}}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
+        .{ .name = "await key inside catch region", .source = "async function make(){try{throw 1}catch(e){return class{[await Promise.resolve(\"read\")]=()=>this}}}make().then(C=>{const box=new C();console.log(box.read.name,box.read()===box)});" },
+        .{ .name = "await key in repeated loop", .source = "async function make(){const all=[];for(let i=0;i<2;i++){all.push(class{[await Promise.resolve(\"read\"+i)]=()=>this})}return all}make().then(all=>console.log(all.map((C,i)=>{const x=new C();return x[\"read\"+i].name+\":\"+(x[\"read\"+i]()===x)}).join(\",\")));" },
+        .{ .name = "yield key in repeated loop", .source = "function* make(){const all=[];for(let i=0;i<2;i++){all.push(class{[yield i]=()=>this})}return all}const g=make();console.log(g.next().value,g.next(\"first\").value);const all=g.next(\"second\").value;console.log(new all[0]().first.name,new all[1]().second.name);" },
+        .{ .name = "multiple key cells in class", .source = "class C{[\"left\"]=()=>this;[\"right\"]=()=>this}const box=new C();console.log(box.left.name,box.right.name,box.left()===box,box.right()===box);" },
     };
     var mismatches: usize = 0;
     for (cases) |case| {
