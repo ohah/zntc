@@ -13,6 +13,10 @@ fn checkCells(source: []const u8) !void {
 }
 
 fn checkCellsForTarget(source: []const u8, target: @import("compat.zig").ESTarget) !void {
+    return checkCellsForFeatures(source, Options.compat.fromESTarget(target));
+}
+
+fn checkCellsForFeatures(source: []const u8, features: @import("compat.zig").UnsupportedFeatures) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -22,7 +26,7 @@ fn checkCellsForTarget(source: []const u8, target: @import("compat.zig").ESTarge
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     var analyzer = Analyzer.init(allocator, &parser.ast);
     try analyzer.analyze();
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = Options.compat.fromESTarget(target) });
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = features });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.references = analyzer.references.items;
@@ -347,4 +351,68 @@ test "constructor StringValue and class-member role survive exact scope copying"
     const copy = try transformer.ast.addNode(transformer.ast.getNode(constructor));
     try transformer.remapCopiedScopeOwner(constructor, copy);
     try std.testing.expect(@import("es_helpers.zig").isClassConstructorMethod(&transformer, copy, transformer.ast.getNode(copy)));
+}
+
+test "native class parameter cells honor common private lowering plan" {
+    try checkCellsForFeatures("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .class_private_method = true });
+    try checkCellsForFeatures("class Box{#read(){return 7}constructor(value=this.#read()){this.saved=value}}", .{ .class_private_field = true });
+    try checkCellsForFeatures("const outside=99;class Box{static #field=7;field=outside;constructor(outside=1){this.saved=outside}}", .{ .class_private_method = true });
+    try checkCellsForFeatures("class Box{accessor field=7;constructor(value=this.field){this.saved=value}}", .{ .class_private_method = true, .decorator_auto_accessor = true });
+}
+
+test "common private lowering plan reaches both native class producers" {
+    for ([_]bool{ false, true }) |field_unsupported| {
+        for (0..4) |style| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            const members = "{static #extra=3;#field=7;#read(){return this.#field}constructor(value=this.#read()){this.saved=value}read(other=this){other.#field++;return other?.#field}}";
+            const source = if (style == 3) "const Box=class" ++ members else "class Box" ++ members;
+            var scanner = try Scanner.init(allocator, source);
+            var parser = Parser.init(allocator, &scanner);
+            _ = try parser.parse();
+            var analyzer = Analyzer.init(allocator, &parser.ast);
+            try analyzer.analyze();
+            var transformer = try Transformer.init(allocator, &parser.ast, .{
+                .unsupported = .{ .class_private_field = field_unsupported, .class_private_method = !field_unsupported },
+                .use_define_for_class_fields = style != 1,
+                .experimental_decorators = style == 2,
+            });
+            try transformer.initSymbolIds(analyzer.symbol_ids.items);
+            transformer.symbols = analyzer.symbols.items;
+            transformer.references = analyzer.references.items;
+            transformer.scopes = analyzer.scopes.items;
+            transformer.scope_maps = analyzer.scope_maps.items;
+            transformer.scope_owner_map = analyzer.scope_owner_map;
+            transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+            transformer.node_scope_provenance = analyzer.node_scope_provenance;
+            transformer.unresolved_references = &analyzer.unresolved_references;
+            transformer.semantic_edit_enabled = true;
+            const root = try transformer.transform();
+            const live = try walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+            for (live) |raw| {
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .update_expression) continue;
+                const operand = transformer.ast.getNode(transformer.ast.readExtraNode(node.data.extra, 0));
+                // JavaScript permits a storage target, never a getter call,
+                // as the operand of ++ after private-field replacement.
+                try std.testing.expect(operand.tag != .call_expression);
+            }
+            const editor = &transformer.semantic_editor.?;
+            var codegen = @import("../codegen/codegen.zig").Codegen.initWithOptions(allocator, transformer.ast, .{
+                .assert_no_raw_private_syntax = true,
+                .semantic_symbol_ids = transformer.symbol_ids.items,
+                .semantic_symbols = editor.symbols.items,
+                .semantic_scope_maps = editor.scope_maps.items,
+                .generated_iife_scope_owner_map = &editor.scope_owner_map,
+            });
+            const code = try codegen.generate(root);
+            try std.testing.expect(std.mem.indexOf(u8, code, "WeakMap") != null);
+            try std.testing.expect(std.mem.indexOf(u8, code, "WeakSet") != null);
+            var output_scanner = try Scanner.init(allocator, code);
+            var output_parser = Parser.init(allocator, &output_scanner);
+            _ = try output_parser.parse();
+            try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+        }
+    }
 }

@@ -283,8 +283,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             self.ast.nodes.items[@backingInt(body_idx)].data.list = try self.ast.addNodeList(members.items);
         }
     }
-    const lower_pm = self.options.unsupported.class_private_method;
-    const lower_pf = self.options.unsupported.class_private_field;
+    const private_plan = self.options.unsupported.privateLoweringPlan();
+    const lower_pm = private_plan.methods;
+    const lower_pf = private_plan.fields;
     var priv_pre_stmts: std.ArrayList(NodeIndex) = .empty;
     defer priv_pre_stmts.deinit(self.allocator);
     // V_ASSIGN fix: assign-semantics path 도 static descriptor 를 별도 array 로 받아
