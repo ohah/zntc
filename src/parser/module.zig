@@ -106,6 +106,7 @@ pub inline fn isDeclarationTypeOnly(x: ImportDeclExtras) bool {
 
 fn finalizeImportDeclaration(
     self: *Parser,
+    first_scan_binding: usize,
     span: token_mod.Span,
     specs_start: u32,
     specs_len: u32,
@@ -124,11 +125,16 @@ fn finalizeImportDeclaration(
         attrs.start,
         attrs.len,
     });
-    return try self.ast.addNode(.{
+    const declaration = try self.ast.addNode(.{
         .tag = .import_declaration,
         .span = span,
         .data = .{ .extra = extra_start },
     });
+    // This batch was created by this import constructor. Publish its exact
+    // declaration owner before initial analysis or any AST cloning occurs.
+    for (self.scan_import_bindings.items[first_scan_binding..]) |*binding|
+        binding.local_declaration_node_index = @backingInt(declaration);
+    return declaration;
 }
 
 /// `export_all_declaration` extra schema.
@@ -227,6 +233,7 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
 }
 
 pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
+    const first_scan_binding = self.scan_import_bindings.items.len;
     var scope = profile.begin(.parse_module_import);
     defer scope.end();
 
@@ -326,6 +333,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         return try finalizeImportDeclaration(
             self,
+            first_scan_binding,
             .{ .start = start, .end = self.currentSpan().start },
             0, // specs_start
             0, // specs_len = 0 (side-effect)
@@ -428,6 +436,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 self.restoreScratch(scratch_top);
                 return try finalizeImportDeclaration(
                     self,
+                    first_scan_binding,
                     .{ .start = start, .end = self.currentSpan().start },
                     specifiers.start,
                     specifiers.len,
@@ -493,6 +502,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     return try finalizeImportDeclaration(
         self,
+        first_scan_binding,
         .{ .start = start, .end = self.currentSpan().start },
         specifiers.start,
         specifiers.len,

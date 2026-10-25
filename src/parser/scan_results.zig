@@ -95,6 +95,7 @@ pub const ScanImportBinding = struct {
     local_span: Span,
     /// Exact AST node that carries the analyzer SymbolId for this import binding.
     local_symbol_node_index: ?u32 = null,
+    local_declaration_node_index: ?u32 = null,
     /// 어떤 import 문에서 왔는지 (scan_import_records 인덱스)
     import_record_index: u32,
 };

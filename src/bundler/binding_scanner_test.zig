@@ -1084,3 +1084,51 @@ test "default declarations inside ambient modules never publish runtime export r
         try std.testing.expect(!bindings[0].has_default_export_facade);
     }
 }
+
+test "import declaration owners are captured by both initial producers in ten forms" {
+    const sources = [_][]const u8{
+        "import local from './dep.cjs';",
+        "import * as local from './dep.cjs';",
+        "import {value as local} from './dep.cjs';",
+        "import {local} from './dep.cjs';",
+        "import local,{value as other} from './dep.cjs';",
+        "import local,* as other from './dep.cjs';",
+        "import {value as first} from './dep.cjs';import {value as second} from './dep.cjs';",
+        "import {type Type,value as local} from './dep.cjs';",
+        "import d\\u0065f from './dep.cjs';import * as n\\u0073 from './dep.cjs';",
+        "import {'x-y' as local} from './dep.cjs';",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        scanner.is_module = true;
+        var parser = Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        parser.enable_scan = true;
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        const records = try import_scanner.extractImports(allocator, &parser.ast);
+        const fallback = try extractImportBindings(allocator, &parser.ast, records, null);
+        try std.testing.expectEqual(parser.scan_import_bindings.items.len, fallback.len);
+        for (parser.scan_import_bindings.items) |initial| {
+            const anchor = initial.local_symbol_node_index.?;
+            const owner = initial.local_declaration_node_index.?;
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.import_declaration, parser.ast.nodes.items[owner].tag);
+            var matching: ?ImportBinding = null;
+            for (fallback) |binding| {
+                if (@backingInt(binding.local_symbol_node.?) == anchor) {
+                    try std.testing.expect(matching == null);
+                    matching = binding;
+                }
+            }
+            try std.testing.expectEqual(owner, @backingInt(matching.?.local_declaration_node.?));
+            // An unreachable clone can share every source/local node. It must
+            // not alter the producer's already selected declaration identity.
+            const clone = try parser.ast.addNode(parser.ast.nodes.items[owner]);
+            try std.testing.expect(@backingInt(clone) != owner);
+            try std.testing.expectEqual(owner, initial.local_declaration_node_index.?);
+        }
+    }
+}

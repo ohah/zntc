@@ -79,6 +79,9 @@ pub const ImportBinding = struct {
     /// at the parser binding; materialization explicitly hands off to its real
     /// storage binding node while retaining the same SymbolId.
     local_symbol_node: ?NodeIndex = null,
+    /// Actual import declaration owner, captured alongside the local anchor.
+    /// Retained clones/rewrites hand this carrier forward without AST scans.
+    local_declaration_node: ?NodeIndex = null,
     /// #3068: helper marker (runtime helper / JSX runtime) 가 적용된 binding.
     /// semantic ID map이 없는 저수준 caller의 호환 lookup은 이 marker로
     /// helper_scope_map을 선택한다. 분석된 경로는 marker/이름 대신 exact node를 쓴다.
@@ -359,6 +362,7 @@ pub fn extractImportBindings(
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
                         .local_symbol_node = spec,
+                        .local_declaration_node = @fromBackingInt(ni),
                     });
                 },
                 .import_namespace_specifier => {
@@ -370,6 +374,7 @@ pub fn extractImportBindings(
                         .local_span = spec_node.span,
                         .import_record_index = rec_idx,
                         .local_symbol_node = spec,
+                        .local_declaration_node = @fromBackingInt(ni),
                     });
                 },
                 .import_specifier => {
@@ -407,6 +412,7 @@ pub fn extractImportBindings(
                         .import_record_index = rec_idx,
                         .is_helper = is_helper,
                         .local_symbol_node = local_node_idx,
+                        .local_declaration_node = @fromBackingInt(ni),
                     });
                 },
                 else => {},
