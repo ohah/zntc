@@ -463,6 +463,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.synthetic_owner_id = null;
             s.annex_b_alias = .{};
             s.parameter_copy = .{};
+            s.binding_instantiation = .{};
             try symbols.append(a, s);
 
             const scopes = try a.alloc(Scope, 1);
@@ -921,5 +922,43 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         try testing.expect(observed_copy);
         try testing.expectEqualSlices(?u32, sem.symbol_ids, restored.symbol_ids);
         try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, restored.owner_token);
+    }
+    sem.symbols.items[lexical].annex_b_alias.state = .native;
+    const saved_alias = sem.symbols.items[lexical].annex_b_alias;
+    var copied_parameter: ?u32 = null;
+    sem.symbols.items[lexical].annex_b_alias = .{};
+    var rejected: std.ArrayList(u8) = .empty;
+    try testing.expectError(error.InvalidAnnexBRole, codec.serialize(&sem, &rejected, allocator));
+    sem.symbols.items[lexical].annex_b_alias = saved_alias;
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.parameter_copy.parameter_source.isNone()) continue;
+        copied_parameter = @backingInt(symbol.parameter_copy.parameter_source);
+        sem.symbols.items[index].parameter_copy = .{};
+        try testing.expectError(error.InvalidParameterBodyVarRole, codec.serialize(&sem, &rejected, allocator));
+        sem.symbols.items[index].parameter_copy = symbol.parameter_copy;
+    }
+    var valid: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &valid, allocator);
+    const patterns = [_][5]u32{
+        .{ @backingInt(saved_alias.variable), 0, saved_alias.source_assignment_count, std.math.maxInt(u32), 0 },
+        .{ std.math.maxInt(u32), 0, 0, copied_parameter.?, 0 },
+    };
+    for (patterns, 0..) |words, index| {
+        var pattern: [21]u8 = undefined;
+        for (words, 0..) |word, offset| std.mem.writeInt(u32, pattern[offset * 4 ..][0..4], word, .little);
+        pattern[20] = if (index == 0) 1 else 2;
+        const start = std.mem.indexOf(u8, valid.items, &pattern) orelse return error.MissingEncodedSourceRole;
+        try testing.expectEqual(start, std.mem.lastIndexOf(u8, valid.items, &pattern).?);
+        const corrupt = try allocator.dupe(u8, valid.items);
+        if (index == 0) {
+            std.mem.writeInt(u32, corrupt[start..][0..4], std.math.maxInt(u32), .little);
+            std.mem.writeInt(u32, corrupt[start + 8 ..][0..4], 0, .little);
+        } else {
+            std.mem.writeInt(u32, corrupt[start + 12 ..][0..4], std.math.maxInt(u32), .little);
+        }
+        // Keep the independent source-operation marker and a valid checksum.
+        // Losing the optional tuple must be a miss, never a name-based repair.
+        std.mem.writeInt(u64, corrupt[8..16], @import("../util/wyhash.zig").hashU64(corrupt[16..]), .little);
+        try testing.expectError(error.Truncated, codec.deserialize(corrupt, allocator));
     }
 }

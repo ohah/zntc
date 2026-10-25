@@ -182,7 +182,7 @@ comptime {
         "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
         "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;output_name_hint:[]const u8;" ++
         "requires_uppercase_first_char:bool;" ++
-        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;parameter_copy:semantic.symbol.ParameterBodyVarCopy;";
+        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;parameter_copy:semantic.symbol.ParameterBodyVarCopy;binding_instantiation:semantic.symbol.BindingInstantiation;";
     if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
         @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
     const annex_alias_sig = "variable:semantic.symbol.SymbolId;state:semantic.symbol.AnnexBFunctionAlias.State;source_assignment_count:u32;";
@@ -191,6 +191,8 @@ comptime {
     const parameter_copy_sig = "parameter_source:semantic.symbol.SymbolId;state:semantic.symbol.ParameterBodyVarCopy.State;";
     if (!std.mem.eql(u8, fieldSig(symbol_mod.ParameterBodyVarCopy), parameter_copy_sig))
         @compileError("Parameter/body-var role changed; update the explicit semantic wire layout/version.");
+    if (@bitSizeOf(symbol_mod.BindingInstantiation) != 8 or !std.mem.eql(u8, fieldSig(symbol_mod.BindingInstantiation), "annex_b:bool;parameter_copy:bool;reserved:u6;"))
+        @compileError("Binding instantiation presence bits changed; update the semantic wire layout/version.");
     const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
         "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
     if (!std.mem.eql(u8, fieldSig(Scope), scope_sig))
@@ -258,6 +260,7 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     try putU32(buf, alloc, s.annex_b_alias.source_assignment_count);
     try putU32(buf, alloc, @backingInt(s.parameter_copy.parameter_source));
     try putU32(buf, alloc, @backingInt(s.parameter_copy.state));
+    try putU8(buf, alloc, @bitCast(s.binding_instantiation));
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
     try putU32(buf, alloc, @backingInt(s.parent));
@@ -549,6 +552,7 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
         .parameter_source = @fromBackingInt(try r.u32v()),
         .state = std.enums.fromInt(symbol_mod.ParameterBodyVarCopy.State, try r.u32v()) orelse return error.Truncated,
     };
+    s.binding_instantiation = @bitCast(try r.byte());
     return s;
 }
 fn readScope(r: *Reader) Error!Scope {

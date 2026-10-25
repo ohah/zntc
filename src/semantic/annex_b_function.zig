@@ -15,6 +15,7 @@ pub fn forSymbol(symbols: []const Symbol, lexical: SymbolId) error{InvalidAnnexB
     if (lexical.isNone() or @backingInt(lexical) >= symbols.len) return error.InvalidAnnexBRole;
     const source = symbols[@backingInt(lexical)];
     const alias = source.annex_b_alias;
+    if (source.binding_instantiation.reserved != 0 or source.binding_instantiation.annex_b != !alias.variable.isNone()) return error.InvalidAnnexBRole;
     if (alias.variable.isNone()) {
         if (alias.state != .native or alias.source_assignment_count != 0) return error.InvalidAnnexBRole;
         return null;

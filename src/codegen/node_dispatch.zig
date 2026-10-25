@@ -258,11 +258,13 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                         return;
                     }
                     // mangler rename — 원본 이름 names 등록.
-                    if (meta.renames.get(sid)) |new_name| {
+                    if (self.finalSymbolName(sid)) |new_name| {
                         const original = self.ast.getText(node.data.string_ref);
-                        try self.addSourceMappingWithName(node.span, original);
-                        try self.write(new_name);
-                        return;
+                        if (meta.renames.get(sid) != null or !std.mem.eql(u8, original, new_name)) {
+                            try self.addSourceMappingWithName(node.span, original);
+                            try self.write(new_name);
+                            return;
+                        }
                     }
                 }
             }

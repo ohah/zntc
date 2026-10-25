@@ -39,6 +39,7 @@ test {
     _ = @import("codegen_test.zig");
     _ = @import("sourcemap_test.zig");
     _ = @import("mangler_test.zig");
+    _ = @import("native_name_affinity_test.zig");
     _ = @import("private_mangler_test.zig");
     _ = @import("precedence_test.zig");
 }

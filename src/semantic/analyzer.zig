@@ -243,7 +243,7 @@ pub const SemanticAnalyzer = struct {
     annex_b_variable_targets: std.AutoHashMapUnmanaged(NodeIndex, AnnexBVariableTarget) = .empty,
     parameter_environments: std.AutoHashMapUnmanaged(ScopeId, ScopeId) = .empty,
     function_parameter_names: std.AutoHashMapUnmanaged(ScopeId, std.StringHashMapUnmanaged(SymbolId)) = .empty,
-    annex_b_barriers: std.StringHashMapUnmanaged(u32) = .empty,
+    annex_b_barriers: std.StringHashMapUnmanaged(AnnexBLexicalBarrier) = .empty,
 
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
@@ -359,6 +359,8 @@ pub const SemanticAnalyzer = struct {
         members: std.StringHashMapUnmanaged(EnumMemberBinding) = .empty,
         owned_member_names: std.ArrayList([]u8) = .empty,
     };
+
+    const AnnexBLexicalBarrier = struct { count: u32, owned: bool };
 
     const AnnexBVariableTarget = struct {
         variable: SymbolId,
@@ -940,6 +942,7 @@ pub const SemanticAnalyzer = struct {
             .origin_scope = self.current_scope,
             .synthetic_name = if (is_synthetic_name) name_text else "",
             .parameter_copy = parameter_copy,
+            .binding_instantiation = .{ .parameter_copy = !parameter_copy.parameter_source.isNone() },
         });
 
         // symbol_ids에 선언 노드 기록
@@ -3654,6 +3657,7 @@ pub const SemanticAnalyzer = struct {
                             if (!alias.variable.isNone() and alias.variable != target.variable)
                                 std.debug.panic("one lexical function has conflicting Annex B targets", .{});
                             alias.variable = target.variable;
+                            self.symbols.items[lexical].binding_instantiation.annex_b = true;
                             alias.source_assignment_count += 1;
                             // The native declaration executes V=L at its source
                             // statement. Its existing exact declare anchor owns
@@ -5667,8 +5671,8 @@ pub const SemanticAnalyzer = struct {
         const saved = self.current_stmt_idx;
         defer self.current_stmt_idx = saved;
         // FunctionDeclarationInstantiation initializes body functions before
-        // ordinary vars; Annex B targets must know whether a parameter copy
-        // is superseded by such a hoisted function initializer.
+        // ordinary vars. A var initialized by such a function does not inherit
+        // the same-named parameter's value.
         for ([_]bool{ true, false }) |function_pass| {
             for (indices, 0..) |raw_idx, i| {
                 const index: NodeIndex = @fromBackingInt(raw_idx);
@@ -5692,20 +5696,32 @@ pub const SemanticAnalyzer = struct {
         var identifiers = try ast_walk.bindingIdentifiers(self.allocator, self.ast, binding, .{});
         defer identifiers.deinit();
         while (try identifiers.next()) |identifier| {
-            const raw = try self.ast.getTextStable(self.allocator, self.ast.getNode(identifier).span);
+            const raw = self.ast.getText(self.ast.getNode(identifier).span);
             const name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw);
+            const owned = name.ptr != raw.ptr;
+            var retained = false;
+            defer if (owned and !retained) self.allocator.free(name);
             const entry = try self.annex_b_barriers.getOrPut(self.allocator, name);
-            if (!entry.found_existing) entry.value_ptr.* = 0;
-            try added.append(self.allocator, name);
-            entry.value_ptr.* += 1;
+            if (!entry.found_existing) entry.value_ptr.* = .{ .count = 0, .owned = owned };
+            added.append(self.allocator, entry.key_ptr.*) catch |err| {
+                if (!entry.found_existing) _ = self.annex_b_barriers.remove(name);
+                return err;
+            };
+            if (!entry.found_existing) retained = owned;
+            entry.value_ptr.count += 1;
         }
     }
 
     fn removeAnnexBBarriers(self: *SemanticAnalyzer, added: []const []const u8) void {
         for (added) |name| {
-            const count = self.annex_b_barriers.getPtr(name).?;
-            count.* -= 1;
-            if (count.* == 0) _ = self.annex_b_barriers.remove(name);
+            const entry = self.annex_b_barriers.getEntry(name).?;
+            entry.value_ptr.count -= 1;
+            if (entry.value_ptr.count == 0) {
+                const key = entry.key_ptr.*;
+                const owned = entry.value_ptr.owned;
+                _ = self.annex_b_barriers.remove(name);
+                if (owned) self.allocator.free(key);
+            }
         }
     }
 
@@ -5933,4 +5949,30 @@ test "initial import expression provenance distinguishes parameter and body use 
         const text = parser.ast.getText(argument.span);
         if (std.mem.indexOf(u8, text, "parameter") != null) try std.testing.expectEqual(parameter_scope, entry.value_ptr.scope) else try std.testing.expectEqual(body_scope, entry.value_ptr.scope);
     }
+}
+
+test "Annex B scoped lexical barrier keys own escaped allocations without retaining duplicate copies" {
+    const allocator = std.testing.allocator;
+    var scanner = try Scanner.init(allocator, "let r\\u0065ad;");
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    var binding: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| if (node.tag == .binding_identifier) {
+        binding = @fromBackingInt(@as(u32, @intCast(raw)));
+    };
+    try std.testing.expect(!binding.isNone());
+    var added: std.ArrayList([]const u8) = .empty;
+    defer added.deinit(allocator);
+    defer analyzer.removeAnnexBBarriers(added.items);
+    try analyzer.addAnnexBBarrier(binding, &added);
+    try analyzer.addAnnexBBarrier(binding, &added);
+    try std.testing.expectEqual(@as(usize, 1), analyzer.annex_b_barriers.count());
+    try std.testing.expectEqual(@as(u32, 2), analyzer.annex_b_barriers.get("read").?.count);
+    analyzer.removeAnnexBBarriers(added.items);
+    added.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.annex_b_barriers.count());
 }
