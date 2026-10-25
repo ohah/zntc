@@ -6880,14 +6880,15 @@ fn canKeepPrepassSemanticGraph(
     // that removes or relocates semantic nodes falls back to the analyzer.
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph.
-    // Decorator options are a no-op when the AST contains no decorators. Keep
-    // their analyzer fallback only for actual decorator lowering/metadata.
+    // Metadata options alone are a no-op without decorators. Legacy options
+    // also normalize class fields to assign semantics, checked separately
+    // below even when the source has no decorated node.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_simple_define) or
         options.hasMappedImportToSplit(ast) or
-        (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or
+        (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast)) or
         (ast.has_decorator and has_legacy_decorator_options and !retained_legacy_decorators)) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await

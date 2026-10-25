@@ -44,17 +44,30 @@ fn classOwnerForMethod(self: anytype, owner: NodeIndex) ?NodeIndex {
     return null;
 }
 
+fn classMovesNativePrivateInitializers(self: anytype, body: NodeIndex) bool {
+    const unsupported = self.options.unsupported;
+    if (self.options.use_define_for_class_fields and !unsupported.class_field) return false;
+    // The assign/legacy producer can move an initializer while leaving its
+    // private declaration and storage native. Match its actual entry path:
+    // a private-only class may still take the native fast path when only
+    // public class fields are marked unsupported.
+    return !self.options.use_define_for_class_fields or self.options.experimental_decorators or
+        (unsupported.class_field and @import("transformer/class_visit.zig").classBodyHasPublicField(self, body));
+}
+
 fn classMovesInstanceInitialization(self: anytype, class_owner: NodeIndex) bool {
     const class = self.ast.getNode(class_owner);
-    const body = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body));
+    const body_idx = self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body);
+    const body = self.ast.getNode(body_idx);
     const private_fields_move = classLowersPrivateFields(self, body.data.list);
+    const native_private_initializers_move = classMovesNativePrivateInitializers(self, body_idx);
     for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
-        if (instanceMemberMoves(self, self.ast.nodes.items[raw], private_fields_move)) return true;
+        if (instanceMemberMoves(self, self.ast.nodes.items[raw], private_fields_move, native_private_initializers_move)) return true;
     }
     return false;
 }
 
-pub fn instanceMemberMoves(self: anytype, member: ast.Node, private_fields_move: bool) bool {
+pub fn instanceMemberMoves(self: anytype, member: ast.Node, private_fields_move: bool, native_private_initializers_move: bool) bool {
     const unsupported = self.options.unsupported;
     switch (member.tag) {
         .property_definition, .accessor_property, .method_definition => {},
@@ -63,13 +76,18 @@ pub fn instanceMemberMoves(self: anytype, member: ast.Node, private_fields_move:
     const flags = self.ast.readExtra(member.data.extra, if (member.tag == .method_definition) ast.MethodExtra.flags else ast.PropertyExtra.flags);
     if (flags & (ast.PropertyFlags.is_static | ast.PropertyFlags.is_abstract | ast.PropertyFlags.is_declare) != 0) return false;
     const key = self.ast.getNode(self.ast.readExtraNode(member.data.extra, 0));
-    if (key.tag == .private_identifier)
-        return if (member.tag == .method_definition) unsupported.privateLoweringPlan().methods else unsupported.privateLoweringPlan().fields;
+    if (key.tag == .private_identifier) {
+        if (member.tag == .method_definition) return unsupported.privateLoweringPlan().methods;
+        return unsupported.privateLoweringPlan().fields or
+            (native_private_initializers_move and !self.ast.readExtraNode(member.data.extra, ast.PropertyExtra.init).isNone());
+    }
     if (member.tag == .property_definition)
         return unsupported.class or unsupported.class_field or !self.options.use_define_for_class_fields or
             (private_fields_move and self.ast.readExtra(member.data.extra, ast.PropertyExtra.deco_len) == 0);
     return member.tag == .accessor_property and
-        (unsupported.class or (unsupported.decorator_auto_accessor and unsupported.privateLoweringPlan().fields));
+        (unsupported.class or (unsupported.decorator_auto_accessor and
+            (unsupported.privateLoweringPlan().fields or
+                (native_private_initializers_move and !self.ast.readExtraNode(member.data.extra, ast.PropertyExtra.init).isNone()))));
 }
 
 fn initializerObservesDynamicEnvironment(self: anytype, root: NodeIndex) !bool {
@@ -162,14 +180,16 @@ pub fn applies(self: anytype, owner: NodeIndex) !bool {
     if (moved_instance_initialization) {
         const class_owner = classOwnerForMethod(self, owner).?;
         const class = self.ast.getNode(class_owner);
-        const members = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body)).data.list;
+        const class_body = self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body);
+        const members = self.ast.getNode(class_body).data.list;
         const private_fields_move = classLowersPrivateFields(self, members);
+        const native_private_initializers_move = classMovesNativePrivateInitializers(self, class_body);
         // Dynamic instance-initializer environments require their own source
         // class-context handoff, not constructor-local lexical bindings.
         for (self.ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
             const member = self.ast.nodes.items[raw];
             if (member.tag != .property_definition and member.tag != .accessor_property) continue;
-            if (!instanceMemberMoves(self, member, private_fields_move)) continue;
+            if (!instanceMemberMoves(self, member, private_fields_move, native_private_initializers_move)) continue;
             if (try initializerObservesDynamicEnvironment(self, self.ast.readExtraNode(member.data.extra, ast.PropertyExtra.init))) return false;
         }
     }
