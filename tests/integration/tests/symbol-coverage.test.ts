@@ -84,6 +84,50 @@ const MINIFY_MODES = [
   ['--minify-identifiers'],
   ['--minify-syntax', '--minify-identifiers'],
 ] as const;
+const EXACT_MATRIX_OBSERVATION_FIELDS = [
+  ['exact', 'generated_bindings'],
+  ['exact', 'generated_references'],
+  ['exact', 'generated_scope_owners_checked'],
+  ['exact', 'external'],
+  ['exact', 'declaration_anchors_checked'],
+  ['exact', 'namespace_iife_params'],
+  ['exact', 'enum_iife_params'],
+  ['coverage', 'new_user_idents'],
+  ['strict', 'bound'],
+  ['strict', 'external'],
+  ['strict', 'marked_synthetic'],
+  ['post', 'bindings'],
+  ['post', 'references'],
+  ['post', 'external'],
+  ['post', 'helpers'],
+  ['post', 'preserved_transform_refs'],
+] as const;
+const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
+  exact: 'zntc: symbol-identity ',
+  coverage: 'zntc: symbol-coverage ',
+  strict: 'zntc: synthetic-coverage ',
+  post: 'zntc: symbol-identity-post-minify ',
+} as const;
+const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
+  '0c9d881a447616ac8b43b9d3f5839dc6b07e3167481fb2820f9bb0cca705310a';
+const EXACT_MATRIX_OBSERVATION_TOTALS = {
+  'exact.generated_bindings': 14142,
+  'exact.generated_references': 45246,
+  'exact.generated_scope_owners_checked': 13347,
+  'exact.external': 13641,
+  'exact.declaration_anchors_checked': 46209,
+  'exact.namespace_iife_params': 270,
+  'exact.enum_iife_params': 36,
+  'coverage.new_user_idents': 7050,
+  'strict.bound': 57003,
+  'strict.external': 2211,
+  'strict.marked_synthetic': 50181,
+  'post.bindings': 46904,
+  'post.references': 102932,
+  'post.external': 13641,
+  'post.helpers': 7353,
+  'post.preserved_transform_refs': 204,
+} as const;
 const LOOP_BINDING_MANIFEST = [
   {
     file: '4819-generator-loop-callers.mjs',
@@ -1064,6 +1108,46 @@ function exactMatrixReportProvenanceProblems(stderr: string, expectedFile: strin
   return problems;
 }
 
+function exactMatrixObservationCensusRow(
+  file: string,
+  target: string,
+  mode: readonly string[],
+  stderr: string,
+): string {
+  const lines = stderr.split(/\r?\n/);
+  const reports = Object.fromEntries(
+    Object.entries(EXACT_MATRIX_REPORT_PREFIX_BY_KIND).map(([kind, prefix]) => [
+      kind,
+      lines.find((line) => line.startsWith(prefix)),
+    ]),
+  ) as Record<string, string | undefined>;
+  const values = EXACT_MATRIX_OBSERVATION_FIELDS.map(([kind, field]) => {
+    const report = reports[kind] ?? '';
+    const matches = report.match(new RegExp(`(?:^| )${field}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
+    return matches.length === 1
+      ? (matches[0].match(/=(\d+)/)?.[1] ?? 'invalid')
+      : `invalid:${matches.length}`;
+  });
+  const graphModeLine = lines.find((line) =>
+    line.startsWith('zntc: symbol-identity-transpile-mode '),
+  );
+  const graphMode =
+    graphModeLine?.match(/semantic_graph=(retained|reanalyzed)(?:\s|$)/)?.[1] ?? '-';
+  return [
+    relative(FIXTURE_DIR, file).replaceAll('\\', '/'),
+    target,
+    mode.join('+'),
+    graphMode,
+    ...values,
+  ].join('\t');
+}
+
+function exactMatrixObservationCensusFingerprint(rows: readonly string[]): string {
+  return createHash('sha256')
+    .update(rows.join('\n') + '\n')
+    .digest('hex');
+}
+
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
@@ -1302,6 +1386,67 @@ describe('symbol identity coverage gate (#4819)', () => {
         exactMatrixReportProvenanceProblems(mutated, expectedFile),
         `report path mutation ${mutation}: ${prefix}`,
       ).toContain(`${prefix.trim()} is not attributed to fixture expected-case.mjs`);
+    }
+  });
+
+  test('exact matrix observation census detects every per-run producer count loss', () => {
+    const fixture = join(FIXTURE_DIR, 'observation-census-case.mjs');
+    const reportKinds = EXACT_MATRIX_OBSERVATION_FIELDS.map(([kind, field]) => `${kind}.${field}`);
+    expect(reportKinds).toEqual([
+      'exact.generated_bindings',
+      'exact.generated_references',
+      'exact.generated_scope_owners_checked',
+      'exact.external',
+      'exact.declaration_anchors_checked',
+      'exact.namespace_iife_params',
+      'exact.enum_iife_params',
+      'coverage.new_user_idents',
+      'strict.bound',
+      'strict.external',
+      'strict.marked_synthetic',
+      'post.bindings',
+      'post.references',
+      'post.external',
+      'post.helpers',
+      'post.preserved_transform_refs',
+    ]);
+
+    const reports = [
+      `${EXACT_MATRIX_REPORT_PREFIX_BY_KIND.exact}${fixture}: generated_bindings=11 generated_references=12 generated_scope_owners_checked=13 external=14 declaration_anchors_checked=15 namespace_iife_params=16 enum_iife_params=17`,
+      `${EXACT_MATRIX_REPORT_PREFIX_BY_KIND.coverage}${fixture}: new_user_idents=18 missing=0 wrong=0`,
+      `${EXACT_MATRIX_REPORT_PREFIX_BY_KIND.strict}${fixture}: bound=19 external=20 marked_synthetic=21`,
+      `${EXACT_MATRIX_REPORT_PREFIX_BY_KIND.post}${fixture}: bindings=22 references=23 external=24 helpers=25 preserved_transform_refs=26`,
+      `zntc: symbol-identity-transpile-mode ${fixture}: semantic_graph=retained`,
+    ].join('\n');
+    const row = exactMatrixObservationCensusRow(fixture, 'es5', ['--minify-identifiers'], reports);
+    expect(row).toBe(
+      'observation-census-case.mjs\tes5\t--minify-identifiers\tretained\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26',
+    );
+    const fingerprint = exactMatrixObservationCensusFingerprint([row]);
+
+    for (const [kind, field] of EXACT_MATRIX_OBSERVATION_FIELDS) {
+      const prefix = EXACT_MATRIX_REPORT_PREFIX_BY_KIND[kind];
+      const mutatedReports = reports
+        .split('\n')
+        .map((line) => {
+          if (!line.startsWith(prefix)) return line;
+          return line.replace(
+            new RegExp(`(${field}=)\\d+`),
+            (_match, start: string) => `${start}0`,
+          );
+        })
+        .join('\n');
+      const mutatedRow = exactMatrixObservationCensusRow(
+        fixture,
+        'es5',
+        ['--minify-identifiers'],
+        mutatedReports,
+      );
+      expect(mutatedRow, `${kind}.${field} zero-observation mutation`).not.toBe(row);
+      expect(
+        exactMatrixObservationCensusFingerprint([mutatedRow]),
+        `${kind}.${field} census mutation`,
+      ).not.toBe(fingerprint);
     }
   });
 
@@ -27507,12 +27652,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
     try {
       const problems: string[] = [];
+      const observationCensusRows: string[] = [];
+      const observationTotals = Object.fromEntries(
+        EXACT_MATRIX_OBSERVATION_FIELDS.map(([kind, field]) => [`${kind}.${field}`, 0]),
+      ) as Record<string, number>;
       let runs = 0;
-      let generatedBindings = 0;
-      let generatedReferences = 0;
-      let generatedScopeOwnersChecked = 0;
-      let declarationAnchorsChecked = 0;
-      let markedSynthetic = 0;
       let transpileModeRuns = 0;
       let retainedGraphRuns = 0;
       let reanalyzedGraphRuns = 0;
@@ -27520,6 +27664,24 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         for (const target of MINIFY_TARGETS) {
           for (const mode of MINIFY_MODES) {
             const { stderr, exitCode } = runCoverage(file, target, dir, false, [...mode]);
+            const censusRow = exactMatrixObservationCensusRow(file, target.name, mode, stderr);
+            observationCensusRows.push(censusRow);
+            const censusValues = censusRow.split('\t').slice(4);
+            if (censusValues.length !== EXACT_MATRIX_OBSERVATION_FIELDS.length) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: malformed census row ${censusRow}`,
+              );
+            }
+            EXACT_MATRIX_OBSERVATION_FIELDS.forEach(([kind, field], index) => {
+              const value = Number(censusValues[index]);
+              if (!Number.isSafeInteger(value) || value < 0) {
+                problems.push(
+                  `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: invalid census observation ${kind}.${field}=${censusValues[index]}`,
+                );
+                return;
+              }
+              observationTotals[`${kind}.${field}`] += value;
+            });
             if (exitCode !== 0) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
@@ -27562,27 +27724,6 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${observationProblem}: ${stderr}`,
               );
             }
-            if (exact) {
-              generatedBindings += Number(
-                exact.match(/(?:^| )generated_bindings=(\d+)(?: |$)/)?.[1] ?? 0,
-              );
-              generatedReferences += Number(
-                exact.match(/(?:^| )generated_references=(\d+)(?: |$)/)?.[1] ?? 0,
-              );
-              generatedScopeOwnersChecked += Number(
-                exact.match(/(?:^| )generated_scope_owners_checked=(\d+)(?: |$)/)?.[1] ?? 0,
-              );
-              declarationAnchorsChecked += Number(
-                exact.match(/(?:^| )declaration_anchors_checked=(\d+)(?: |$)/)?.[1] ?? 0,
-              );
-            }
-            const strict = stderr
-              .split(/\r?\n/)
-              .find((line) => line.startsWith('zntc: synthetic-coverage '));
-            if (strict)
-              markedSynthetic += Number(
-                strict.match(/(?:^| )marked_synthetic=(\d+)(?: |$)/)?.[1] ?? 0,
-              );
             for (const auditProblem of postMinifyAuditProblems(stderr)) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${auditProblem}: ${stderr}`,
@@ -27597,11 +27738,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(transpileModeRuns).toBe(fixtures.length * MINIFY_TARGETS.length * 2);
       expect(retainedGraphRuns).toBeGreaterThan(0);
       expect(retainedGraphRuns + reanalyzedGraphRuns).toBe(transpileModeRuns);
-      expect(generatedBindings).toBeGreaterThan(0);
-      expect(generatedReferences).toBeGreaterThan(0);
-      expect(generatedScopeOwnersChecked).toBeGreaterThan(0);
-      expect(declarationAnchorsChecked).toBeGreaterThan(0);
-      expect(markedSynthetic).toBeGreaterThan(0);
+      expect(observationTotals).toEqual(EXACT_MATRIX_OBSERVATION_TOTALS);
+      expect(exactMatrixObservationCensusFingerprint(observationCensusRows)).toBe(
+        EXACT_MATRIX_OBSERVATION_FINGERPRINT,
+      );
       expect(problems).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
