@@ -3689,6 +3689,41 @@ pub const Linker = struct {
         }
     }
 
+    /// Compiler import uses carry their foreign identity and actual read scope.
+    /// Plain deconfliction consumes that edge too, without changing semantic IDs.
+    fn resolveCallsiteReadShadows(self: *Linker, module: *const Module, binding: ImportBinding, name_to_owners: *const NameToOwnersMap) !void {
+        if (self.manglerActive()) return;
+        const target = binding.callsite_target orelse return;
+        const sem = if (module.semantic) |*value| value else return error.InvalidCallsiteBinding;
+        const ast = if (module.ast) |*value| value else return error.InvalidCallsiteBinding;
+        const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+        const local_sid = local.semanticIndex() orelse return error.InvalidCallsiteBinding;
+        const name = try self.callsiteTargetName(target);
+        if (sem.scopes.len == 0 or sem.scopes[0].blocksMangling()) return;
+        for (sem.references) |reference| {
+            if (@backingInt(reference.symbol_id) != local_sid or !reference.isValueUse()) continue;
+            var scope = reference.scope_id;
+            var hops: usize = 0;
+            while (!scope.isNone()) : (hops += 1) {
+                if (hops >= sem.scopes.len or scope.toIndex() >= sem.scopes.len or scope.toIndex() >= sem.scope_maps.len) return error.InvalidCallsiteReference;
+                if (sem.scopes[scope.toIndex()].blocksMangling()) break;
+                if (sem.scope_maps[scope.toIndex()].get(name)) |shadow| {
+                    if (shadow != local_sid) {
+                        const identity = bundler_symbol.SymbolID.make(module.index, shadow);
+                        const selected = self.rename_table.get(identity);
+                        if (selected == null or std.mem.eql(u8, selected.?, name)) {
+                            const replacement = try self.pickConsumerShadowName(name, module.index.toU32(), module, name_to_owners);
+                            try self.assignSymbolCanonical(identity, replacement);
+                            if (scope.toIndex() > 0) try self.nonminify_nested_shadow_modules.put(self.allocator, module.index.toU32(), {});
+                        }
+                    }
+                    break;
+                }
+                scope = sem.scopes[scope.toIndex()].parent;
+            }
+        }
+    }
+
     /// `per_chunk`(#4563/#4566 splitting·preserve-modules per-chunk 경로): target 이 consumer 와
     /// **같은 청크**면 target canonical 을 리네임(같은 청크라 안전, #4563), **다른 청크/파일경계**
     /// (cross-chunk splitting·preserve-modules·미배정)면 target 을 못 건드리므로 대신 **consumer 의
@@ -3698,6 +3733,10 @@ pub const Linker = struct {
         const helper_modules = @import("../runtime_helper_modules.zig");
         const m = self.getModule(mod_i) orelse return;
         for (m.import_bindings) |ib| {
+            if (ib.callsite_target != null) {
+                try self.resolveCallsiteReadShadows(m, ib, name_to_owners);
+                continue;
+            }
             if (ib.kind == .namespace) continue;
             const resolved = self.getResolvedBinding(mod_i, ib.local_span) orelse continue;
             const cmod: u32 = @intCast(@backingInt(resolved.canonical.module_index));

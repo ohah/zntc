@@ -40,6 +40,10 @@ pub const ImportBinding = struct {
     /// Compiler-created import whose use is represented by real callsite AST.
     /// The foreign identity is captured at creation, never recovered by name.
     callsite_target: ?CallsiteTarget = null,
+    /// Original value identity remains; actual source AST owns lazy init calls.
+    guarded_lazy_calls_lowered: bool = false,
+    /// A real program-prologue AST owns this original helper initialization.
+    guarded_eager_init_lowered: bool = false,
 
     /// The producer may materialize an imported value as real local storage.
     /// Its exact current declaration anchor keeps the same source SymbolId.

@@ -1,0 +1,398 @@
+//! Actual guarded lazy-import calls retain the original value call and scope.
+const std = @import("std");
+const ast_mod = @import("../parser/ast.zig");
+const NodeIndex = ast_mod.NodeIndex;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+const Reference = @import("../semantic/symbol.zig").Reference;
+const ModuleIndex = @import("types.zig").ModuleIndex;
+const Module = @import("module.zig").Module;
+const SymbolID = @import("symbol.zig").SymbolID;
+const Binding = @import("binding_scanner.zig").ImportBinding;
+const Builder = @import("runtime_callsite_builder.zig").Builder;
+const walk = @import("../parser/ast_walk.zig");
+
+const Initializers = struct { direct: SymbolID, value: SymbolID };
+const Call = struct { node: NodeIndex, callee: NodeIndex, symbol: SymbolId, scope: ScopeId };
+const Plan = struct { binding: usize, calls: []const Call, targets: Initializers };
+
+fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: Binding, sid: u32) !?Initializers {
+    if (binding.kind != .named or binding.importsDefault() or binding.is_helper or binding.source_type_only == true or binding.callsite_target != null or binding.guarded_lazy_calls_lowered) return null;
+    if (binding.import_record_index >= module.import_records.len) return error.InvalidGuardedImportBinding;
+    const record = module.import_records[binding.import_record_index];
+    if (record.kind != .static_import or record.resolved.isNone() or record.resolved == module.index or @import("linker.zig").isMetroNonInlinedRequireSpecifier(record.specifier)) return null;
+    const direct = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
+    if (direct.wrap_kind != .esm or !direct.shouldGuard(true) or direct.isUserDeclaredSideEffectful() or (linker.tree_shaker_active and !direct.is_included)) return null;
+    const canonical = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return null;
+    if (canonical.canonical.synthetic_member != null or !binding.symbol.isValid() or binding.symbol.semanticIndex() == null or binding.symbol.moduleIndex() != canonical.canonical.module_index) return null;
+    const value = graph.getModule(binding.symbol.moduleIndex()) orelse return error.InvalidGuardedImportBinding;
+    if (value.wrap_kind != .esm or !value.shouldGuard(true) or value.isUserDeclaredSideEffectful() or (linker.tree_shaker_active and !value.is_included)) return null;
+    const value_semantic = value.semantic orelse return error.InvalidGuardedImportBinding;
+    const value_sid = binding.symbol.semanticIndex().?;
+    if (value_sid >= value_semantic.symbols.items.len or value_semantic.symbols.items[value_sid].synthetic_kind != null) return null;
+    // Exporting a namespace binding has eager initialization semantics.
+    for (value.import_bindings) |other| {
+        if (other.kind == .namespace and other.local_symbol.semanticIndex() == value_sid) return null;
+    }
+    const ast = &module.ast.?;
+    const sem = module.semantic.?;
+    // Source local exports retain the metadata producer's eager policy. Use
+    // exact local anchors, never a spelling lookup to select an identity.
+    for (module.export_bindings) |exported| {
+        if (exported.kind != .local) continue;
+        const anchor = exported.local_symbol_node orelse continue;
+        if (!anchor.isNone() and @backingInt(anchor) < ast.nodes.items.len and @backingInt(anchor) < sem.symbol_ids.len and sem.symbol_ids[@backingInt(anchor)] == sid) return null;
+    }
+    return .{ .direct = try direct.esmInitSymbol(), .value = try value.esmInitSymbol() };
+}
+
+const EagerHelper = struct { record: usize, target: SymbolID, bindings: []const usize };
+
+/// Preserve the existing eager order: this slice owns helper-only eager
+/// records; every other eager dependency must already be a deferred named read.
+/// Mixed eager work stays with its current producer until the ordered phase owns it.
+fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.mem.Allocator) ![]const EagerHelper {
+    var result: std.ArrayList(EagerHelper) = .empty;
+    for (module.import_records, 0..) |record, record_index| {
+        if (!record.kind.isEagerEvalDependency() or record.callsite_lowered) continue;
+        if (record.resolved.isNone() or record.kind != .static_import) return &.{};
+        const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
+        if (linker.tree_shaker_active and !target.is_included) continue;
+        var helpers: std.ArrayList(usize) = .empty;
+        var ordinary: usize = 0;
+        for (module.import_bindings, 0..) |binding, index| {
+            if (binding.import_record_index != record_index) continue;
+            if (binding.is_helper) {
+                if (binding.kind != .named or binding.importsDefault() or target.wrap_kind != .esm or !target.shouldGuard(true) or
+                    !binding.symbol.isValid() or binding.symbol.semanticIndex() == null or binding.symbol.moduleIndex() != target.index) return &.{};
+                try helpers.append(a, index);
+            } else {
+                const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = module.semantic.?.symbol_ids, .symbols = module.semantic.?.symbols.items });
+                const sid = local.semanticIndex() orelse return &.{};
+                if (try targetsFor(graph, linker, module, binding, sid) == null) return &.{};
+                ordinary += 1;
+            }
+        }
+        if (helpers.items.len == 0 and ordinary == 0) return &.{};
+        if (helpers.items.len != 0) {
+            if (ordinary != 0) return &.{};
+            try result.append(a, .{ .record = record_index, .target = try target.esmInitSymbol(), .bindings = helpers.items });
+        }
+    }
+    return result.items;
+}
+
+fn projectStatementOwners(editor: anytype, root: NodeIndex, a: std.mem.Allocator) !void {
+    var wanted: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+    for (editor.references.items) |reference| {
+        const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
+        if (!anchor.isNone()) try wanted.put(a, anchor, {});
+    }
+    var owners: std.AutoHashMapUnmanaged(NodeIndex, u32) = .empty;
+    const list = editor.ast.getNode(root).data.list;
+    var statements = editor.ast.iterateExtraList(list);
+    var index: u32 = 0;
+    while (statements.next()) |statement| : (index += 1) {
+        for (try walk.collectReachableNodeIndicesFrom(a, editor.ast, statement)) |raw| {
+            const node: NodeIndex = @fromBackingInt(raw);
+            if (!wanted.contains(node)) continue;
+            const found = try owners.getOrPut(a, node);
+            if (found.found_existing and found.value_ptr.* != index) return error.AmbiguousGuardedStatementOwner;
+            found.value_ptr.* = index;
+        }
+    }
+    for (editor.references.items) |*reference| {
+        const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
+        reference.stmt_idx = owners.get(anchor) orelse Reference.NO_STMT;
+        if (reference.scope_id.toIndex() == 0) reference.scope_stmt_idx = reference.stmt_idx;
+    }
+}
+
+/// Statement metadata may change; SymbolId/ScopeId and source read identities do not.
+fn refreshStatementInfo(module: *Module, shaker: ?*@import("tree_shaker.zig").TreeShaker, newly_live: []const NodeIndex) !void {
+    const a = module.parse_arena.?.allocator();
+    const ast = &module.ast.?;
+    const sem = &module.semantic.?;
+    const rebuilt = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.references, &sem.unresolved_references, false, false) orelse return;
+    module.prebuilt_stmt_info = rebuilt;
+    const s = shaker orelse return;
+    const index = module.index.toU32();
+    if (index >= s.module_stmt_infos.len or index >= s.reachable_stmts.len) return error.InvalidGuardedStatementState;
+    const old = s.module_stmt_infos[index] orelse return; // Preserve opaque wrapped-module policy.
+    var alive: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    if (s.reachable_stmts[index]) |reachable| {
+        for (old.stmts, 0..) |statement, i| if (i < reachable.capacity() and reachable.isSet(i)) try alive.put(a, statement.node_idx, {});
+    }
+    for (newly_live) |statement| try alive.put(a, @backingInt(statement), {});
+    var replacement = try std.DynamicBitSet.initEmpty(s.allocator, rebuilt.stmts.len);
+    errdefer replacement.deinit();
+    for (rebuilt.stmts, 0..) |statement, i| if (alive.contains(statement.node_idx)) replacement.set(i);
+    if (s.prebuilt_mask) |*mask| {
+        if (!mask.isSet(index)) {
+            var owned = old;
+            owned.deinit();
+        }
+        mask.set(index);
+    } else return error.InvalidGuardedStatementState;
+    if (s.reachable_stmts[index]) |*previous| previous.deinit();
+    s.reachable_stmts[index] = replacement;
+    s.module_stmt_infos[index] = rebuilt;
+    module.reachable_stmts = &s.reachable_stmts[index].?;
+    module.symbol_to_stmt = rebuilt.symbol_to_stmt;
+}
+
+pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.zig").Linker, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
+    if (!linker.inline_requires or !linker.entry_error_guard or graph.entry_guard_ast_provider == null) return;
+    const guard = try @import("runtime_entry_guard_ast.zig").exactBinding(graph);
+    const count = graph.moduleCount();
+    var activated = false;
+    for (0..count) |raw| {
+        const module = graph.moduleAtMut(ModuleIndex.fromUsize(raw)) orelse continue;
+        if (module.wrap_kind != .esm) continue;
+        if (shaker) |s| if (!s.isIncluded(@intCast(raw))) continue;
+        const ast = if (module.ast) |*value| value else continue;
+        const sem = if (module.semantic) |*value| value else continue;
+        const a = module.parse_arena.?.allocator();
+        const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+        const live = try walk.collectReachableNodeIndices(a, ast);
+        var live_set: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
+        var call_by_callee: std.AutoHashMapUnmanaged(NodeIndex, NodeIndex) = .empty;
+        for (live) |node_raw| {
+            const node: NodeIndex = @fromBackingInt(node_raw);
+            try live_set.put(a, node, {});
+            const data = ast.getNode(node);
+            if (data.tag == .call_expression) {
+                const callee = ast.readExtraNode(data.data.extra, 0);
+                if (!callee.isNone() and ast.getNode(callee).tag == .identifier_reference) try call_by_callee.put(a, callee, node);
+            }
+        }
+        var plans: std.ArrayList(Plan) = .empty;
+        for (module.import_bindings, 0..) |binding, index| {
+            const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+            const sid = local.semanticIndex() orelse continue;
+            const targets = try targetsFor(graph, linker, module, binding, sid) orelse continue;
+            var calls: std.ArrayList(Call) = .empty;
+            var supported = true;
+            for (sem.references) |reference| {
+                if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or !live_set.contains(reference.node_index)) continue;
+                const call = call_by_callee.get(reference.node_index) orelse {
+                    supported = false;
+                    break;
+                };
+                if (!reference.flags.read or reference.flags.write) {
+                    supported = false;
+                    break;
+                }
+                try calls.append(a, .{ .node = call, .callee = reference.node_index, .symbol = reference.symbol_id, .scope = reference.scope_id });
+            }
+            if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets });
+        }
+        const eager = try eagerHelpers(graph, linker, module, a);
+        if (plans.items.len == 0 and eager.len == 0) continue;
+        var editor = try sem.beginEdit(a, ast);
+        defer editor.deinit();
+        var builder: Builder = .{ .allocator = a, .module = module, .graph = graph, .ast = ast, .editor = &editor };
+        const guard_local = try builder.imported(guard, .entry_guard);
+        var initializer_locals: std.AutoHashMapUnmanaged(SymbolID, SymbolId) = .empty;
+        var prologue: std.ArrayList(NodeIndex) = .empty;
+        var initialized: std.AutoHashMapUnmanaged(SymbolID, void) = .empty;
+        for (eager) |owned| {
+            for (owned.bindings) |binding_index| module.import_bindings[binding_index].guarded_eager_init_lowered = true;
+            if (initialized.contains(owned.target)) continue;
+            try initialized.put(a, owned.target, {});
+            const local = try builder.imported(owned.target, .esm_init);
+            try initializer_locals.put(a, owned.target, local);
+            const scope: ScopeId = @fromBackingInt(@as(u32, 0));
+            const call = try builder.call(try builder.reference(guard_local, scope), &.{try builder.reference(local, scope)});
+            try editor.recordNodeScopeProvenance(call, scope);
+            const statement = try ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = call, .flags = 0 } } });
+            try prologue.append(a, statement);
+        }
+        for (plans.items) |plan| {
+            for (plan.calls) |call| {
+                const reference = try editor.referenceForNode(call.callee) orelse return error.InvalidGuardedImportReference;
+                if (reference.scope_id != call.scope or reference.symbol_id != call.symbol) return error.InvalidGuardedImportReference;
+                const original = ast.getNode(call.node);
+                const clone = try ast.addNode(original);
+                var sequence: std.ArrayList(NodeIndex) = .empty;
+                const targets = [_]SymbolID{ plan.targets.direct, plan.targets.value };
+                for (targets, 0..) |target, i| {
+                    if (i == 1 and target.eql(targets[0])) continue;
+                    const local = if (initializer_locals.get(target)) |existing| existing else blk: {
+                        const created = try builder.imported(target, .esm_init);
+                        try initializer_locals.put(a, target, created);
+                        break :blk created;
+                    };
+                    const callee = try builder.reference(guard_local, call.scope);
+                    const argument = try builder.reference(local, call.scope);
+                    try editor.moveReference(callee, call.scope, reference.stmt_idx, reference.scope_stmt_idx);
+                    try editor.moveReference(argument, call.scope, reference.stmt_idx, reference.scope_stmt_idx);
+                    const guarded = try builder.call(callee, &.{argument});
+                    try editor.recordNodeScopeProvenance(guarded, call.scope);
+                    try sequence.append(a, guarded);
+                }
+                try editor.recordNodeScopeProvenance(clone, call.scope);
+                try sequence.append(a, clone);
+                const list = try ast.addNodeList(sequence.items);
+                ast.nodes.items[@backingInt(call.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = list } };
+                try editor.recordNodeScopeProvenance(call.node, call.scope);
+            }
+            module.import_bindings[plan.binding].guarded_lazy_calls_lowered = true;
+        }
+        var statements: std.ArrayList(NodeIndex) = .empty;
+        var original_statements = ast.iterateExtraList(ast.getNode(root).data.list);
+        var prologue_inserted = false;
+        while (original_statements.next()) |statement| {
+            if (!prologue_inserted and ast.getNode(statement).tag != .directive) {
+                try statements.appendSlice(a, prologue.items);
+                prologue_inserted = true;
+            }
+            try statements.append(a, statement);
+        }
+        if (!prologue_inserted) try statements.appendSlice(a, prologue.items);
+        try statements.appendSlice(a, builder.declarations.items);
+        const replacement = try ast.addNode(.{ .tag = .program, .span = ast.getNode(root).span, .data = .{ .list = try ast.addNodeList(statements.items) } });
+        try editor.remapScopeOwner(root, replacement);
+        ast.transformed_root = replacement;
+        try projectStatementOwners(&editor, replacement, a);
+        try builder.validate();
+        sem.applyEdit(try editor.finish());
+        var added: std.ArrayList(NodeIndex) = .empty;
+        try added.appendSlice(a, prologue.items);
+        try added.appendSlice(a, builder.declarations.items);
+        try refreshStatementInfo(module, shaker, added.items);
+        if (module.transform_cache) |*cache| cache.symbol_ids = sem.symbol_ids;
+        activated = true;
+    }
+    if (activated) try @import("runtime_entry_guard_ast.zig").activate(graph, shaker);
+}
+
+test "guarded lazy source calls preserve original callee identity and actual nested scope" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_][]const u8{
+        "function run(__zntc_guarded){return value();}globalThis.actual=run(null);",
+        "class Box{run(__zntc_guarded){return value();}}globalThis.actual=new Box().run(null);",
+        "function* run(__zntc_guarded){yield value();}globalThis.actual=run(null).next().value;",
+    }) |body| for ([_]bool{ true, false }) |tree_shaking| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import {{value}} from './dep.mjs';{s}", .{body});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        try helpers.writeFile(tmp.dir, "second.mjs", "import {value} from './dep.mjs';globalThis.second=value;");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42;}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const second = try helpers.absPath(&tmp, "second.mjs");
+        defer std.testing.allocator.free(second);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true, .tree_shaking = tree_shaking, .minify_whitespace = true };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        const sem = module.semantic.?;
+        const ast = &module.ast.?;
+        var original: ?Binding = null;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target != null or binding.is_helper) continue;
+            try std.testing.expect(original == null);
+            original = binding;
+        }
+        const original_binding = original orelse return error.MissingOriginalImport;
+        try std.testing.expect(original_binding.guarded_lazy_calls_lowered);
+        const original_sid = original_binding.local_symbol.semanticIndex().?;
+        var use_scope: ScopeId = .none;
+        var value_node: NodeIndex = .none;
+        for (sem.references) |reference| {
+            if (@backingInt(reference.symbol_id) == original_sid and reference.isValueUse()) {
+                try std.testing.expect(use_scope.isNone());
+                use_scope = reference.scope_id;
+                value_node = reference.node_index;
+            }
+        }
+        try std.testing.expect(!use_scope.isNone() and use_scope.toIndex() != 0);
+        try std.testing.expectEqual(@as(?u32, original_sid), sem.symbol_ids[@backingInt(value_node)]);
+        var generated_reads: usize = 0;
+        for (module.import_bindings) |binding| {
+            const target = binding.callsite_target orelse continue;
+            try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            for (sem.references) |reference| {
+                if (!reference.isValueUse() or binding.local_symbol.semanticIndex() != @backingInt(reference.symbol_id)) continue;
+                if (reference.scope_id == use_scope) {
+                    generated_reads += 1;
+                } else try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+            }
+        }
+        try std.testing.expect(generated_reads >= 2);
+        const current_root = ast.transformed_root.?;
+        const current_list = ast.getNode(current_root).data.list;
+        try std.testing.expectEqual(current_list.len, @as(u32, @intCast(module.prebuilt_stmt_info.?.stmts.len)));
+        var top_statements = ast.iterateExtraList(current_list);
+        var top_index: u32 = 0;
+        while (top_statements.next()) |statement| : (top_index += 1) {
+            for (try walk.collectReachableNodeIndicesFrom(module.parse_arena.?.allocator(), ast, statement)) |raw| {
+                for (sem.references) |reference| {
+                    const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
+                    if (!anchor.isNone() and @backingInt(anchor) == raw) try std.testing.expectEqual(top_index, reference.stmt_idx);
+                }
+            }
+        }
+        var actual_calls: usize = 0;
+        for (try walk.collectReachableNodeIndices(module.parse_arena.?.allocator(), ast)) |raw| {
+            const node = ast.nodes.items[raw];
+            if (node.tag == .call_expression and ast.readExtraNode(node.data.extra, 0) == value_node) actual_calls += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_calls);
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "await import('file://{s}');console.log(globalThis.actual);", .{emitted});
+        defer std.testing.allocator.free(script);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("42\n", execution.stdout);
+    };
+}
+
+test "guarded lazy source calls preserve late reporter and argument evaluation order" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import{value}from'./dep.mjs';globalThis.load=function(){return value((events.push('argument'),1));};");
+    try helpers.writeFile(tmp.dir, "second.mjs", "import{value}from'./dep.mjs';globalThis.second=value;");
+    try helpers.writeFile(tmp.dir, "dep.mjs", "throw new Error('dependency');export function value(){return 42;}");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const second = try helpers.absPath(&tmp, "second.mjs");
+    defer std.testing.allocator.free(second);
+    const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+    defer bundler.deinit();
+    const output = try bundler.bundle(std.testing.io);
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expect(!output.hasErrors());
+    for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+    const emitted = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(emitted);
+    const script = try std.fmt.allocPrint(std.testing.allocator, "globalThis.events=[];globalThis.ErrorUtils={{reportFatalError(e){{events.push(e.message)}}}};await import('file://{s}');events.push(globalThis.load());console.log(JSON.stringify(events));", .{emitted});
+    defer std.testing.allocator.free(script);
+    const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+    defer std.testing.allocator.free(execution.stdout);
+    defer std.testing.allocator.free(execution.stderr);
+    try std.testing.expectEqualStrings("[\"dependency\",\"argument\",42]\n", execution.stdout);
+}

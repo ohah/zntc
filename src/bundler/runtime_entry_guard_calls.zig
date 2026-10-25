@@ -159,6 +159,13 @@ pub fn validate(graph: anytype, invocation: Invocation) !void {
 pub fn prepare(graph: anytype, io: std.Io) !void {
     const count = graph.moduleCount();
     for (0..count) |raw| {
+        const candidate = graph.getModule(ModuleIndex.fromUsize(raw)) orelse continue;
+        if (candidate.shouldGuard(true) and candidate.wrap_kind == .esm) {
+            if (graph.entry_guard_ast_provider == null) try @import("runtime_entry_guard_ast.zig").installCandidate(graph, io);
+            break;
+        }
+    }
+    for (0..count) |raw| {
         const target = graph.getModule(ModuleIndex.fromUsize(raw)) orelse continue;
         if (!target.is_entry_point or !target.shouldGuard(true)) continue;
         if (graph.entry_guard_ast_provider == null) try @import("runtime_entry_guard_ast.zig").installCandidate(graph, io);

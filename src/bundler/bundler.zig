@@ -1807,7 +1807,7 @@ pub const Bundler = struct {
                 defer analyze_scope.end();
                 try s.analyze(self.options.entry_points);
             }
-            if (graph.entry_guard_ast_provider != null) try @import("runtime_entry_guard_ast.zig").activate(graph, &s);
+            if (graph.entry_guard_invocations.items.len != 0) try @import("runtime_entry_guard_ast.zig").activate(graph, &s);
 
             // metadata builder + collectUnifiedInput 가 `Module.is_included` 를 신뢰해
             // tree-shake 된 모듈의 preamble emit + mangle candidate 를 건너뛸 수 있도록
@@ -1817,6 +1817,7 @@ pub const Bundler = struct {
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s);
             if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
             if (linker) |*l| try @import("static_import_callsite.zig").lower(graph, l);
+            if (linker) |*l| try @import("guarded_import_callsite.zig").lower(graph, l, &s);
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
             // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
@@ -1859,11 +1860,12 @@ pub const Bundler = struct {
             break :blk s;
         } else null;
         if (!will_tree_shake) {
-            if (graph.entry_guard_ast_provider != null) try @import("runtime_entry_guard_ast.zig").activate(graph, null);
+            if (graph.entry_guard_invocations.items.len != 0) try @import("runtime_entry_guard_ast.zig").activate(graph, null);
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
             if (linker) |*l| {
                 try @import("interop_callsite.zig").lower(graph, l, null);
                 try @import("static_import_callsite.zig").lower(graph, l);
+                try @import("guarded_import_callsite.zig").lower(graph, l, null);
                 if (graph.dynamic_import_ast_provider) |provider| if (provider.active) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
             }
         }
