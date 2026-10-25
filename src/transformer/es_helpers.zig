@@ -2634,6 +2634,12 @@ pub const TempCapture = struct {
 /// Reserve a generated temp identity before its first reference is emitted.
 /// Use this when a lowering has several consumers instead of one capture
 /// assignment; the allocator slot keeps the eventual hoisted var on this ID.
+pub const NativeParameterThisCapture = struct {
+    identity: TempIdentityCapture,
+    frame: u32,
+    needs_this_before: bool,
+};
+
 pub const TempIdentityCapture = struct {
     span: Span,
     symbol_id: ?symbol_mod.SymbolId = null,
@@ -3707,6 +3713,8 @@ pub const CaptureFrameSnapshot = struct {
     scope: @import("../semantic/scope.zig").ScopeId,
     outermost_arrow_scope: @import("../semantic/scope.zig").ScopeId,
     native_parameter_arrow_capture: ?TempIdentityCapture,
+    native_parameter_arrow_this_capture: ?NativeParameterThisCapture,
+    native_parameter_this_snapshot_allowed: bool,
 };
 
 pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
@@ -3716,12 +3724,16 @@ pub fn pushCaptureFrame(self: anytype) CaptureFrameSnapshot {
         .scope = self.capture_scope,
         .outermost_arrow_scope = self.outermost_lowered_arrow_scope,
         .native_parameter_arrow_capture = self.native_parameter_arrow_capture,
+        .native_parameter_arrow_this_capture = self.native_parameter_arrow_this_capture,
+        .native_parameter_this_snapshot_allowed = self.native_parameter_this_snapshot_allowed,
     };
     self.capture_frame = self.next_capture_frame;
     self.next_capture_frame += 1;
     self.capture_scope = self.current_scope;
     self.outermost_lowered_arrow_scope = .none;
     self.native_parameter_arrow_capture = null;
+    self.native_parameter_arrow_this_capture = null;
+    self.native_parameter_this_snapshot_allowed = true;
     return snap;
 }
 
@@ -3730,6 +3742,8 @@ pub fn popCaptureFrame(self: anytype, snap: CaptureFrameSnapshot) void {
     self.capture_scope = snap.scope;
     self.outermost_lowered_arrow_scope = snap.outermost_arrow_scope;
     self.native_parameter_arrow_capture = snap.native_parameter_arrow_capture;
+    self.native_parameter_arrow_this_capture = snap.native_parameter_arrow_this_capture;
+    self.native_parameter_this_snapshot_allowed = snap.native_parameter_this_snapshot_allowed;
 }
 
 pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {

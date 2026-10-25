@@ -3055,6 +3055,19 @@ pub fn ensureNativeConstructorCaptureBinding(self: *Transformer, plan: *@import(
 /// fields with a known constructor owner create their Reference immediately.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
     const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
+    if (kind == .this_value) {
+        if (self.native_parameter_arrow_this_capture) |capture| {
+            if (capture.frame == self.capture_frame) {
+                self.ast.nodes.items[@backingInt(node)].data.string_ref = capture.identity.span;
+                self.needs_this_var = capture.needs_this_before;
+                if (self.semantic_edit_enabled) {
+                    const id = capture.identity.symbol_id orelse @panic("native parameter this has no exact binding");
+                    try addSyntheticRefInScope(self, node, id, self.current_scope, .{ .read = true });
+                }
+                return;
+            }
+        }
+    }
     if (nativeFieldCaptureOwner(self)) |plan| {
         if (kind == .this_value) {
             if (plan.scope != self.capture_scope) std.debug.panic("field capture lost its actual constructor scope", .{});

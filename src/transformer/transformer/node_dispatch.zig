@@ -826,6 +826,15 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         // === 리프 노드: 그대로 복사 (자식 없음) ===
         // this_expression: static block 안에서 클래스 이름으로 치환 가능
         .this_expression => {
+            if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
+                if (self.native_parameter_arrow_this_capture) |capture| {
+                    if (capture.frame == self.capture_frame) {
+                        var identity = capture.identity;
+                        identity.reference_scope = self.current_scope;
+                        return es_helpers.makeTempRefFromIdentity(self, identity, node.span, .{ .read = true });
+                    }
+                }
+            }
             // ES2022 static block 다운레벨링 중이고, 일반 함수 안이 아니면 치환
             if (self.static_block_class_name) |class_span| {
                 if (self.this_depth == 0) {

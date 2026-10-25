@@ -5779,3 +5779,49 @@ fn expectDistinctDefaultFacadeNames(result: anytype, expected: usize) !void {
     }
     try std.testing.expectEqual(expected, names.count());
 }
+
+test "linker: native parameter this capture accepts actual function parameter ownership" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "function Parent(get=()=>this){return get}const object={};console.log(Parent.call(object)()===object)");
+    var result = try buildAndLinkWithTransformOptions(std.testing.allocator, &tmp, "entry.cjs", .{ .unsupported = TransformOptions.compat.fromReactNativeVersion(0, 80) }, false);
+    defer result.linker.deinit();
+    defer result.destroyGraph();
+    defer result.cache.deinit();
+    const module_index = findModuleIdx(result.graph, "entry.cjs") orelse return error.MissingThisCaptureModule;
+    const module = result.linker.moduleAtMut(module_index.toU32()) orelse return error.MissingThisCaptureModule;
+    const semantic = module.semantic orelse return error.MissingThisCaptureSemantic;
+    const sid = for (semantic.symbols.items, 0..) |symbol, i| {
+        if (symbol.synthetic_kind == .this_capture_binding and symbol.kind == .parameter) break i;
+    } else return error.MissingThisCaptureParameter;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, semantic.scopes[semantic.symbols.items[sid].scope_id.toIndex()].kind);
+    try result.linker.computeRenames();
+    try std.testing.expect(result.linker.rename_table.get(bundler_symbol.SymbolID.make(module.index, @as(u32, @intCast(sid)))) != null);
+}
+
+test "linker: native parameter this capture rejects wrong kind scope and hint" {
+    for (0..5) |mutation| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.cjs", "function Parent(get=()=>this){return get}console.log(Parent()());");
+        var result = try buildAndLinkWithTransformOptions(std.testing.allocator, &tmp, "entry.cjs", .{ .unsupported = TransformOptions.compat.fromReactNativeVersion(0, 80) }, false);
+        defer result.linker.deinit();
+        defer result.destroyGraph();
+        defer result.cache.deinit();
+        const module_index = findModuleIdx(result.graph, "entry.cjs") orelse return error.MissingThisCaptureModule;
+        const module = result.linker.moduleAtMut(module_index.toU32()) orelse return error.MissingThisCaptureModule;
+        const semantic = module.semantic orelse return error.MissingThisCaptureSemantic;
+        const sid = for (semantic.symbols.items, 0..) |symbol, i| {
+            if (symbol.synthetic_kind == .this_capture_binding and symbol.kind == .parameter) break i;
+        } else return error.MissingThisCaptureParameter;
+        switch (mutation) {
+            0 => semantic.symbols.items[sid].kind = .function_decl,
+            1 => semantic.symbols.items[sid].scope_id = @fromBackingInt(0),
+            2 => semantic.symbols.items[sid].scope_id = .none,
+            3 => semantic.symbols.items[sid].scope_id = @fromBackingInt(@intCast(semantic.scopes.len + 1)),
+            4 => semantic.symbols.items[sid].output_name_hint = "_arguments",
+            else => unreachable,
+        }
+        try std.testing.expectError(error.InvalidThisCaptureOutputBinding, result.linker.computeRenames());
+    }
+}

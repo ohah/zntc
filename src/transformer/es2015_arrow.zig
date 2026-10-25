@@ -360,13 +360,23 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                     saved_native_parameter_list_retained) and self.capture_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame;
             const parent_native_parameter_capture = self.native_parameter_arrow_capture;
+            const parent_native_this_capture = self.native_parameter_arrow_this_capture;
             const capture_plan = if (native_parameter_capture) blk: {
-                const target_span = (try findLexicalNewTargetSpan(self, source_owner)) orelse break :blk null;
-                break :blk try prepareNativeParameterArrow(self, source_owner, node.span, target_span);
+                const target_node = try findLexicalParameterCaptureNode(self, source_owner, false);
+                const target_span = if (target_node) |target| self.ast.getNode(target).span else null;
+                const this_source = if (self.native_parameter_this_snapshot_allowed and !self.super_call_this_alias)
+                    (try findLexicalParameterCaptureNode(self, source_owner, true)) orelse NodeIndex.none
+                else
+                    NodeIndex.none;
+                if (target_span == null and this_source.isNone()) break :blk null;
+                break :blk try prepareNativeParameterArrow(self, source_owner, node.span, target_span, this_source);
             } else null;
-            if (native_parameter_capture)
+            if (native_parameter_capture) {
                 self.native_parameter_arrow_capture = if (capture_plan) |plan| plan.capture else null;
+                self.native_parameter_arrow_this_capture = if (capture_plan) |plan| if (plan.this_capture) |identity| .{ .identity = identity, .frame = self.capture_frame, .needs_this_before = self.needs_this_var } else null else null;
+            }
             defer self.native_parameter_arrow_capture = parent_native_parameter_capture;
+            defer self.native_parameter_arrow_this_capture = parent_native_this_capture;
 
             const saved_outermost_arrow = self.outermost_lowered_arrow_scope;
             if (self.arrow_this_depth == 0) self.outermost_lowered_arrow_scope = self.current_scope;
@@ -484,7 +494,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             }
 
             if (capture_plan) |plan| {
-                return wrapNativeParameterArrow(self, source_owner, result, node.span, plan, parent_native_parameter_capture);
+                return wrapNativeParameterArrow(self, source_owner, result, node.span, plan, parent_native_parameter_capture, parent_native_this_capture);
             }
 
             return result;
@@ -581,10 +591,11 @@ fn isLexicalValueBoundary(tag: Tag) bool {
     };
 }
 
-fn findLexicalNewTargetSpan(
+fn findLexicalParameterCaptureNode(
     self: anytype,
     root: NodeIndex,
-) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
+    comptime this_value: bool,
+) std.mem.Allocator.Error!?NodeIndex {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -596,7 +607,8 @@ fn findLexicalNewTargetSpan(
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(idx);
-        if (node.tag == .meta_property and node.data.none == 1) return node.span;
+        if (this_value and node.tag == .this_expression) return idx;
+        if (!this_value and node.tag == .meta_property and node.data.none == 1) return idx;
         if (idx != root and isLexicalValueBoundary(node.tag)) continue;
         if (idx != root) switch (node.tag) {
             .method_definition => {
@@ -633,42 +645,59 @@ const NativeParameterArrowPlan = struct {
     wrapper: NodeIndex,
     extra: u32,
     callsite_scope: @import("../semantic/scope.zig").ScopeId,
-    target_span: @import("../lexer/token.zig").Span,
-    capture: es_helpers.TempIdentityCapture,
+    target_span: ?@import("../lexer/token.zig").Span,
+    this_source: NodeIndex,
+    capture: ?es_helpers.TempIdentityCapture,
+    this_capture: ?es_helpers.TempIdentityCapture,
 };
 
-fn prepareNativeParameterArrow(self: anytype, source_owner: NodeIndex, span: @import("../lexer/token.zig").Span, target_span: @import("../lexer/token.zig").Span) !NativeParameterArrowPlan {
+fn prepareNativeParameterArrow(self: anytype, source_owner: NodeIndex, span: @import("../lexer/token.zig").Span, target_span: ?@import("../lexer/token.zig").Span, this_source: NodeIndex) !NativeParameterArrowPlan {
     const arrow_scope = self.outputOwnedScope(source_owner) orelse self.current_scope;
     const source = self.ast.getNode(source_owner);
     const source_parameters = self.ast.readExtraNode(source.data.extra, 0);
     const parameter_scope = self.outputOwnedScope(source_parameters) orelse arrow_scope;
     const lexical_root = if (parameter_scope != arrow_scope) parameter_scope else arrow_scope;
     const callsite_scope = self.outputScopeParent(lexical_root);
-    const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
-        try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", arrow_scope)
-    else
-        .{ .name = try es_helpers.resolveSyntheticName(self, "_newTarget"), .late = false };
-    const binding = try es_helpers.makeExactSyntheticBinding(self, output_name.name);
-    const parameters = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
+    const names = [_][]const u8{ "_this", "_newTarget" };
+    const present = [_]bool{ !this_source.isNone(), target_span != null };
+    var output_names: [2]es_helpers.ScopedSyntheticOutputName = undefined;
+    var bindings: [2]NodeIndex = .{ .none, .none };
+    var parameter_nodes: [2]NodeIndex = undefined;
+    var parameter_count: usize = 0;
+    for (names, 0..) |name, i| {
+        if (!present[i]) continue;
+        output_names[i] = if (self.semantic_edit_enabled)
+            try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, name, arrow_scope)
+        else
+            .{ .name = try es_helpers.resolveSyntheticName(self, name), .late = false };
+        bindings[i] = try es_helpers.makeExactSyntheticBinding(self, output_names[i].name);
+        parameter_nodes[parameter_count] = bindings[i];
+        parameter_count += 1;
+    }
+    const parameters = try self.ast.addFormalParameters(try self.ast.addNodeList(parameter_nodes[0..parameter_count]), span);
     const empty_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
     const extra = try self.ast.addExtras(&.{ @backingInt(NodeIndex.none), @backingInt(parameters), @backingInt(empty_body), 0, @backingInt(NodeIndex.none) });
     const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = extra } });
-    // This ordinary function inherits strictness from its actual call site.
     const wrapper_scope = try self.addGeneratedFunctionScope(callsite_scope, wrapper);
     try self.reparentGeneratedScope(lexical_root, wrapper_scope);
-    const symbol = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
+    var identities: [2]?es_helpers.TempIdentityCapture = .{ null, null };
+    for (names, 0..) |name, i| {
+        if (!present[i]) continue;
+        const symbol = try self.declareSyntheticInScope(bindings[i], span, .parameter, wrapper_scope);
+        if (output_names[i].late) {
+            es_helpers.markScopedLateSyntheticSymbol(self, symbol orelse @panic("native parameter capture has no SymbolId"), arrow_scope, if (i == 0) .this_capture_binding else .new_target_capture_binding, name);
+        }
+        identities[i] = .{ .span = self.ast.getNode(bindings[i]).data.string_ref, .symbol_id = symbol, .owner_scope = wrapper_scope };
+    }
     if (self.semantic_edit_enabled) {
         const editor = &self.semantic_editor.?;
         editor.scopes.items[wrapper_scope.toIndex()].subtree_has_direct_eval = editor.scopes.items[lexical_root.toIndex()].subtree_has_direct_eval;
         editor.scopes.items[wrapper_scope.toIndex()].subtree_has_with = editor.scopes.items[lexical_root.toIndex()].subtree_has_with;
     }
-    if (output_name.late) {
-        es_helpers.markScopedLateSyntheticSymbol(self, symbol orelse @panic("late native parameter capture has no SymbolId"), arrow_scope, .new_target_capture_binding, "_newTarget");
-    }
-    return .{ .wrapper = wrapper, .extra = extra, .callsite_scope = callsite_scope, .target_span = target_span, .capture = .{ .span = self.ast.getNode(binding).data.string_ref, .symbol_id = symbol, .owner_scope = wrapper_scope } };
+    return .{ .wrapper = wrapper, .extra = extra, .callsite_scope = callsite_scope, .target_span = target_span, .this_source = this_source, .capture = identities[1], .this_capture = identities[0] };
 }
 
-fn wrapNativeParameterArrow(self: anytype, source_owner: NodeIndex, lowered_arrow: NodeIndex, span: @import("../lexer/token.zig").Span, plan: NativeParameterArrowPlan, parent_capture: ?es_helpers.TempIdentityCapture) !NodeIndex {
+fn wrapNativeParameterArrow(self: anytype, source_owner: NodeIndex, lowered_arrow: NodeIndex, span: @import("../lexer/token.zig").Span, plan: NativeParameterArrowPlan, parent_capture: ?es_helpers.TempIdentityCapture, parent_this_capture: ?es_helpers.NativeParameterThisCapture) !NodeIndex {
     var return_value = lowered_arrow;
     if (isDirectDefaultArrow(self, source_owner)) {
         if (self.native_parameter_name_hint) |inferred_name| {
@@ -688,16 +717,36 @@ fn wrapNativeParameterArrow(self: anytype, source_owner: NodeIndex, lowered_arro
     const saved_scope = self.current_scope;
     self.current_scope = plan.callsite_scope;
     defer self.current_scope = saved_scope;
-    const capture_value = if (parent_capture) |parent| blk: {
-        var use = parent;
-        use.reference_scope = plan.callsite_scope;
-        break :blk try es_helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
-    } else blk: {
-        if (self.options.unsupported.new_target and (self.options.unsupported.class or self.new_target_ctx != .constructor))
-            break :blk try self.lowerNewTarget(span);
-        break :blk try self.ast.addNode(.{ .tag = .meta_property, .span = plan.target_span, .data = .{ .none = 1 } });
-    };
-    return es_helpers.makeCallExpr(self, plan.wrapper, &.{capture_value}, span);
+    var values: [2]NodeIndex = undefined;
+    var value_count: usize = 0;
+    if (plan.this_capture != null) {
+        const lexical_parent = if (parent_this_capture) |parent|
+            if (parent.frame == self.capture_frame) parent else null
+        else
+            null;
+        const saved_capture = self.native_parameter_arrow_this_capture;
+        self.native_parameter_arrow_this_capture = lexical_parent;
+        defer self.native_parameter_arrow_this_capture = saved_capture;
+        values[value_count] = if (lexical_parent) |parent| blk: {
+            var use = parent.identity;
+            use.reference_scope = plan.callsite_scope;
+            break :blk try es_helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+        } else try self.visitNode(plan.this_source);
+        value_count += 1;
+    }
+    if (plan.capture != null) {
+        values[value_count] = if (parent_capture) |parent| blk: {
+            var use = parent;
+            use.reference_scope = plan.callsite_scope;
+            break :blk try es_helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+        } else blk: {
+            if (self.options.unsupported.new_target and (self.options.unsupported.class or self.new_target_ctx != .constructor))
+                break :blk try self.lowerNewTarget(span);
+            break :blk try self.ast.addNode(.{ .tag = .meta_property, .span = plan.target_span.?, .data = .{ .none = 1 } });
+        };
+        value_count += 1;
+    }
+    return es_helpers.makeCallExpr(self, plan.wrapper, values[0..value_count], span);
 }
 
 test "ES2015 arrow module compiles" {
