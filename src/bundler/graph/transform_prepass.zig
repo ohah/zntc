@@ -13224,9 +13224,9 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
 }
 
 /// Retain the semantic graph after the narrow CJS Buffer fold. The caller gives
-/// the complete pre-mutation node set removed by the fold. Any declaration,
-/// scope owner, or graph-owned node in that set makes this transform ineligible
-/// and returns false so the caller can reanalyze the already-mutated AST.
+/// the complete pre-mutation node set removed by the fold. Dead block scopes
+/// are only elided when removing their exact references leaves them empty;
+/// other graph owners remain ineligible and use the full analyzer fallback.
 pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     self: anytype,
     module: *Module,
@@ -13248,8 +13248,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
         if (removed.isSet(raw)) return false;
         removed.set(raw);
-        if (semantic.scope_owner_map.contains(raw) or
-            semantic.class_self_symbol_map.contains(raw) or
+        if (semantic.class_self_symbol_map.contains(raw) or
             semantic.namespace_member_owners.contains(raw) or
             semantic.namespace_declaration_owners.contains(raw)) return false;
     }
@@ -13285,6 +13284,8 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
 
     var references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
     defer references_to_remove.deinit(arena_alloc);
+    var removed_scope_owners: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer removed_scope_owners.deinit(arena_alloc);
     for (semantic.references) |reference| {
         if (!reference.declaration_node_index.isNone()) {
             const declaration_raw = @backingInt(reference.declaration_node_index);
@@ -13303,11 +13304,20 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     for (removed_nodes) |node_index| {
         const raw = @backingInt(node_index);
         if (semantic.symbol_ids[raw] != null and !reference_nodes.isSet(raw)) return false;
+        if (semantic.node_scope_provenance.contains(node_index)) return false;
+        if (semantic.scope_owner_map.contains(raw)) {
+            const tag = ast.nodes.items[raw].tag;
+            if (tag != .block_statement) return false;
+            try removed_scope_owners.append(arena_alloc, node_index);
+        }
     }
 
     var editor = try semantic.beginEdit(arena_alloc, ast);
     defer editor.deinit();
     try editor.removeReferences(references_to_remove.items);
+    for (removed_scope_owners.items) |owner| {
+        if (!try editor.elideEmptyGeneratedScopeOwner(owner)) return false;
+    }
     semantic.applyEdit(try editor.finish());
     if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
 
@@ -13867,8 +13877,12 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     const source =
         \\var buffer = require("buffer");
         \\var Buffer = buffer.Buffer;
-        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) module.exports = buffer;
-        \\else exports.Buffer = SafeBuffer;
+        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
+        \\  const scoped = buffer;
+        \\  module.exports = scoped;
+        \\} else {
+        \\  exports.Buffer = SafeBuffer;
+        \\}
         \\function SafeBuffer() { return Buffer(1); }
         \\SafeBuffer.from = 1;
     ;
@@ -13889,7 +13903,19 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     var buffer_binding: ?ast_mod.NodeIndex = null;
     var buffer_symbol: ?u32 = null;
     var fallback_symbol: ?u32 = null;
+    var if_node: ?ast_mod.NodeIndex = null;
+    var kept_block: ?ast_mod.NodeIndex = null;
+    var alternate_block: ?ast_mod.NodeIndex = null;
+    var kept_scope_id: ?u32 = null;
+    var scoped_binding: ?ast_mod.NodeIndex = null;
+    var scoped_symbol: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .if_statement) {
+            if_node = @fromBackingInt(@intCast(raw));
+            kept_block = node.data.ternary.b;
+            alternate_block = node.data.ternary.c;
+            kept_scope_id = analyzer.scope_owner_map.get(@backingInt(kept_block.?));
+        }
         if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
         const name = parser.ast.getText(node.span);
         if (std.mem.eql(u8, name, "Buffer")) {
@@ -13897,11 +13923,20 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
             buffer_symbol = analyzer.symbol_ids.items[raw];
         } else if (std.mem.eql(u8, name, "SafeBuffer")) {
             fallback_symbol = analyzer.symbol_ids.items[raw];
+        } else if (std.mem.eql(u8, name, "scoped")) {
+            scoped_binding = @fromBackingInt(@intCast(raw));
+            scoped_symbol = analyzer.symbol_ids.items[raw];
         }
     }
     try std.testing.expect(buffer_binding != null);
     try std.testing.expect(buffer_symbol != null);
     try std.testing.expect(fallback_symbol != null);
+    try std.testing.expect(if_node != null);
+    try std.testing.expect(kept_block != null);
+    try std.testing.expect(alternate_block != null);
+    try std.testing.expect(kept_scope_id != null);
+    try std.testing.expect(scoped_binding != null);
+    try std.testing.expect(scoped_symbol != null);
     const buffer_reference_count_before = analyzer.symbols.items[buffer_symbol.?].reference_count;
     var buffer_refs_before: usize = 0;
     var fallback_refs_before: usize = 0;
@@ -13956,6 +13991,42 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         .wrap_kinds_finalized = true,
         .transform_options_base = .{ .minify_syntax = false },
     };
+    const if_raw = @backingInt(if_node.?);
+    const kept_raw = @backingInt(kept_block.?);
+    const alternate_raw = @backingInt(alternate_block.?);
+    const before_semantic = &module.semantic.?;
+    const alternate_scope_id = before_semantic.scope_owner_map.get(alternate_raw).?;
+    try before_semantic.scope_owner_map.put(allocator, if_raw, alternate_scope_id);
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    try std.testing.expectEqual(kept_scope_id.?, before_semantic.scope_owner_map.get(kept_raw).?);
+    _ = before_semantic.scope_owner_map.remove(if_raw);
+    try std.testing.expect(before_semantic.scope_owner_map.contains(alternate_raw));
+
+    const mutable_scopes = @constCast(before_semantic.scopes);
+    const original_scope_kind = mutable_scopes[alternate_scope_id].kind;
+    mutable_scopes[alternate_scope_id].kind = .function;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    mutable_scopes[alternate_scope_id].kind = original_scope_kind;
+    const original_symbol_count = mutable_scopes[alternate_scope_id].symbol_count;
+    mutable_scopes[alternate_scope_id].symbol_count = 1;
+    try std.testing.expect(!try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+    mutable_scopes[alternate_scope_id].symbol_count = original_symbol_count;
+
     try std.testing.expect(try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         &test_context,
         &module,
@@ -13967,17 +14038,28 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     const binding_raw = @backingInt(buffer_binding.?);
     try std.testing.expectEqual(buffer_symbol.?, semantic.symbol_ids[binding_raw].?);
     try std.testing.expectEqual(buffer_symbol.?, module.transform_cache.?.symbol_ids[binding_raw].?);
+    try std.testing.expectEqual(kept_scope_id.?, semantic.scope_owner_map.get(kept_raw).?);
+    try std.testing.expect(!semantic.scope_owner_map.contains(if_raw));
+    try std.testing.expect(!semantic.scope_owner_map.contains(alternate_raw));
+    try std.testing.expectEqual(ast_mod.Node.Tag.if_statement, module.ast.?.nodes.items[if_raw].tag);
+    try std.testing.expectEqual(kept_block.?, module.ast.?.nodes.items[if_raw].data.ternary.b);
+    try std.testing.expect(module.ast.?.nodes.items[if_raw].data.ternary.c.isNone());
+    try std.testing.expectEqual(scoped_symbol.?, semantic.symbol_ids[@backingInt(scoped_binding.?)].?);
     var buffer_refs_after: usize = 0;
     var fallback_refs_after: usize = 0;
+    var scoped_ref_keeps_block_scope = false;
     for (semantic.references) |reference| {
         if (reference.node_index.isNone()) continue;
         if (@backingInt(reference.symbol_id) == buffer_symbol.?) buffer_refs_after += 1;
         if (@backingInt(reference.symbol_id) == fallback_symbol.?) fallback_refs_after += 1;
+        if (@backingInt(reference.symbol_id) == scoped_symbol.? and
+            @backingInt(reference.scope_id) == kept_scope_id.?) scoped_ref_keeps_block_scope = true;
     }
-    try std.testing.expectEqual(buffer_refs_before - 4, buffer_refs_after);
+    try std.testing.expectEqual(buffer_refs_before, buffer_refs_after);
     try std.testing.expectEqual(@as(usize, 0), fallback_refs_after);
+    try std.testing.expect(scoped_ref_keeps_block_scope);
     try std.testing.expectEqual(
-        buffer_reference_count_before - 4,
+        buffer_reference_count_before,
         semantic.symbols.items[buffer_symbol.?].reference_count,
     );
     for (removed_nodes.items) |node_index| {

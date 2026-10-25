@@ -58,8 +58,11 @@ test "TreeShaking CJS: direct node Buffer capability branch keeps native exports
     try writeFile(tmp.dir, "lib.js",
         \\var buffer = require("buffer");
         \\var Buffer = buffer.Buffer;
-        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) module.exports = buffer;
-        \\else exports.Buffer = SafeBuffer;
+        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
+        \\  module.exports = buffer;
+        \\} else {
+        \\  exports.Buffer = SafeBuffer;
+        \\}
         \\function SafeBuffer() { return "DIRECT_BUFFER_FALLBACK_MARKER"; }
         \\SafeBuffer.from = "DIRECT_BUFFER_SETUP_MARKER";
     );

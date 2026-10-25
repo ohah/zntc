@@ -2438,6 +2438,10 @@ pub const TreeShaker = struct {
                 if (retained) {
                     self.markAstMutated(m);
                 } else {
+                    // The retained candidate has already removed the alternate.
+                    // Finish the legacy shape normalization before rebuilding
+                    // semantics so rejected block-owner cases keep prior output.
+                    _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
                     self.markAstMutatedAndResync(m);
                 }
                 continue;
