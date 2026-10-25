@@ -49,7 +49,8 @@ fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: B
 const EagerHelper = struct { record: usize, target: SymbolID, bindings: []const usize };
 
 /// Preserve the existing eager order: this slice owns helper-only eager
-/// records; every other eager dependency must already be a deferred named read.
+/// records; other eager dependencies must be deferred named reads or already
+/// unwrapped modules executed by the graph's ordinary dependency order.
 /// Mixed eager work stays with its current producer until the ordered phase owns it.
 fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.mem.Allocator) ![]const EagerHelper {
     var result: std.ArrayList(EagerHelper) = .empty;
@@ -58,6 +59,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.m
         if (record.resolved.isNone() or record.kind != .static_import) return &.{};
         const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
         if (linker.tree_shaker_active and !target.is_included) continue;
+        if (target.wrap_kind == .none) continue;
         var helpers: std.ArrayList(usize) = .empty;
         var ordinary: usize = 0;
         for (module.import_bindings, 0..) |binding, index| {
@@ -67,6 +69,7 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.m
                     !binding.symbol.isValid() or binding.symbol.semanticIndex() == null or binding.symbol.moduleIndex() != target.index) return &.{};
                 try helpers.append(a, index);
             } else {
+                if (module.wrap_kind != .esm) return &.{};
                 const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = module.semantic.?.symbol_ids, .symbols = module.semantic.?.symbols.items });
                 const sid = local.semanticIndex() orelse return &.{};
                 if (try targetsFor(graph, linker, module, binding, sid) == null) return &.{};
@@ -205,7 +208,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
     var activated = false;
     for (0..count) |raw| {
         const module = graph.moduleAtMut(ModuleIndex.fromUsize(raw)) orelse continue;
-        if (module.wrap_kind != .esm) continue;
+        if (module.wrap_kind != .esm and module.wrap_kind != .none) continue;
         if (shaker) |s| if (!s.isIncluded(@intCast(raw))) continue;
         const ast = if (module.ast) |*value| value else continue;
         const sem = if (module.semantic) |*value| value else continue;
@@ -229,26 +232,28 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             }
         }
         var plans: std.ArrayList(Plan) = .empty;
-        for (module.import_bindings, 0..) |binding, index| {
-            const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
-            const sid = local.semanticIndex() orelse continue;
-            const targets = try targetsFor(graph, linker, module, binding, sid) orelse continue;
-            var calls: std.ArrayList(Call) = .empty;
-            var supported = true;
-            for (sem.references) |reference| {
-                if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or !live_set.contains(reference.node_index)) continue;
-                if (ast.getNode(reference.node_index).tag != .identifier_reference) {
-                    supported = false;
-                    break;
+        if (module.wrap_kind == .esm) {
+            for (module.import_bindings, 0..) |binding, index| {
+                const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+                const sid = local.semanticIndex() orelse continue;
+                const targets = try targetsFor(graph, linker, module, binding, sid) orelse continue;
+                var calls: std.ArrayList(Call) = .empty;
+                var supported = true;
+                for (sem.references) |reference| {
+                    if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or !live_set.contains(reference.node_index)) continue;
+                    if (ast.getNode(reference.node_index).tag != .identifier_reference) {
+                        supported = false;
+                        break;
+                    }
+                    const call = call_by_callee.get(reference.node_index);
+                    if (!reference.flags.read or reference.flags.write) {
+                        supported = false;
+                        break;
+                    }
+                    try calls.append(a, .{ .node = call orelse reference.node_index, .callee = reference.node_index, .symbol = reference.symbol_id, .scope = reference.scope_id, .direct_call = call != null, .shorthand_property = shorthand_by_value.get(reference.node_index) });
                 }
-                const call = call_by_callee.get(reference.node_index);
-                if (!reference.flags.read or reference.flags.write) {
-                    supported = false;
-                    break;
-                }
-                try calls.append(a, .{ .node = call orelse reference.node_index, .callee = reference.node_index, .symbol = reference.symbol_id, .scope = reference.scope_id, .direct_call = call != null, .shorthand_property = shorthand_by_value.get(reference.node_index) });
+                if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets });
             }
-            if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets });
         }
         const eager = try eagerHelpers(graph, linker, module, a);
         if (plans.items.len == 0 and eager.len == 0) continue;
