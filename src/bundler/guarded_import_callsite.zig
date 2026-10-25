@@ -899,3 +899,60 @@ test "guarded reexport callers retain explicit producer ownership" {
         try std.testing.expectEqualStrings("{\"keys\":[\"default\",\"marker\",\"publicAlias\"],\"result\":42,\"marker\":7,\"alias\":7,\"order\":[\"other\",\"entry\"]}\n", execution.stdout);
     };
 }
+
+test "plain initializer admission preserves non-PM dev and async-cone graphs" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const Case = enum { non_pm, dev, async_cone };
+    for ([_]Case{ .non_pm, .dev, .async_cone }) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import value from'./dep.mjs';export default()=>value()");
+        try helpers.writeFile(tmp.dir, "dep.mjs", if (case == .async_cone) "await Promise.resolve();export default function(){return 42}" else "export default function(){return 42}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = case != .non_pm, .entry_error_guard = false };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.code_splitting = true;
+        graph.preserve_modules = case != .non_pm;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
+        defer linker.deinit();
+        linker.setEmitFormat(.esm, .{ .inline_requires = true, .entry_error_guard = false });
+        try linker.link();
+        linker.populateImportSymbols();
+        if (case == .dev) {
+            graph.dev_mode = true;
+            linker.dev_mode = true;
+        }
+        const module = graph.moduleAtMut(graph.path_to_module.get(entry).?).?;
+        if (case == .async_cone) try std.testing.expect(module.in_async_cone);
+        const node_count = module.ast.?.nodes.items.len;
+        const references = module.semantic.?.references;
+        const scope_count = module.semantic.?.scopes.len;
+        const symbol_count = module.semantic.?.symbols.items.len;
+        const binding_count = module.import_bindings.len;
+        const record_count = module.import_records.len;
+        const root = module.ast.?.transformed_root;
+        const module_count = graph.moduleCount();
+        try lower(&graph, &linker, null);
+        try std.testing.expectEqual(root, module.ast.?.transformed_root);
+        try std.testing.expectEqual(node_count, module.ast.?.nodes.items.len);
+        try std.testing.expectEqual(references.ptr, module.semantic.?.references.ptr);
+        try std.testing.expectEqual(references.len, module.semantic.?.references.len);
+        try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
+        try std.testing.expectEqual(symbol_count, module.semantic.?.symbols.items.len);
+        try std.testing.expectEqual(binding_count, module.import_bindings.len);
+        try std.testing.expectEqual(record_count, module.import_records.len);
+        try std.testing.expectEqual(module_count, graph.moduleCount());
+        try std.testing.expect(graph.entry_guard_ast_provider == null);
+        for (module.import_bindings) |binding| {
+            try std.testing.expect(binding.callsite_target == null);
+            try std.testing.expect(!binding.guarded_eager_init_lowered and !binding.guarded_lazy_calls_lowered);
+        }
+    }
+}

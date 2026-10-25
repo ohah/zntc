@@ -106,3 +106,19 @@ key remains distinct from an actual Unicode escape. This normalization selects
 output spellings and compares public property keys; it never discovers or
 reassigns a SymbolID/ScopeID. Private initializer/namespace handles are still
 created and consumed through the same exact typed module fields.
+
+For native preserve-modules callers with the entry guard disabled, the same
+supported synchronous imports use an actual `esm_init` callee with zero arguments.
+The producer creates no guard import, provider or fabricated argument. Each new
+read keeps its real source ScopeId and statement coordinates; source value-read
+SIDs and namespace receivers remain unchanged. Existing guarded calls retain
+their two-reference callee/argument structure. Ownership markers continue to
+suppress only legacy evaluation already represented by actual AST calls.
+
+This plain admission is limited to non-dev PM ESM/CJS with inline requires and
+excludes async-cone sources/targets. Non-PM, dev and async-cone negative controls
+keep their graph unchanged. Native CLI controls check zero ErrorUtils reads.
+The NAPI React Native option currently ORs the guard with its preset, so an
+explicit false there does not exercise this plain path; that option-policy bug
+remains separate. The current runtime proof uses actual native CLI and direct
+BundleOptions false, without changing preset behavior in this slice.
