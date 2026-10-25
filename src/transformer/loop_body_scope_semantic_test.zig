@@ -42,6 +42,16 @@ fn check(source: []const u8, is_async: bool, is_in: bool) !void {
         transformer.state_machine_depth = 1;
         transformer.generator_operation_scope = loop_scope;
         transformer.generator_state_machine_scope = transformer.nearestVarScope(loop_scope);
+        const switch_owner = try transformer.ast.addNode(.{
+            .tag = .switch_statement,
+            .span = old.span,
+            .data = .{ .extra = try transformer.ast.addExtras(&.{ @backingInt(ast.NodeIndex.none), 0, 0 }) },
+        });
+        transformer.generator_native_var_scope = try transformer.addGeneratedScope(
+            transformer.generator_state_machine_scope,
+            switch_owner,
+            .switch_block,
+        );
     }
     const output = if (is_in)
         try ForOf.rewriteForIn(&transformer, original, old)

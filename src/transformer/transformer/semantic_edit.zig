@@ -1203,8 +1203,31 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             } else if (self.exact_output_ref_symbol_ids.get(raw)) |exact_id| {
                 if (scope.isNone() or exact_id >= editor.symbols.items.len)
                     std.debug.panic("generated reference has no exact output owner", .{});
+                const output_scope = if (self.exact_output_ref_scope_ids.get(raw)) |planned_scope| blk: {
+                    const expected: ScopeId = @fromBackingInt(@intCast(planned_scope));
+                    if (expected.isNone() or expected.toIndex() >= editor.scopes.items.len)
+                        std.debug.panic("generated reference has an invalid producer-selected output ScopeId", .{});
+                    if (expected != scope) {
+                        const expected_scope_node = editor.scopes.items[expected.toIndex()];
+                        const actual_scope_node = editor.scopes.items[scope.toIndex()];
+                        const parent_tag = if (work.parent.isNone()) "none" else @tagName(self.ast.getNode(work.parent).tag);
+                        std.debug.panic("generated reference changed its producer-selected output ScopeId: node={d} name={s} parent={s} symbol={d} planned={d}({s},parent={d}) actual={d}({s},parent={d})", .{
+                            raw,
+                            self.ast.getText(node.data.string_ref),
+                            parent_tag,
+                            exact_id,
+                            expected.toIndex(),
+                            @tagName(expected_scope_node.kind),
+                            expected_scope_node.parent.toIndex(),
+                            scope.toIndex(),
+                            @tagName(actual_scope_node.kind),
+                            actual_scope_node.parent.toIndex(),
+                        });
+                    }
+                    break :blk expected;
+                } else scope;
                 const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
-                try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = exact_id, .exact = true, .flags = flags });
+                try output_refs.append(self.allocator, .{ .node = work.node, .scope = output_scope, .raw_id = exact_id, .exact = true, .flags = flags });
             } else {
                 var raw_id = outputSymbolIdAt(self, editor, work.node);
                 if (raw_id == null) {
@@ -1369,6 +1392,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
             self.symbol_ids.items[raw] = reference.raw_id;
             _ = self.exact_output_ref_symbol_ids.remove(raw);
+            _ = self.exact_output_ref_scope_ids.remove(raw);
             continue;
         }
         // Source counterparts now participate in validation too. Search the
@@ -4506,6 +4530,31 @@ pub fn trackExactOutputReference(self: *Transformer, target: NodeIndex, symbol_i
         return;
     }
     try self.exact_output_ref_symbol_ids.put(self.allocator, raw, symbol_id);
+}
+
+/// Reserve both the exact generated SymbolId and its final output ScopeId.
+/// The final AST walk checks the reservation against actual ancestry, then
+/// attaches the reference using this producer-selected scope.
+pub fn trackExactOutputReferenceInScope(
+    self: *Transformer,
+    target: NodeIndex,
+    symbol_id: u32,
+    scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (scope.isNone()) std.debug.panic("exact generated reference has no producer-selected output ScopeId", .{});
+    const editor = try editorFor(self);
+    if (scope.toIndex() >= editor.scopes.items.len)
+        std.debug.panic("exact generated reference has an out-of-range output ScopeId", .{});
+    try trackExactOutputReference(self, target, symbol_id);
+    const raw = @backingInt(target);
+    const raw_scope = @backingInt(scope);
+    if (self.exact_output_ref_scope_ids.get(raw)) |existing| {
+        if (existing != raw_scope)
+            std.debug.panic("generated reference was assigned multiple exact output ScopeIds", .{});
+        return;
+    }
+    try self.exact_output_ref_scope_ids.put(self.allocator, raw, raw_scope);
 }
 
 /// A named class expression's self binding becomes the implementation

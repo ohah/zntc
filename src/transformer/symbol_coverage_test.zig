@@ -5477,10 +5477,20 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
-    // Model generator operation collection: the wrapper binding identity is
-    // known, but references must wait for their final output ScopeIds.
+    // Model generator operation collection with the reserved output switch
+    // scope already known to the producer.
     transformer.state_machine_depth = 1;
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
+    const switch_owner = try transformer.ast.addNode(.{
+        .tag = .switch_statement,
+        .span = parser.ast.getNode(loop).span,
+        .data = .{ .extra = try transformer.ast.addExtras(&.{ @backingInt(NodeIndex.none), 0, 0 }) },
+    });
+    transformer.generator_native_var_scope = try transformer.addGeneratedScope(
+        transformer.generator_state_machine_scope,
+        switch_owner,
+        .switch_block,
+    );
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
     try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
@@ -5501,6 +5511,7 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     const expected_names = [_][]const u8{ "_c", "_d", "_keys2", "_idx2" };
     var binding_ids: [expected_names.len]?u32 = @splat(null);
     var reference_counts: [expected_names.len]usize = @splat(0);
+    var planned_scope_count: usize = 0;
     for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
         if (node.tag != .binding_identifier) continue;
         const name = transformer.ast.getText(node.data.string_ref);
@@ -5521,11 +5532,90 @@ test "#4819 for-in temporaries bind symbols during lowering" {
             const exact_id = transformer.exact_output_ref_symbol_ids.get(@intCast(raw)) orelse
                 return error.MissingDeferredSyntheticTempReference;
             try std.testing.expectEqual(binding_ids[expected_index].?, exact_id);
+            if (transformer.exact_output_ref_scope_ids.get(@intCast(raw))) |exact_scope| {
+                try std.testing.expectEqual(@backingInt(transformer.generator_native_var_scope), exact_scope);
+                planned_scope_count += 1;
+            }
             reference_counts[expected_index] += 1;
         }
     }
     for (reference_counts) |count| try std.testing.expect(count > 0);
+    try std.testing.expectEqual(@as(usize, 7), planned_scope_count);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
+fn expectForInProducerOutputScopes(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var loop: AstNodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .for_in_statement) {
+            loop = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    if (loop.isNone()) return error.MissingForInLoop;
+    const source_scope = @as(ScopeId, @fromBackingInt(@intCast(analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForInScope)));
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = source_scope;
+    transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(source_scope);
+    const switch_owner = try transformer.ast.addNode(.{
+        .tag = .switch_statement,
+        .span = parser.ast.getNode(loop).span,
+        .data = .{ .extra = try transformer.ast.addExtras(&.{ @backingInt(AstNodeIndex.none), 0, 0 }) },
+    });
+    transformer.generator_native_var_scope = try transformer.addGeneratedScope(
+        transformer.generator_state_machine_scope,
+        switch_owner,
+        .switch_block,
+    );
+    const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+    _ = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
+
+    try std.testing.expectEqual(@as(usize, 9), transformer.exact_output_ref_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 7), transformer.exact_output_ref_scope_ids.count());
+    var planned_scopes = transformer.exact_output_ref_scope_ids.iterator();
+    while (planned_scopes.next()) |entry| {
+        try std.testing.expectEqual(@backingInt(transformer.generator_native_var_scope), entry.value_ptr.*);
+        try std.testing.expect(transformer.exact_output_ref_symbol_ids.contains(entry.key_ptr.*));
+    }
+}
+
+test "#4819 generator for-in control references reserve their output scope across hostile inputs" {
+    const sources = [_][]const u8{
+        "function* g(object) { for (const key in object) yield key; }",
+        "function* g(object) { for (let key in object) { yield key; } }",
+        "function* g(object) { for (var key in object) { yield key; } }",
+        "function* g(object) { let key; for (key in object) yield key; }",
+        "function* g(object) { for (const key in object) { if (key) continue; yield key; } }",
+        "function* g(object) { for (const key in object) { if (key) return key; yield key; } }",
+        "function* g(object) { for (const key in object) yield () => key; }",
+        "function* g(object) { const _a=0, _b=0, _keys=0, _idx=0; for (const key in object) yield key; }",
+        "function* g(object) { for (const outer in object) { for (const inner in object[outer]) yield inner; } }",
+        "function* g(object) { try { for (const key in object) yield key; } finally { use(object); } }",
+    };
+    for (sources) |source| try expectForInProducerOutputScopes(source);
 }
 
 test "#4819 pending extracted for-of producers assign temp identities immediately" {
