@@ -1643,9 +1643,12 @@ pub const Parser = struct {
         // 각 초크포인트의 defer 로 이미 호출 스택과 함께 정확히 복원돼 있어 저장/복원 대상이 아니다.)
         self.depth_overflow = s.depth_overflow;
         self.scan_import_records.shrinkRetainingCapacity(s.scan_import_records_len);
+        // Ordinary lookahead preserves the same bindings and their lazy index.
+        // Invalidate only if speculative creation appended discarded bindings.
+        if (self.scan_import_bindings.items.len != s.scan_import_bindings_len)
+            self.scan_import_binding_map.clearRetainingCapacity();
         self.scan_import_bindings.shrinkRetainingCapacity(s.scan_import_bindings_len);
         self.scan_export_bindings.shrinkRetainingCapacity(s.scan_export_bindings_len);
-        self.scan_import_binding_map.clearRetainingCapacity();
         self.scan_result = s.scan_result;
         self.scanner.current = s.current;
         self.scanner.start = s.start;
