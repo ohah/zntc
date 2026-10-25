@@ -44,6 +44,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const loop_scopes = @import("loop_scope_producer.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const std = @import("std");
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
@@ -396,10 +397,18 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const left = node.data.ternary.a;
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
-            const loop_scope: @import("../semantic/scope.zig").ScopeId = if (self.semantic_edit_enabled)
-                @fromBackingInt(@intCast(self.scope_owner_map.get(@backingInt(source_idx)) orelse @backingInt(self.current_scope)))
+            const loop_scope: ScopeId = if (self.semantic_edit_enabled)
+                self.outputOwnedScope(source_idx) orelse std.debug.panic("for-in has no actual source scope", .{})
             else
                 self.current_scope;
+            const outer_scope = if (self.semantic_edit_enabled) self.outputScopeParent(loop_scope) else loop_scope;
+            const wrapper = try loop_scopes.createBlock(self, outer_scope, span);
+            const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{ .a = .none, .b = .none, .c = .none } } });
+            const collect_scope = try self.addGeneratedScope(wrapper.scope, collect, .block);
+            // Input closures must leave the original loop before its scope is
+            // nested inside the emitted wrapper and iteration body.
+            try loop_scopes.moveExpression(self, right, loop_scope, wrapper.scope);
+            if (self.semantic_edit_enabled) try self.reparentGeneratedScope(loop_scope, wrapper.scope);
 
             const obj = try es_helpers.makeTempVarSpan(self);
             const key = try es_helpers.makeTempVarSpan(self);
@@ -432,26 +441,25 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, key_binding.node, .none, span),
             }, .@"var", span);
 
-            // for (_k in _obj) _keys.push(_k);
-            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "push"), span), &.{try makeRefForSyntheticBinding(self, key_binding, loop_scope, .{ .read = true })}, span);
-            const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeRefForSyntheticBinding(self, key_binding, loop_scope, .{ .write = true }),
-                .b = try makeRefForSyntheticBinding(self, obj_binding, loop_scope, .{ .read = true }),
-                .c = try es_helpers.makeExprStmt(self, push, span),
-            } } });
+            // The real collector owns all of its control and body references.
+            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, collect_scope, .{ .read = true }, collect_scope), try es_helpers.makePropertyName(self, "push"), span), &.{try makeRefForSyntheticBinding(self, key_binding, collect_scope, .{ .read = true }, collect_scope)}, span);
+            const collect_key = try makeRefForSyntheticBinding(self, key_binding, collect_scope, .{ .write = true }, collect_scope);
+            const collect_object = try makeRefForSyntheticBinding(self, obj_binding, collect_scope, .{ .read = true }, collect_scope);
+            const collect_body = try es_helpers.makeExprStmt(self, push, span);
+            self.ast.nodes.items[@backingInt(collect)].data.ternary = .{ .a = collect_key, .b = collect_object, .c = collect_body };
 
             // for (var _idx = 0; _idx < _keys.length; _idx++) { <루프 변수 = _keys[_idx]>; body }
             const init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, idx_binding.node, try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
-            const length = try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "length"), span);
+            const length = try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }, self.generator_native_var_scope), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
-                .left = try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }),
+                .left = try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }, self.generator_native_var_scope),
                 .right = length,
                 .flags = @backingInt(token_mod.Kind.l_angle),
             } } });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = try self.ast.addExtras(&.{
-                @backingInt(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true })),
+                @backingInt(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true }, self.generator_native_var_scope)),
                 @backingInt(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
             }) } });
             const for_body = try createLoopBody(self, loop_scope, span);
@@ -461,7 +469,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span, loop_scope, for_body)),
             });
             try self.remapCopiedScopeOwner(source_idx, for_stmt);
-            return makeBlock(self, &.{ decl, collect, for_stmt }, span);
+            try loop_scopes.fillBlock(self, wrapper.node, &.{ decl, collect, for_stmt });
+            return wrapper.node;
         }
 
         fn uniqueForInNames(self: *Transformer) Transformer.Error!struct { keys: Span, idx: Span } {
@@ -490,9 +499,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// 루프 변수 대입을 앞에 둔 본문 블록. 원래 본문 블록에 루프 변수와 같은 이름의
         /// 선언이 있으면(헤더와 본문은 스코프가 다르다) 합치지 않고 한 겹 더 감싼다.
         pub fn createLoopBody(self: *Transformer, loop_scope: @import("../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!NodeIndex {
-            const result = try makeBlock(self, &.{}, span);
-            if (self.semantic_edit_enabled) _ = try self.addGeneratedScope(loop_scope, result, .block);
-            return result;
+            return (try loop_scopes.createBlock(self, loop_scope, span)).node;
         }
 
         pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
@@ -622,25 +629,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         self.generator_state_machine_scope,
                     );
                 }
+
             }
             return ref;
         }
 
-        fn makeRefForSyntheticBinding(self: *Transformer, binding: Transformer.SyntheticBinding, scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
+        fn makeRefForSyntheticBinding(self: *Transformer, binding: Transformer.SyntheticBinding, scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags, output_scope: ScopeId) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, binding.name_span);
             if (self.semantic_edit_enabled) {
                 const symbol_id = binding.symbol_id orelse std.debug.panic("for-in temp reference has no exact SymbolId", .{});
+                try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
                 if (self.state_machine_depth > 0) {
-                    // State-machine construction reserves its switch scope
-                    // before collecting operations. Preserve that exact final
-                    // reference scope with the producer identity; finalization
-                    // checks the emitted AST still places this use there.
-                    const output_scope = self.generator_native_var_scope;
-                    if (output_scope.isNone()) std.debug.panic("generator for-in reference has no reserved switch ScopeId", .{});
+                    if (output_scope.isNone()) std.debug.panic("generator for-in reference has no planned output scope", .{});
                     try self.trackExactOutputReferenceInScope(ref, @backingInt(symbol_id), output_scope);
-                } else {
-                    try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
                 }
+
             }
             return ref;
         }

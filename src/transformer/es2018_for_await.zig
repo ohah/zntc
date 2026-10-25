@@ -319,41 +319,9 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             } } });
         }
 
-        fn moveIterableExpression(self: *Transformer, root: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
-            if (!self.semantic_edit_enabled) return;
-            try self.reparentGeneratedBodyScopes(source, target, root);
-            const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, root);
-            defer self.allocator.free(refs);
-            for (refs) |node| {
-                const editor = &self.semantic_editor.?;
-                const reference = editor.referenceForNode(node) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => std.debug.panic("for-await iterable lost source reference: {s}", .{@errorName(err)}),
-                };
-                if (reference) |ref| {
-                    if (ref.scope_id == source) editor.moveReference(node, target, ref.stmt_idx, ref.scope_stmt_idx) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => std.debug.panic("for-await iterable cannot move exact reference: {s}", .{@errorName(err)}),
-                    };
-                }
-            }
-        }
-
-        const PlannedBlock = struct { node: NodeIndex, scope: ScopeId };
-
-        fn plannedBlock(self: *Transformer, parent: ScopeId, span: Span) Transformer.Error!PlannedBlock {
-            const node = try block(self, &.{}, span);
-            return .{ .node = node, .scope = try self.addGeneratedScope(parent, node, .block) };
-        }
-
-        fn fillBlock(self: *Transformer, node: NodeIndex, statements: []const NodeIndex) Transformer.Error!void {
-            const list = try self.ast.addNodeList(statements);
-            self.ast.nodes.items[@backingInt(node)].data.list = list;
-        }
-
-        fn block(self: *Transformer, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(stmts) } });
-        }
+        const plannedBlock = @import("loop_scope_producer.zig").createBlock;
+        const fillBlock = @import("loop_scope_producer.zig").fillBlock;
+        const moveIterableExpression = @import("loop_scope_producer.zig").moveExpression;
     };
 }
 
