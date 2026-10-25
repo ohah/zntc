@@ -119,3 +119,88 @@ test "module map retained prepass preserves original semantic owner and bindings
 test "module map TypeScript value imports preserve original owner and bindings in ten contexts" {
     try expectMapOwner(true);
 }
+
+test "module map retains exact anonymous default facade owner across ten expression forms" {
+    const expressions = [_][]const u8{
+        "map+filter",                    "({map,filter})",                    "[map,filter]", "(()=>map+filter)",
+        "function(){return map+filter}", "class {read(){return map+filter}}", "(map,filter)", "map?filter:0",
+        "map===filter",                  "String(map+filter)",
+    };
+    var owner_resets: usize = 0;
+    for (expressions) |expression| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import {{map,filter}} from './library.mjs';export default {s};", .{expression});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "consumer.mjs", source);
+        try helpers.writeFile(tmp.dir, "library.mjs", "export const map=1,filter=2;");
+        const entry = try helpers.absPath(&tmp, "consumer.mjs");
+        defer std.testing.allocator.free(entry);
+        var cache = ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = Graph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        const module = graph.moduleAtMut(graph.path_to_module.get(entry).?).?;
+        const old = module.semantic.?;
+        const owner = module.semantic.?.captureOwnerToken();
+        const facade = module.findExportBinding("default").?.symbol.semanticIndex().?;
+        try std.testing.expect(old.symbols.items[facade].decl_flags.is_default_export);
+        const mapping = [_]@import("../transformer/options.zig").ModuleSpecifierMapEntry{.{ .module = "./library.mjs", .template = "./parts/{name}.mjs" }};
+        graph.transform_options_base.module_specifier_map = &mapping;
+        graph.runTransformerPrePass(module, module.parse_arena.?.allocator());
+        const current = module.semantic.?;
+        if (current.owner_token != owner) {
+            owner_resets += 1;
+            continue;
+        }
+        try std.testing.expectEqual(old.symbols.items.len, current.symbols.items.len);
+        try std.testing.expectEqual(old.scopes.len, current.scopes.len);
+        try std.testing.expectEqual(@as(?u32, facade), module.findExportBinding("default").?.symbol.semanticIndex());
+        const ast = &module.ast.?;
+        const list = ast.getNode(ast.transformed_root.?).data.list;
+        const export_node: NodeIndex = @fromBackingInt(ast.extra_data.items[list.start + 2]);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.export_default_declaration, ast.getNode(export_node).tag);
+        try std.testing.expectEqual(@as(?u32, facade), current.symbol_ids[@backingInt(export_node)]);
+        var declarations: usize = 0;
+        for (current.references) |reference| {
+            if (!reference.flags.declare or @backingInt(reference.symbol_id) != facade) continue;
+            declarations += 1;
+            try std.testing.expect(reference.declaration_node_index.isNone());
+            try std.testing.expectEqual(@as(u32, 2), reference.stmt_idx);
+            try std.testing.expectEqual(@as(u32, 2), reference.scope_stmt_idx);
+            try std.testing.expectEqual(@as(u32, 0), @backingInt(reference.scope_id));
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        const role = @import("default_facade_identity.zig");
+        try std.testing.expectEqual(@as(?u32, facade), try role.symbolAt(ast, export_node, current.symbol_ids, current.symbols.items));
+        const ids = try std.testing.allocator.dupe(?u32, current.symbol_ids);
+        defer std.testing.allocator.free(ids);
+        ids[@backingInt(export_node)] = null;
+        try std.testing.expectEqual(@as(?u32, null), try role.symbolAt(ast, export_node, ids, current.symbols.items));
+        ids[@backingInt(export_node)] = @intCast(current.symbols.items.len);
+        try std.testing.expectError(error.InvalidDefaultFacade, role.symbolAt(ast, export_node, ids, current.symbols.items));
+        ids[@backingInt(export_node)] = facade;
+        const symbols = try std.testing.allocator.dupe(@import("../semantic/symbol.zig").Symbol, current.symbols.items);
+        defer std.testing.allocator.free(symbols);
+        symbols[facade].decl_flags.is_default_export = false;
+        try std.testing.expectEqual(@as(?u32, null), try role.symbolAt(ast, export_node, ids, symbols));
+        symbols[facade] = current.symbols.items[facade];
+        symbols[facade].kind = .variable_let;
+        try std.testing.expectEqual(@as(?u32, null), try role.symbolAt(ast, export_node, ids, symbols));
+        symbols[facade] = current.symbols.items[facade];
+        symbols[facade].scope_id = @fromBackingInt(1);
+        try std.testing.expectEqual(@as(?u32, null), try role.symbolAt(ast, export_node, ids, symbols));
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(std.testing.allocator);
+        try @import("module_codec.zig").serialize(ast, &current, &bytes, std.testing.allocator);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var decoded = try @import("module_codec.zig").deserialize(bytes.items, arena.allocator());
+        try std.testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, decoded.semantic.owner_token);
+        try std.testing.expectEqual(@as(?u32, facade), try role.symbolAt(&decoded.ast, export_node, decoded.semantic.symbol_ids, decoded.semantic.symbols.items));
+        try std.testing.expectEqualDeep(current.references, decoded.semantic.references);
+    }
+    try std.testing.expectEqual(@as(usize, 0), owner_resets);
+}

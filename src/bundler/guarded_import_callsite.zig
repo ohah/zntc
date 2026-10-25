@@ -134,12 +134,8 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
     var live_anchors = owners.iterator();
     while (live_anchors.next()) |entry| {
         const node = entry.key_ptr.*;
-        const raw = @backingInt(node);
-        if (editor.ast.getNode(node).tag != .export_default_declaration or raw >= editor.symbol_ids.items.len) continue;
-        const sid = editor.symbol_ids.items[raw] orelse continue;
-        if (sid >= editor.symbols.items.len) return error.InvalidGuardedDefaultFacade;
-        const symbol = editor.symbols.items[sid];
-        if (!symbol.decl_flags.is_default_export or symbol.kind != .variable_const or symbol.scope_id.toIndex() != 0) continue;
+        const sid = (@import("default_facade_identity.zig").symbolAt(editor.ast, node, editor.symbol_ids.items, editor.symbols.items) catch
+            return error.InvalidGuardedDefaultFacade) orelse continue;
         const slot = try default_contexts.getOrPut(a, sid);
         if (slot.found_existing and slot.value_ptr.node != node) return error.AmbiguousGuardedDefaultFacade;
         slot.value_ptr.* = .{ .node = node, .statement = entry.value_ptr.* };
