@@ -91,6 +91,9 @@ pub fn appendWrappedCjsNamedEntryExports(
         try appendPublicKeyLiteral(&suffix, allocator, entry.exported);
         try suffix.appendSlice(allocator, "];}});\n");
     }
+    // A real public __esModule export owns its key, including quoted aliases.
+    // Only the absent compiler interop marker is added; no getter is evaluated.
+    try suffix.appendSlice(allocator, "if(Object.prototype.hasOwnProperty.call(exports,\"default\")&&!Object.prototype.hasOwnProperty.call(exports,\"__esModule\"))Object.defineProperty(exports,\"__esModule\",{value:true});\n");
     return try std.mem.concat(allocator, u8, &.{ module_code, suffix.items });
 }
 
@@ -421,7 +424,7 @@ fn checkWrappedCjsExportAllocation(allocator: std.mem.Allocator) !void {
     };
     const combined = (try appendWrappedCjsNamedEntryExports(allocator, body, "namespace", &entries)).?;
     defer allocator.free(combined);
-    try std.testing.expectEqualStrings("var namespace={};Object.defineProperty(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\nObject.defineProperty(exports,'x-y',{enumerable:true,get:function(){return namespace['x-y'];}});\n", combined);
+    try std.testing.expectEqualStrings("var namespace={};Object.defineProperty(exports,\"default\",{enumerable:true,get:function(){return namespace[\"default\"];}});\nObject.defineProperty(exports,'x-y',{enumerable:true,get:function(){return namespace['x-y'];}});\nif(Object.prototype.hasOwnProperty.call(exports,\"default\")&&!Object.prototype.hasOwnProperty.call(exports,\"__esModule\"))Object.defineProperty(exports,\"__esModule\",{value:true});\n", combined);
     try std.testing.expectEqualStrings("var namespace={};", body);
     try std.testing.expect(std.mem.indexOf(u8, combined, "must_not_be_evaluated") == null);
 }
