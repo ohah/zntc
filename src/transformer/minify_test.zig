@@ -1285,12 +1285,26 @@ test "dead store: unused let with string literal 제거" {
     try expectMinifyDead("let x = \"secret\";", "function run() {\n\t;\n}\nrun();");
 }
 
-test "dead store: unused let with member access (pure) 제거 — 연쇄로 o 도 제거" {
-    // obj.prop 은 purity 관점 pure. x 제거 시 o 의 ref_count 가 0 → 같은 pass 안에서
-    // o 가 아직 방문 안 된 상태면 연쇄 제거됨 (oxc fixed-point 효과를 단일 pass 로 부분 달성).
+test "dead store: unused member read retains possible getter effects" {
+    // A generic pure-expression predicate cannot prove a member read is safe
+    // to discard. The object may inline, but the read remains evaluated.
     try expectMinifyDead(
         "const o = { a: 1 }; let x = o.a;",
-        "function run() {\n\t;\n\t;\n}\nrun();",
+        "function run() {\n\t;\n\tlet x = { a: 1 }.a;\n}\nrun();",
+    );
+}
+
+test "dead store: unused initializer retains lexical TDZ read" {
+    try expectMinifyDead(
+        "let ignored = value; let value = 7; console.log(value);",
+        "function run() {\n\tlet ignored = value,value = 7;\n\tconsole.log(value);\n}\nrun();",
+    );
+}
+
+test "dead store: unused initializer retains getter invocation" {
+    try expectMinifyDead(
+        "const input = {get n(){log();return 7}}; let ignored = input.n;",
+        "function run() {\n\tconst input = { get n() {\n\t\tlog();\n\t\treturn 7;\n\t} };\n\tlet ignored = input.n;\n}\nrun();",
     );
 }
 

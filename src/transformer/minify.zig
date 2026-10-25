@@ -636,7 +636,9 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
 
     // init 이 있으면 purity 검사 — 불순하면 RHS 보존을 위해 (아직) 제거 불가
     if (!init_idx.isNone()) {
-        if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+        // Discarding an unused initializer must retain exceptions, including
+        // reads of lexical bindings before their ordered initialization.
+        if (!purity.isRemovableAtStmtPos(ast, init_idx, ctx.stmtRemovalCtx())) return;
         // init 내부의 pure identifier_reference 들의 reference_count 를 감산
         decrementRefsInExpr(ast, ctx, init_idx);
     }
