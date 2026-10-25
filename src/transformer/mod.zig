@@ -79,6 +79,7 @@ test {
     _ = @import("object_computed_temp_identity_semantic_test.zig");
     _ = @import("es2015_parameter_temp_identity_semantic_test.zig");
     _ = @import("generated_alias_reference_semantic_test.zig");
+    _ = @import("binding_storage_identity_semantic_test.zig");
     _ = @import("legacy_anonymous_export_semantic_test.zig");
     _ = @import("transformer/legacy_decorator_helpers.zig");
     _ = @import("runtime_key_name_temp_identity_semantic_test.zig");

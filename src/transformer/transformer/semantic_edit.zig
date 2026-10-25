@@ -749,6 +749,8 @@ const OutputBindingCandidate = struct {
     target_scope: ScopeId,
     kind: SymbolKind,
     name: []const u8,
+    needs_placement: bool,
+    is_function_declaration: bool,
 };
 const OutputBindingGroup = struct {
     raw_id: u32,
@@ -757,9 +759,8 @@ const OutputBindingGroup = struct {
     kind: SymbolKind,
     name: []const u8,
     first_node: NodeIndex,
-    candidate_start: usize,
-    candidate_end: usize,
-    resolved_id: u32,
+    needs_placement: bool,
+    is_function_declaration: bool,
 };
 
 fn outputBindingCandidateLessThan(_: void, lhs: OutputBindingCandidate, rhs: OutputBindingCandidate) bool {
@@ -770,8 +771,9 @@ fn outputBindingCandidateLessThan(_: void, lhs: OutputBindingCandidate, rhs: Out
 }
 
 fn sameOutputBindingGroup(lhs: OutputBindingCandidate, rhs: OutputBindingCandidate) bool {
-    return lhs.raw_id == rhs.raw_id and lhs.target_scope == rhs.target_scope and lhs.kind == rhs.kind and
-        std.mem.eql(u8, lhs.name, rhs.name);
+    // The producer-selected identity owns redeclarations, including escaped
+    // and decoded spellings of the same source identifier.
+    return lhs.raw_id == rhs.raw_id and lhs.target_scope == rhs.target_scope and lhs.kind == rhs.kind;
 }
 
 fn containsNodeInExtraList(ast: *const ast_mod.Ast, start: u32, len: u32, child: u32) bool {
@@ -930,6 +932,7 @@ fn outputBindingTargetScope(
     // resource lowering. Their original var boundary still encloses the code.
     if (output_var and !symbol.scope_id.isNone() and symbol.scope_id.toIndex() < editor.scopes.items.len and
         editor.scopes.items[symbol.scope_id.toIndex()].kind.isVarScope() and
+        self.nearestVarScope(lexical_scope) == symbol.scope_id and
         scopeWithin(editor.scopes.items, lexical_scope, symbol.scope_id)) return symbol.scope_id;
     return lexical_scope;
 }
@@ -944,14 +947,18 @@ fn isAnnexBBlockFunctionAliasGroup(self: *Transformer, editor: *SemanticEditor, 
     if (!(symbol.kind.isFunctionLike() or symbol.kind == .variable_var) or symbol.scope_id.isNone() or
         symbol.scope_id.toIndex() >= scopes.len) return false;
     if (!scopes[symbol.scope_id.toIndex()].kind.isVarScope()) return false;
+    var has_block_function = false;
     for (groups) |group| {
         if (group.kind != symbol.kind or group.lexical_scope.isNone() or group.lexical_scope.toIndex() >= scopes.len) return false;
         const lexical = scopes[group.lexical_scope.toIndex()];
-        if (lexical.kind.isVarScope() or lexical.is_strict) return false;
+        // The unchanged outer var declaration participates in validation too.
+        if (group.lexical_scope == symbol.scope_id and group.target_scope == symbol.scope_id) continue;
+        if (lexical.kind.isVarScope() or lexical.is_strict or !group.is_function_declaration) return false;
+        has_block_function = true;
         if (self.nearestVarScope(group.lexical_scope) != symbol.scope_id) return false;
         if (self.ast.getNode(group.first_node).tag != .binding_identifier) return false;
     }
-    return true;
+    return has_block_function;
 }
 
 fn isNamedFunctionExpressionBinding(self: *Transformer, parent: NodeIndex, binding: NodeIndex) bool {
@@ -999,6 +1006,14 @@ fn bridgeOutputParentToSourceParent(
 /// state-machine switch and references copied from the generator body need an
 /// explicit output owner before their IDs can pass the exact audit.
 pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_scope: ScopeId) Transformer.Error!void {
+    bindOutputScopesAndReferencesChecked(self, root, root_scope) catch |err| return editError(err);
+}
+
+/// Producers must select storage identities before final output placement.
+/// Keep conflicts observable without inventing a new ID or adopting a
+/// same-spelled binding. The production entry treats a conflict as a compiler
+/// invariant failure, matching other invalid semantic edits.
+pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex, root_scope: ScopeId) EditorError!void {
     const editor = try editorFor(self);
     if (self.outputOwnedScope(root) == null) {
         try editor.scope_owner_map.put(self.allocator, @backingInt(root), @backingInt(root_scope));
@@ -1117,7 +1132,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                         symbol.scope_id
                     else
                         outputBindingTargetScope(self, editor, &non_simple_parameter_scopes, scope, symbol, is_declaration_name, output_var);
-                    if (!target_scope.isNone() and (symbol.synthetic_name.len > 0 or symbol.scope_id != target_scope)) {
+                    if (!target_scope.isNone()) {
                         try output_bindings.append(self.allocator, .{
                             .node = work.node,
                             .raw_id = id,
@@ -1125,6 +1140,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                             .target_scope = target_scope,
                             .kind = symbol.kind,
                             .name = try self.ast.getTextStable(self.allocator, node.data.string_ref),
+                            .needs_placement = symbol.synthetic_name.len > 0 or symbol.scope_id != target_scope,
+                            .is_function_declaration = is_declaration_name,
                         });
                     }
                 }
@@ -1178,10 +1195,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         }
     }
 
-    // Resolve each emitted synthetic binding after the full output tree is
-    // known. One source SymbolId can materialize as both an outer storage
-    // binding and a callback-local binding; moving it while walking would make
-    // the last declaration steal the identity from every earlier one.
+    // Final placement can update an existing storage's scope or spelling.
+    // Distinct storage must already have distinct producer-selected IDs;
+    // this pass neither splits identities nor merges by matching names.
     std.mem.sort(OutputBindingCandidate, output_bindings.items, {}, outputBindingCandidateLessThan);
     var binding_groups: std.ArrayList(OutputBindingGroup) = .empty;
     defer binding_groups.deinit(self.allocator);
@@ -1192,6 +1208,12 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             sameOutputBindingGroup(output_bindings.items[candidate_start], output_bindings.items[candidate_end])) : (candidate_end += 1)
         {}
         const candidate = output_bindings.items[candidate_start];
+        var needs_placement = false;
+        var is_function_declaration = false;
+        for (output_bindings.items[candidate_start..candidate_end]) |binding| {
+            needs_placement = needs_placement or binding.needs_placement;
+            is_function_declaration = is_function_declaration or binding.is_function_declaration;
+        }
         try binding_groups.append(self.allocator, .{
             .raw_id = candidate.raw_id,
             .target_scope = candidate.target_scope,
@@ -1199,9 +1221,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             .kind = candidate.kind,
             .name = candidate.name,
             .first_node = candidate.node,
-            .candidate_start = candidate_start,
-            .candidate_end = candidate_end,
-            .resolved_id = candidate.raw_id,
+            .needs_placement = needs_placement,
+            .is_function_declaration = is_function_declaration,
         });
         candidate_start = candidate_end;
     }
@@ -1219,36 +1240,21 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             group_cursor = group_end;
             continue;
         }
-        const original_scope = editor.symbols.items[raw_id].scope_id;
+        if (group_end - group_cursor != 1) return error.InvalidSymbol;
+        if (!binding_groups.items[group_cursor].needs_placement) {
+            group_cursor = group_end;
+            continue;
+        }
         const original_name = if (editor.symbols.items[raw_id].synthetic_name.len > 0)
             editor.symbols.items[raw_id].synthetic_name
         else
             self.ast.getText(editor.symbols.items[raw_id].name);
-        var matching_scope_group: ?usize = null;
-        var ancestor_group: ?usize = null;
-        var best_distance: usize = std.math.maxInt(usize);
-        for (group_cursor..group_end) |index| {
-            const group = binding_groups.items[index];
-            if (group.target_scope == original_scope and std.mem.eql(u8, group.name, original_name)) {
-                matching_scope_group = index;
-                break;
-            }
-            if (group.target_scope == original_scope and matching_scope_group == null) matching_scope_group = index;
-            if (lexicalScopeDistance(editor.scopes.items, original_scope, group.target_scope)) |distance| {
-                if (distance < best_distance) {
-                    best_distance = distance;
-                    ancestor_group = index;
-                }
-            }
-        }
-        const primary = matching_scope_group orelse ancestor_group orelse group_cursor;
-        const primary_binding = binding_groups.items[primary];
+        const primary_binding = binding_groups.items[group_cursor];
         const editor_binding_id = outputSymbolIdAt(self, editor, primary_binding.first_node) orelse std.debug.panic("primary synthetic binding lost its SymbolId", .{});
         if (editor_binding_id != raw_id) std.debug.panic("primary synthetic binding changed SymbolId", .{});
         const existing_target_identity = primary_binding.target_scope.toIndex() < editor.scope_maps.items.len and
             editor.scope_maps.items[primary_binding.target_scope.toIndex()].get(primary_binding.name) == @as(?usize, raw_id) and
             std.mem.eql(u8, original_name, primary_binding.name);
-        var merged_into_existing_var = false;
         if (primary_binding.target_scope.toIndex() < editor.scope_maps.items.len) {
             if (editor.scope_maps.items[primary_binding.target_scope.toIndex()].get(primary_binding.name)) |existing_raw| {
                 if (existing_raw != raw_id and existing_raw < editor.symbols.items.len) {
@@ -1257,44 +1263,16 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                     if (primary_binding.kind == .variable_var and existing.kind == .variable_var and
                         existing.scope_id == primary_binding.target_scope and std.mem.eql(u8, existing_name, primary_binding.name))
                     {
-                        try self.rebindOutputBinding(primary_binding.first_node, @intCast(existing_raw));
-                        for (output_bindings.items[primary_binding.candidate_start + 1 .. primary_binding.candidate_end]) |binding| {
-                            try self.rebindOutputBinding(binding.node, @intCast(existing_raw));
-                        }
-                        binding_groups.items[primary].resolved_id = @intCast(existing_raw);
-                        merged_into_existing_var = true;
+                        return error.InvalidSymbol;
                     }
                 }
             }
         }
-        if (!merged_into_existing_var and !existing_target_identity and
+        if (!existing_target_identity and
             (editor.symbols.items[raw_id].scope_id != primary_binding.target_scope or
                 !std.mem.eql(u8, original_name, primary_binding.name)))
         {
             editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id)), primary_binding.target_scope, primary_binding.first_node) catch |err| return editError(err);
-        }
-        for (group_cursor..group_end) |index| {
-            if (index == primary) continue;
-            const group = binding_groups.items[index];
-            const binding_id = outputSymbolIdAt(self, editor, group.first_node) orelse std.debug.panic("split synthetic binding lost its SymbolId", .{});
-            if (binding_id != raw_id) std.debug.panic("split synthetic binding changed SymbolId", .{});
-            const new_id = editor.splitBindingIdentity(
-                group.first_node,
-                @fromBackingInt(@intCast(raw_id)),
-                group.lexical_scope,
-                group.kind,
-                self.ast.getNode(group.first_node).span,
-            ) catch |err| return editError(err);
-            const first_index = @backingInt(group.first_node);
-            if (self.symbol_ids.items.len <= first_index)
-                try self.symbol_ids.appendNTimes(self.allocator, null, first_index + 1 - self.symbol_ids.items.len);
-            self.symbol_ids.items[first_index] = @backingInt(new_id);
-            binding_groups.items[index].resolved_id = @backingInt(new_id);
-            for (output_bindings.items[group.candidate_start + 1 .. group.candidate_end]) |binding| {
-                if (outputSymbolIdAt(self, editor, binding.node) != @as(?u32, raw_id))
-                    std.debug.panic("synthetic binding alias changed before split", .{});
-                try self.rebindOutputBinding(binding.node, @backingInt(new_id));
-            }
         }
         group_cursor = group_end;
     }
@@ -1349,32 +1327,27 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             _ = self.exact_output_ref_symbol_ids.remove(raw);
             continue;
         }
-        var only_group: ?OutputBindingGroup = null;
-        var group_count: usize = 0;
-        for (binding_groups.items) |group| {
-            if (group.raw_id != reference.raw_id) continue;
-            only_group = group;
-            group_count += 1;
-        }
-        if (group_count == 1 and only_group != null and
-            !scopeVisibleFrom(editor.scopes.items, editor.symbols.items[only_group.?.resolved_id].scope_id, reference.scope))
-        {
-            try bridgeOutputReferenceScopeToBinding(editor, editor.symbols.items[only_group.?.resolved_id].scope_id, reference.scope);
-        }
-        var resolved_id = reference.raw_id;
-        var best_distance: usize = std.math.maxInt(usize);
-        for (binding_groups.items) |group| {
-            if (group.raw_id != reference.raw_id) continue;
-            if (lexicalScopeDistance(editor.scopes.items, reference.scope, group.target_scope)) |distance| {
-                if (distance < best_distance) {
-                    best_distance = distance;
-                    resolved_id = group.resolved_id;
-                }
+        // Source counterparts now participate in validation too. Search the
+        // ID-sorted groups instead of scanning every user binding for each use.
+        const group_start = std.sort.lowerBound(OutputBindingGroup, binding_groups.items, reference.raw_id, struct {
+            fn compare(id: u32, group: OutputBindingGroup) std.math.Order {
+                return std.math.order(id, group.raw_id);
             }
+        }.compare);
+        const only_group: ?OutputBindingGroup = if (group_start < binding_groups.items.len and
+            binding_groups.items[group_start].raw_id == reference.raw_id and
+            (group_start + 1 == binding_groups.items.len or binding_groups.items[group_start + 1].raw_id != reference.raw_id))
+            binding_groups.items[group_start]
+        else
+            null;
+        if (only_group != null and only_group.?.needs_placement and
+            !scopeVisibleFrom(editor.scopes.items, editor.symbols.items[only_group.?.raw_id].scope_id, reference.scope))
+        {
+            try bridgeOutputReferenceScopeToBinding(editor, editor.symbols.items[only_group.?.raw_id].scope_id, reference.scope);
         }
-        // Output spellings may be selected later by an ID-keyed override.
-        // Use the producer ID or its binding-group handle, never a different
-        // identity selected from the reference's spelling.
+        // The storage identity was selected by its producer, including any
+        // explicit producer split. Placement never creates or adopts an ID.
+        const resolved_id = reference.raw_id;
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
         if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[resolved_id].scope_id, reference.scope)) {
             // The emitted AST can move a declaration behind a function
