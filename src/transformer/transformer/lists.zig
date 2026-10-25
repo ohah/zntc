@@ -232,6 +232,16 @@ pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, 
     var body = sm_body;
     if (self.temp_var_counter > saved_counter) {
         body = try hoistTempVarsWithScope(self, body, saved_counter, span, self.generator_temp_var_spans.items, null, bindings);
+        if (self.semantic_edit_enabled and body != sm_body and self.ast.getNode(sm_body).tag == .switch_statement) {
+            // A switch wrapped for callback-local var declarations now has a
+            // real block parent. Reserve it at this producer boundary before
+            // callback assembly, keeping the existing switch ScopeId intact.
+            if (self.outputOwnedScope(sm_body)) |moved_scope| {
+                const parent = self.outputScopeParent(moved_scope);
+                const block_scope = try self.addGeneratedScope(parent, body, .block);
+                try self.reparentGeneratedScope(moved_scope, block_scope);
+            }
+        }
     }
     self.temp_var_counter = saved_counter;
     return body;

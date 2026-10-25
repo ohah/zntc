@@ -971,7 +971,14 @@ pub fn Members(comptime Transformer: type) type {
             });
         }
 
-        pub fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span, output_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
+            const source_scope = self.current_scope;
+            if (self.semantic_edit_enabled and !init_idx.isNone()) {
+                try self.reparentGeneratedBodyScopes(source_scope, output_scope, init_idx);
+                try @import("../class_strict_context.zig").moveSourceReferences(self, init_idx, source_scope, source_scope, output_scope);
+            }
+            self.current_scope = output_scope;
+            defer self.current_scope = source_scope;
             const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
             return buildStaticFieldDefineProperty(self, obj, key_idx, init_idx, span);

@@ -599,7 +599,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .field => |field| {
                         try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, iife_scope);
                         const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
-                        const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
+                        const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span, iife_scope);
                         try self.scratch.append(self.allocator, static_assign);
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
@@ -1134,7 +1134,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 switch (element) {
                     .field => |field| {
                         try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, iife_scope);
-                        try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span));
+                        try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span, iife_scope));
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                     // static private field → descriptor 객체 선언 `var _x = { writable: true, value: init }`.
