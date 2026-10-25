@@ -1982,6 +1982,21 @@ fn expectPreservedEagerBeforewalk(format: @import("../emitter.zig").EmitOptions.
         try std.testing.expect(!before_module.import_records[0].callsite_lowered);
         for (before_module.import_bindings) |binding| try std.testing.expect(!binding.guarded_eager_init_lowered and !binding.guarded_lazy_calls_lowered);
         before_module.import_records[0].source_node = source;
+        // A live source/specifier cannot legitimize a wrong birth owner.
+        // Only this typed declaration field is poisoned; all AST anchors,
+        // original SIDs and record/source relations stay unchanged.
+        for (before_module.import_bindings, 0..) |binding, binding_index| {
+            if (binding.is_helper or binding.callsite_target != null) continue;
+            const declaration = binding.local_declaration_node;
+            before_module.import_bindings[binding_index].local_declaration_node = orphan;
+            defer before_module.import_bindings[binding_index].local_declaration_node = declaration;
+            try std.testing.expectError(error.InvalidGuardedImportSource, @import("../guarded_import_callsite.zig").lower(&graph, &linker, null));
+            try std.testing.expectEqual(original_root, before_ast.transformed_root.?);
+            try std.testing.expectEqual(originals.len, before_module.import_bindings.len);
+            try std.testing.expect(!before_module.import_records[0].callsite_lowered);
+            for (before_module.import_bindings) |unchanged| try std.testing.expect(!unchanged.guarded_eager_init_lowered and !unchanged.guarded_lazy_calls_lowered);
+            break;
+        }
         try @import("../guarded_import_callsite.zig").lower(&graph, &linker, null);
         const module = graph.getModule(module_index).?;
         const semantic = module.semantic.?;
