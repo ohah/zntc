@@ -249,6 +249,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         try replacement_statements.appendSlice(a, builder.declarations.items);
         const new_root = try ast.addNode(.{ .tag = .program, .span = ast.getNode(root).span, .data = .{ .list = try ast.addNodeList(replacement_statements.items) } });
         try editor.remapScopeOwner(root, new_root);
+        try @import("strict_function_context.zig").remapProgram(&sem.strict_output_context, root, new_root);
         ast.transformed_root = new_root;
         try builder.validate();
         sem.applyEdit(try editor.finish());

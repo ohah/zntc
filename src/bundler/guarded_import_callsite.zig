@@ -290,38 +290,7 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
     }
 }
 
-/// Statement metadata may change; SymbolId/ScopeId and source read identities do not.
-fn refreshStatementInfo(module: *Module, shaker: ?*@import("tree_shaker.zig").TreeShaker, newly_live: []const NodeIndex) !void {
-    const a = module.parse_arena.?.allocator();
-    const ast = &module.ast.?;
-    const sem = &module.semantic.?;
-    const rebuilt = try @import("stmt_info.zig").buildFromSemantic(a, ast, sem.symbols.items, sem.scopes, sem.references, &sem.unresolved_references, false, false) orelse return;
-    module.prebuilt_stmt_info = rebuilt;
-    const s = shaker orelse return;
-    const index = module.index.toU32();
-    if (index >= s.module_stmt_infos.len or index >= s.reachable_stmts.len) return error.InvalidGuardedStatementState;
-    const old = s.module_stmt_infos[index] orelse return; // Preserve opaque wrapped-module policy.
-    var alive: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    if (s.reachable_stmts[index]) |reachable| {
-        for (old.stmts, 0..) |statement, i| if (i < reachable.capacity() and reachable.isSet(i)) try alive.put(a, statement.node_idx, {});
-    }
-    for (newly_live) |statement| try alive.put(a, @backingInt(statement), {});
-    var replacement = try std.DynamicBitSet.initEmpty(s.allocator, rebuilt.stmts.len);
-    errdefer replacement.deinit();
-    for (rebuilt.stmts, 0..) |statement, i| if (alive.contains(statement.node_idx)) replacement.set(i);
-    if (s.prebuilt_mask) |*mask| {
-        if (!mask.isSet(index)) {
-            var owned = old;
-            owned.deinit();
-        }
-        mask.set(index);
-    } else return error.InvalidGuardedStatementState;
-    if (s.reachable_stmts[index]) |*previous| previous.deinit();
-    s.reachable_stmts[index] = replacement;
-    s.module_stmt_infos[index] = rebuilt;
-    module.reachable_stmts = &s.reachable_stmts[index].?;
-    module.symbol_to_stmt = rebuilt.symbol_to_stmt;
-}
+const refreshStatementInfo = @import("statement_owner_projection.zig").refresh;
 
 pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.zig").Linker, shaker: ?*@import("tree_shaker.zig").TreeShaker) !void {
     if (!linker.inline_requires or !linker.entry_error_guard or graph.entry_guard_ast_provider == null) return;
@@ -456,6 +425,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         try statements.appendSlice(a, builder.declarations.items);
         const replacement = try ast.addNode(.{ .tag = .program, .span = ast.getNode(root).span, .data = .{ .list = try ast.addNodeList(statements.items) } });
         try editor.remapScopeOwner(root, replacement);
+        try @import("strict_function_context.zig").remapProgram(&sem.strict_output_context, root, replacement);
         ast.transformed_root = replacement;
         try projectStatementOwners(&editor, replacement, &sem.class_self_symbol_map, a);
         try builder.validate();

@@ -235,6 +235,9 @@ pub fn emitEsmWrappedModule(
     const stmt_list = root_node.data.list;
     const all_stmts = esm_ast.extra_data.items[stmt_list.start .. stmt_list.start + stmt_list.len];
 
+    var directive_stmts: std.ArrayList(u32) = .empty;
+    defer directive_stmts.deinit(allocator);
+    var in_prologue = true;
     var hoisted_stmts: std.ArrayList(u32) = .empty;
     defer hoisted_stmts.deinit(allocator);
     // #4598: TLA promise 임시변수의 리네임 반영된 이름 (없으면 null).
@@ -287,10 +290,28 @@ pub fn emitEsmWrappedModule(
         }
     }
 
+    var strict_factories: std.AutoHashMapUnmanaged(NodeIndex, @import("../strict_function_context.zig").Role) = .empty;
+    defer strict_factories.deinit(allocator);
+    if (module.semantic) |semantic| {
+        try @import("../strict_function_context.zig").validateContext(esm_ast, semantic, arena_alloc);
+        for (semantic.strict_output_context.functions) |role| {
+            try @import("../strict_function_context.zig").validate(esm_ast, semantic, role, arena_alloc);
+            if (role.kind != .factory) continue;
+            const slot = try strict_factories.getOrPut(allocator, role.declaration);
+            if (slot.found_existing) return error.InvalidStrictFunctionRole;
+            slot.value_ptr.* = role;
+        }
+    }
+
     for (all_stmts) |raw_idx| {
         const ni: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (ni.isNone()) continue;
         const stmt_node = esm_ast.nodes.items[raw_idx];
+        if (in_prologue and stmt_node.tag == .directive) {
+            try directive_stmts.append(allocator, raw_idx);
+            continue;
+        }
+        in_prologue = false;
 
         // export_named_declaration의 inner decl 추출 (있으면)
         const export_inner: ?NodeIndex = switch (stmt_node.tag) {
@@ -323,6 +344,21 @@ pub fn emitEsmWrappedModule(
                 break :blk null;
             } else null,
         };
+
+        const effective_node = export_inner orelse ni;
+        if (strict_factories.get(effective_node)) |role| {
+            if (!module.isStatementAliveBySym(@backingInt(role.symbol))) continue;
+            const raw_name = module.symbolName(role.symbol) orelse return error.InvalidStrictFunctionRole;
+            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(role.binding), raw_name));
+            if (options.strict_execution_order) {
+                try hoisted_var_names.append(allocator, resolved);
+                try body_func_stmts.append(allocator, raw_idx);
+            } else {
+                try hoisted_fn_names.append(allocator, resolved);
+                try hoisted_stmts.append(allocator, raw_idx);
+            }
+            continue;
+        }
 
         switch (effective_tag) {
             .function_declaration => {
@@ -1179,6 +1215,9 @@ pub fn emitEsmWrappedModule(
         }
     }
 
+    var directive_codegen = Codegen.initWithOptions(arena_alloc, esm_ast, .{ .minify_whitespace = options.minify_whitespace });
+    const directive_code = try directive_codegen.generateStatements(root, directive_stmts.items);
+
     // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
@@ -1215,6 +1254,7 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, esm_factory_name);
         try wrapped.appendSlice(allocator, "({");
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, true);
+        try wrapped.appendSlice(allocator, directive_code);
         if (has_refresh) {
             try appendHmrNamedTemplate(&wrapped, allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;", hmr_names);
             try appendHmrNamedTemplateParts(&wrapped, allocator, &.{
@@ -1257,6 +1297,7 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "({\n\t");
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, false);
         try wrapped.appendSlice(allocator, "\n");
+        try appendIndented(&wrapped, allocator, directive_code);
         if (has_refresh) {
             try appendHmrNamedTemplate(&wrapped, allocator, "\tvar __prevRefreshReg = __zntc_g.$RefreshReg$, __prevRefreshSig = __zntc_g.$RefreshSig$;\n", hmr_names);
             try appendHmrNamedTemplate(&wrapped, allocator, "\t__zntc_g.$RefreshReg$ = function(type, id) {\n", hmr_names);

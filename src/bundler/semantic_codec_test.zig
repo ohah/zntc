@@ -626,7 +626,7 @@ test "semantic_codec: checksum 유효 + 거대 map count → panic 아닌 error 
     const dup = try alloc.dupe(u8, buf.items);
     defer alloc.free(dup);
     const HEADER_LEN: usize = 16; // magic(4)+version(4)+checksum(8)
-    std.mem.writeInt(u32, dup[dup.len - 8 ..][0..4], std.math.maxInt(u32), .little);
+    std.mem.writeInt(u32, dup[dup.len - 20 ..][0..4], std.math.maxInt(u32), .little);
     // checksum 재계산(payload = HEADER_LEN..). 변조했어도 checksum 은 유효하게 만들어 가드만 검증.
     const new_checksum = wyhash.hashU64(dup[HEADER_LEN..]);
     std.mem.writeInt(u64, dup[8..16], new_checksum, .little);
@@ -672,7 +672,7 @@ test "semantic_codec: runtime identity roles reject malformed checksummed snapsh
     try testing.expectEqualDeep(snapshot, restored.runtime_identities.?.*);
     // Snapshot tail: present, CJS factory, CJS present + four IDs,
     // ESM factory, ESM present + five IDs, binary, two absent interop groups and absent HMR group (18 u32 words).
-    const tail = buf.items.len - 18 * 4;
+    const tail = buf.items.len - 21 * 4; // Exclude the following empty strict-role count and two context anchors.
     const corruptions = [_]struct { word: usize, value: u32 }{
         .{ .word = 0, .value = 2 }, // invalid snapshot presence
         .{ .word = 1, .value = 12 }, // out-of-range factory
@@ -809,7 +809,7 @@ test "HMR codec preserves independent canonical roles and rejects corrupt role h
     try testing.expectEqualDeep(ids, decoded.runtime_identities.?.hmr_internal.?);
     try testing.expect(module.validHmrRuntimeIds(decoded.runtime_identities.?.hmr_internal.?, decoded.symbols.items));
     // HMR is the last group: its presence and all fourteen IDs are checksummed.
-    const tail = bytes.items.len - 15 * 4;
+    const tail = bytes.items.len - 18 * 4; // Exclude the following empty strict-role count and two context anchors.
     const invalid = [_]struct { word: usize, value: u32 }{
         .{ .word = 0, .value = 2 },
         .{ .word = 1, .value = 19 },

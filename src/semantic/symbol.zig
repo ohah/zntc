@@ -49,7 +49,8 @@ pub const ParameterBodyVarCopy = struct {
 pub const BindingInstantiation = packed struct(u8) {
     annex_b: bool = false,
     parameter_copy: bool = false,
-    reserved: u6 = 0,
+    strict_output_function: bool = false,
+    reserved: u5 = 0,
 };
 
 /// 심볼 종류. 재선언 규칙이 kind별로 다르다.
