@@ -1811,6 +1811,7 @@ pub const Bundler = struct {
             if (linker) |*l| l.tree_shaker_active = true;
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, &s);
             if (linker) |*l| try @import("interop_callsite.zig").lower(graph, l, &s);
+            if (linker) |*l| try @import("static_import_callsite.zig").lower(graph, l);
 
             // ast mutation 이 있었거나 mangle 을 일부러 미뤘던 경우 (will_tree_shake)
             // tree-shake 결과 (`is_included`) 를 반영해 한 번만 mangle 한다.
@@ -1856,6 +1857,7 @@ pub const Bundler = struct {
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
             if (linker) |*l| {
                 try @import("interop_callsite.zig").lower(graph, l, null);
+                try @import("static_import_callsite.zig").lower(graph, l);
                 if (graph.dynamic_import_ast_provider) |provider| if (provider.active) try l.finalize(.{ .compute_renames = true, .compute_mangling = self.options.minify_identifiers, .clear_first = true });
             }
         }
