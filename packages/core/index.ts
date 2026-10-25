@@ -101,7 +101,16 @@ function wrapOutputFiles<T extends { outputFiles: Array<{ path: string; contents
 interface Diagnostic {
   text: string;
   code?: string;
-  location?: { file: string; line?: number; column?: number };
+  location?: {
+    file: string;
+    /** One-based line, when native source coordinates are available. */
+    line?: number;
+    /** Zero-based UTF-8 byte column. */
+    column?: number;
+    /** UTF-8 byte offset and byte length in the diagnostic source. */
+    offset?: number;
+    length?: number;
+  };
 }
 
 /**

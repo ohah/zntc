@@ -154,6 +154,12 @@ pub fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult,
             var js_file_path: c.napi_value = undefined;
             _ = c.napi_create_string_utf8(env, d.file_path.ptr, d.file_path.len, &js_file_path);
             _ = c.napi_set_named_property(env, js_loc, "file", js_file_path);
+            if (d.span) |span| {
+                common.setUint32Prop(env, js_loc, "offset", span.start);
+                common.setUint32Prop(env, js_loc, "length", span.end - span.start);
+            }
+            if (d.line) |line| common.setUint32Prop(env, js_loc, "line", line);
+            if (d.column) |column| common.setUint32Prop(env, js_loc, "column", column);
             _ = c.napi_set_named_property(env, js_diag, "location", js_loc);
         }
 

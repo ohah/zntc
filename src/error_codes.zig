@@ -266,6 +266,8 @@ pub const Code = enum(u16) {
     arrow_dynamic_eval = 1504,
     /// Class initializer lexical environment cannot be safely downleveled (error).
     static_initializer_dynamic_scope = 1505,
+    /// A dynamic capture retains private syntax that the target requires to lower (error).
+    arrow_private_dynamic_scope = 1506,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -503,6 +505,7 @@ pub const Code = enum(u16) {
             .exponentiation_dynamic_scope => "Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe",
             .arrow_dynamic_scope => "Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it",
             .static_initializer_dynamic_scope => "Class initializer or extracted private method cannot preserve its dynamic class lexical environment",
+            .arrow_private_dynamic_scope => "Retained dynamic capture contains private class syntax that requires lowering for the configured target",
             .arrow_dynamic_eval => "Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax",
         };
     }

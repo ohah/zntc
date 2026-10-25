@@ -592,6 +592,11 @@ pub const BundleResult = struct {
 
     /// 문자열 필드를 소유하는 diagnostic (graph 해제 후에도 유효).
     pub const OwnedDiagnostic = struct {
+        /// Optional byte span; EMPTY producer spans keep the legacy file-only shape.
+        span: ?@import("../lexer/token.zig").Span = null,
+        /// Human-readable one-based line and zero-based byte column.
+        line: ?u32 = null,
+        column: ?u32 = null,
         code: BundlerDiagnostic.ErrorCode,
         severity: BundlerDiagnostic.Severity,
         message: []const u8,
@@ -691,9 +696,27 @@ fn copyDiagnostics(
     dest: []BundleResult.OwnedDiagnostic,
     src: []const types.BundlerDiagnostic,
     filled: *usize,
+    graph: *ModuleGraph,
 ) !void {
     for (src) |d| {
+        const has_span = d.span.end >= d.span.start and (d.span.start != 0 or d.span.end != 0);
+        var line: ?u32 = null;
+        var column: ?u32 = null;
+        if (has_span) {
+            if (graph.path_to_module.get(d.file_path)) |module_index| {
+                const module = graph.modules.at(module_index.toU32());
+                if (d.span.end <= module.source.len and module.line_offsets.len > 0) {
+                    const source_info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = module.source, .line_offsets = module.line_offsets };
+                    const location = source_info.getLineColumn(d.span.start);
+                    line = location.line + 1;
+                    column = location.column;
+                }
+            }
+        }
         dest[filled.*] = .{
+            .span = if (has_span) d.span else null,
+            .line = line,
+            .column = column,
             .code = d.code,
             .severity = d.severity,
             .message = try allocator.dupe(u8, d.message),
@@ -2432,9 +2455,9 @@ pub const Bundler = struct {
                 self.allocator.free(d.file_path);
                 if (d.suggestion) |s| self.allocator.free(s);
             };
-            try copyDiagnostics(self.allocator, diags, graph.diagnostics.items, &filled);
+            try copyDiagnostics(self.allocator, diags, graph.diagnostics.items, &filled, graph);
             if (linker) |*l| {
-                try copyDiagnostics(self.allocator, diags, l.fatal_diagnostics.items, &filled);
+                try copyDiagnostics(self.allocator, diags, l.fatal_diagnostics.items, &filled, graph);
             }
             break :blk diags;
         } else null;

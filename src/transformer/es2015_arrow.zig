@@ -113,6 +113,24 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             return captures;
         }
 
+        /// Retention is intentional, but the private-lowering output contract
+        /// still forbids raw private syntax for this target. Diagnose the exact
+        /// retained subtree rather than weakening the codegen invariant.
+        pub fn noteRetainedPrivateSyntax(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!void {
+            if (!self.options.unsupported.requiresPrivateDownlevel() or self.unsupported_arrow_private_scope_span != null) return;
+            const live = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+            defer self.allocator.free(live);
+            for (live) |raw| {
+                const node = self.ast.nodes.items[raw];
+                if (node.tag != .private_identifier and node.tag != .private_field_expression) continue;
+                self.unsupported_arrow_private_scope_span = if (node.span.end <= self.ast.source.len and node.span.end > node.span.start)
+                    node.span
+                else
+                    self.ast.getNode(root).span;
+                return;
+            }
+        }
+
         const WithCaptureWork = struct {
             node: NodeIndex,
             in_with: bool,

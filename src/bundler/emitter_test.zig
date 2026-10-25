@@ -3855,3 +3855,85 @@ test "emitter: static initializer omission requires matching typed module error"
     try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.static_initializer_dynamic_scope, result.graph.diagnostics.items[3].code);
     try std.testing.expectEqual(types.BundlerDiagnostic.Severity.@"error", result.graph.diagnostics.items[3].severity);
 }
+
+test "emitter: retained private capture omission requires matching typed module error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.cjs", "function Parent(){return()=>{with({}){return class{#value=7;[this.key](){return this.#value}}}}}Parent();");
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.cjs");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    var linker = Linker.init(std.testing.allocator, &result.graph, .cjs);
+    defer linker.deinit();
+    const module = result.graph.modules.at(0);
+    const options: EmitOptions = .{ .transform_options_base = .{
+        .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es5),
+    } };
+    const Span = @import("../lexer/token.zig").Span;
+    // Same code at another path does not describe this module's failure.
+    result.graph.addDiag(.arrow_private_dynamic_scope, .@"error", "different.js", Span.EMPTY, .parse, "different module", null);
+    try std.testing.expectError(error.ArrowPrivateDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    // Same path and code at warning level is also insufficient.
+    result.graph.addDiag(.arrow_private_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, "warning only", null);
+    try std.testing.expectError(error.ArrowPrivateDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    // An unrelated typed error at this path must not swallow the actual error.
+    result.graph.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "other error", null);
+    try std.testing.expectError(error.ArrowPrivateDynamicScope, emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null));
+    result.graph.addDiag(.arrow_private_dynamic_scope, .@"error", module.path, Span.EMPTY, .parse, "already diagnosed", null);
+    const output = try emitter.emitModule(std.testing.allocator, module, &options, &linker, true, null, null, null, null, null, null, null, null, null);
+    try std.testing.expect(output == null);
+    try std.testing.expectEqual(@as(usize, 4), result.graph.diagnostics.items.len);
+    try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.arrow_private_dynamic_scope, result.graph.diagnostics.items[3].code);
+    try std.testing.expectEqual(types.BundlerDiagnostic.Severity.@"error", result.graph.diagnostics.items[3].severity);
+}
+
+test "retained private capture public bundle keeps typed error source coordinates" {
+    const Bundler = @import("bundler.zig").Bundler;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "function Parent(){return()=>{\nwith({}){return class{\n#value=7;[this.key](){return this.#value}}}}}";
+    try writeFile(tmp.dir, "index.cjs", source);
+    const path = try @import("test_helpers.zig").absPath(&tmp, "index.cjs");
+    defer std.testing.allocator.free(path);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{path}, .format = .cjs, .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5) });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.hasErrors());
+    // Failure results may still contain runtime stubs. They are not a
+    // successful artifact; the rejected source module must not be emitted.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "#value") == null);
+    const diagnostics = result.getDiagnostics();
+    try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+    const diagnostic = diagnostics[0];
+    try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.arrow_private_dynamic_scope, diagnostic.code);
+    try std.testing.expectEqual(types.BundlerDiagnostic.Severity.@"error", diagnostic.severity);
+    try std.testing.expect(std.mem.endsWith(u8, diagnostic.file_path, "index.cjs"));
+    const span = diagnostic.span orelse return error.MissingDiagnosticSpan;
+    try std.testing.expectEqualStrings("#value", source[span.start..span.end]);
+    try std.testing.expectEqual(@as(u32, 3), diagnostic.line.?);
+    try std.testing.expectEqual(@as(u32, 0), diagnostic.column.?);
+}
+
+test "retained private capture keeps absent source spans absent on existing warnings" {
+    const Bundler = @import("bundler.zig").Bundler;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.cjs", "function Parent(){with({}){return()=>this}}Parent();");
+    const path = try @import("test_helpers.zig").absPath(&tmp, "index.cjs");
+    defer std.testing.allocator.free(path);
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{path}, .format = .cjs, .unsupported = @import("../transformer/compat.zig").fromESTarget(.es5) });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    var found_warning = false;
+    for (result.getDiagnostics()) |diagnostic| {
+        if (diagnostic.code != .arrow_dynamic_scope) continue;
+        try std.testing.expectEqual(types.BundlerDiagnostic.Severity.warning, diagnostic.severity);
+        try std.testing.expect(diagnostic.span == null);
+        try std.testing.expect(diagnostic.line == null and diagnostic.column == null);
+        found_warning = true;
+    }
+    try std.testing.expect(found_warning);
+}
