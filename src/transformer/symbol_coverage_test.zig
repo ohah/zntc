@@ -5604,6 +5604,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     }
     const loop = source_loop orelse return error.MissingForAwaitLoop;
     const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForAwaitScope;
+    const source_loop_scope: ScopeId = @fromBackingInt(@intCast(loop_scope));
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -5615,13 +5616,22 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
+    transformer.current_scope = source_loop_scope;
     transformer.state_machine_depth = 1;
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
 
     const lowering = @import("es2018_for_await.zig").ES2018ForAwait(Transformer);
     _ = try lowering.rewriteForAwait(&transformer, loop, parser.ast.getNode(loop), .none, false, true);
     try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
+    var emitted_body: ?NodeIndex = null;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..]) |node| {
+        if (node.tag != .while_statement) continue;
+        emitted_body = node.data.binary.right;
+        break;
+    }
+    const body = emitted_body orelse return error.MissingLoweredForAwaitBody;
+    const body_scope = transformer.outputOwnedScope(body) orelse return error.MissingProducerBodyScope;
+    try std.testing.expectEqual(source_loop_scope, transformer.semantic_editor.?.scopes.items[body_scope.toIndex()].parent);
 
     var binding_ids: [4]?u32 = @splat(null);
     var ref_counts: [4]usize = @splat(0);
@@ -5682,6 +5692,8 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     }
     const loop = source_loop orelse return error.MissingForOfLoop;
     const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForOfScope;
+    const source_loop_scope: ScopeId = @fromBackingInt(@intCast(loop_scope));
+    const operation_parent_scope = analyzer.scopes.items[source_loop_scope.toIndex()].parent;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -5693,12 +5705,23 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
+    transformer.current_scope = operation_parent_scope;
+    transformer.generator_operation_scope = source_loop_scope;
     transformer.state_machine_depth = 1;
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
     try std.testing.expectEqual(@as(usize, 3), transformer.generator_temp_var_spans.items.len);
+    var emitted_body: ?NodeIndex = null;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .for_statement) continue;
+        emitted_body = @fromBackingInt(@intCast(transformer.ast.extra_data.items[node.data.extra + 3]));
+        _ = raw;
+        break;
+    }
+    const body = emitted_body orelse return error.MissingLoweredForOfBody;
+    const body_scope = transformer.outputOwnedScope(body) orelse return error.MissingProducerBodyScope;
+    try std.testing.expectEqual(source_loop_scope, transformer.semantic_editor.?.scopes.items[body_scope.toIndex()].parent);
 
     const expected_names = [_][]const u8{ "_a", "_b", "_c", "_d", "_step" };
     var found: usize = 0;

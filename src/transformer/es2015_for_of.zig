@@ -138,12 +138,14 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // so the traversal cursor can still be the enclosing scope.
             const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
                 self.outputOwnedScope(source_idx) orelse std.debug.panic("missing for-of source scope", .{})
+            else if (self.semantic_edit_enabled and register_sm_temps and !self.generator_operation_scope.isNone())
+                self.generator_operation_scope
             else
                 self.current_scope;
             const stable_scope = self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0;
             const outer_scope = if (stable_scope) self.outputScopeParent(loop_scope) else self.current_scope;
             const generated_temp_scope = if (self.semantic_edit_enabled and register_sm_temps)
-                self.nearestVarScope(loop_scope)
+                self.generator_state_machine_scope
             else
                 loop_scope;
             // The iterator step is read from the body, including by an extracted
@@ -277,8 +279,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_update = try makeAssign(self, try makeForOfRef(self, norm, norm_symbol, loop_scope, .{ .write = true }), try es_helpers.makeBoolLiteral(self, true), span);
 
             // body: <루프 변수 = _e.value>; body
-            const value = try es_helpers.makeStaticMember(self, try makeForOfRef(self, step, step_symbol, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "value"), span);
-            const for_body = try buildLoopBody(self, left, value, body, span);
+            const for_body = try createLoopBody(self, loop_scope, span);
+            const body_scope = self.outputOwnedScope(for_body) orelse loop_scope;
+            const value = try es_helpers.makeStaticMember(self, try makeForOfRef(self, step, step_symbol, body_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "value"), span);
+            _ = try buildLoopBody(self, left, value, body, span, loop_scope, for_body);
 
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @backingInt(for_init), @backingInt(for_test), @backingInt(for_update), @backingInt(for_body),
@@ -450,9 +454,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 @backingInt(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true })),
                 @backingInt(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
             }) } });
-            const value = try es_helpers.makeComputedMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }), span);
+            const for_body = try createLoopBody(self, loop_scope, span);
+            const body_scope = self.outputOwnedScope(for_body) orelse loop_scope;
+            const value = try es_helpers.makeComputedMember(self, try makeLoopBodyTempRead(self, keys_binding, body_scope), try makeLoopBodyTempRead(self, idx_binding, body_scope), span);
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
-                @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span)),
+                @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span, loop_scope, for_body)),
             });
             return makeBlock(self, &.{ decl, collect, for_stmt }, span);
         }
@@ -482,7 +488,18 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
         /// 루프 변수 대입을 앞에 둔 본문 블록. 원래 본문 블록에 루프 변수와 같은 이름의
         /// 선언이 있으면(헤더와 본문은 스코프가 다르다) 합치지 않고 한 겹 더 감싼다.
-        pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn createLoopBody(self: *Transformer, loop_scope: @import("../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!NodeIndex {
+            const result = try makeBlock(self, &.{}, span);
+            if (self.semantic_edit_enabled) _ = try self.addGeneratedScope(loop_scope, result, .block);
+            return result;
+        }
+
+        pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span, loop_scope: @import("../semantic/scope.zig").ScopeId, result: NodeIndex) Transformer.Error!NodeIndex {
+            const body_scope = if (self.semantic_edit_enabled)
+                self.outputOwnedScope(result) orelse std.debug.panic("loop body lost its planned scope", .{})
+            else
+                loop_scope;
+            if (self.semantic_edit_enabled) try validateLoopValueScope(self, value, body_scope);
             const left_node = self.ast.getNode(left);
             const head_stmt = if (left_node.tag == .variable_declaration) blk: {
                 const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(left_node.data.extra, 1)])));
@@ -491,58 +508,67 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     try es_helpers.makeDeclarator(self, binding, value, span),
                 }, self.ast.variableDeclarationKind(left_node), span);
             } else try es_helpers.makeExprStmt(self, try makeAssign(self, left, value, span), span);
-
-            if (body.isNone()) return makeBlock(self, &.{head_stmt}, span);
-            const body_node = self.ast.getNode(body);
-            if (body_node.tag == .block_statement and !(left_node.tag == .variable_declaration and try headCollidesWithBlock(self, left_node, body_node))) {
-                var items: std.ArrayList(NodeIndex) = .empty;
-                defer items.deinit(self.allocator);
-                try items.append(self.allocator, head_stmt);
-                var i: u32 = 0;
-                while (i < body_node.data.list.len) : (i += 1) {
-                    try items.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[body_node.data.list.start + i])));
-                }
-                return makeBlock(self, items.items, body_node.span);
+            // Keep the original block as an actual child: flattening its statements
+            // discards the node which owns the source lexical environment.
+            self.ast.nodes.items[@backingInt(result)].data.list = try self.ast.addNodeList(if (body.isNone()) &.{head_stmt} else &.{ head_stmt, body });
+            if (self.semantic_edit_enabled) {
+                try self.reparentGeneratedBodyScopes(loop_scope, body_scope, body);
+                try self.reparentGeneratedBodyScopes(loop_scope, body_scope, head_stmt);
+                try moveLoopHead(self, head_stmt, loop_scope, body_scope);
+                if (!body.isNone() and self.outputOwnedScope(body) == null)
+                    try moveLoopHead(self, body, loop_scope, body_scope);
             }
-            return makeBlock(self, &.{ head_stmt, body }, span);
+            return result;
         }
 
-        /// 헤더 선언 이름이 본문 블록 직계 선언(let/const/using/var/class/function)과 겹치는지.
-        fn headCollidesWithBlock(self: *Transformer, head: Node, block: Node) Transformer.Error!bool {
-            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
-            var head_names: std.ArrayList([]const u8) = .empty;
-            defer head_names.deinit(self.allocator);
-            const hd = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(head.data.extra, 1)])));
-            try BlockScoping.collectBindingNames(self, self.readNodeIdx(hd.data.extra, 0), &head_names);
+        fn validateLoopValueScope(self: *Transformer, value: NodeIndex, target: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, value);
+            defer self.allocator.free(refs);
+            for (refs) |node| {
+                const id = self.getSymbolIdAt(node) orelse std.debug.panic("loop value has no creation SymbolId", .{});
+                const maybe = self.semantic_editor.?.referenceForNode(node) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("loop value has an invalid creation reference: {s}", .{@errorName(err)}),
+                };
+                const actual = maybe orelse std.debug.panic("loop value has no creation reference", .{});
+                if (actual.scope_id != target or @backingInt(actual.symbol_id) != id)
+                    std.debug.panic("loop value reference lost its planned creation identity or scope", .{});
+            }
+        }
 
-            var block_names: std.ArrayList([]const u8) = .empty;
-            defer block_names.deinit(self.allocator);
-            var i: u32 = 0;
-            while (i < block.data.list.len) : (i += 1) {
-                const st = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[block.data.list.start + i])));
-                switch (st.tag) {
-                    .variable_declaration => {
-                        const ds = self.readU32(st.data.extra, 1);
-                        const dl = self.readU32(st.data.extra, 2);
-                        var j: u32 = 0;
-                        while (j < dl) : (j += 1) {
-                            const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
-                            if (d.tag == .variable_declarator) try BlockScoping.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), &block_names);
-                        }
-                    },
-                    .class_declaration, .function_declaration => {
-                        const name = self.readNodeIdx(st.data.extra, 0);
-                        if (!name.isNone()) try block_names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(name).span)));
-                    },
-                    else => {},
+        fn moveLoopHead(self: *Transformer, root: NodeIndex, source: @import("../semantic/scope.zig").ScopeId, target: @import("../semantic/scope.zig").ScopeId) Transformer.Error!void {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, root);
+            while (stack.pop()) |idx| {
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+                const editor = &self.semantic_editor.?;
+                if (node.tag == .binding_identifier) {
+                    if (self.getSymbolIdAt(idx)) |sid| {
+                        const symbol = editor.symbols.items[sid];
+                        if (symbol.scope_id == source and (symbol.kind == .variable_let or symbol.kind == .variable_const))
+                            try self.relocateOutputSymbolAs(sid, target, idx);
+                    }
                 }
-            }
-            for (head_names.items) |h| {
-                for (block_names.items) |b| {
-                    if (std.mem.eql(u8, h, b)) return true;
+                const maybe_ref = editor.referenceForNode(idx) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("loop head lost reference: {s}", .{@errorName(err)}),
+                };
+                if (maybe_ref) |reference| {
+                    if (!reference.flags.declare and reference.scope_id == source) {
+                        if (self.tracked_runtime_helper_ref_index.contains(@backingInt(idx)))
+                            try self.relocateRuntimeHelperRef(idx, target)
+                        else
+                            editor.moveReference(idx, target, reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => std.debug.panic("loop head cannot move reference: {s}", .{@errorName(err)}),
+                            };
+                    }
                 }
+                var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
             }
-            return false;
         }
 
         pub fn uniqueStepName(self: *Transformer, scope: @import("../semantic/scope.zig").ScopeId, late_output_name: bool) Transformer.Error!Span {
@@ -579,6 +605,16 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
+        }
+
+        fn makeLoopBodyTempRead(self: *Transformer, binding: Transformer.SyntheticBinding, scope: ScopeId) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, binding.name_span);
+            if (self.semantic_edit_enabled) {
+                const symbol = binding.symbol_id orelse std.debug.panic("loop body temp has no creation identity", .{});
+                try self.addSyntheticRefInScope(ref, symbol, scope, .{ .read = true });
+                if (self.state_machine_depth > 0) try self.trackExactOutputReference(ref, @backingInt(symbol));
+            }
+            return ref;
         }
 
         fn makeRefForSyntheticBinding(self: *Transformer, binding: Transformer.SyntheticBinding, scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {

@@ -155,10 +155,17 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .flags = 0,
             } } });
             const test_expr = try es_helpers.makeUnaryNot(self, try es_helpers.makeStaticMember(self, step_assign, try es_helpers.makePropertyName(self, "done"), span), span);
-            const value = try es_helpers.makeStaticMember(self, try makeRef(self, step_temp, loop_ref_scope, .{ .read = true }, register_semantics, register_sm_temps), try es_helpers.makePropertyName(self, "value"), span);
+            const for_body = try ForOf.createLoopBody(self, loop_ref_scope, span);
+            const body_scope = self.outputOwnedScope(for_body) orelse loop_ref_scope;
+            const value_ref = try makeRef(self, step_temp, body_scope, .{ .read = true }, register_semantics, register_sm_temps);
+            if (self.semantic_edit_enabled and register_sm_temps and !register_semantics) {
+                const symbol = step_temp.symbol_id orelse std.debug.panic("for-await body step has no creation identity", .{});
+                try self.addSyntheticRefInScope(value_ref, symbol, body_scope, .{ .read = true });
+            }
+            const value = try es_helpers.makeStaticMember(self, value_ref, try es_helpers.makePropertyName(self, "value"), span);
             const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
                 .left = test_expr,
-                .right = try ForOf.buildLoopBody(self, left, value, body, span),
+                .right = try ForOf.buildLoopBody(self, left, value, body, span, loop_ref_scope, for_body),
                 .flags = 0,
             } } });
             if (register_semantics) try self.remapCopiedScopeOwner(source_idx, while_stmt);

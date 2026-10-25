@@ -648,6 +648,46 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// for 루프 body를 _loop 함수로 추출하고 호출로 대체한다.
         ///
         /// 반환: { .loop_fn_decl, .call_stmt } — 호출부에서 조립.
+        // Only the actual extracted body moves here. The source loop header and
+        // its callsite retain their original owner outside the new function.
+        fn prepareExtractedGeneratorBody(self: *Transformer, body: NodeIndex, source: ScopeId, target: ScopeId, headers: []const u32, parameters: []const u32) Transformer.Error!void {
+            try self.reparentGeneratedBodyScopes(source, target, body);
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, body);
+            while (stack.pop()) |node| {
+                if (node.isNone()) continue;
+                const editor = &self.semantic_editor.?;
+                const maybe_ref = editor.referenceForNode(node) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("extracted body lost a source reference: {s}", .{@errorName(err)}),
+                };
+                if (maybe_ref) |reference| {
+                    if (!reference.flags.declare) {
+                        var id = @backingInt(reference.symbol_id);
+                        for (headers, parameters) |header, parameter| {
+                            if (id == header) {
+                                id = parameter;
+                                break;
+                            }
+                        }
+                        const scope = if (reference.scope_id == source) target else reference.scope_id;
+                        if (scope != reference.scope_id or id != @backingInt(reference.symbol_id)) {
+                            editor.relocateReference(node, scope, @fromBackingInt(id), reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => std.debug.panic("extracted body cannot move a source reference: {s}", .{@errorName(err)}),
+                            };
+                            const raw = @backingInt(node);
+                            if (self.symbol_ids.items.len <= raw) try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
+                            self.symbol_ids.items[raw] = id;
+                        }
+                    }
+                }
+                var children = ast_walk.children(self.ast, self.ast.getNode(node));
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+        }
+
         pub fn buildLoopClosureWithFlow(
             self: *Transformer,
             visited_body: NodeIndex,
@@ -796,6 +836,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     try header_symbol_ids.append(self.allocator, source_id);
                     try parameter_symbol_ids.append(self.allocator, parameter_id);
                 }
+                try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
                 try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,

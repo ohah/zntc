@@ -41,6 +41,7 @@ pub const es_helpers = @import("es_helpers.zig");
 pub const minify = @import("minify.zig");
 
 test {
+    _ = @import("loop_body_scope_semantic_test.zig");
     _ = @import("transformer/driver.zig");
     _ = @import("transformer/semantic_edit.zig");
     _ = @import("transformer/refresh.zig");
