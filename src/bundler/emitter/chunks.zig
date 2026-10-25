@@ -89,6 +89,7 @@ fn emitChunkModuleRange(
         const mi = @backingInt(mod_idx);
         if (mi >= graph.moduleCount()) continue;
         const module = graph.getModule(mod_idx) orelse continue;
+        if (@import("../runtime_entry_guard_calls.zig").isArtifact(graph, mod_idx)) continue;
         const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
         const used_names: ?[]const []const u8 = if (mi < used_names_by_modidx.len and !used_names_by_modidx[mi].all_used)
             used_names_by_modidx[mi].names
@@ -2490,7 +2491,14 @@ fn emitChunksImpl(
                 if (em.wrap_kind.isWrapped() and !tla_cjs) {
                     // 단일번들과 동일하게 `appendGuardedModuleCall` — entry_error_guard(RN/Metro)
                     // 활성 시 `__zntc_guarded(require_X)` 로 wrap, 아니면 appendModuleCall 과 동등.
-                    try parent.appendGuardedModuleCall(&chunk_output, allocator, em, options, if (linker) |l| &l.rename_table else null);
+                    if (@import("../runtime_entry_guard_calls.zig").find(graph, em.index)) |invocation| {
+                        try @import("../runtime_entry_guard_calls.zig").validatePlacement(graph, chunk_graph, invocation);
+                        try @import("../runtime_entry_guard_calls.zig").validate(graph, invocation);
+                        const artifact = graph.getModule(invocation.module_index) orelse return error.InvalidGuardInvocation;
+                        const code = try parent.emitModule(allocator, artifact, options, linker, false, null, null, null, null, null, null, null, null, null) orelse return error.InvalidGuardInvocation;
+                        defer allocator.free(code);
+                        try chunk_output.appendSlice(allocator, code);
+                    } else try parent.appendGuardedModuleCall(&chunk_output, allocator, em, options, if (linker) |l| &l.rename_table else null);
                 }
             }
         }

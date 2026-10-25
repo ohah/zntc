@@ -1714,6 +1714,9 @@ pub const Bundler = struct {
             });
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
+            if (self.options.code_splitting and !self.options.preserve_modules and !self.options.dev_mode and
+                self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
+                try @import("runtime_entry_guard_calls.zig").prepare(graph, io);
 
             // perf/hmr-link-rename-reuse: HMR-incremental 경로에서 가드 통과 시
             // computeRenames 를 skip 하고 초기 빌드 rename_table 을 재주입한다.
@@ -1804,6 +1807,8 @@ pub const Bundler = struct {
                 defer analyze_scope.end();
                 try s.analyze(self.options.entry_points);
             }
+            if (graph.entry_guard_ast_provider != null) try @import("runtime_entry_guard_ast.zig").activate(graph, &s);
+
             // metadata builder + collectUnifiedInput 가 `Module.is_included` 를 신뢰해
             // tree-shake 된 모듈의 preamble emit + mangle candidate 를 건너뛸 수 있도록
             // plug. post-shake finalize 보다 먼저 켜 두어야 collectUnifiedInput 가드가
@@ -1854,6 +1859,7 @@ pub const Bundler = struct {
             break :blk s;
         } else null;
         if (!will_tree_shake) {
+            if (graph.entry_guard_ast_provider != null) try @import("runtime_entry_guard_ast.zig").activate(graph, null);
             if (linker) |*l| try @import("emitter/runtime_helpers.zig").activateSingleBundleInterop(graph, l, null);
             if (linker) |*l| {
                 try @import("interop_callsite.zig").lower(graph, l, null);
@@ -2117,6 +2123,7 @@ pub const Bundler = struct {
                     .reg_split = self.options.format.isWrappedFormat() and !self.options.preserve_modules,
                 });
             defer chunk_graph.deinit();
+            try @import("runtime_entry_guard_calls.zig").place(graph, &chunk_graph);
 
             // 작은 common 청크 병합 (Rollup experimentalMinChunkSize 류).
             // computeCrossChunkLinks *전* — cross-chunk import 가 병합 후 기준 재계산.

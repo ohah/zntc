@@ -2110,6 +2110,16 @@ pub fn computeCrossChunkLinks(
             // 심볼 수준 크로스 청크 바인딩 추적 (linker가 있을 때만)
             if (linker) |lnk| {
                 for (m.import_bindings) |ib| {
+                    if (ib.callsite_target) |target| if (target.role == .entry_guard) {
+                        try @import("runtime_callsite_targets.zig").validateTargetRole(graph, target);
+                        const source_chunk = chunk_graph.getModuleChunk(target.symbol.module);
+                        if (!source_chunk.isNone() and source_chunk != chunk.index) {
+                            const provider = graph.getModule(target.symbol.module) orelse return error.InvalidEntryGuardProvider;
+                            try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, &seen_static, source_chunk, provider.export_bindings[0].exported_name, target.symbol.module.toU32());
+                        }
+                        continue;
+                    };
+
                     if (ib.source_type_only != true and ib.import_record_index < m.import_records.len) {
                         const target = m.import_records[ib.import_record_index].resolved;
                         if (!target.isNone()) if (graph.getModule(target)) |provider| {

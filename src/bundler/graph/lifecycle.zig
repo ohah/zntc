@@ -45,6 +45,7 @@ pub fn reset(self: *ModuleGraph) void {
     self.interop_ast_provider = null;
     self.dynamic_import_ast_provider = null;
     self.entry_guard_ast_provider = null;
+    self.entry_guard_invocations.clearRetainingCapacity();
     for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
     self.owned_diagnostic_strings.clearRetainingCapacity();
     self.diagnostics.clearRetainingCapacity();
@@ -178,6 +179,7 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
 }
 
 pub fn deinit(self: *ModuleGraph) void {
+    self.entry_guard_invocations.deinit(self.allocator);
     // 0.16: entry_dir 는 graph-owned dupe (build_flow). project_root 는 entry_dir
     // 로의 borrow 또는 user-set borrow 라 별도 free 안 함.
     if (self.entry_dir.len > 0) self.allocator.free(self.entry_dir);
