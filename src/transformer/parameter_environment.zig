@@ -130,7 +130,8 @@ pub fn parameterScopesByBody(self: anytype) std.mem.Allocator.Error!std.AutoHash
 pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table {
     var split_parameters: Table = .empty;
     errdefer split_parameters.deinit(self.allocator);
-    if ((!self.options.unsupported.default_params and !self.options.unsupported.object_spread) or
+    if ((!self.options.unsupported.default_params and !self.options.unsupported.object_spread and
+        !@import("native_parameter_cells.zig").hasPotentialClassWork(self)) or
         !self.semantic_edit_enabled or self.scopes.len == 0) return split_parameters;
 
     const Self = @TypeOf(self.*);
@@ -158,13 +159,14 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         const function = self.ast.nodes.items[function_raw];
         const params = self.ast.functionParamsList(function);
         if (params.len == 0 or !Params.hasDefaultOrRest(self, params)) continue;
-        // Native defaults keep the parameter environment native. Only an object
-        // rest parameter, lowered into the body, moves the list there — like
-        // `collectRenames`. Splitting anything else renamed the parameter and
+        const native_cells_apply = try @import("native_parameter_cells.zig").applies(self, @fromBackingInt(@intCast(function_raw)));
+        // Native defaults keep the parameter environment native unless the
+        // exact cell plan moves object rest or lowered instance initialization
+        // into the body. Splitting anything else renamed the parameter and
         // left a same-named body `var` undefined (#5668:
         // `function g(a = 1) { var a; return a }` at es2015).
-        if (!self.options.unsupported.default_params and
-            (try Params.firstObjectRestParamIndex(self, params)) == null) continue;
+        if (!self.options.unsupported.default_params and !native_cells_apply and
+            (!self.options.unsupported.object_spread or (try Params.firstObjectRestParamIndex(self, params)) == null)) continue;
         const scope_raw = self.scope_owner_map.get(@intCast(function_raw)) orelse continue;
         if (scope_raw >= scopes.len) continue;
         const function_scope: ScopeId = @fromBackingInt(@intCast(scope_raw));
@@ -239,7 +241,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
                 if (body_vars.contains(id)) try referenced_shared_ids.put(self.allocator, id, {});
             }
         }
-        if (split_dynamic_body_vars or try @import("native_parameter_cells.zig").applies(self, function)) {
+        if (split_dynamic_body_vars or native_cells_apply) {
             var body_var_ids = body_vars.keyIterator();
             while (body_var_ids.next()) |id| try referenced_shared_ids.put(self.allocator, id.*, {});
         }
@@ -366,7 +368,8 @@ fn canonicalIdentifier(allocator: std.mem.Allocator, name: []const u8) std.mem.A
 pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
     var result: Table = .empty;
     errdefer result.deinit(self.allocator);
-    if (!self.options.unsupported.class_field and self.options.use_define_for_class_fields) return result;
+    const lowers_public_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
+    if (!lowers_public_fields and !@import("native_parameter_cells.zig").hasPotentialClassWork(self)) return result;
     const scope_maps = scopeMapsOf(self);
     const scope_owners = scopeOwnersOf(self);
     var names: std.StringHashMapUnmanaged(void) = .empty;
@@ -381,9 +384,10 @@ pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
             switch (member.tag) {
                 .method_definition => {
                     const key = self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
-                    if (@import("es_helpers.zig").isConstructorKey(self, key)) constructor = @backingInt(member_idx);
+                    if ((self.ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static) == 0 and
+                        @import("es_helpers.zig").isConstructorKey(self, key)) constructor = @backingInt(member_idx);
                 },
-                .property_definition => {
+                .property_definition, .accessor_property => {
                     const flags = self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags);
                     if ((flags & ast_mod.PropertyFlags.is_static) != 0) continue;
                     const init = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.init);
@@ -393,6 +397,10 @@ pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
             }
         }
         const ctor = constructor orelse continue;
+        // Additional private/backing-field captures are needed only when this
+        // exact constructor will receive the native lexical-cell producer.
+        if (!lowers_public_fields and
+            !try @import("native_parameter_cells.zig").applies(self, @fromBackingInt(ctor))) continue;
         if (names.count() == 0) continue;
         const scopes_to_check = [_]?u32{ scope_owners.get(ctor), if (functionParamsNode(self, ctor)) |p| scope_owners.get(p) else null };
         for (scopes_to_check) |maybe_scope| {
@@ -433,7 +441,8 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
     var result: Table = .empty;
     errdefer result.deinit(self.allocator);
     const lower_defaults = self.options.unsupported.default_params;
-    const lower_object_rest_only = !lower_defaults and self.options.unsupported.object_spread;
+    const lower_object_rest_only = !lower_defaults and
+        (self.options.unsupported.object_spread or @import("native_parameter_cells.zig").hasPotentialClassWork(self));
     if (!lower_defaults and !lower_object_rest_only) return result;
     const params_mod = @import("es2015_params.zig").ES2015Params(@TypeOf(self.*));
     const symbols = symbolsOf(self);
@@ -443,6 +452,8 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
     for (self.ast.nodes.items, 0..) |node, raw| {
         const params = self.ast.functionParamsList(node);
         if (params.len == 0 or !params_mod.hasDefaultOrRest(self, params)) continue;
+        const native_cells_apply = try @import("native_parameter_cells.zig").applies(self, @fromBackingInt(@intCast(raw)));
+        if (!lower_defaults and !self.options.unsupported.object_spread and !native_cells_apply) continue;
         const scope_raw = scope_owners.get(@intCast(raw)) orelse continue;
         if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) continue;
         const scope = scopes[scope_raw];
@@ -458,7 +469,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             (scopes[parameter_scope_raw].subtree_has_direct_eval or scopes[parameter_scope_raw].subtree_has_with);
         if (scopes[parameter_scope_raw].blocksMangling() and !parameter_dynamic_lookup) continue;
         const first_affected_param = if (lower_object_rest_only)
-            if (try @import("native_parameter_cells.zig").applies(self, node)) @as(u32, 0) else (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
+            if (native_cells_apply) @as(u32, 0) else (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
         else
             0;
         if (parameter_dynamic_lookup) {

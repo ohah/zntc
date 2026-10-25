@@ -214,8 +214,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         self.current_scope = self.originalFunctionScope(source_owner);
     defer self.current_scope = saved_scope;
 
-    const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and
-        es_helpers.isConstructorKey(self, self.readNodeIdx(e, ast_mod.MethodExtra.key));
+    const is_ctor = es_helpers.isClassConstructorMethod(self, source_owner, node);
     // Parameter initializers use this function's new.target context too.
     const saved_new_target_ctx = self.new_target_ctx;
     if (self.options.unsupported.new_target) {

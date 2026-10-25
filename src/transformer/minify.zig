@@ -888,7 +888,7 @@ const InlineSites = struct {
             const node = ast.nodes.items[ni];
             const child_owner = if (isBoundary(node.tag)) ni else work.owner;
             const is_list = switch (node.tag) {
-                .program, .block_statement, .static_block => true,
+                .program, .block_statement, .function_body, .static_block => true,
                 else => false,
             };
             var it = ast_walk.children(ast, node);
@@ -914,6 +914,67 @@ const InlineSites = struct {
         if (read_ni >= self.owner.len or decl_stmt >= self.owner.len) return false;
         if (self.owner[read_ni] == self.owner[decl_stmt]) return true;
         return self.declLeadsItsScope(ast, decl_stmt);
+    }
+
+    fn lexicalBindingPrecedes(self: *InlineSites, ast: *const Ast, ctx: MinifyCtx, scratch: std.mem.Allocator, sid: u32, decl_stmt: u32) bool {
+        if (!self.build(ast, scratch) or decl_stmt >= self.stmt_parent.len) return false;
+        const parent = self.stmt_parent[decl_stmt];
+        if (parent == none_owner or parent >= ast.nodes.items.len) return false;
+        const list = ast.nodes.items[parent].data.list;
+        for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            if (raw == decl_stmt) return false;
+            const statement = ast.nodes.items[raw];
+            if (statement.tag == .class_declaration) {
+                const name = ast.readExtraNode(statement.data.extra, ast_mod.ClassExtra.name);
+                if (!name.isNone() and @backingInt(name) < ctx.symbol_ids.len and ctx.symbol_ids[@backingInt(name)] == sid) return true;
+            }
+            if (statement.tag != .variable_declaration) continue;
+            const extra = statement.data.extra;
+            const start = ast.readExtra(extra, 1);
+            const len = ast.readExtra(extra, 2);
+            for (ast.extra_data.items[start .. start + len]) |declarator| {
+                const pattern = ast.readExtraNode(ast.nodes.items[declarator].data.extra, 0);
+                var bindings = ast_walk.bindingIdentifiers(scratch, ast, pattern, .{}) catch return false;
+                defer bindings.deinit();
+                while (bindings.next() catch return false) |binding| {
+                    if (@backingInt(binding) < ctx.symbol_ids.len and ctx.symbol_ids[@backingInt(binding)] == sid) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn initializerLexicalReadsInitialized(self: *InlineSites, ast: *const Ast, ctx: MinifyCtx, scratch: std.mem.Allocator, init: NodeIndex, scope: scope_mod.ScopeId, decl_stmt: u32) bool {
+        var stack: std.ArrayList(NodeIndex) = .empty;
+        defer stack.deinit(scratch);
+        stack.append(scratch, init) catch return false;
+        while (stack.pop()) |idx| {
+            if (idx.isNone()) continue;
+            const raw = @backingInt(idx);
+            if (raw >= ast.nodes.items.len) return false;
+            const node = ast.nodes.items[raw];
+            switch (node.tag) {
+                .function, .function_expression, .arrow_function_expression => continue,
+                .identifier_reference => {
+                    if (raw < ctx.symbol_ids.len) {
+                        if (ctx.symbol_ids[raw]) |sid| {
+                            if (sid >= ctx.symbols.len) return false;
+                            const dependency = ctx.symbols[sid];
+                            if (dependency.decl_flags.block_scoped and !dependency.decl_flags.is_function) {
+                                // Source position cannot prove initialization:
+                                // an outer closure can run before its binding.
+                                if (dependency.decl_flags.is_import or dependency.scope_id != scope or
+                                    !self.lexicalBindingPrecedes(ast, ctx, scratch, sid, decl_stmt)) return false;
+                            }
+                        }
+                    }
+                },
+                else => {},
+            }
+            var children = ast_walk.children(ast, node);
+            while (children.next()) |child| stack.append(scratch, child) catch return false;
+        }
+        return true;
     }
 
     fn declLeadsItsScope(self: *const InlineSites, ast: *const Ast, decl_stmt: u32) bool {
@@ -1155,6 +1216,9 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
         needs_scope_check = true;
     }
     if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+    // Keep the existing pure-expression optimization, but require actual
+    // preceding initialization before moving an immutable lexical dependency.
+    if (!sites.initializerLexicalReadsInitialized(ast, ctx, scratch, init_idx, sym.scope_id, decl_stmt_idx)) return;
 
     // 실측 identifier_reference 수 확인 — ref_deltas 를 감안한 ref_count 와 정확히 1 일치.
     if (sym_id >= counts.len) return;

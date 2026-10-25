@@ -49,13 +49,19 @@ fn expectPrivateReferencesAtCreation(source: []const u8) !void {
     var original_members = parser.ast.iterateExtraList(parser.ast.getNode(body).data.list);
     while (original_members.next()) |member| {
         const node = parser.ast.getNode(member);
-        if (node.tag == .method_definition and @import("es_helpers.zig").isConstructorKey(&transformer, parser.ast.readExtraNode(node.data.extra, ast.MethodExtra.key)))
+        if (node.tag == .method_definition and
+            parser.ast.readExtra(node.data.extra, ast.MethodExtra.flags) & ast.MethodFlags.is_static == 0 and
+            @import("es_helpers.zig").isConstructorKey(&transformer, parser.ast.readExtraNode(node.data.extra, ast.MethodExtra.key)))
             source_ctor_scope = transformer.outputOwnedScope(member);
     }
     transformer.current_scope = class_scope;
     transformer.current_class_name_node = binding;
     transformer.current_class_self_symbol_id = self_id;
     try transformer.buildBlockRenameMap();
+    // Prove the scope choice before private descriptor references are created;
+    // a later method-body relocation must not hide a wrong static owner.
+    if (source_ctor_scope) |original|
+        try std.testing.expectEqual(original, try @import("es2022.zig").ES2022(Transformer).reservePrivateConstructorScope(&transformer, body, &.{}, &.{}));
     var output_body: ast.NodeIndex = .none;
     var pre: std.ArrayList(ast.NodeIndex) = .empty;
     var ctor: std.ArrayList(ast.NodeIndex) = .empty;
@@ -90,7 +96,9 @@ fn expectPrivateReferencesAtCreation(source: []const u8) !void {
         var members = transformer.ast.iterateExtraList(transformer.ast.getNode(output_body).data.list);
         while (members.next()) |member| {
             const node = transformer.ast.getNode(member);
-            if (node.tag != .method_definition or !@import("es_helpers.zig").isConstructorKey(&transformer, transformer.ast.readExtraNode(node.data.extra, ast.MethodExtra.key))) continue;
+            if (node.tag != .method_definition or
+                transformer.ast.readExtra(node.data.extra, ast.MethodExtra.flags) & ast.MethodFlags.is_static != 0 or
+                !@import("es_helpers.zig").isConstructorKey(&transformer, transformer.ast.readExtraNode(node.data.extra, ast.MethodExtra.key))) continue;
             const scope = transformer.outputOwnedScope(member);
             try std.testing.expect(scope != null);
             try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[scope.?.toIndex()].kind);
@@ -177,6 +185,11 @@ test "#4819 private reference creation implicit derived constructor" {
 }
 test "#4819 private reference creation existing non-simple constructor" {
     try expectPrivateReferencesAtCreation("class Box{constructor(value=1){this.value=value;}#value=2;read(){return this.#value;}}");
+}
+test "#4819 private reference creation static constructor name does not own instance initialization" {
+    try expectPrivateReferencesAtCreation("class Box{#value=7;static constructor(value=2){return value}read(){return this.#value}}");
+    try expectPrivateReferencesAtCreation("class Box{#value=7;constructor(value=1){this.value=value}static constructor(value=2){return value}}");
+    try expectPrivateReferencesAtCreation("class Box{#value=7;static constructor(value=2){return value}constructor(value=1){this.value=value}}");
 }
 test "#4819 private reference creation static method descriptor" {
     try expectPrivateReferencesAtCreation("class Box{static #read(){return 1;}static run(){return this.#read();}}");

@@ -80,7 +80,8 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     const lower_block_scoping = self.options.unsupported.block_scoping;
     const lower_parameter_object_rest = self.options.unsupported.object_spread;
     const lower_class_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
-    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields) return;
+    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields and
+        !@import("../native_parameter_cells.zig").hasPotentialClassWork(self)) return;
     if (self.scopes.len == 0) return;
     var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
     defer parameter_renames.deinit(self.allocator);
