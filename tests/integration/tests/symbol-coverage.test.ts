@@ -6828,6 +6828,161 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('bundled synchronous using lowering retains the edited semantic graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundled-using-retained-graph-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      [
+        "const _stack = 'source-binding';",
+        'const events: string[] = [];',
+        'const make = (name: string) => ({ [Symbol.dispose]() { events.push(name); } });',
+        "using unused = make('outer');",
+        "{ using _stack2 = make('inner'); events.push('body'); }",
+        "setTimeout(() => console.log(events.join(','), _stack), 0);",
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es2022',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+      );
+      expect(mode, `${proc.stderr}`).toContain('semantic_graph=retained');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+      );
+      expect(identity, `${proc.stderr}`).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${identity}`,
+        ).toBe(0);
+      }
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('body,inner,outer source-binding\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('bundled await-using and loop-head lowering keep semantic reanalysis', () => {
+    const cases = [
+      {
+        name: 'await-using',
+        source: [
+          'const events: string[] = [];',
+          'async function run() {',
+          "  await using resource = { [Symbol.asyncDispose]() { events.push('dispose'); } };",
+          "  events.push('body');",
+          '}',
+          "run().then(() => console.log(events.join(',')));",
+        ].join('\n'),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'for-of-using',
+        source: [
+          'const events: string[] = [];',
+          "for (using resource of [{ [Symbol.dispose]() { events.push('dispose'); } }]) events.push('body');",
+          "console.log(events.join(','));",
+        ].join('\n'),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-state-machine',
+        target: '--target=es2015',
+        source: [
+          'const events: string[] = [];',
+          'async function run() {',
+          "  using resource = { [Symbol.dispose]() { events.push('dispose'); } };",
+          "  events.push('body');",
+          '}',
+          "run().then(() => console.log(events.join(',')));",
+        ].join('\n'),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-generator-state-machine',
+        target: '--target=es5',
+        source: [
+          'const events: string[] = [];',
+          'function* run() {',
+          "  using resource = { [Symbol.dispose]() { events.push('dispose'); } };",
+          "  events.push('body');",
+          "  yield 'yield';",
+          '}',
+          'for (const value of run()) events.push(value);',
+          "console.log(events.join(','));",
+        ].join('\n'),
+        output: 'body,yield,dispose\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-bundled-${fixture.name}-fallback-`));
+      const input = join(dir, 'entry.ts');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(input, fixture.source);
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            fixture.target ?? '--target=es2022',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const mode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe(fixture.output);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('bundled using helper references survive same-name function parameters', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-using-helper-shadow-'));
     const input = join(dir, 'entry.js');

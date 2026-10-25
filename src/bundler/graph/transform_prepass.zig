@@ -5412,6 +5412,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_for_of = false;
     var found_native_for_await = false;
     var found_lowered_for_await = false;
+    var found_lowered_using = false;
     var found_native_class = false;
     var found_lowered_simple_class = false;
     var found_lowered_simple_static_class_field = false;
@@ -5480,7 +5481,25 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
-                if (options.unsupported.using and kind.isUsing()) return false;
+                if (options.unsupported.using and kind.isUsing()) {
+                    // Synchronous using declarations directly owned by a
+                    // program or block list are rewritten with exact generated
+                    // bindings, references, and scopes. Await-using,
+                    // switch/loop-head declarations, and combinations with
+                    // async/generator state-machine lowering stay on semantic
+                    // reanalysis because they add control-flow ownership.
+                    if (kind != .using or options.unsupported.async_await or
+                        options.unsupported.generator or options.unsupported.async_generator) return false;
+                    if (!source_parent_map_ready) {
+                        if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                        source_parent_map_ready = true;
+                    }
+                    const parent_raw = source_parent_map.get(raw_idx) orelse return false;
+                    if (parent_raw >= ast.nodes.items.len) return false;
+                    const parent_tag = ast.nodes.items[parent_raw].tag;
+                    if (parent_tag != .program and parent_tag != .block_statement) return false;
+                    found_lowered_using = true;
+                }
                 if (options.unsupported.block_scoping and kind != .@"var" and
                     !lowered_for_in_heads.contains(raw_idx) and
                     !lowered_for_of_heads.contains(raw_idx) and
@@ -6015,6 +6034,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_class or
+        found_lowered_using or
         found_lowered_simple_static_class_field or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
@@ -6084,11 +6104,13 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_stage3_decorator_helpers: bool,
     allow_legacy_decorator_helpers: bool,
     allow_async_helper: bool,
+    allow_using_helper: bool,
     allow_es5_async_method_super_get: bool,
     allow_es5_async_method_super_set: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
+    if (allow_using_helper) other_helpers.using_ctx = false;
     if (allow_derived_class_helpers) {
         other_helpers.extends = false;
         other_helpers.call_super = false;
@@ -6121,10 +6143,13 @@ fn runtimeHelpersSafeForRetainedGraph(
 test "retained legacy decorators admit their tracked metadata helper" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const helpers: RuntimeHelpers = .{ .legacy_decorator = true, .metadata = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false, false));
     const metadata_only: RuntimeHelpers = .{ .metadata = true };
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false, false));
+    const using_helpers: RuntimeHelpers = .{ .using_ctx = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, true, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
 }
 
 /// Stage 3 decorators are always lowered by the transformer, even when the
@@ -9862,7 +9887,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         }
     }
 
-    // Type erasure, Flow match lowering, TypeScript enums, supported JSX,
+    // Type erasure, Flow match lowering, TypeScript enums, sync using,
+    // supported JSX,
     // Stage 3 decorators, bounded named-class cases, and audited
     // iterator/destructuring/spread subsets preserve the edited semantic
     // graph. JSX, decorators, and syntax lowering may add synthetic helper
@@ -9873,6 +9899,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         allow_stage3_decorator_helpers,
         allow_legacy_decorator_helpers,
         allow_async_helper,
+        can_keep_semantic_graph and transformer.runtime_helpers.using_ctx,
         allow_es5_async_method_super_get,
         allow_es5_async_method_super_set,
     )) {
