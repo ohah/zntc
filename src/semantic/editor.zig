@@ -1407,7 +1407,7 @@ fn deadLocalConstRemovalForTest(mutation: DeadLocalConstMutation) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = if (mutation == .live_reference)
+    const source = if (mutation == .live_reference or mutation == .wrong_binding_node)
         "const local = 1; function read() { return local; } const other = 2;"
     else
         "const local = 1; const other = 2;";
@@ -1443,6 +1443,16 @@ fn deadLocalConstRemovalForTest(mutation: DeadLocalConstMutation) !void {
         }
     }
     const binding = local_binding orelse return error.MissingLocalBinding;
+    var local_reference: ?NodeIndex = null;
+    if (mutation == .wrong_binding_node) {
+        for (analyzer.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) == local_symbol and !reference.flags.declare) {
+                local_reference = reference.node_index;
+                break;
+            }
+        }
+        if (local_reference == null) return error.MissingLocalReference;
+    }
     const scope_id = analyzer.symbols.items[local_symbol].scope_id;
     var editor = try analyzer.beginEdit();
     defer editor.deinit();
@@ -1491,7 +1501,10 @@ fn deadLocalConstRemovalForTest(mutation: DeadLocalConstMutation) !void {
     for (live_nodes) |raw| reachable.set(raw);
 
     const symbol_id: SymbolId = @fromBackingInt(local_symbol);
-    const removal_node = if (mutation == .wrong_binding_node) root else binding;
+    const removal_node = if (mutation == .wrong_binding_node)
+        local_reference orelse return error.MissingLocalReference
+    else
+        binding;
     const result = editor.removeUnreachableLocalConstDeclaration(removal_node, &reachable);
     switch (mutation) {
         .none => {
