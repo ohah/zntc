@@ -689,7 +689,7 @@ pub fn buildMetadataForAst(
             // 소스에 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용
             // 지점으로 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.
             for (m.import_records, 0..) |rec, rec_index| {
-                if (!rec.kind.isEagerEvalDependency()) continue;
+                if (!rec.kind.isEagerEvalDependency() or rec.callsite_lowered) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_mod = self.graph.getModule(rec.resolved) orelse continue;
                 if (self.tree_shaker_active and !target_mod.is_included) continue;
@@ -741,6 +741,7 @@ pub fn buildMetadataForAst(
 
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
+            if (rec.callsite_lowered) continue;
 
             // Phase D elision: transformer 가 AST 에서 specifier 를 drop 하는 것과 대칭으로
             // linker 도 preamble 생성을 건너뛴다. verbatim_module_syntax=true 면 양쪽 모두 보존.
