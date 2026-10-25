@@ -688,6 +688,57 @@ fn isReactRefreshRuntimePath(path: []const u8) bool {
         std.mem.endsWith(u8, path, "\\react-refresh\\runtime.js");
 }
 
+fn diagnosticSpanBelongsToSource(span: @import("../lexer/token.zig").Span, source_len: usize) bool {
+    return span.end >= span.start and span.end <= source_len and (span.start != 0 or span.end != 0);
+}
+
+test "owned diagnostic coordinates reject invalid and out of source spans" {
+    try std.testing.expect(diagnosticSpanBelongsToSource(.{ .start = 2, .end = 5 }, 5));
+    try std.testing.expect(diagnosticSpanBelongsToSource(.{ .start = 5, .end = 5 }, 5));
+    try std.testing.expect(!diagnosticSpanBelongsToSource(.{ .start = 0, .end = 0 }, 5));
+    try std.testing.expect(!diagnosticSpanBelongsToSource(.{ .start = 4, .end = 3 }, 5));
+    try std.testing.expect(!diagnosticSpanBelongsToSource(.{ .start = 2, .end = 6 }, 5));
+}
+
+test "owned diagnostic nonmodule span stays absent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var cache = ResolveCache.init(alloc, .{});
+    var graph = ModuleGraph.init(alloc, &cache);
+    const diagnostics = [_]types.BundlerDiagnostic{.{
+        .code = .arrow_private_dynamic_scope,
+        .severity = .@"error",
+        .message = "unsupported retained private syntax",
+        .step = .transform,
+        .file_path = "not-a-source-module.cjs",
+        .span = .{ .start = 2, .end = 5 },
+    }};
+    var dest: [1]BundleResult.OwnedDiagnostic = undefined;
+    var filled: usize = 0;
+    try copyDiagnostics(alloc, &dest, &diagnostics, &filled, &graph);
+    try std.testing.expectEqual(@as(usize, 1), filled);
+    try std.testing.expect(dest[0].span == null);
+    try std.testing.expect(dest[0].line == null and dest[0].column == null);
+    var module = @import("module.zig").Module.init(@fromBackingInt(0), "source.cjs");
+    module.source = "value";
+    try graph.modules.append(alloc, module);
+    try graph.path_to_module.put(alloc, "source.cjs", @fromBackingInt(0));
+    for ([_]@import("../lexer/token.zig").Span{
+        .{ .start = 4, .end = 3 },
+        .{ .start = 2, .end = 6 },
+        .{ .start = 0, .end = 0 },
+    }) |invalid_span| {
+        var diagnostic = diagnostics[0];
+        diagnostic.file_path = "source.cjs";
+        diagnostic.span = invalid_span;
+        filled = 0;
+        try copyDiagnostics(alloc, &dest, &.{diagnostic}, &filled, &graph);
+        try std.testing.expect(dest[0].span == null);
+        try std.testing.expect(dest[0].line == null and dest[0].column == null);
+    }
+}
+
 /// BundlerDiagnostic 을 allocator-owned OwnedDiagnostic 으로 deep copy 해 `dest` 에 채운다.
 /// `filled` 는 이미 채워진 item 수 — 루프 내부에서 매 entry 성공 후 증가한다 (호출자의
 /// errdefer 가 부분 할당분을 정확히 해제할 수 있도록).
@@ -699,13 +750,16 @@ fn copyDiagnostics(
     graph: *ModuleGraph,
 ) !void {
     for (src) |d| {
-        const has_span = d.span.end >= d.span.start and (d.span.start != 0 or d.span.end != 0);
+        var validated_span: ?@import("../lexer/token.zig").Span = null;
         var line: ?u32 = null;
         var column: ?u32 = null;
-        if (has_span) {
+        if (d.span.end >= d.span.start and (d.span.start != 0 or d.span.end != 0)) {
             if (graph.path_to_module.get(d.file_path)) |module_index| {
                 const module = graph.modules.at(module_index.toU32());
-                if (d.span.end <= module.source.len and module.line_offsets.len > 0) {
+                if (diagnosticSpanBelongsToSource(d.span, module.source.len)) {
+                    validated_span = d.span;
+                }
+                if (validated_span != null and module.line_offsets.len > 0) {
                     const source_info: @import("../rich_diagnostic.zig").SourceInfo = .{ .source = module.source, .line_offsets = module.line_offsets };
                     const location = source_info.getLineColumn(d.span.start);
                     line = location.line + 1;
@@ -714,7 +768,7 @@ fn copyDiagnostics(
             }
         }
         dest[filled.*] = .{
-            .span = if (has_span) d.span else null,
+            .span = validated_span,
             .line = line,
             .column = column,
             .code = d.code,
