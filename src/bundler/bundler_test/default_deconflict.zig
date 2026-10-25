@@ -2405,3 +2405,338 @@ test "preserved plain imports evaluate with exact zero-argument init callees and
         try expectDefaultRuntimeOutput(script, expected);
     };
 }
+
+const mixedForwardedRecordCases = [_]struct { name: []const u8, entry: []const u8, provider: []const u8, dep: []const u8, expected: []const u8 = "[42,42]\n" }{
+    .{ .name = "default-arrow-local-reexport", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "default-function-local-reexport", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value};export default function run(){return value()}", .dep = "export function value(){return 42}" },
+    .{ .name = "default-class-local-reexport", .entry = "import Run,{value}from'./provider.mjs';export default()=>[new Run().run(),value()]", .provider = "import{value}from'./dep.mjs';export{value};export default class Run{run(){return value()}}", .dep = "export function value(){return 42}" },
+    .{ .name = "default-expression-snapshot", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value};const run=()=>value();export default run", .dep = "export function value(){return 42}" },
+    .{ .name = "default-alias-syntax", .entry = "import{default as run,value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "namespace-mixed-forward", .entry = "import*as ns from'./provider.mjs';import{value}from'./provider.mjs';export default()=>[ns.default(),value()]", .provider = "import{value}from'./dep.mjs';export{value};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "quoted-private-collision", .entry = "import run,{'init_provider' as value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value as 'init_provider'};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "escaped-private-collision", .entry = "import run,{'\\u0069nit_provider' as value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value as '\\u0069nit_provider'};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "two-forwarded-names", .entry = "import run,{value,other}from'./provider.mjs';export default()=>[run(),value()+other()-42]", .provider = "import{value,other}from'./dep.mjs';export{value,other};export default()=>value()", .dep = "export function value(){return 42}export function other(){return 42}" },
+    .{ .name = "explicit-from-reexport", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value}from'./dep.mjs';export{value}from'./dep.mjs';export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "live-variable-after-default-call", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}", .dep = "export let value=()=>42;export function change(){value=()=>43}", .expected = "[42,43]\n" },
+    .{ .name = "live-function-after-default-call", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value()]", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}", .dep = "export function value(){return 42}export function change(){value=()=>43}", .expected = "[42,43]\n" },
+    .{ .name = "known-nested-function-statement", .entry = "import run,{value}from'./provider.mjs';export default function(){const first=run();return[first,value()]}", .provider = "import{value}from'./dep.mjs';export{value};export default()=>value()", .dep = "export function value(){return 42}" },
+    .{ .name = "named-class-expression-method-scope", .entry = "import run,{value}from'./provider.mjs';const Box=class Inner{read(){return value()}};export default function(){run();return[42,new Box().read()]}", .provider = "import{value}from'./dep.mjs';export{value};export default()=>value()", .dep = "export function value(){return 42}" },
+};
+
+const mixedForwardedReadCases = [_]@TypeOf(mixedForwardedRecordCases[0]){
+    .{ .name = "stored-function-value", .entry = "import run,{value}from'./provider.mjs';export default()=>{run();const fn=value;return[42,fn()]}", .dep = "export let value=()=>42;export function change(){value=()=>43}", .expected = "[42,43]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "shorthand-receiver", .entry = "import run,{value}from'./provider.mjs';export default()=>{run();const box={value,marker:43};return[42,box.value()]}", .dep = "export let value=()=>42;export function change(){value=function(){return this.marker}}", .expected = "[42,43]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "member-receiver", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value.read()]", .dep = "export let value=function(){return 42};value.answer=42;value.read=function(){return this.answer};export function change(){value=function(){return 43};value.answer=43;value.read=function(){return this.answer}}", .expected = "[42,43]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "unbound-tag", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),value`x`]", .dep = "export let value=function(){return 42};export function change(){value=function(){return this===undefined?43:99}}", .expected = "[42,43]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "constructor-value", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),new value().answer]", .dep = "export let value=class{constructor(){this.answer=42}};export function change(){value=class{constructor(){this.answer=43}}}", .expected = "[42,43]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "same-binding-twice", .entry = "import run,{value}from'./provider.mjs';export default()=>[run(),[value(),value()]]", .dep = "export let value=()=>42;export function change(){let count=42;value=()=>++count}", .expected = "[42,[43,44]]\n", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}" },
+    .{ .name = "canonical-value-shadow", .entry = "import run,{value as read}from'./provider.mjs';export default()=>{run();function inner(value){return read()}return[42,inner(99)]}", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}", .dep = "export let value=()=>42;export function change(){value=()=>43}", .expected = "[42,43]\n" },
+    .{ .name = "guard-and-init-shadow", .entry = "import run,{value as read}from'./provider.mjs';export default()=>{run();function inner($zg,init_provider,init_dep,value){return read()}return[42,inner(91,92,93,94)]}", .provider = "import{value,change}from'./dep.mjs';export{value};export default()=>{change();return 42}", .dep = "export let value=()=>42;export function change(){value=()=>43}", .expected = "[42,43]\n" },
+};
+
+test "preserved mixed forwarded records evaluate actual providers without replacing value identities" {
+    var runtime_failures: usize = 0;
+    for (mixedForwardedRecordCases ++ mixedForwardedReadCases) |case| for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .cjs }) |format| for ([_]bool{ false, true }) |guarded| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("mixed runtime {s} {s} guard={} minify={}\n", .{ case.name, @tagName(format), guarded, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", if (format == .esm) "{\"type\":\"module\"}" else "{\"type\":\"commonjs\"}");
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "provider.mjs", case.provider);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native_script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(JSON.stringify(ns.default()));", .{entry});
+        defer std.testing.allocator.free(native_script);
+        try expectDefaultRuntimeOutput(native_script, case.expected);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = guarded, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        for (module.import_bindings) |binding| {
+            if (binding.callsite_target != null or binding.is_helper) continue;
+            const sid = binding.local_symbol.semanticIndex().?;
+            try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, module.semantic.?.symbols.items[sid].kind);
+            try std.testing.expectEqual(@as(?u32, sid), module.semantic.?.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
+            try std.testing.expect(binding.guarded_eager_init_lowered);
+        }
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const load = if (format == .esm)
+            try std.fmt.allocPrint(std.testing.allocator, "await import('file://{s}')", .{emitted})
+        else
+            try std.fmt.allocPrint(std.testing.allocator, "(await import('node:module')).createRequire(import.meta.url)('{s}')", .{emitted});
+        defer std.testing.allocator.free(load);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns={s};console.log(JSON.stringify(ns.default()));", .{load});
+        defer std.testing.allocator.free(script);
+        expectDefaultRuntimeOutput(script, case.expected) catch |err| {
+            runtime_failures += 1;
+            std.debug.print("mixed runtime failed {s} {s} guard={} minify={} error={s}\n", .{ case.name, @tagName(format), guarded, minify, @errorName(err) });
+            for (output.outputs.?) |file| {
+                const basename = std.fs.path.basename(file.path);
+                if (std.mem.eql(u8, basename, "entry.js") or std.mem.eql(u8, basename, "dep.js")) std.debug.print("mixed emitted {s}:\n{s}\n", .{ basename, file.contents });
+            }
+        };
+    };
+    try std.testing.expectEqual(@as(usize, 0), runtime_failures);
+}
+
+test "mixed forwarded record beforewalk preserves original alias SID Scope and source roles" {
+    const Binding = @import("../binding_scanner.zig").ImportBinding;
+    const Reference = @import("../../semantic/symbol.zig").Reference;
+    for (mixedForwardedRecordCases) |case| for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .cjs }) |format| for ([_]bool{ false, true }) |guarded| {
+        errdefer std.debug.print("mixed beforewalk {s} {s} guard={}\n", .{ case.name, @tagName(format), guarded });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "provider.mjs", case.provider);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .code_splitting = true, .preserve_modules = true, .entry_error_guard = guarded };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.code_splitting = true;
+        graph.preserve_modules = true;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, format);
+        defer linker.deinit();
+        linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = guarded });
+        try linker.link();
+        linker.populateImportSymbols();
+        if (guarded) try @import("../runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        const module_index = graph.path_to_module.get(entry).?;
+        const before = graph.moduleAtMut(module_index).?;
+        const owner = before.semantic.?.captureOwnerToken();
+        const original = try std.testing.allocator.dupe(Binding, before.import_bindings);
+        defer std.testing.allocator.free(original);
+        const references = try std.testing.allocator.dupe(Reference, before.semantic.?.references);
+        defer std.testing.allocator.free(references);
+        const before_root = before.ast.?.transformed_root orelse @as(@import("../../parser/ast.zig").NodeIndex, @fromBackingInt(@as(u32, @intCast(before.ast.?.nodes.items.len - 1))));
+        const before_contexts = try @import("../statement_owner_projection.zig").collect(before.parse_arena.?.allocator(), &before.ast.?, before_root);
+        var expected_inits: std.AutoHashMapUnmanaged(@import("../symbol.zig").SymbolID, void) = .empty;
+        defer expected_inits.deinit(std.testing.allocator);
+        for (original) |binding| {
+            const direct = graph.getModule(before.import_records[binding.import_record_index].resolved).?;
+            try expected_inits.put(std.testing.allocator, try direct.esmInitSymbol(), {});
+            if (linker.getResolvedBinding(module_index.toU32(), binding.local_span)) |resolved| {
+                const canonical = graph.getModule(resolved.canonical.module_index).?;
+                try expected_inits.put(std.testing.allocator, try canonical.esmInitSymbol(), {});
+            }
+        }
+        try std.testing.expectEqual(@as(u32, 2), expected_inits.count());
+        var alias_reads: usize = 0;
+        var known_nested_coordinate = false;
+        for (original) |binding| {
+            if (binding.kind != .named or binding.importsDefault() or binding.symbol != .alias) continue;
+            for (references) |reference| {
+                if (@backingInt(reference.symbol_id) == binding.local_symbol.semanticIndex().? and reference.isValueUse()) {
+                    alias_reads += 1;
+                    if (reference.scope_stmt_idx != Reference.NO_STMT and @backingInt(reference.scope_id) != 0) known_nested_coordinate = true;
+                }
+            }
+        }
+        try std.testing.expect(alias_reads > 0);
+        if (std.mem.eql(u8, case.name, "known-nested-function-statement") or std.mem.eql(u8, case.name, "named-class-expression-method-scope")) try std.testing.expect(known_nested_coordinate);
+        try @import("../guarded_import_callsite.zig").lower(&graph, &linker, null);
+        const after = graph.getModule(module_index).?;
+        try std.testing.expectEqual(owner, after.semantic.?.owner_token);
+        for (original, 0..) |binding, index| {
+            const current = after.import_bindings[index];
+            try std.testing.expect(current.local_symbol.eql(binding.local_symbol));
+            try std.testing.expect(current.symbol.eql(binding.symbol));
+            try std.testing.expectEqual(binding.local_symbol_node, current.local_symbol_node);
+            try std.testing.expectEqual(binding.local_declaration_node, current.local_declaration_node);
+            try std.testing.expectEqual(binding.kind, current.kind);
+            try std.testing.expect(current.guarded_eager_init_lowered);
+            try std.testing.expectEqual(binding.kind == .named and !binding.importsDefault() and binding.symbol == .alias, current.guarded_lazy_calls_lowered);
+            const sid = binding.local_symbol.semanticIndex().?;
+            try std.testing.expectEqual(@as(?u32, sid), after.semantic.?.symbol_ids[@backingInt(binding.local_symbol_node.?)]);
+            try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, after.semantic.?.symbols.items[sid].kind);
+        }
+        for (references) |reference| {
+            var matches: usize = 0;
+            for (after.semantic.?.references) |current| {
+                if (current.node_index != reference.node_index or current.declaration_node_index != reference.declaration_node_index or current.symbol_id != reference.symbol_id) continue;
+                matches += 1;
+                try std.testing.expectEqual(reference.scope_id, current.scope_id);
+                try std.testing.expectEqual(reference.flags, current.flags);
+            }
+            try std.testing.expectEqual(@as(usize, 1), matches);
+        }
+        var imported: usize = 0;
+        for (after.import_bindings) |binding| {
+            const target = binding.callsite_target orelse continue;
+            try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            if (target.role == .esm_init) {
+                try std.testing.expect(expected_inits.contains(target.symbol));
+                imported += 1;
+            } else try std.testing.expect(guarded and target.role == .entry_guard);
+        }
+        try std.testing.expectEqual(@as(usize, 2), imported);
+        var calls: usize = 0;
+        var eager_calls: usize = 0;
+        var lazy_calls: usize = 0;
+        const ast = &after.ast.?;
+        const after_contexts = try @import("../statement_owner_projection.zig").collect(after.parse_arena.?.allocator(), ast, ast.transformed_root.?);
+        for (try @import("../../parser/ast_walk.zig").collectReachableNodeIndices(after.parse_arena.?.allocator(), ast)) |raw| {
+            const node = ast.nodes.items[raw];
+            if (node.tag != .call_expression) continue;
+            const callee = ast.readExtraNode(node.data.extra, 0);
+            const callee_sid = after.semantic.?.symbol_ids[@backingInt(callee)] orelse continue;
+            for (after.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                if (binding.local_symbol.semanticIndex() != @as(?u32, callee_sid)) continue;
+                try std.testing.expectEqual(if (guarded) @import("../binding_scanner.zig").CallsiteRole.entry_guard else .esm_init, target.role);
+                try std.testing.expectEqual(@as(u32, if (guarded) 1 else 0), ast.readExtra(node.data.extra, 2));
+                var found = false;
+                for (after.semantic.?.references) |reference| {
+                    if (reference.node_index != callee) continue;
+                    found = true;
+                    try std.testing.expectEqual(after_contexts[@backingInt(callee)].?.stmt_idx, reference.stmt_idx);
+                    if (@backingInt(reference.scope_id) == 0) {
+                        eager_calls += 1;
+                        try std.testing.expect(reference.stmt_idx != Reference.NO_STMT);
+                        try std.testing.expectEqual(reference.stmt_idx, reference.scope_stmt_idx);
+                    } else {
+                        lazy_calls += 1;
+                        var original_scope = false;
+                        for (references) |source| {
+                            if (!source.isValueUse() or source.scope_id != reference.scope_id) continue;
+                            for (original) |source_binding| {
+                                if (source_binding.kind != .named or source_binding.importsDefault() or source_binding.symbol != .alias or source_binding.local_symbol.semanticIndex() != @as(?u32, @backingInt(source.symbol_id))) continue;
+                                const context = before_contexts[@backingInt(source.node_index)] orelse continue;
+                                if (source.scope_stmt_idx == reference.scope_stmt_idx and reference.stmt_idx == context.stmt_idx + 1) original_scope = true;
+                            }
+                        }
+                        try std.testing.expect(original_scope);
+                    }
+                }
+                try std.testing.expect(found);
+                calls += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), eager_calls);
+        try std.testing.expectEqual(alias_reads * 2, lazy_calls);
+        try std.testing.expectEqual(1 + alias_reads * 2, calls);
+    };
+}
+
+test "mixed forwarded generic reads clone exact source identities and keep shorthand keys static" {
+    const Reference = @import("../../semantic/symbol.zig").Reference;
+    const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+    for (mixedForwardedReadCases) |case| for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .cjs }) |format| for ([_]bool{ false, true }) |guarded| {
+        errdefer std.debug.print("mixed generic beforewalk {s} {s} guard={}\n", .{ case.name, @tagName(format), guarded });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", case.entry);
+        try writeFile(tmp.dir, "provider.mjs", case.provider);
+        try writeFile(tmp.dir, "dep.mjs", case.dep);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = format, .code_splitting = true, .preserve_modules = true, .entry_error_guard = guarded };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.code_splitting = true;
+        graph.preserve_modules = true;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, format);
+        defer linker.deinit();
+        linker.setEmitFormat(format, .{ .inline_requires = true, .entry_error_guard = guarded });
+        try linker.link();
+        linker.populateImportSymbols();
+        if (guarded) try @import("../runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        const module_index = graph.path_to_module.get(entry).?;
+        const before = graph.moduleAtMut(module_index).?;
+        const owner = before.semantic.?.captureOwnerToken();
+        var selected: ?usize = null;
+        for (before.import_bindings, 0..) |binding, index| if (binding.kind == .named and !binding.importsDefault()) {
+            selected = index;
+        };
+        const original = before.import_bindings[selected.?];
+        try std.testing.expect(original.symbol == .alias);
+        const sid = original.local_symbol.semanticIndex().?;
+        const references = try std.testing.allocator.dupe(Reference, before.semantic.?.references);
+        defer std.testing.allocator.free(references);
+        var scopes: std.AutoHashMapUnmanaged(ScopeId, usize) = .empty;
+        defer scopes.deinit(std.testing.allocator);
+        var read_count: usize = 0;
+        for (references) |reference| {
+            if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse()) continue;
+            const slot = try scopes.getOrPut(std.testing.allocator, reference.scope_id);
+            if (!slot.found_existing) slot.value_ptr.* = 0;
+            slot.value_ptr.* += 1;
+            read_count += 1;
+        }
+        try std.testing.expect(read_count > 0);
+        var expected_retagged = read_count;
+        var shorthand: ?@import("../../parser/ast.zig").NodeIndex = null;
+        for (try @import("../../parser/ast_walk.zig").collectReachableNodeIndices(before.parse_arena.?.allocator(), &before.ast.?)) |raw| {
+            const node = before.ast.?.nodes.items[raw];
+            if (node.tag == .call_expression) {
+                const callee = before.ast.?.readExtraNode(node.data.extra, 0);
+                if (before.ast.?.getNode(callee).tag == .identifier_reference and before.semantic.?.symbol_ids[@backingInt(callee)] == @as(?u32, sid)) expected_retagged -= 1;
+            }
+            if (node.tag == .object_property and node.data.binary.right.isNone() and before.semantic.?.symbol_ids[@backingInt(node.data.binary.left)] == @as(?u32, sid)) shorthand = @fromBackingInt(raw);
+        }
+        if (std.mem.eql(u8, case.name, "shorthand-receiver")) try std.testing.expect(shorthand != null);
+        if (std.mem.eql(u8, case.name, "same-binding-twice")) try std.testing.expectEqual(@as(usize, 2), read_count);
+        try @import("../guarded_import_callsite.zig").lower(&graph, &linker, null);
+        const after = graph.getModule(module_index).?;
+        try std.testing.expectEqual(owner, after.semantic.?.owner_token);
+        const current = after.import_bindings[selected.?];
+        try std.testing.expect(current.symbol.eql(original.symbol));
+        try std.testing.expect(current.local_symbol.eql(original.local_symbol));
+        try std.testing.expectEqual(original.local_symbol_node, current.local_symbol_node);
+        try std.testing.expect(current.guarded_eager_init_lowered and current.guarded_lazy_calls_lowered);
+        try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.import_binding, after.semantic.?.symbols.items[sid].kind);
+        var current_scopes: std.AutoHashMapUnmanaged(ScopeId, usize) = .empty;
+        defer current_scopes.deinit(std.testing.allocator);
+        var current_reads: usize = 0;
+        for (after.semantic.?.references) |reference| {
+            if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse()) continue;
+            try std.testing.expect(reference.flags.read and !reference.flags.write);
+            try std.testing.expect(after.ast.?.getNode(reference.node_index).tag == .identifier_reference);
+            try std.testing.expectEqual(@as(?u32, sid), after.semantic.?.symbol_ids[@backingInt(reference.node_index)]);
+            const slot = try current_scopes.getOrPut(std.testing.allocator, reference.scope_id);
+            if (!slot.found_existing) slot.value_ptr.* = 0;
+            slot.value_ptr.* += 1;
+            current_reads += 1;
+        }
+        try std.testing.expectEqual(read_count, current_reads);
+        try std.testing.expectEqual(scopes.count(), current_scopes.count());
+        var iterator = scopes.iterator();
+        while (iterator.next()) |slot| try std.testing.expectEqual(@as(?usize, slot.value_ptr.*), current_scopes.get(slot.key_ptr.*));
+        var retagged: usize = 0;
+        for (references) |reference| {
+            if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse()) continue;
+            if (after.ast.?.getNode(reference.node_index).tag != .sequence_expression) continue;
+            retagged += 1;
+            try std.testing.expect(after.semantic.?.symbol_ids[@backingInt(reference.node_index)] == null);
+            for (after.semantic.?.references) |row| try std.testing.expect(row.node_index != reference.node_index);
+        }
+        try std.testing.expectEqual(expected_retagged, retagged);
+        if (shorthand) |property| {
+            const node = after.ast.?.getNode(property);
+            const key = node.data.binary.left;
+            try std.testing.expect(after.ast.?.getNode(key).tag == .identifier_reference);
+            try std.testing.expect(after.semantic.?.symbol_ids[@backingInt(key)] == null);
+            for (after.semantic.?.references) |row| try std.testing.expect(row.node_index != key);
+            try std.testing.expect(!node.data.binary.right.isNone());
+        }
+    };
+}

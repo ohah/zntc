@@ -39,16 +39,22 @@ fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, bind
     const direct = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
     if (direct.wrap_kind != .esm or !direct.shouldGuard(true) or direct.isUserDeclaredSideEffectful() or (linker.tree_shaker_active and !direct.is_included)) return null;
     const canonical = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return null;
-    if (canonical.canonical.synthetic_member != null or !binding.symbol.isValid() or binding.symbol.semanticIndex() == null or binding.symbol.moduleIndex() != canonical.canonical.module_index) return null;
-    const value = graph.getModule(binding.symbol.moduleIndex()) orelse return error.InvalidGuardedImportBinding;
+    if (canonical.canonical.synthetic_member != null or !binding.symbol.isValid()) return null;
+    const value = graph.getModule(canonical.canonical.module_index) orelse return error.InvalidGuardedImportBinding;
     if (!linker.entry_error_guard and (direct.in_async_cone or value.in_async_cone)) return null;
     if (value.wrap_kind != .esm or !value.shouldGuard(true) or value.isUserDeclaredSideEffectful() or (linker.tree_shaker_active and !value.is_included)) return null;
-    const value_semantic = value.semantic orelse return error.InvalidGuardedImportBinding;
-    const value_sid = binding.symbol.semanticIndex().?;
-    if (value_sid >= value_semantic.symbols.items.len or value_semantic.symbols.items[value_sid].synthetic_kind != null) return null;
-    // Exporting a namespace binding has eager initialization semantics.
-    for (value.import_bindings) |other| {
-        if (other.kind == .namespace and other.local_symbol.semanticIndex() == value_sid) return null;
+    if (binding.symbol == .alias) {
+        if (!try validForwardingAlias(graph, linker, module, binding, direct)) return null;
+        if (!preservedEagerTarget(graph, linker, module, value)) return null;
+    } else {
+        if (binding.symbol.moduleIndex() != canonical.canonical.module_index) return null;
+        const value_semantic = value.semantic orelse return error.InvalidGuardedImportBinding;
+        const value_sid = binding.symbol.semanticIndex() orelse return null;
+        if (value_sid >= value_semantic.symbols.items.len or value_semantic.symbols.items[value_sid].synthetic_kind != null) return null;
+        // Exporting a namespace binding has eager initialization semantics.
+        for (value.import_bindings) |other| {
+            if (other.kind == .namespace and other.local_symbol.semanticIndex() == value_sid) return null;
+        }
     }
     // A live source export must initialize eagerly. Its identifier-only
     // specifier is never a lazy-read rewrite target.
@@ -81,6 +87,20 @@ fn preservedEagerBindingTargets(graph: anytype, linker: anytype, module: *const 
     const value_init: ?SymbolID = if (value.wrap_kind == .none) null else if (preservedEagerTarget(graph, linker, module, value)) try value.esmInitSymbol() else return null;
     const first = direct_init orelse value_init orelse return null;
     return .{ .direct = first, .value = value_init orelse first };
+}
+
+/// A forwarding alias is a different identity space from semantic symbols.
+/// Validate its existing row, then select only known module initializer handles.
+/// The original local value SID and the linker's value writer stay unchanged.
+fn validForwardingAlias(graph: anytype, linker: anytype, module: *const Module, binding: Binding, direct: *const Module) !bool {
+    if (graph.dev_mode or !preservedEagerTarget(graph, linker, module, direct)) return false;
+    const alias = binding.symbol.alias;
+    const table = direct.alias_table orelse return error.InvalidGuardedImportBinding;
+    if (alias.module != direct.index or alias.symbol.isNone() or @backingInt(alias.symbol) >= table.count()) return error.InvalidGuardedImportBinding;
+    // The row is already selected by its AliasId. Public-key equality only
+    // validates that row; it never discovers or converts a semantic SID.
+    if (!std.mem.eql(u8, table.getName(alias.symbol), binding.imported_name)) return error.InvalidGuardedImportBinding;
+    return true;
 }
 
 fn importSourceOwner(ast: *const ast_mod.Ast, root: NodeIndex, source: NodeIndex, bare: bool) !NodeIndex {
@@ -366,6 +386,19 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             }
         }
         const eager = try eagerHelpers(graph, linker, module, root, a);
+        // An alias read is admitted only if the read-only eager planner really
+        // owns its provider. Another unsupported record may veto that plan.
+        var plan_index = plans.items.len;
+        while (plan_index != 0) {
+            plan_index -= 1;
+            const plan = plans.items[plan_index];
+            if (module.import_bindings[plan.binding].symbol != .alias) continue;
+            var provider_owned = false;
+            for (eager) |owned| if (owned.target.eql(plan.targets.direct)) {
+                provider_owned = true;
+            };
+            if (!provider_owned) _ = plans.orderedRemove(plan_index);
+        }
         if (plans.items.len == 0 and eager.len == 0) continue;
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
@@ -423,6 +456,10 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                 try editor.recordNodeScopeProvenance(call.node, call.scope);
             }
             module.import_bindings[plan.binding].guarded_lazy_calls_lowered = true;
+            // Its provider evaluation is separately represented by the actual
+            // eager plan, while canonical CJS value proxies refresh at the read.
+            if (module.import_bindings[plan.binding].symbol == .alias)
+                module.import_bindings[plan.binding].guarded_eager_init_lowered = true;
         }
         var statements: std.ArrayList(NodeIndex) = .empty;
         var original_statements = ast.iterateExtraList(ast.getNode(root).data.list);
@@ -954,5 +991,141 @@ test "plain initializer admission preserves non-PM dev and async-cone graphs" {
             try std.testing.expect(binding.callsite_target == null);
             try std.testing.expect(!binding.guarded_eager_init_lowered and !binding.guarded_lazy_calls_lowered);
         }
+    }
+}
+
+test "mixed record forwarding aliases keep values while owning known provider evaluation" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import run,{value}from'./provider.mjs';export default()=>[run(),value()]");
+    try helpers.writeFile(tmp.dir, "provider.mjs", "import{value}from'./dep.mjs';export{value};export default()=>value()");
+    try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42}");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .entry_error_guard = true };
+    var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+    defer cache.deinit();
+    var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.code_splitting = true;
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+    var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    linker.setEmitFormat(.cjs, .{ .inline_requires = true, .entry_error_guard = true });
+    try linker.link();
+    linker.populateImportSymbols();
+    try @import("runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+    const module_index = graph.path_to_module.get(entry).?;
+    const module = graph.getModule(module_index).?;
+    const original = try std.testing.allocator.dupe(Binding, module.import_bindings);
+    defer std.testing.allocator.free(original);
+    for (module.import_bindings) |binding| {
+        const resolved = linker.getResolvedBinding(module.index.toU32(), binding.local_span).?;
+        const direct = graph.getModule(module.import_records[binding.import_record_index].resolved).?;
+        try std.testing.expect(binding.local_symbol.semanticIndex() != null);
+        if (binding.kind == .named) {
+            try std.testing.expect(binding.symbol == .alias);
+            try std.testing.expect(binding.symbol.semanticIndex() == null);
+            try std.testing.expectEqual(direct.index, binding.symbol.moduleIndex());
+            try std.testing.expect(direct.index != resolved.canonical.module_index);
+            try std.testing.expect(try targetsFor(&graph, &linker, module, binding, binding.local_symbol.semanticIndex().?) != null);
+        }
+    }
+    try lower(&graph, &linker, null);
+    const lowered = graph.getModule(module_index).?;
+    for (original, 0..) |binding, index| {
+        try std.testing.expect(lowered.import_bindings[index].symbol.eql(binding.symbol));
+        try std.testing.expect(lowered.import_bindings[index].local_symbol.eql(binding.local_symbol));
+        try std.testing.expect(lowered.import_bindings[index].guarded_eager_init_lowered);
+        try std.testing.expectEqual(binding.kind == .named and !binding.importsDefault(), lowered.import_bindings[index].guarded_lazy_calls_lowered);
+    }
+}
+
+test "mixed record planning rejects foreign dangling and unsupported alias provenance without publication" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const Case = enum { valid, foreign_alias, dangling_alias, wrong_alias_row, semantic_alias, synthetic_member, orphan_source, no_eager_provider, vetoed_eager_record };
+    for ([_]Case{ .valid, .foreign_alias, .dangling_alias, .wrong_alias_row, .semantic_alias, .synthetic_member, .orphan_source, .no_eager_provider, .vetoed_eager_record }) |case| {
+        errdefer std.debug.print("mixed negative {s}\n", .{@tagName(case)});
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", if (case == .no_eager_provider) "import{value}from'./provider.mjs';export default()=>value()" else if (case == .vetoed_eager_record) "import run,{value}from'./provider.mjs';import'./extra.mjs';export default()=>[run(),value()]" else "import run,{value}from'./provider.mjs';export default()=>[run(),value()]");
+        try helpers.writeFile(tmp.dir, "extra.mjs", "export const unused=0");
+        try helpers.writeFile(tmp.dir, "provider.mjs", "import{value,other}from'./dep.mjs';export{value,other};export default()=>value()");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42}export function other(){return 99}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .entry_error_guard = true };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.code_splitting = true;
+        graph.preserve_modules = true;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .cjs);
+        defer linker.deinit();
+        linker.setEmitFormat(.cjs, .{ .inline_requires = true, .entry_error_guard = true });
+        try linker.link();
+        linker.populateImportSymbols();
+        if (case == .vetoed_eager_record or case == .no_eager_provider) try @import("runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        const module = graph.moduleAtMut(graph.path_to_module.get(entry).?).?;
+        var alias_index: ?usize = null;
+        for (module.import_bindings, 0..) |binding, index| if (binding.kind == .named) {
+            alias_index = index;
+        };
+        const binding = &module.import_bindings[alias_index.?];
+        try std.testing.expect(binding.symbol == .alias);
+        const direct = graph.getModule(module.import_records[binding.import_record_index].resolved).?;
+        const resolved = linker.resolved_bindings.getPtr(.{ .module_index = module.index.toU32(), .span_key = @import("types.zig").spanKey(binding.local_span) }).?;
+        const original_root = module.ast.?.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(module.ast.?.nodes.items.len - 1))));
+        switch (case) {
+            .foreign_alias => binding.symbol.alias.module = module.index,
+            .dangling_alias => binding.symbol.alias.symbol = @fromBackingInt(direct.alias_table.?.count()),
+            .wrong_alias_row => {
+                try std.testing.expect(direct.alias_table.?.count() >= 2);
+                binding.symbol.alias.symbol = @fromBackingInt((@backingInt(binding.symbol.alias.symbol) + 1) % direct.alias_table.?.count());
+            },
+            .semantic_alias => binding.symbol = @import("symbol.zig").SymbolRef.makeSemantic(direct.index, 0),
+            .synthetic_member => resolved.canonical.synthetic_member = "not-a-semantic-binding",
+            .orphan_source => {
+                const source = module.import_records[binding.import_record_index].source_node;
+                module.import_records[binding.import_record_index].source_node = try module.ast.?.addNode(module.ast.?.getNode(source));
+            },
+            .vetoed_eager_record => {
+                var vetoes: usize = 0;
+                for (module.import_records) |*record| if (record.kind == .side_effect) {
+                    record.resolved = .none;
+                    vetoes += 1;
+                };
+                try std.testing.expectEqual(@as(usize, 1), vetoes);
+            },
+            .valid, .no_eager_provider => {},
+        }
+        const ast = &module.ast.?;
+        const root = original_root;
+        const count = ast.nodes.items.len;
+        const references = module.semantic.?.references;
+        const import_count = module.import_bindings.len;
+        const module_count = graph.moduleCount();
+        const planned = eagerHelpers(&graph, &linker, module, root, module.parse_arena.?.allocator());
+        switch (case) {
+            .foreign_alias, .dangling_alias, .wrong_alias_row => try std.testing.expectError(error.InvalidGuardedImportBinding, planned),
+            .orphan_source => try std.testing.expectError(error.InvalidGuardedImportSource, planned),
+            .valid => try std.testing.expect((try planned).len != 0),
+            .semantic_alias, .synthetic_member, .no_eager_provider, .vetoed_eager_record => try std.testing.expectEqual(@as(usize, 0), (try planned).len),
+        }
+        if (case == .vetoed_eager_record or case == .no_eager_provider) try lower(&graph, &linker, null);
+        try std.testing.expectEqual(count, ast.nodes.items.len);
+        try std.testing.expectEqual(references.ptr, module.semantic.?.references.ptr);
+        try std.testing.expectEqual(references.len, module.semantic.?.references.len);
+        try std.testing.expectEqual(import_count, module.import_bindings.len);
+        try std.testing.expectEqual(module_count, graph.moduleCount());
+        for (module.import_bindings) |original| try std.testing.expect(!original.guarded_eager_init_lowered and !original.guarded_lazy_calls_lowered and original.callsite_target == null);
     }
 }
