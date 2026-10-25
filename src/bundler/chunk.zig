@@ -240,6 +240,8 @@ pub const Chunk = struct {
     /// preserve-modules: 원본 모듈의 절대 경로 (출력 디렉토리 구조 결정용).
     /// null이면 일반 청크 (preserve-modules 아님).
     rel_dir: ?[]const u8 = null,
+    /// Virtual output paths are allocated; ordinary source paths are borrowed.
+    rel_dir_owned: bool = false,
     /// 출력 경로 패턴 `[dir]` 토큰 치환용 — entry 의 `entry_dir` 기준 상대
     /// 디렉토리. `rel_dir`(= 절대경로 + 파일명 + ext, preserve-modules 한정)
     /// 의 misnomer 와 분리된 안전한 필드. sanitize 거친 결과:
@@ -324,8 +326,9 @@ pub const Chunk = struct {
         self.esm_wrapper_cross_imports.deinit(allocator);
         // PR B-1: name_dir 은 sanitizeNameDir 의 결과 — chunk 가 owning.
         // doc 의 "빌림" 표현은 부정확 — 실제로는 chunk lifetime 와 일치하므로
-        // 여기서 free 한다(chunk.rel_dir 와 달리 항상 alloc 된 메모리).
+        // 여기서 free 한다(일반 source rel_dir 와 달리 항상 alloc 된 메모리).
         if (self.name_dir) |nd| allocator.free(nd);
+        if (self.rel_dir_owned) if (self.rel_dir) |path| allocator.free(path);
     }
 
     /// 청크에 모듈을 추가한다.
@@ -1359,10 +1362,11 @@ pub fn generatePreserveModulesChunks(
         // import specifier 로 새지 않도록 sanitize. caller 가 owner 인 m.path 와 다른 메모리 —
         // graph allocator 로 alloc (chunk_graph 와 동일 lifetime).
         const helper_modules = @import("../runtime_helper_modules.zig");
-        chunk.rel_dir = if (helper_modules.isVirtualId(m.path))
-            helper_modules.sanitizeId(allocator, m.path) catch m.path
-        else
-            m.path;
+        if (helper_modules.isVirtualId(m.path)) {
+            chunk.rel_dir = try helper_modules.sanitizeId(allocator, m.path);
+            chunk.rel_dir_owned = true;
+        } else chunk.rel_dir = m.path;
+        errdefer if (chunk.rel_dir_owned) allocator.free(chunk.rel_dir.?);
 
         // PR B-1: [dir] 토큰 치환용 raw dir. preserve-modules 의 `rel_dir` 은
         // 모듈 절대경로+파일명+ext 의 misnomer 라 [dir] 토큰에 직접 노출하면
@@ -1377,6 +1381,7 @@ pub fn generatePreserveModulesChunks(
         errdefer if (chunk.name_dir) |nd| allocator.free(nd);
 
         const ci = try chunk_graph.addChunk(chunk);
+        chunk.rel_dir_owned = false; // ownership → graph copy.
         chunk.name_dir = null; // ownership → graph copy; errdefer no-op.
         chunk_graph.assignModuleToChunk(mod_idx, ci);
         try chunk_graph.getChunkMut(ci).addModule(allocator, mod_idx);

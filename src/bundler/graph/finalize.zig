@@ -236,6 +236,15 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
         if (m.getExportsName(null)) |n| try used_names.put(self.allocator, n, 1);
         if (m.getRequireName(null)) |n| try used_names.put(self.allocator, n, 1);
     }
+    if (self.preserve_modules) {
+        // Public aliases and internal wrapper handles share the emitted ESM
+        // export namespace. Reserve public spellings before creating handles;
+        // the resulting exact wrapper SID remains authoritative everywhere.
+        var public_it = self.modules.iterator(0);
+        while (public_it.next()) |module| {
+            for (module.export_bindings) |binding| try used_names.put(self.allocator, binding.exported_name, 1);
+        }
+    }
 
     var cjs_runtime_identity_registered = false;
     var to_binary_runtime_identity_registered = false;

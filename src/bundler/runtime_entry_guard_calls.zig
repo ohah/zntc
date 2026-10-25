@@ -156,7 +156,7 @@ pub fn validate(graph: anytype, invocation: Invocation) !void {
 
 /// Bootstrap ownership determines placement, not a fabricated source import.
 /// The artifact imports its target; the target never imports the artifact.
-pub fn prepare(graph: anytype, io: std.Io) !void {
+pub fn prepareProvider(graph: anytype, io: std.Io) !void {
     const count = graph.moduleCount();
     for (0..count) |raw| {
         const candidate = graph.getModule(ModuleIndex.fromUsize(raw)) orelse continue;
@@ -165,6 +165,11 @@ pub fn prepare(graph: anytype, io: std.Io) !void {
             break;
         }
     }
+}
+
+pub fn prepare(graph: anytype, io: std.Io) !void {
+    const count = graph.moduleCount();
+    try prepareProvider(graph, io);
     for (0..count) |raw| {
         const target = graph.getModule(ModuleIndex.fromUsize(raw)) orelse continue;
         if (!target.is_entry_point or !target.shouldGuard(true)) continue;

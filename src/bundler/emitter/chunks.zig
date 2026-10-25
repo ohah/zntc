@@ -2117,13 +2117,9 @@ fn emitChunksImpl(
         // PR-3b-ii: lazy reg(IIFE/CJS) entry 청크는 소비자(동적 청크)가 시작 시 미파싱이라
         // exports_to 가 비어도 export-all 해야 하므로 별도로 진입한다.
         const lazy_reg_entry = graph.lazy_compilation and entry_mod_idx != null and (options.format == .cjs or reg_split);
-        // (#4528) preserve-modules 에서도 **ESM-wrap** 모듈은 이 블록이 필요하다.
-        // `__esm` 클로저 안에 들어가는 건 **부수효과 문장뿐**이고, `function tag(){}` 같은
-        // **선언은 파일 top-level 에 남는다** — 소비자도 그걸 bare 로 참조한다(단일 번들과 동일).
-        // 그런데 wrap 된 모듈은 buildFinalExports 가 null 이라 자기 export 를 못 낸다 →
-        // 이 블록이 아니면 `export { tag }` 가 어디서도 안 나오고 소비자는
-        // `ReferenceError: tag is not defined`.
-        // CJS 는 반대다 — 본문 **전체**가 클로저 안이라 top-level 선언이 없다(래퍼뿐).
+        // Wrapped PM modules publish their complete public surface through
+        // final_export_entries. Cross-chunk aliases may still require additional
+        // export keys; remove only keys that the public writer already owns.
         const pm_wrapped_esm_provider = options.preserve_modules and blk: {
             const mi = preserveModulesWrapperChunk(chunk, graph, options) orelse break :blk false;
             const em = graph.getModule(mi) orelse break :blk false;
@@ -2195,23 +2191,40 @@ fn emitChunksImpl(
             // entry 모듈 export 가 아닌 cross-chunk 심볼(예: 호이스팅된 다른
             // 모듈 심볼)만 남겨 합집합을 정확히 1회 emit. 전부 제거 시 블록 생략.
             // cross-chunk 소비자는 codegen 이 낸 동일 `export {}` 로 바인딩.
-            // (#4528) ⚠️ **wrap 된 모듈에는 이 필터를 걸면 안 된다.** 전제("codegen 이 entry
-            // 모듈의 `export {}` 를 이미 낸다")가 거짓이다 — wrap 된 모듈의 export 는
-            // `__export(exports_X, {...})` 로 들어가고 `export {}` 는 나오지 않는다.
-            // 필터를 걸면 이름이 전부 제거돼 블록이 생략되고, 소비자는
-            // `SyntaxError: does not provide an export named 'tag'` 를 만난다.
             if (!cjs_x) {
                 if (entry_mod_idx) |ei| {
-                    if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| if (!em.wrap_kind.isWrapped()) {
+                    if (graph.getModule(ModuleIndex.fromUsize(@intCast(ei)))) |em| if (!em.wrap_kind.isWrapped() or (options.preserve_modules and em.wrap_kind == .esm)) {
+                        var public_owned: std.ArrayListUnmanaged([]const u8) = .empty;
+                        defer {
+                            if (linker) |l| {
+                                for (public_owned.items) |text| l.allocator.free(text);
+                                public_owned.deinit(l.allocator);
+                            }
+                        }
+                        const public_entries = if (options.preserve_modules and em.wrap_kind == .esm)
+                            if (linker) |l| try l.buildFinalExports(true, @intCast(ei), em.export_bindings, &public_owned) else null
+                        else
+                            null;
+                        defer if (public_entries) |entries| if (linker) |l| l.allocator.free(entries);
                         var w: usize = 0;
                         for (export_names.items) |nm| {
                             var entry_exported = false;
+                            const emitted_key = if (pm_wrapped_esm_provider)
+                                if (linker) |l| l.getCrossChunkGlobalName(@intCast(ei), nm) orelse nm else nm
+                            else
+                                nm;
                             for (em.export_bindings) |eb| {
-                                if (std.mem.eql(u8, eb.exported_name, nm)) {
+                                if (std.mem.eql(u8, eb.exported_name, emitted_key)) {
                                     entry_exported = true;
                                     break;
                                 }
                             }
+                            if (public_entries) |entries| for (entries) |entry| {
+                                if (std.mem.eql(u8, entry.exported, emitted_key)) {
+                                    entry_exported = true;
+                                    break;
+                                }
+                            };
                             if (!entry_exported) {
                                 export_names.items[w] = nm;
                                 w += 1;
@@ -4705,7 +4718,6 @@ fn computePreserveModulesPath(
 /// preserve-modules: 두 모듈 간의 상대 import 경로를 계산한다.
 /// src_abs: import하는 모듈의 절대 경로
 /// dep_abs: import 대상 모듈의 절대 경로
-/// dep_stem: 대상 청크의 stem 이름 (fallback용)
 /// ext: 출력 확장자
 /// root: preserve-modules-root (null 가능)
 ///
@@ -4717,50 +4729,13 @@ fn computeRelativeImportPath(
     ext: []const u8,
     root: ?[]const u8,
 ) ![]const u8 {
-    // root가 있으면 root 기준 상대 경로에서 계산
-    if (root) |r| {
-        const normalized_root = if (r.len > 0 and r[r.len - 1] == '/') r[0 .. r.len - 1] else r;
-
-        const src_rel = stripRoot(src_abs, normalized_root);
-        const dep_rel = stripRoot(dep_abs, normalized_root);
-
-        if (src_rel != null and dep_rel != null) {
-            // 둘 다 root 아래 → 상대 경로 계산
-            const src_dir = std.fs.path.dirname(src_rel.?) orelse "";
-            const dep_rel_no_ext = dep_rel.?[0 .. dep_rel.?.len - std.fs.path.extension(dep_rel.?).len];
-            const rel = try computeRelativePath(allocator, src_dir, dep_rel_no_ext, ext);
-            return rel;
-        }
-        // (#4574) dep 이 root 밖 **bare id**(virtual runtime helper 의 sanitize 된 rel_dir, 예
-        // `runtime-class-call-check`)면 헬퍼는 outdir **최상위**에 놓인다(computePreserveModulesPath).
-        // src 의 **출력 위치** 기준으로 상대 계산해야 한다:
-        //  · src 가 root 아래  → src_rel dir 에서 root-level 헬퍼로 상대 (`../helper` 또는 `./helper`).
-        //  · src 도 root 밖    → computePreserveModulesPath 가 stem-only 로 outdir 최상위에 놓으므로
-        //                        헬퍼와 형제 → `./helper` (src_dir="" 로 계산).
-        // 이 가드가 없으면 절대경로 fallback 이 src 의 원본 절대 dir(`/tmp/x`)에서 올라가 `../../helper`.
-        // 실제 모듈의 dep_abs 는 항상 절대경로('/'), virtual helper 만 bare 라 slash-부재로 판별 안전.
-        if (std.mem.indexOfScalar(u8, dep_abs, '/') == null) {
-            const dep_no_ext = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
-            const src_dir = if (src_rel) |sr| (std.fs.path.dirname(sr) orelse "") else "";
-            return try computeRelativePath(allocator, src_dir, dep_no_ext, ext);
-        }
-    }
-
-    // root 없거나 매칭 실패 → 절대 경로 기준으로 computeRelativePath에 위임
-    const src_dir = std.fs.path.dirname(src_abs) orelse "";
-    const dep_no_ext = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
-    return computeRelativePath(allocator, src_dir, dep_no_ext, ext);
-}
-
-/// 절대 경로에서 root prefix를 제거한다.
-/// 예: stripRoot("/a/b/c.ts", "/a/b") → "c.ts"
-fn stripRoot(abs_path: []const u8, root: []const u8) ?[]const u8 {
-    if (std.mem.startsWith(u8, abs_path, root)) {
-        var rel = abs_path[root.len..];
-        if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
-        return rel;
-    }
-    return null;
+    // Resolve the same output paths used by the file writer. Virtual modules
+    // live at outdir's root even when their importer has an absolute source path.
+    const src_output = try computePreserveModulesPath(allocator, src_abs, ext, root);
+    defer allocator.free(src_output);
+    const dep_output = try computePreserveModulesPath(allocator, dep_abs, ext, root);
+    defer allocator.free(dep_output);
+    return computeRelativePath(allocator, std.fs.path.dirname(src_output) orelse "", dep_output, "");
 }
 
 /// src_dir에서 dep_path로의 상대 경로를 계산한다.
@@ -5056,5 +5031,20 @@ test "rewriteImportSpecifier: import attributes specifier 교체 + 인자 보존
     // attributes 가 있어도 prefix 충돌은 닫는 quote 불일치로 skip(null).
     {
         try std.testing.expect((try rewriteImportSpecifier(a, "import(\"./xyz\", { with: {} })", "./x", "./X")) == null);
+    }
+}
+
+test "preserved output paths agree for virtual providers and nested source modules" {
+    const cases = [_]struct { source: []const u8, dependency: []const u8, root: ?[]const u8, expected: []const u8 }{
+        .{ .source = "/project/src/entry.mjs", .dependency = "runtime-split-entry-guard", .root = null, .expected = "./runtime-split-entry-guard.js" },
+        .{ .source = "/project/src/entry.mjs", .dependency = "runtime-split-entry-guard", .root = "/project", .expected = "../runtime-split-entry-guard.js" },
+        .{ .source = "/project/src/entry.mjs", .dependency = "/project/lib/value.mjs", .root = null, .expected = "./value.js" },
+        .{ .source = "/project/src/entry.mjs", .dependency = "/project/lib/value.mjs", .root = "/project", .expected = "../lib/value.js" },
+        .{ .source = "runtime-helper", .dependency = "/project/lib/value.mjs", .root = "/project", .expected = "./lib/value.js" },
+    };
+    for (cases) |case| {
+        const actual = try computeRelativeImportPath(std.testing.allocator, case.source, case.dependency, ".js", case.root);
+        defer std.testing.allocator.free(actual);
+        try std.testing.expectEqualStrings(case.expected, actual);
     }
 }

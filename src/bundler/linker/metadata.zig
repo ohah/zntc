@@ -1083,6 +1083,7 @@ pub fn buildMetadataForAst(
                     !isMetroNonInlinedRequireSpecifier(rec.specifier) and
                     canonical_mod != module_index and
                     !is_helper_binding and
+                    !ib.guarded_eager_init_lowered and
                     ib.kind == .named and
                     !ib.importsDefault() and
                     !import_is_namespace_export and
