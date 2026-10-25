@@ -5652,12 +5652,31 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     const wrapper_scope = transformer.outputOwnedScope(lowered_wrapper) orelse return error.MissingGeneratedForAwaitWrapperScope;
     const output_scopes = transformer.semantic_editor.?.scopes.items;
     try std.testing.expectEqual(outer_scope, output_scopes[wrapper_scope.toIndex()].parent);
-    try std.testing.expectEqual(wrapper_scope, output_scopes[source_loop_scope.toIndex()].parent);
+    const wrapper_node = transformer.ast.getNode(lowered_wrapper);
+    const try_statement = transformer.ast.getNode(@fromBackingInt(transformer.ast.extra_data.items[wrapper_node.data.list.start + 1]));
+    const try_body_scope = transformer.outputOwnedScope(try_statement.data.ternary.a).?;
+    const finally_node = transformer.ast.getNode(try_statement.data.ternary.c);
+    const finally_scope = transformer.outputOwnedScope(try_statement.data.ternary.c).?;
+    const inner_try = transformer.ast.getNode(@fromBackingInt(transformer.ast.extra_data.items[finally_node.data.list.start]));
+    const close_scope = transformer.outputOwnedScope(inner_try.data.ternary.a).?;
+    const error_finally_scope = transformer.outputOwnedScope(inner_try.data.ternary.c).?;
+    const error_finally_node = transformer.ast.getNode(inner_try.data.ternary.c);
+    const rethrow_if = transformer.ast.getNode(@fromBackingInt(transformer.ast.extra_data.items[error_finally_node.data.list.start]));
+    const rethrow_scope = transformer.outputOwnedScope(rethrow_if.data.ternary.b).?;
+    const catch_node = transformer.ast.getNode(try_statement.data.ternary.b);
+    const catch_body_scope = transformer.outputOwnedScope(catch_node.data.binary.right).?;
+    try std.testing.expectEqual(wrapper_scope, output_scopes[try_body_scope.toIndex()].parent);
+    try std.testing.expectEqual(try_body_scope, output_scopes[source_loop_scope.toIndex()].parent);
+    try std.testing.expectEqual(wrapper_scope, output_scopes[finally_scope.toIndex()].parent);
+    try std.testing.expectEqual(finally_scope, output_scopes[close_scope.toIndex()].parent);
+    try std.testing.expectEqual(finally_scope, output_scopes[error_finally_scope.toIndex()].parent);
+    try std.testing.expectEqual(error_finally_scope, output_scopes[rethrow_scope.toIndex()].parent);
+    try std.testing.expectEqual(generated_catch_scope, output_scopes[catch_body_scope.toIndex()].parent);
     try std.testing.expectEqual(wrapper_scope, output_scopes[generated_catch_scope.toIndex()].parent);
 
     var binding_ids: [4]?u32 = @splat(null);
     var ref_counts: [4]usize = @splat(0);
-    var scope_counts: [4][4]usize = @splat(@splat(0));
+    var scope_counts: [4][6]usize = @splat(@splat(0));
     for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
         const temp_name = transformer.ast.getText(temp_span);
         for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
@@ -5679,44 +5698,23 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
         const ref_name = transformer.ast.getText(node.data.string_ref);
         for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
             if (!std.mem.eql(u8, ref_name, transformer.ast.getText(temp_span))) continue;
-            const reference_node: NodeIndex = @fromBackingInt(@intCast(raw));
-            const immediate_id = transformer.getSymbolIdAt(reference_node) orelse
-                return error.MissingImmediateGeneratedForAwaitTempReference;
-            try std.testing.expectEqual(binding_ids[temp_index].?, immediate_id);
-            const pending = blk: {
-                for (transformer.generator_state_semantic_refs.items) |reference| {
-                    if (reference.node == reference_node) break :blk reference;
-                }
-                return error.MissingDeferredForAwaitReferenceScope;
-            };
-            try std.testing.expectEqual(immediate_id, pending.symbol_id);
-            const direct_reference = try transformer.semantic_editor.?.referenceForNode(reference_node);
-            if (temp_index == 1 and pending.flags.read and pending.scope == body_scope) {
-                const actual = direct_reference orelse return error.MissingLoopValueCreationReference;
-                try std.testing.expectEqual(immediate_id, @backingInt(actual.symbol_id));
-                try std.testing.expectEqual(body_scope, actual.scope_id);
-            } else {
-                try std.testing.expect(direct_reference == null);
-            }
-            const scope_index: usize = if (pending.scope == source_loop_scope)
-                0
-            else if (pending.scope == body_scope)
-                1
-            else if (pending.scope == outer_scope)
-                2
-            else if (pending.scope == generated_catch_scope)
-                3
-            else
-                return error.UnexpectedForAwaitTempReferenceScope;
+            const reference = (try transformer.semantic_editor.?.referenceForNode(@fromBackingInt(@intCast(raw)))) orelse
+                return error.MissingCreationSyntheticTempReference;
+            try std.testing.expectEqual(binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(@backingInt(reference.symbol_id), transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))).?);
+            try std.testing.expect(!reference.scope_id.isNone());
+            try std.testing.expect(!transformer.exact_output_ref_symbol_ids.contains(@intCast(raw)));
+            const scope_index: usize = if (reference.scope_id == source_loop_scope) 0 else if (reference.scope_id == body_scope) 1 else if (reference.scope_id == close_scope) 2 else if (reference.scope_id == catch_body_scope) 3 else if (reference.scope_id == error_finally_scope) 4 else if (reference.scope_id == rethrow_scope) 5 else return error.UnexpectedForAwaitTempReferenceScope;
             scope_counts[temp_index][scope_index] += 1;
+
             ref_counts[temp_index] += 1;
         }
     }
     for (ref_counts) |count| try std.testing.expect(count > 0);
-    try std.testing.expectEqual([4]usize{ 1, 0, 2, 0 }, scope_counts[0]);
-    try std.testing.expectEqual([4]usize{ 1, 1, 2, 0 }, scope_counts[1]);
-    try std.testing.expectEqual([4]usize{ 0, 0, 2, 0 }, scope_counts[2]);
-    try std.testing.expectEqual([4]usize{ 0, 0, 2, 1 }, scope_counts[3]);
+    try std.testing.expectEqual([6]usize{ 1, 0, 2, 0, 0, 0 }, scope_counts[0]);
+    try std.testing.expectEqual([6]usize{ 1, 1, 2, 0, 0, 0 }, scope_counts[1]);
+    try std.testing.expectEqual([6]usize{ 0, 0, 2, 0, 0, 0 }, scope_counts[2]);
+    try std.testing.expectEqual([6]usize{ 0, 0, 0, 1, 1, 1 }, scope_counts[3]);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
