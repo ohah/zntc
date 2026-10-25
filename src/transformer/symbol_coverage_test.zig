@@ -5533,7 +5533,7 @@ test "#4819 for-in temporaries bind symbols during lowering" {
                 return error.MissingDeferredSyntheticTempReference;
             try std.testing.expectEqual(binding_ids[expected_index].?, exact_id);
             if (transformer.exact_output_ref_scope_ids.get(@intCast(raw))) |exact_scope| {
-                try std.testing.expectEqual(@backingInt(transformer.generator_native_var_scope), exact_scope);
+                try expectForInPlannedScope(&transformer, @intCast(raw), exact_scope, transformer.generator_native_var_scope);
                 planned_scope_count += 1;
             }
             reference_counts[expected_index] += 1;
@@ -5542,6 +5542,33 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     for (reference_counts) |count| try std.testing.expect(count > 0);
     try std.testing.expectEqual(@as(usize, 7), planned_scope_count);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
+fn expectForInPlannedScope(transformer: *Transformer, raw: u32, planned: u32, switch_scope: ScopeId) !void {
+    var collector: ?ScopeId = null;
+    var iteration: ?ScopeId = null;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, index| {
+        const owner = transformer.outputOwnedScope(@fromBackingInt(@intCast(index))) orelse continue;
+        switch (node.tag) {
+            .for_in_statement => {
+                try std.testing.expect(collector == null);
+                collector = owner;
+            },
+            .for_statement => {
+                try std.testing.expect(iteration == null);
+                iteration = owner;
+            },
+            else => {},
+        }
+    }
+    const reference = (try transformer.semantic_editor.?.referenceForNode(@fromBackingInt(raw))) orelse return error.MissingCreationForInReference;
+    try std.testing.expectEqual(transformer.exact_output_ref_symbol_ids.get(raw).?, @backingInt(reference.symbol_id));
+    if (reference.scope_id == collector.?) {
+        try std.testing.expectEqual(@backingInt(collector.?), planned);
+    } else {
+        try std.testing.expectEqual(iteration.?, reference.scope_id);
+        try std.testing.expectEqual(@backingInt(switch_scope), planned);
+    }
 }
 
 fn expectForInProducerOutputScopes(source: []const u8) !void {
@@ -5597,7 +5624,7 @@ fn expectForInProducerOutputScopes(source: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 7), transformer.exact_output_ref_scope_ids.count());
     var planned_scopes = transformer.exact_output_ref_scope_ids.iterator();
     while (planned_scopes.next()) |entry| {
-        try std.testing.expectEqual(@backingInt(transformer.generator_native_var_scope), entry.value_ptr.*);
+        try expectForInPlannedScope(&transformer, entry.key_ptr.*, entry.value_ptr.*, transformer.generator_native_var_scope);
         try std.testing.expect(transformer.exact_output_ref_symbol_ids.contains(entry.key_ptr.*));
     }
 }
@@ -5759,7 +5786,7 @@ test "#4819 deferred generator for-in body references move to an extracted callb
     while (planned_scopes.next()) |entry| {
         if (entry.key_ptr.* == pending_refs[0] or entry.key_ptr.* == pending_refs[1] or
             entry.key_ptr.* == clone_ref_raw or entry.key_ptr.* == copied_ref_raw) continue;
-        try std.testing.expectEqual(@backingInt(outer_switch_scope), entry.value_ptr.*);
+        try expectForInPlannedScope(&transformer, entry.key_ptr.*, entry.value_ptr.*, outer_switch_scope);
     }
 }
 

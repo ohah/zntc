@@ -52,7 +52,7 @@ fn check(source: []const u8) !void {
         t.state_machine_depth = 1;
         t.generator_operation_scope = parent_scope;
         t.generator_state_machine_scope = variable_owner;
-        const switch_owner = try t.ast.addNode(.{ .tag = .switch_statement, .span = t.ast.getNode(source_loop).span, .data = .{ .extra = try t.ast.addExtras(&.{@backingInt(ast.NodeIndex.none),0,0}) } });
+        const switch_owner = try t.ast.addNode(.{ .tag = .switch_statement, .span = t.ast.getNode(source_loop).span, .data = .{ .extra = try t.ast.addExtras(&.{ @backingInt(ast.NodeIndex.none), 0, 0 }) } });
         t.generator_native_var_scope = try t.addGeneratedScope(variable_owner, switch_owner, .switch_block);
         const output = try ForOf.rewriteForIn(&t, input, t.ast.getNode(input));
         const wrapper_node = t.ast.getNode(output);
