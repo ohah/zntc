@@ -117,7 +117,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
-      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 4 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -128,7 +128,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
-      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 4 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -139,6 +139,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 5 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -151,6 +152,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
       // The isolated fixture produces 8 generated references without the
       // captured class-this reference and 9 with it.
       { report: 'exact', field: 'generated_references', minimum: 9 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 2 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
@@ -167,6 +169,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     observations: [
       { report: 'exact', field: 'namespace_iife_params', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 2 },
     ],
   },
   {
@@ -1143,12 +1146,12 @@ describe('symbol identity coverage gate (#4819)', () => {
           `${entry.file}:${entry.target.name}:${entry.observations.map(({ report, field, minimum }) => `${report}.${field}>=${minimum}`).join(',')}`,
       ),
     ).toEqual([
-      '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=1,strict.marked_synthetic>=1',
-      '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=1,strict.marked_synthetic>=1',
-      '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
-      '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,strict.marked_synthetic>=1',
+      '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
+      '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
+      '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
+      '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
-      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1',
+      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=2',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
     ]);
     expect(
