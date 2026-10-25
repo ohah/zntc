@@ -15,7 +15,7 @@ const AstOwnership = state_mod.AstOwnership;
 /// true 는 ECMA-스펙 `[[Define]]` semantics 라 가로챌 곳이 없음. 둘 다 enable 은 모순이라 강제 정정.
 fn normalizeOptions(options: TransformOptions) TransformOptions {
     var opts = options;
-    if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+    opts.use_define_for_class_fields = options.effectiveUseDefineForClassFields();
     return opts;
 }
 

@@ -17,6 +17,10 @@ fn checkCellsForTarget(source: []const u8, target: @import("compat.zig").ESTarge
 }
 
 fn checkCellsForFeatures(source: []const u8, features: @import("compat.zig").UnsupportedFeatures) !void {
+    return checkCellsForOptions(source, .{ .unsupported = features });
+}
+
+fn checkCellsForOptions(source: []const u8, options: Options) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -26,7 +30,7 @@ fn checkCellsForFeatures(source: []const u8, features: @import("compat.zig").Uns
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     var analyzer = Analyzer.init(allocator, &parser.ast);
     try analyzer.analyze();
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = features });
+    var transformer = try Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.references = analyzer.references.items;
@@ -263,6 +267,10 @@ fn checkClassSelection(source: []const u8, target: @import("compat.zig").ESTarge
 }
 
 fn checkClassSelectionWithMode(source: []const u8, target: @import("compat.zig").ESTarget, metadata: bool, expected: usize, is_ts: bool) !void {
+    return checkClassSelectionWithOptions(source, .{ .unsupported = Options.compat.fromESTarget(target), .emit_decorator_metadata = metadata }, expected, is_ts);
+}
+
+fn checkClassSelectionWithOptions(source: []const u8, options: Options, expected: usize, is_ts: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -274,10 +282,7 @@ fn checkClassSelectionWithMode(source: []const u8, target: @import("compat.zig")
     var analyzer = Analyzer.init(allocator, &parser.ast);
     analyzer.is_ts = is_ts;
     try analyzer.analyze();
-    var transformer = try Transformer.init(allocator, &parser.ast, .{
-        .unsupported = Options.compat.fromESTarget(target),
-        .emit_decorator_metadata = metadata,
-    });
+    var transformer = try Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.scopes = analyzer.scopes.items;
@@ -415,4 +420,37 @@ test "common private lowering plan reaches both native class producers" {
             try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
         }
     }
+}
+
+test "native private initializer parameter cells exist before class visitation" {
+    const options: Options = .{ .use_define_for_class_fields = false };
+    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;#read(){return this.#field}constructor(value=this.#read()){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;get #read(){return this.#field}constructor(value=this.#read){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;constructor(get=()=>value,value=this.#field){this.get=get}}", options);
+    try checkCellsForOptions("class Box{#field=7;constructor(first=(()=>value)(),value=this.#field){}}", options);
+    try checkCellsForOptions("class Box{#field=7;constructor(first=(()=>{value=9})(),value=this.#field){}}", options);
+    try checkCellsForOptions("class Box{#field=7;constructor(get=()=>value,value=this.#field){var value=9;this.get=get}}", options);
+    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .use_define_for_class_fields = false, .experimental_decorators = true });
+    // Transformer.init normalizes legacy decorators to assign semantics even
+    // when the caller requested define semantics. Classify the actual options.
+    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .experimental_decorators = true });
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true } });
+    try checkCellsForOptions("class Box{#field=7;static publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true } });
+    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true }, .experimental_decorators = true });
+    try checkCellsForOptions("class Box{accessor field=7;constructor(value=this.field){this.saved=value}}", .{ .unsupported = .{ .decorator_auto_accessor = true }, .use_define_for_class_fields = false });
+}
+
+test "native private initializer parameter cells require actual instance movement" {
+    const options: Options = .{ .use_define_for_class_fields = false };
+    try checkClassSelectionWithOptions("class Box{#field;constructor(value=this.#field){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{static #field=7;constructor(value=1){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#read(){return 7}constructor(value=this.#read()){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=7;static constructor(value=1){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=7;['constructor'](value=1){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=7;constructor(value=this.#field){}}", .{}, 0, false);
+
+    try checkClassSelectionWithOptions("class Box{#field=7;constructor(value=this.#field){}}", .{ .unsupported = .{ .class_field = true } }, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=7;constructor(value=this.#field){eval('value')}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=eval('outside');constructor(value=this.#field){}}", options, 0, false);
 }

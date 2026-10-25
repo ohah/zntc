@@ -310,6 +310,12 @@ pub const TransformOptions = struct {
         return unsupported;
     }
 
+    /// Legacy decorators use assign field semantics in every Transformer
+    /// constructor. Graph planning must observe that same effective option.
+    pub fn effectiveUseDefineForClassFields(self: *const TransformOptions) bool {
+        return self.use_define_for_class_fields and !self.experimental_decorators;
+    }
+
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (drop_scan.hasDroppedTransformStatement(ast, self.drop_console, self.drop_debugger, self.drop_labels)) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
@@ -317,7 +323,7 @@ pub const TransformOptions = struct {
         // Whitespace-only minification changes emission, not the AST or graph.
         // Any syntax that creates helper identities has its own pre-pass gate.
         if (self.minify_syntax) return true;
-        if (!self.use_define_for_class_fields and astHasClassFieldSyntax(ast)) return true;
+        if (!self.effectiveUseDefineForClassFields() and astHasClassFieldSyntax(ast)) return true;
         if ((self.experimental_decorators or self.emit_decorator_metadata) and ast.has_decorator) return true;
         if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
         return false;
@@ -1280,5 +1286,28 @@ test "object spread expression lowering independently requires graph pre-pass" {
             fixture.needs_prepass,
             options.requiresGraphPrePass(&parser.ast),
         );
+    }
+}
+
+test "native private initializer legacy normalized field semantics require graph pre-pass" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, expected: bool }{
+        .{ .source = "const answer = 42;", .expected = false },
+        .{ .source = "class Example { method() { return 1; } }", .expected = false },
+        .{ .source = "class Example { value = 1; }", .expected = true },
+        .{ .source = "class Example { #value = 1; constructor(value=this.#value){} }", .expected = true },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        _ = try parser.parse();
+        const legacy: TransformOptions = .{ .experimental_decorators = true };
+        try std.testing.expect(!legacy.effectiveUseDefineForClassFields());
+        try std.testing.expectEqual(fixture.expected, legacy.requiresGraphPrePass(&parser.ast));
+        const metadata: TransformOptions = .{ .emit_decorator_metadata = true };
+        try std.testing.expect(metadata.effectiveUseDefineForClassFields());
+        try std.testing.expect(!metadata.requiresGraphPrePass(&parser.ast));
     }
 }
