@@ -132,7 +132,7 @@ const cases = [
     },
     read: '[ns.init_entry(),ns.default()]',
     expected: '[42,42]\n',
-    guardReads: 2,
+    guardReads: 1,
   },
   {
     name: 'public-namespace-alias',
@@ -143,7 +143,7 @@ const cases = [
     },
     read: '[ns.exports_entry(),ns.default()]',
     expected: '[42,42]\n',
-    guardReads: 2,
+    guardReads: 1,
   },
   {
     name: 'public-string-key',
@@ -153,7 +153,7 @@ const cases = [
     },
     read: "[ns['x-y'](),ns.default()]",
     expected: '[42,42]\n',
-    guardReads: 2,
+    guardReads: 1,
   },
   {
     name: 'nested-namespace-decoy',
@@ -193,7 +193,7 @@ describe('preserved CJS eager imports use actual source Scope0 callers', () => {
               [
                 '--input-type=module',
                 '-e',
-                `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
+                `${guarded ? "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{configurable:true,get(){reads++;return undefined}});" : ''}const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});${guarded ? "const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{default:ns};if(babel.default!==ns.default)throw new Error('wrong interop default');" : ''}console.log(JSON.stringify(${entry.read}));${guarded ? 'console.log(reads);' : ''}`,
               ],
               { encoding: 'utf8' },
             );
@@ -353,6 +353,56 @@ describe('preserved CJS public default getters keep native source roles', () => 
           const native = execute(join(dir, 'entry.mjs'));
           expect(native.status).toBe(0);
           expect(native.stdout).toBe(entry.expected);
+          await init();
+          try {
+            const result = await build({
+              entryPoints: [join(dir, 'entry.mjs')],
+              rootDir: dir,
+              outdir: join(dir, 'out'),
+              write: true,
+              platform: 'react-native',
+              format: 'cjs',
+              outputExports: 'named',
+              splitting: true,
+              preserveModules: true,
+              minify,
+            });
+            expect(result.errors).toEqual([]);
+          } finally {
+            close();
+          }
+          const actual = execute(join(dir, 'out/entry.js'));
+          expect(actual.status).toBe(0);
+          expect(actual.stderr).toBe('');
+          expect(actual.stdout).toBe(native.stdout);
+        } finally {
+          await cleanup();
+        }
+      });
+});
+
+describe('preserved CJS source public interop-name exports keep their actual getter', () => {
+  for (const alias of ['__esModule', '"__esModule"', '"\\u005f_esModule"'])
+    for (const minify of [false, true])
+      test(`${alias} minify=${minify}`, async () => {
+        const { dir, cleanup } = await createFixture({
+          'package.json': '{"type":"commonjs"}',
+          'entry.mjs': `const marker=0;export{marker as ${alias}};export default function(){return 42}`,
+        });
+        try {
+          const execute = (file: string) =>
+            spawnSync(
+              'node',
+              [
+                '--input-type=module',
+                '-e',
+                `const ns=${JSON.stringify(file)}.endsWith('.mjs')?await import(${JSON.stringify(pathToFileURL(file).href)}):(await import('node:module')).createRequire(import.meta.url)(${JSON.stringify(file)});console.log(JSON.stringify([ns.default(),ns.__esModule]));`,
+              ],
+              { encoding: 'utf8' },
+            );
+          const native = execute(join(dir, 'entry.mjs'));
+          expect(native.status).toBe(0);
+          expect(native.stdout).toBe('[42,0]\n');
           await init();
           try {
             const result = await build({

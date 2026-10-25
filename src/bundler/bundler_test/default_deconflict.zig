@@ -1915,7 +1915,7 @@ test "preserved CJS named exports retain exact source values and namespace recei
                 }
             }
         }
-        const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{configurable:true,get(){{reads++;return undefined}}}});const ns=(await import('node:module')).createRequire(import.meta.url)('{s}');const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');console.log(JSON.stringify({s}));console.log(reads);", .{ emitted, case.read });
+        const script = try std.fmt.allocPrint(std.testing.allocator, "let reads=0;Object.defineProperty(globalThis,'ErrorUtils',{{configurable:true,get(){{reads++;return undefined}}}});const ns=(await import('node:module')).createRequire(import.meta.url)('{s}');const descriptor=Object.getOwnPropertyDescriptor(ns,'default');if(!descriptor||!descriptor.enumerable||typeof descriptor.get!=='function')throw new Error('missing public getter');const marker=Object.getOwnPropertyDescriptor(ns,'__esModule');if(!marker||marker.value!==true||marker.enumerable)throw new Error('missing interop marker');const babel=ns&&ns.__esModule?ns:{{default:ns}};if(babel.default!==ns.default)throw new Error('wrong interop default');console.log(JSON.stringify({s}));console.log(reads);", .{ emitted, case.read });
         defer std.testing.allocator.free(script);
         const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}{d}\n", .{ case.expected, guard_calls });
         defer std.testing.allocator.free(expected);
@@ -2217,5 +2217,37 @@ test "preserved CJS public getters preserve named defaults and expression snapsh
         const script = try std.fmt.allocPrint(std.testing.allocator, "const values=(await import('node:module')).createRequire(import.meta.url)('{s}');values.change();console.log({s});", .{ emitted, case.use });
         defer std.testing.allocator.free(script);
         try expectDefaultRuntimeOutput(script, case.expected);
+    };
+}
+
+test "preserved CJS source interop-name export is not overwritten by a compiler marker" {
+    for ([_][]const u8{ "__esModule", "\"__esModule\"", "\"\\u005f_esModule\"" }) |alias| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+        const source = try std.fmt.allocPrint(std.testing.allocator, "const marker=0;export{{marker as {s}}};export default function(){{return 42}}", .{alias});
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log(JSON.stringify([ns.default(),ns.__esModule]));", .{entry});
+        defer std.testing.allocator.free(native);
+        try expectDefaultRuntimeOutput(native, "[42,0]\n");
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .output_exports = .named, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        for (output.outputs.?) |file| try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=(await import('node:module')).createRequire(import.meta.url)('{s}');if(typeof Object.getOwnPropertyDescriptor(ns,'__esModule').get!=='function')throw new Error('source getter overwritten');console.log(JSON.stringify([ns.default(),ns.__esModule]));", .{emitted});
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, "[42,0]\n");
     };
 }

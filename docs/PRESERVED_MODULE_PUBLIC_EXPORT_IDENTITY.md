@@ -91,3 +91,10 @@ This named-mode slice does not change `auto`, `default` or `none` mode policy.
 Separate baseline/candidate artifacts preserve existing failures in `auto` and
 `default`, including missing mixed/default-mode diagnostics; those public API
 paths remain mandatory follow-up work.
+
+Named CJS output with a default also publishes the documented non-enumerable
+`__esModule` interop marker. It first checks the already-created public
+properties, so an actual source export with that key remains authoritative,
+including quoted/escaped aliases. The check does not invoke public getters or
+select any semantic identity by spelling. Babel-style default interop and the
+source-public-marker collision have independent Node controls.
