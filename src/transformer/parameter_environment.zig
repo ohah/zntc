@@ -239,7 +239,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
                 if (body_vars.contains(id)) try referenced_shared_ids.put(self.allocator, id, {});
             }
         }
-        if (split_dynamic_body_vars) {
+        if (split_dynamic_body_vars or try @import("native_parameter_cells.zig").applies(self, function)) {
             var body_var_ids = body_vars.keyIterator();
             while (body_var_ids.next()) |id| try referenced_shared_ids.put(self.allocator, id.*, {});
         }
@@ -458,7 +458,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             (scopes[parameter_scope_raw].subtree_has_direct_eval or scopes[parameter_scope_raw].subtree_has_with);
         if (scopes[parameter_scope_raw].blocksMangling() and !parameter_dynamic_lookup) continue;
         const first_affected_param = if (lower_object_rest_only)
-            (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
+            if (try @import("native_parameter_cells.zig").applies(self, node)) @as(u32, 0) else (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
         else
             0;
         if (parameter_dynamic_lookup) {

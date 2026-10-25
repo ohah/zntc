@@ -79,6 +79,7 @@ test {
     _ = @import("static_class_reference_semantic_test.zig");
     _ = @import("static_class_capture_semantic_test.zig");
     _ = @import("private_reference_scope_semantic_test.zig");
+    _ = @import("native_parameter_cells_semantic_test.zig");
     _ = @import("object_computed_temp_identity_semantic_test.zig");
     _ = @import("es2015_parameter_temp_identity_semantic_test.zig");
     _ = @import("generated_alias_reference_semantic_test.zig");

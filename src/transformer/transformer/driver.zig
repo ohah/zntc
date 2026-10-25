@@ -59,6 +59,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     // 블록 스코핑 리네임을 심볼 기준으로 미리 정한다 (#4760).
     try self.buildBlockRenameMap();
     try @import("../parameter_environment.zig").collectClassInferredNames(self);
+    try @import("../native_parameter_cells.zig").normalize(self);
 
     // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
     const root_idx: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
@@ -376,7 +377,7 @@ fn loweredParameterPattern(self: anytype, param_idx: NodeIndex) ?NodeIndex {
     };
 }
 
-fn appendParameterBodyVarCopies(
+pub fn appendParameterBodyVarCopies(
     self: anytype,
     function_scope: @import("../../semantic/scope.zig").ScopeId,
     reference_scope: @import("../../semantic/scope.zig").ScopeId,
@@ -409,6 +410,7 @@ fn appendParameterBodyVarCopies(
         );
         // The final output walk must preserve this producer-selected parameter
         // identity even when a same-named body `var` is visible in the wrapper.
+        try self.addSyntheticRefInScope(value, @fromBackingInt(copy.parameter_symbol_id), reference_scope, .{ .read = true });
         try self.trackExactOutputRead(value, copy.parameter_symbol_id);
         try statements.append(self.allocator, try es_helpers.makeAssignStmt(self, target, value, copy.source_span, 0));
     }
