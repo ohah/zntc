@@ -1247,3 +1247,41 @@ test "isRemovableAtStmtPos: 빌트인 pure call 은 인자까지 엄격 검사�
     defer ctx3.deinit();
     try std.testing.expect(!purity.isRemovableAtStmtPos(&ctx3.ast, try firstNodeOfTag(&ctx3, .call_expression), removalCtx(&ctx3)));
 }
+
+// Initializer purity does not prove that resource validation, cleanup or
+// awaiting cleanup is unobservable. Each of these pure initializers must keep
+// the using declaration as an effectful statement.
+test "native using declaration effects survive pure initializers" {
+    const initializers = [_][]const u8{ "42", "'value'", "true", "1n", "/value/", "[]", "{}", "()=>{}", "class {}", "true?{}:[]" };
+    var failures: usize = 0;
+    for (initializers, 0..) |initializer, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        // Keep ordinary pure declarations removable; this is a resource
+        // lifetime rule, not a blanket retention rule for local declarations.
+        for ([_][]const u8{ "var", "let", "const" }) |kind| {
+            const source = try std.fmt.allocPrint(a, "{s} value={s};", .{ kind, initializer });
+            var ctx = try setup(a, source);
+            defer ctx.deinit();
+            const root = ctx.ast.getNode(ctx.root);
+            const node = ctx.ast.getNode(@fromBackingInt(@as(u32, @intCast(ctx.ast.extra_data.items[root.data.list.start]))));
+            try std.testing.expect(purity.isVarDeclPure(&ctx.ast, node, &ctx.analyzer.unresolved_references));
+            try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, node, &ctx.analyzer.unresolved_references));
+        }
+        for ([_][]const u8{ "using", "await using" }) |kind| {
+            const source = try std.fmt.allocPrint(a, "{s} value={s};", .{ kind, initializer });
+            var ctx = try setup(a, source);
+            defer ctx.deinit();
+            const root = ctx.ast.getNode(ctx.root);
+            const node = ctx.ast.getNode(@fromBackingInt(@as(u32, @intCast(ctx.ast.extra_data.items[root.data.list.start]))));
+            const pure = purity.isVarDeclPure(&ctx.ast, node, &ctx.analyzer.unresolved_references);
+            const has_effects = purity.stmtHasSideEffects(&ctx.ast, node, &ctx.analyzer.unresolved_references);
+            if (pure or !has_effects) {
+                std.debug.print("native using purity case={d} kind={s} initializer={s} pure={} effects={}\n", .{ index, kind, initializer, pure, has_effects });
+                failures += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}

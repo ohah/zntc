@@ -627,8 +627,11 @@ fn isArrayPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRe
 }
 
 /// variable declaration의 순수성 판정.
-/// 모든 declarator의 초기값이 순수이면 순수.
+/// 일반 선언은 모든 초기값이 순수이면 순수. using 은 별도 정리 효과를 가진다.
 pub fn isVarDeclPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    // Resource validation and disposal are observable even when evaluating the
+    // initializer is pure. Await using also observes async cleanup completion.
+    if (ast.variableDeclarationKind(node).isUsing()) return false;
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return false;
     const list_start = ast.extra_data.items[e + 1];
