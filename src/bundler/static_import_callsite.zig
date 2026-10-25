@@ -160,10 +160,20 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             try removed_declarations.put(a, plan.declaration, {});
         }
         try editor.removeReferences(removed.items);
+        const initializers = replacement_statements.items;
+        replacement_statements = .empty;
+        var initializers_inserted = false;
         statements = ast.iterateExtraList(ast.getNode(root).data.list);
-        while (statements.next()) |statement| if (!removed_declarations.contains(statement)) {
-            try replacement_statements.append(a, statement);
-        };
+        while (statements.next()) |statement| {
+            // Preserve the source directive prologue as real directives in the
+            // generated wrapper, rather than demoting it to string expressions.
+            if (!initializers_inserted and ast.getNode(statement).tag != .directive) {
+                try replacement_statements.appendSlice(a, initializers);
+                initializers_inserted = true;
+            }
+            if (!removed_declarations.contains(statement)) try replacement_statements.append(a, statement);
+        }
+        if (!initializers_inserted) try replacement_statements.appendSlice(a, initializers);
         try replacement_statements.appendSlice(a, builder.declarations.items);
         const new_root = try ast.addNode(.{ .tag = .program, .span = ast.getNode(root).span, .data = .{ .list = try ast.addNodeList(replacement_statements.items) } });
         try editor.remapScopeOwner(root, new_root);
@@ -416,4 +426,51 @@ test "static named callsites keep compiler binding edges out of eager initializa
         defer std.testing.allocator.free(execution.stderr);
         try std.testing.expectEqualStrings("run\ndep\n42\n", execution.stdout);
     }
+}
+
+test "static named callsites initialize after the source directive prologue" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_][]const u8{ "\"use strict\";", "\"use custom\";\"use strict\";" }) |prologue| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import('./consumer.mjs').then(m=>console.log(JSON.stringify(m.run())));");
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}import {{value}} from './dep.cjs';let mode;try{{eval('leaked_static_directive=1');mode='sloppy'}}catch{{mode='strict'}}export function run(){{return [mode,value]}}", .{prologue});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "consumer.mjs", source);
+        try helpers.writeFile(tmp.dir, "dep.cjs", "exports.value=42;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("[\"strict\",42]\n", execution.stdout);
+        var modules = graph.modulesIterator();
+        while (modules.next()) |module| {
+            if (!std.mem.endsWith(u8, module.path, "/consumer.mjs")) continue;
+            const ast = &module.ast.?;
+            var statements = ast.iterateExtraList(ast.getNode(ast.transformed_root.?).data.list);
+            if (std.mem.indexOf(u8, prologue, "use custom") != null) {
+                const custom = ast.getNode(statements.next().?);
+                try std.testing.expectEqual(ast_mod.Node.Tag.directive, custom.tag);
+                try std.testing.expectEqualStrings("\"use custom\"", ast.getText(custom.span));
+            }
+            const strict = ast.getNode(statements.next().?);
+            try std.testing.expectEqual(ast_mod.Node.Tag.directive, strict.tag);
+            try std.testing.expectEqualStrings("\"use strict\"", ast.getText(strict.span));
+            const initializer = ast.getNode(statements.next().?);
+            try std.testing.expectEqual(ast_mod.Node.Tag.expression_statement, initializer.tag);
+            try std.testing.expectEqual(ast_mod.Node.Tag.call_expression, ast.getNode(initializer.data.unary.operand).tag);
+        }
+    };
 }

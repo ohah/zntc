@@ -20,12 +20,13 @@
 - compiler import record는 binding-only edge이며 `callsite_lowered=true`로 생성한다. strict-order/async-cone metadata의 eager loop가 별도 raw initializer를 만들지 않는다. 그렇지 않으면 wrapped 소비자의 내부 dynamic import가 `run / dep / 42` 대신 `dep / run / 42`로 실행되는 기존 결함이 있었다. CJS/ESM target을 실제 실행으로 대조한다.
 - 기존 source Reference는 일괄 제거한다. 원래 source import declaration을 program에서 제거하고, source record의 `callsite_lowered`를 표시한다. `linker/metadata.zig`는 이 source record의 raw preamble와 expression rename을 모두 생략한다. 생성한 compiler import는 기존 exact-target 분기를 사용한다.
 - program owner는 새 root로 명시 이관하며 editor finish 결과와 transform-cache ID 배열을 동일 snapshot으로 갱신한다. 두 번 semantic analysis를 실행하지 않는다.
+- source directive prologue의 모든 노드는 원래 순서대로 먼저 유지하고 dependency initializer는 그 뒤에 넣는다. `use strict` 앞에 호출을 삽입해 directive를 일반 문자열 식으로 바꾸지 않는다. compiler import declaration도 prologue 앞에 놓지 않는다.
 
 ## 검사
 
-네 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개, strict-order dynamic target 2개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다.
+다섯 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개, strict-order dynamic target 2개, directive prologue 4개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다. directive 검사는 실제 eval leak 결과와 custom/strict 노드 순서·첫 initializer 위치를 각각 확인한다.
 
-외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. 첫 10개 변이 및 source-order/binding-only 보호 제거 2개 변이는 모두 컴파일 뒤 실제 테스트 실패로 검출했다. 최종 통합 결과는 PR에 별도로 기록한다.
+외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. 첫 10개 변이 및 source-order/binding-only/directive 보호 제거 3개 변이는 모두 컴파일 뒤 실제 테스트 실패로 검출했다. 최종 통합 결과는 PR에 별도로 기록한다.
 
 ## 유지한 잔여
 
@@ -36,3 +37,4 @@
 - foreign CJS wrapper 자체의 생성 Scope/Reference와 raw emitter는 이 단계로 제거되지 않는다. split/preserve/HMR도 기존 미완료 gate를 유지한다.
 - compiler import가 있는 소비자는 기존 process-owner cache eviction 정책을 따른다. owner-linked persistent warm reuse는 아직 완료하지 않았으며 warm parse 0을 주장하지 않는다. 새 wire field나 codec 버전 변경은 없다.
 - dynamic phase의 기존 DCE 5개 및 실제 TLA 4개 실패는 별도 잔여다. 이 named 경로의 통과 수에 섞지 않는다.
+- 명시 directive 없는 ESM 소비자의 implicit strictness는 기존 raw wrapper에서 사라진다. eval leak oracle의 plain/min 두 칸은 native `["strict",42]`, 이전 출력 `["sloppy",42]`로 별도 재현했다. 명시 prologue를 복원한 이번 수정으로 이 wrapper 자체의 기존 strictness 결함까지 완료했다고 주장하지 않는다.
