@@ -163,6 +163,31 @@ describe('dynamic import actual callsite references (#4819)', () => {
     }
   }
 
+  writeFileSync(
+    join(directory, 'tla-leaf.mjs'),
+    'await new Promise(resolve=>setTimeout(resolve,10));export const value=42;',
+  );
+  for (const format of ['esm', 'cjs', 'iife']) {
+    for (const minify of [false, true]) {
+      it(
+        `dynamic target top-level await ${format} minify=${minify}`,
+        {
+          todo:
+            format !== 'cjs'
+              ? 'Existing baseline ESM/IIFE import promise does not wait for async init'
+              : false,
+        },
+        () => {
+          assert.equal(
+            execute("import('./tla-leaf.mjs').then(m=>console.log(m.value));", { format, minify })
+              .stdout,
+            '42',
+          );
+        },
+      );
+    }
+  }
+
   const promisePatch =
     "const OriginalPromise=globalThis.Promise;let reads=0;Object.defineProperty(globalThis,'Promise',{configurable:true,get(){reads++;return OriginalPromise}});";
   for (const mode of [{}, { minify: true }]) {

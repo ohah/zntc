@@ -119,13 +119,16 @@ wrong valid scheduler SID, stale codegen SID array, omitted provider owner guard
 omitted foreign owner guard, omitted actual AST use-scope check and dropped
 serialized provenance. The unmodified snapshot passes after restoration.
 
-The current full Debug suite passes 7,468 tests. ReleaseFast CLI execution passes
+The pre-rebase full Debug suite passes 7,469 tests; the final integrated suite
+also passes through the normal pre-push hook. ReleaseFast CLI execution passes
 120 combinations (ten sources, four target/minification modes and three output
 formats). Runtime tests separately exercise literal eval tokens, live/dead
 Promise getter timing, microtask order, bootstrap caches, source CJS/UMD sloppy
 environments, native option evaluation, with-environment legacy controls and
-persistent-cache execution. These controls do not turn the explicit remaining
-boundaries above into completed scope contracts.
+persistent-cache execution. The final ReleaseFast NAPI run executes 217 tests: 208 pass and nine retained
+baseline TODOs fail as expected. These controls do not turn the explicit remaining
+boundaries above into completed scope contracts. Normal formatting, full test,
+oxlint and oxfmt pre-push checks pass without bypass flags.
 
 Five additional runtime combinations remain executable TODO controls because
 both the prior provider-only compiler and this slice fail them: full minification
@@ -135,3 +138,11 @@ removes the options binding read by a native import's second argument (two modes
 These are baseline DCE/statement-reference defects, not passing controls. They
 remain in the denominator and require separate repairs; this PR does not claim
 complete literal-eval or native-options support.
+
+Actual top-level await is a separate boundary from an async importing function.
+For a dependency that awaits a timer before exporting 42, native import returns
+42. The prior and current compilers both return 42 for CJS output, but return
+undefined for ESM/IIFE output (plain and minified). Those four combinations remain
+executable TODOs, with two passing CJS controls. The callback's current
+`(init(), namespace)` body does not await async initialization; preserving the
+async init Promise chain remains required after static caller conversion.
