@@ -69,7 +69,8 @@ pub const RuntimeHelpers = packed struct(u32) {
     metadata: bool = false,
     /// __toPropertyKey: 낮춘 class 의 computed key 를 정의 시점에 한 번 변환 (#5553).
     to_property_key: bool = false,
-    _padding: u1 = 0,
+    /// Preserve NamedEvaluation after native-parameter arrows are wrapped for dynamic keys.
+    native_parameter_named_property: bool = false,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.

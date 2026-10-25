@@ -1623,9 +1623,9 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const await_index = std.mem.indexOf(u8, combined.items, "var __await2 = function __awaitCtor(v, s)").?;
     const async_generator_index = std.mem.indexOf(u8, combined.items, "var __asyncGenerator2 = function(thisArg, _arguments, generator)").?;
     const yield_star_index = std.mem.indexOf(u8, combined.items, "var __yieldStar2 = function(value)").?;
-    const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
+    const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = (function(ObjectConstructor)").?;
     const wrap_regex_index = std.mem.indexOf(u8, combined.items, "var __wrapRegExp2 = function()").?;
-    const keep_names_index = std.mem.indexOf(u8, combined.items, "var __name2 = (function(defineProperty)").?;
+    const keep_names_index = std.mem.indexOf(u8, combined.items, "var __name2 = (function(defineProperty, create)").?;
     const private_method_init_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodInit2 = function(obj, privateSet)").?;
     const private_method_get_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodGet2 = function(receiver, privateSet, fn)").?;
     const static_private_access_index = std.mem.indexOf(u8, combined.items, "var __classCheckPrivateStaticAccess2 = function(receiver, classConstructor)").?;
@@ -1659,8 +1659,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names
         false,
         .{ .keep_names = "__name2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __name2 = (function(defineProperty)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __name = (function(defineProperty)"));
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __name2 = (function(defineProperty, create)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __name = (function(defineProperty, create)"));
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -1672,8 +1672,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names
         false,
         .{ .keep_names = "$nm2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $nm2=(function(d)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $nm=(function(d)"));
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $nm2=(function(d,c)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $nm=(function(d,c)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected wrap-regexp local and self references directly" {
@@ -2321,8 +2321,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected public fie
         false,
         .{ .public_field = "__publicField2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __publicField2 = function(obj, key, value)"));
-    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __publicField = function(obj, key, value)"));
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __publicField2 = (function(ObjectConstructor)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __publicField = (function(ObjectConstructor)"));
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -2334,8 +2334,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected public fie
         false,
         .{ .public_field = "$pb2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pb2=function(obj,key,value)"));
-    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pb=function(obj,key,value)"));
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pb2=(function(O)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pb=(function(O)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {

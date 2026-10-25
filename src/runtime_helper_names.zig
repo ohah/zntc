@@ -59,6 +59,7 @@ pub const NAMES = struct {
     pub const ARRAY_LIKE_TO_ARRAY_MIN = "$aL"; // __arrayLikeToArray
     pub const TO_CONSUMABLE_ARRAY_MIN = "$tA"; // __toConsumableArray (array spread)
     pub const NAME_MIN = "$nm"; // __name (--keep-names)
+    pub const NAMED_PROPERTY_MIN = "$np"; // __namedProperty (computed property function names)
     pub const TO_BINARY_MIN = "$tb"; // __toBinary (binary loader asset)
     // ES2022 private field downlevel
     pub const PRIVATE_METHOD_INIT_MIN = "$pI"; // __classPrivateMethodInit
@@ -249,6 +250,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__arrayLikeToArray", .short = NAMES.ARRAY_LIKE_TO_ARRAY_MIN },
     .{ .base = "__toConsumableArray", .short = NAMES.TO_CONSUMABLE_ARRAY_MIN },
     .{ .base = "__name", .short = NAMES.NAME_MIN },
+    .{ .base = "__namedProperty", .short = NAMES.NAMED_PROPERTY_MIN },
     .{ .base = "__toBinary", .short = NAMES.TO_BINARY_MIN },
     .{ .base = "__classPrivateMethodInit", .short = NAMES.PRIVATE_METHOD_INIT_MIN },
     .{ .base = "__classPrivateMethodGet", .short = NAMES.PRIVATE_METHOD_GET_MIN },

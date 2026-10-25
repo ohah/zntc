@@ -371,6 +371,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 if (target_span == null and this_source.isNone()) break :blk null;
                 break :blk try prepareNativeParameterArrow(self, source_owner, node.span, target_span, this_source);
             } else null;
+            if (capture_plan != null) {
+                if (self.native_parameter_property_capture_context) |*context| {
+                    if (context.source == source_owner) context.capture_created = true;
+                }
+            }
             if (native_parameter_capture) {
                 self.native_parameter_arrow_capture = if (capture_plan) |plan| plan.capture else null;
                 self.native_parameter_arrow_this_capture = if (capture_plan) |plan| if (plan.this_capture) |identity| .{ .identity = identity, .frame = self.capture_frame, .needs_this_before = self.needs_this_var } else null else null;

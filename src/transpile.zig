@@ -1964,6 +1964,12 @@ fn transpileWithCallbackInternal(
     if (transformer.runtime_helpers.await_helper or transformer.runtime_helpers.async_generator or transformer.runtime_helpers.yield_star) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__await", options.minify_whitespace);
     }
+    if (transformer.runtime_helpers.native_parameter_named_property) {
+        // __namedProperty calls __name inside the helper template rather than
+        // through a transformed AST reference, so reserve that preamble's
+        // exact identity before standalone output-name resolution.
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__name", options.minify_whitespace);
+    }
     if (transformer.runtime_helpers.class_static_private_field) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classCheckPrivateStaticAccess", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace);
@@ -2385,6 +2391,8 @@ fn transpileWithCallbackInternal(
             local_names.public_field = try helper_name_resolver.resolve("__publicField", options.minify_whitespace);
         if (transformer.runtime_helpers.to_property_key)
             local_names.to_property_key = try helper_name_resolver.resolve("__toPropertyKey", options.minify_whitespace);
+        if (transformer.runtime_helpers.native_parameter_named_property)
+            local_names.native_parameter_named_property = try helper_name_resolver.resolve("__namedProperty", options.minify_whitespace);
         if (transformer.runtime_helpers.wrap_regex)
             local_names.wrap_regex = try helper_name_resolver.resolve("__wrapRegExp", options.minify_whitespace);
         if (transformer.runtime_helpers.yield_star)

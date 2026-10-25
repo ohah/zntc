@@ -417,6 +417,7 @@ pub const Transformer = struct {
     /// Its binding and scope exist before any arrow child is visited.
     native_parameter_arrow_capture: ?@import("es_helpers.zig").TempIdentityCapture = null,
     native_parameter_arrow_this_capture: ?@import("es_helpers.zig").NativeParameterThisCapture = null,
+    native_parameter_property_capture_context: ?@import("es_helpers.zig").NativeParameterPropertyCaptureContext = null,
     /// Only initialized this environments can be snapshotted in native params.
     /// Derived constructors and their lexical arrows retain their live binding.
     native_parameter_this_snapshot_allowed: bool = true,

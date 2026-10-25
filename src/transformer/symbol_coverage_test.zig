@@ -2626,30 +2626,73 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
+    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
     var temp_scopes = [_]u32{ std.math.maxInt(u32), std.math.maxInt(u32) };
     var temp_names: [2][]const u8 = undefined;
+    var temp_count: usize = 0;
+    var helper_to_key_count: usize = 0;
+    var helper_public_field_count: usize = 0;
     for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
-        try std.testing.expect(generated.synthetic_kind == .standalone_temp_binding);
-        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@backingInt(generated.scope_id)].get(generated.synthetic_name));
-        try std.testing.expectEqual(@as(u32, 3), generated.reference_count);
-        try std.testing.expectEqual(@as(u32, 1), generated.write_count);
-        var bindings: usize = 0;
-        var references: usize = 0;
+        if (generated.synthetic_kind == .standalone_temp_binding) {
+            try std.testing.expect(temp_count < temp_scopes.len);
+            try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@backingInt(generated.scope_id)].get(generated.synthetic_name));
+            try std.testing.expectEqual(@as(u32, 3), generated.reference_count);
+            try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+            var bindings: usize = 0;
+            var references: usize = 0;
+            for (edited.symbol_ids, 0..) |maybe_id, node_index| {
+                const id = maybe_id orelse continue;
+                if (@as(usize, @intCast(id)) != symbol_index) continue;
+                switch (transformer.ast.nodes.items[node_index].tag) {
+                    .binding_identifier => bindings += 1,
+                    .identifier_reference, .assignment_target_identifier => references += 1,
+                    else => {},
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), bindings);
+            try std.testing.expectEqual(@as(usize, 3), references);
+            temp_scopes[temp_count] = generated.scope_id.toIndex();
+            temp_names[temp_count] = transformer.ast.getText(generated.name);
+            temp_count += 1;
+            continue;
+        }
+        try std.testing.expectEqual(@as(?SyntheticKind, .runtime_helper_preamble), generated.synthetic_kind);
+        try std.testing.expectEqual(.import_binding, generated.kind);
+        try std.testing.expectEqual(@as(u32, 0), generated.scope_id.toIndex());
+        const helper_id = transformer.runtime_helper_symbol_ids.get(generated.synthetic_name) orelse return error.MissingExactRuntimeHelperIdentity;
+        try std.testing.expectEqual(@as(usize, symbol_index), @backingInt(helper_id));
+        try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
+        try std.testing.expectEqual(@as(u32, 0), generated.write_count);
+        var helper_references: usize = 0;
         for (edited.symbol_ids, 0..) |maybe_id, node_index| {
             const id = maybe_id orelse continue;
             if (@as(usize, @intCast(id)) != symbol_index) continue;
-            switch (transformer.ast.nodes.items[node_index].tag) {
-                .binding_identifier => bindings += 1,
-                .identifier_reference, .assignment_target_identifier => references += 1,
-                else => {},
+            const ref_node: AstNodeIndex = @fromBackingInt(@intCast(node_index));
+            try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(ref_node).tag);
+            var found_reference = false;
+            for (edited.references) |reference| {
+                if (reference.node_index != ref_node) continue;
+                try std.testing.expect(!found_reference);
+                try std.testing.expectEqual(helper_id, reference.symbol_id);
+                try std.testing.expect(reference.flags.read and !reference.flags.write);
+                try std.testing.expect(!reference.scope_id.isNone());
+                found_reference = true;
             }
+            try std.testing.expect(found_reference);
+            helper_references += 1;
         }
-        try std.testing.expectEqual(@as(usize, 1), bindings);
-        try std.testing.expectEqual(@as(usize, 3), references);
-        temp_scopes[symbol_index - original_symbols] = generated.scope_id.toIndex();
-        temp_names[symbol_index - original_symbols] = transformer.ast.getText(generated.name);
+        try std.testing.expectEqual(@as(usize, generated.reference_count), helper_references);
+        if (std.mem.eql(u8, generated.synthetic_name, "__toPropertyKey")) {
+            helper_to_key_count += 1;
+        } else if (std.mem.eql(u8, generated.synthetic_name, "__publicField")) {
+            helper_public_field_count += 1;
+        } else {
+            return error.UnexpectedRuntimeHelperIdentity;
+        }
     }
+    try std.testing.expectEqual(@as(usize, 2), temp_count);
+    try std.testing.expectEqual(@as(usize, 1), helper_to_key_count);
+    try std.testing.expectEqual(@as(usize, 1), helper_public_field_count);
     try std.testing.expect(temp_scopes[0] != temp_scopes[1]);
     try std.testing.expectEqualStrings(temp_names[0], temp_names[1]);
     try std.testing.expectEqualStrings("_b", temp_names[0]);
