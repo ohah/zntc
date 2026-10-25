@@ -128,3 +128,59 @@ test "Annex B duplicate block declarations share lexical identity and explicit l
     defer after.deinit();
     try std.testing.expectEqual(@as(usize, 0), after.count());
 }
+
+test "Annex B unbraced branches and labelled declarations retain initial identities" {
+    const cases = [_]struct { source: []const u8, alias: bool }{
+        .{ .source = "function root(){const outer=()=>/*use*/read;if(true)function /*decl*/read(){return 42}}", .alias = true },
+        .{ .source = "function root(){const outer=()=>/*use*/read;if(false)function /*decl*/read(){return 42}}", .alias = true },
+        .{ .source = "function root(){const outer=()=>/*use*/read;if(false)function other(){}else function /*decl*/read(){return 42}}", .alias = true },
+        .{ .source = "function root(){const saved=/*use*/read;label:function /*decl*/read(){return 42}}", .alias = false },
+        .{ .source = "function root(){const saved=/*use*/read;outer:inner:function /*decl*/read(){return 42}}", .alias = false },
+        .{ .source = "function root(){{const saved=/*use*/read;label:function /*decl*/read(){return 42}}}", .alias = true },
+        .{ .source = "function root(){try{throw 1}catch(error){const saved=/*use*/read;label:function /*decl*/read(){return error}}}", .alias = true },
+        .{ .source = "function root(decoy){const saved=/*use*/read;label:function /*decl*/read(){return 42}}", .alias = false },
+        .{ .source = "function root(decoy=1){const saved=/*use*/read;label:function /*decl*/read(){return 42}}", .alias = false },
+        .{ .source = "const saved=/*use*/read;label:function /*decl*/read(){return 42}", .alias = false },
+    };
+    for (cases, 0..) |case, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, case.source);
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = Analyzer.init(allocator, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        const declaration = try nodeAt(&parser.ast, case.source, "/*decl*/", true);
+        const use = try nodeAt(&parser.ast, case.source, "/*use*/", false);
+        const lexical = analyzer.symbol_ids.items[@backingInt(declaration)].?;
+        const alias = analyzer.symbols.items[lexical].annex_b_alias.variable;
+        const expected: u32 = if (index < 3) @backingInt(alias) else lexical;
+        if (analyzer.symbol_ids.items[@backingInt(use)] != expected)
+            std.debug.print("unbraced case {d}: declaration={d}, alias={any}, use={any}\n", .{ index, lexical, alias, analyzer.symbol_ids.items[@backingInt(use)] });
+        try std.testing.expectEqual(case.alias, !alias.isNone());
+        try std.testing.expectEqual(@as(?u32, expected), analyzer.symbol_ids.items[@backingInt(use)]);
+    }
+}
+
+test "Annex B direct labelled function shares a simple parameter binding" {
+    const source = "function root(/*param*/read){const before=/*use*/read;label:function /*decl*/read(){return 42}return arguments[0]===read}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const parameter = try nodeAt(&parser.ast, source, "/*param*/", true);
+    const declaration = try nodeAt(&parser.ast, source, "/*decl*/", true);
+    const use = try nodeAt(&parser.ast, source, "/*use*/", false);
+    try std.testing.expectEqual(analyzer.symbol_ids.items[@backingInt(parameter)], analyzer.symbol_ids.items[@backingInt(declaration)]);
+    try std.testing.expectEqual(analyzer.symbol_ids.items[@backingInt(parameter)], analyzer.symbol_ids.items[@backingInt(use)]);
+}
