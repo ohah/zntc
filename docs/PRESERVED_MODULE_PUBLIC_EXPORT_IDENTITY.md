@@ -123,3 +123,21 @@ NAPI React Native option also honors an explicit `entryErrorGuard: false`;
 omitting that option retains the React Native guard default. Synchronous and
 asynchronous API calls use the same policy without creating a guard provider
 for the explicit-false path.
+
+Mixed imports can reference a forwarding alias in the direct provider while
+its value belongs to another canonical module. That alias has no semantic SID in
+the provider. The source producer validates the existing AliasId row and keeps
+the alias and original local import SID unchanged. When the eager planner really
+owns the same provider initializer, each alias value read creates actual calls to
+that provider's known initializer and the linker's canonical module initializer
+at the original read ScopeId. CJS value proxies therefore refresh immediately
+before each read, including after an earlier call changes the live binding.
+The existing value writer and namespace/call receiver structure stay unchanged.
+
+Alias rows never convert into semantic SIDs. Public-key equality only validates
+the already selected row. Named-only aliases without an eager provider retain
+their previous admission; their negative planner control proves no graph
+publication for that boundary, not runtime correctness of every raw caller.
+Foreign/dangling aliases, synthetic members and orphan source owners remain
+rejected. An unsupported eager record also prevents publishing alias-read plans
+that would otherwise claim a provider evaluation absent from the actual AST.
