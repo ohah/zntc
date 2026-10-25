@@ -94,10 +94,13 @@ pub fn mergeImportRecords(
         if (use_index) {
             if (added.getOrPutAssumeCapacity(rec).found_existing) continue;
         } else if (hasImportRecord(records.items, rec)) continue;
-        const merged = if (use_index)
+        var merged = if (use_index)
             (prev_index.get(rec) orelse rec)
         else
             (findImportRecord(previous, rec) orelse rec);
+        // Resolution belongs to the known dependency; syntax owns its current
+        // literal anchor. A cloned/re-written AST must not keep the old node.
+        merged.source_node = rec.source_node;
         try records.append(arena_alloc, merged);
     }
     for (previous) |rec| {

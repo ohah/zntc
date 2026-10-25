@@ -540,6 +540,7 @@ fn tryExtractImportDecl(ast: *const Ast, node: Node) ?ImportRecord {
     const source_node = ast.getNode(source_idx);
 
     return .{
+        .source_node = source_idx,
         .specifier = specifier,
         .kind = if (specs_len == 0) .side_effect else .static_import,
         .span = source_node.span,
@@ -572,6 +573,7 @@ fn tryExtractExportAll(ast: *const Ast, node: Node) ?ImportRecord {
     const source_node = ast.getNode(source_idx);
 
     return .{
+        .source_node = source_idx,
         .specifier = specifier,
         .kind = .re_export,
         .span = source_node.span,
@@ -592,6 +594,7 @@ fn tryExtractExportNamed(ast: *const Ast, node: Node) ?ImportRecord {
     const source_node = ast.getNode(source_idx);
 
     return .{
+        .source_node = source_idx,
         .specifier = specifier,
         .kind = .re_export,
         .span = source_node.span,
