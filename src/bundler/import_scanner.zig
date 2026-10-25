@@ -115,7 +115,7 @@ pub const CjsExportScope = struct {
                         if (symbol.synthetic_kind == expected and symbol.kind == .parameter and symbol.decl_flags.is_parameter) return true;
                         // The wrapper producer reuses an existing root var/function
                         // declaration for implicit-parameter redeclarations.
-                        if (symbol.synthetic_kind == null and
+                        if (symbol.synthetic_kind == null and @backingInt(symbol.scope_id) == 0 and
                             (symbol.kind == .variable_var or symbol.kind.isFunctionLike())) return true;
                     }
                     // Explicit CJS source already owns implicit host parameters:

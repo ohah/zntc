@@ -1986,6 +1986,19 @@ test "CJS export source kind uses exact reference identities and cached host slo
     symbols[11].synthetic_kind = .cjs_wrapper_module_parameter;
     const invalid_rows = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
     try std.testing.expect(!invalid_rows.has_module_exports and !invalid_rows.has_exports_dot and !invalid_rows.has_esmodule_marker);
+    symbols[7].synthetic_kind = null;
+    symbols[7].kind = .variable_var;
+    symbols[7].scope_id = @fromBackingInt(1);
+    symbols[11].synthetic_kind = null;
+    symbols[11].kind = .function_decl;
+    symbols[11].scope_id = @fromBackingInt(2);
+    const nested_slots = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(!nested_slots.has_module_exports and !nested_slots.has_exports_dot);
+    symbols[7].scope_id = @fromBackingInt(0);
+    symbols[11].scope_id = @fromBackingInt(0);
+    const root_slots = try import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = cached_ids, .symbols = &symbols, .module_parameter = 7, .exports_parameter = 11 });
+    try std.testing.expect(root_slots.has_module_exports and root_slots.has_exports_dot);
+
     try std.testing.expectError(error.MissingCjsExportReferenceIdentity, import_scanner.withSemanticCjsExports(&parser.ast, syntax, .{ .symbol_ids = &.{} }));
     const empty_statements = try parser.ast.addNodeList(&.{});
     parser.ast.transformed_root = try parser.ast.addNode(.{ .tag = .program, .span = .{ .start = 0, .end = 0 }, .data = .{ .list = empty_statements } });
