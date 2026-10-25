@@ -7,6 +7,14 @@ import { createFixture, ZNTC_BIN } from './helpers';
 
 const cases = [
   [
+    'derived body capture before and after super',
+    'class Parent{};class Box extends Parent{value=7;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();',
+  ],
+  [
+    'derived shared capture before and after super',
+    'class Parent{};class Box extends Parent{value=7;read=()=>this.value;constructor(){const early=()=>this;try{console.log(early())}catch(e){console.log(e.name)}super();console.log(early()===this)}}new Box();',
+  ],
+  [
     'global alias collision',
     'const _this=11;class Box{value=7;read=()=>[this.value,_this]}console.log(JSON.stringify(new Box().read()));',
   ],

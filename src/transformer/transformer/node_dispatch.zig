@@ -824,7 +824,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2015 arrow this 캡처: arrow body 안의 this → _this
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
-                if (self.super_call_this_alias) {
+                const native_field_owner = @import("semantic_edit.zig").nativeFieldCaptureOwner(self);
+                const native_derived_capture = if (native_field_owner) |owner| owner.derived else false;
+                if (self.super_call_this_alias or native_derived_capture) {
                     const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
                     const this_ref = try es_helpers.makeSyntheticRef(self, "_this");
                     try self.trackLexicalCaptureRef(this_ref, .none, .this_value);

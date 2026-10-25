@@ -3061,16 +3061,23 @@ pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex
     return initializer;
 }
 
-/// A generated lexical alias reference is paired with its source function
-/// frame at construction. The source identifier is retained only so a replaced
-/// original `arguments` Reference can be removed after final reachability.
+/// Field/body captures share the actual constructor's storage. Native
+/// parameter environments and nested ordinary functions have distinct owners.
+pub fn nativeFieldCaptureOwner(self: *Transformer) ?*@import("../transformer.zig").NativeFieldCapturePlan {
+    if (!self.semantic_edit_enabled or self.capture_frame == 0) return null;
+    const plan = self.native_field_capture_plan orelse return null;
+    if (plan.scope != self.capture_scope) return null;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (!scopeWithin(scopes, self.current_scope, plan.scope)) return null;
+    return plan;
+}
+
+/// A generated lexical alias keeps its exact frame and source role. Moved
+/// fields with a known constructor owner create their Reference immediately.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
     const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
-    if (self.native_field_capture_plan) |plan| {
-        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-        if (self.semantic_edit_enabled and self.capture_frame != 0 and plan.scope == self.capture_scope and
-            scopeWithin(scopes, self.current_scope, plan.scope) and kind == .this_value)
-        {
+    if (nativeFieldCaptureOwner(self)) |plan| {
+        if (kind == .this_value) {
             if (plan.scope != self.capture_scope) std.debug.panic("field capture lost its actual constructor scope", .{});
             if (plan.this_declaration.isNone()) {
                 const saved_scope = self.current_scope;

@@ -312,6 +312,7 @@ pub fn classifyPropertyDefinition(
                 const capture = &ctx.field_initializer_plan.capture;
                 if (capture.frame == 0) capture.frame = env.capture.active_frame;
                 capture.scope = ctx.field_initializer_plan.scope;
+                capture.derived = ctx.has_super;
                 self.capture_frame = capture.frame;
                 self.capture_scope = capture.scope;
                 self.native_field_capture_plan = capture;
@@ -462,6 +463,7 @@ pub fn classifyMethodDefinition(
         defer self.native_field_capture_plan = saved_field_capture_plan;
         if (!ctx.field_initializer_plan.scope.isNone() and self.options.unsupported.arrow and !self.options.unsupported.class) {
             ctx.field_initializer_plan.capture.scope = ctx.field_initializer_plan.scope;
+            ctx.field_initializer_plan.capture.derived = ctx.has_super;
             self.native_field_capture_plan = &ctx.field_initializer_plan.capture;
         }
         // constructor parameter decorator → class-level __decorateClass에 포함
