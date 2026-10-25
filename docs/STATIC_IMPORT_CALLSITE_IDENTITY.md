@@ -22,13 +22,15 @@
 
 ## 검사
 
-두 unit test는 source context 10개와 poisoned state 10개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다.
+세 unit test는 source context 10개, poisoned state 10개, mixed dependency 6개를 실행한다. 별도 AST owner walk로 live callee Reference의 ScopeId를 확인하며, 원래 import declaration/Reference가 남지 않는지도 확인한다. ES5 parameter/class/optional-call 변형을 포함한다. Node 실행 oracle은 dependency 실행 시점과 strict callee receiver를 함께 검사한다.
 
 외부 실행 행렬은 source 10개 × ES5/ES2017 × ESM/CJS/IIFE × 일반/전체 압축 120개다. 원래 CLI의 동일 source 10개는 모두 native와 불일치했고, 새 CLI의 120개는 native와 일치한다. compiled mutation 및 최종 통합 결과는 PR에 별도로 기록한다.
 
 ## 유지한 잔여
 
 - 첫 경로는 단일 출력 provider admission 안에서만 열린다. inlineRequires/Metro의 의도된 lazy 실행은 기존 경로를 유지한다. 기존 RN named-import ordering control을 함께 실행한다.
+- 다른 user eager import가 raw 경로에 남아 있으면 해당 소비자 모듈 전체를 전환하지 않는다. mixed prefix의 bare B→named A에서 기존 정상 `B,A`가 `A,B`로 바뀌는 실제 회귀를 확인했다(plain/min). planned record와 exact compiler/helper record만 함께 허용하며, 다른 user eager record는 source-order typed handoff 후에 전환한다.
+- mixed default/namespace/bare 3종 × source 순서 2종 × 일반/압축 12셀을 native/이전/새 출력으로 대조한다. consumer body effect가 있는 12셀도 별도로 실행한다. 기존 raw 순서 실패는 기존 debt로 유지하며 보호 gate의 회귀 방지를 별도로 검사한다.
 - 일반 unwrapped 소비자의 snapshot 변수, namespace/default/bare import, reexport, shorthand/object-property 사용, source-phase/defer/attribute import, helper binding은 후속 실제 caller 전환 대상이다. 지원 범위에서 제외했다는 이유로 A 완료에 포함하지 않는다.
 - foreign CJS wrapper 자체의 생성 Scope/Reference와 raw emitter는 이 단계로 제거되지 않는다. split/preserve/HMR도 기존 미완료 gate를 유지한다.
 - compiler import가 있는 소비자는 기존 process-owner cache eviction 정책을 따른다. owner-linked persistent warm reuse는 아직 완료하지 않았으며 warm parse 0을 주장하지 않는다. 새 wire field나 codec 버전 변경은 없다.

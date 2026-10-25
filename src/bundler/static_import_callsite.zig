@@ -100,6 +100,34 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
             try plans.append(a, .{ .declaration = statement, .record = ri, .symbols = symbols.items });
         }
         if (plans.items.len == 0) continue;
+        // Raw preambles and retained bare declarations have different placement
+        // contracts. Until all user eager edges share an ordered AST producer,
+        // keep mixed modules on their existing path instead of moving one
+        // dependency ahead of another (notably bare B before named A).
+        const Ownership = struct { bindings: usize = 0, compiler: usize = 0 };
+        const ownership = try a.alloc(Ownership, module.import_records.len);
+        @memset(ownership, .{});
+        for (module.import_bindings) |binding| {
+            if (binding.import_record_index >= ownership.len) return error.InvalidCallsiteBinding;
+            const row = &ownership[binding.import_record_index];
+            row.bindings += 1;
+            if (binding.callsite_target != null or binding.is_helper) row.compiler += 1;
+        }
+        var planned_records = try std.DynamicBitSet.initEmpty(a, module.import_records.len);
+        for (plans.items) |plan| planned_records.set(plan.record);
+        var mixed_raw_dependencies = false;
+        for (module.import_records, 0..) |record, index| {
+            if (!record.kind.isEagerEvalDependency() or record.ts_elided or record.callsite_lowered or planned_records.isSet(index)) continue;
+            const row = ownership[index];
+            if (row.bindings > 0 and row.bindings == row.compiler) continue;
+            if (!record.resolved.isNone()) {
+                const target = graph.getModule(record.resolved) orelse return error.InvalidCallsiteTarget;
+                if (!target.is_included) continue;
+            }
+            mixed_raw_dependencies = true;
+            break;
+        }
+        if (mixed_raw_dependencies) continue;
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
         var builder: Builder = .{ .allocator = a, .ast = ast, .editor = &editor, .module = module, .graph = graph };
@@ -319,4 +347,48 @@ test "static named callsites trust exact anchors across ten poisoned source stat
             for (module.semantic.?.references) |reference| try std.testing.expect(@backingInt(reference.symbol_id) != call_sid or !reference.isValueUse());
         }
     }
+}
+
+test "static named callsites retain source order at mixed raw dependency boundary" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const import_b = [_][]const u8{ "import './b.cjs';", "import other from './b.cjs';", "import * as other from './b.cjs';" };
+    for (import_b, 0..) |b_import, kind| for ([_]bool{ false, true }) |a_first| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "globalThis.events=[];import('./consumer.mjs').then(m=>{const result=m.run();console.log(globalThis.events.join(','),result);});");
+        const import_a = "import {value} from './a.cjs';";
+        const consumer_source = try std.fmt.allocPrint(std.testing.allocator, "{s}{s}export function run(){{return value;}}", .{ if (a_first) import_a else b_import, if (a_first) b_import else import_a });
+        defer std.testing.allocator.free(consumer_source);
+        try helpers.writeFile(tmp.dir, "consumer.mjs", consumer_source);
+        try helpers.writeFile(tmp.dir, "a.cjs", "globalThis.events.push('A');exports.value=42;");
+        try helpers.writeFile(tmp.dir, "b.cjs", "globalThis.events.push('B');exports.other=43;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true, .minify_identifiers = a_first, .minify_syntax = a_first, .minify_whitespace = a_first };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        // The previously correct bare-B then named-A case must remain correct.
+        // Other raw mixed ordering/value behavior remains an explicit debt.
+        if (kind == 0 and !a_first) {
+            const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+            defer std.testing.allocator.free(execution.stdout);
+            defer std.testing.allocator.free(execution.stderr);
+            try std.testing.expectEqualStrings("B,A 42\n", execution.stdout);
+        }
+        var modules = graph.modulesIterator();
+        while (modules.next()) |module| {
+            if (!std.mem.endsWith(u8, module.path, "/consumer.mjs")) continue;
+            for (module.import_bindings) |binding| {
+                try std.testing.expect(binding.callsite_target == null);
+            }
+        }
+    };
 }
