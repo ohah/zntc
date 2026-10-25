@@ -52,7 +52,14 @@ pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
-pub const NativeFieldCapturePlan = struct { frame: u32 = 0, scope: ScopeId = .none, this_declaration: NodeIndex = .none, symbol_id: ?u32 = null };
+/// Field visits and the source constructor share one actual storage identity
+/// even when traversal opens different capture frames for them.
+pub const NativeFieldCapturePlan = struct {
+    frame: u32 = 0,
+    scope: ScopeId = .none,
+    this_declaration: NodeIndex = .none,
+    symbol_id: ?u32 = null,
+};
 pub const DeferredGeneratorLoopMigration = struct {
     loop_function: NodeIndex,
     body: NodeIndex,
