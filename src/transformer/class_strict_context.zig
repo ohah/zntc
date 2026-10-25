@@ -88,8 +88,18 @@ pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, pre
 /// zero-parameter factory preserves both evaluation errors and strictness of
 /// functions created by the initializer (including non-simple parameter lists).
 pub fn visitInitializer(self: anytype, source: NodeIndex, class_scope: ScopeId, output_scope: ScopeId) !NodeIndex {
-    // The ES5 class IIFE itself supplies this strict creation context.
-    if (self.options.unsupported.class) return self.visitNode(source);
+    // The ES5 class IIFE supplies strictness, but the initializer still moves
+    // from the source class environment into that exact output function.
+    if (self.options.unsupported.class) {
+        if (self.semantic_edit_enabled) {
+            try moveInitializerScopes(self, source, class_scope, output_scope, output_scope);
+            try moveSourceReferences(self, source, class_scope, output_scope, output_scope);
+        }
+        const saved_scope = self.current_scope;
+        self.current_scope = output_scope;
+        defer self.current_scope = saved_scope;
+        return self.visitNode(source);
+    }
     const span = self.ast.getNode(source).span;
     const factory_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(output_scope) else output_scope;
     const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });

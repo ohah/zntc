@@ -72,6 +72,26 @@ const cases = [
     source: 'class Box{static #value=1;static{this.read=this.#value;}}console.log(Box.read);',
   },
   {
+    name: 'generator switch owns class private super helpers',
+    source:
+      "function getBase(){return class Base{get value(){return this.token+':value';}get other(){return this.token+':other';}}}function* build(){class Child extends getBase(){#value(){const Child=1;return super.value;}#other(){return super.other;}method(){return[this.#value(),this.#other()];}}yield Child;}const Child=build().next().value;const child=new Child();child.token='ok';console.log(JSON.stringify(child.method()));",
+  },
+  {
+    name: 'async callback owns class private references',
+    source:
+      'async function make(){await 0;return class Box{#value=7;read(){return this.#value;}}}make().then(Box=>console.log(new Box().read()));',
+  },
+  {
+    name: 'static method exists before public field initialization',
+    source:
+      'class Box{static read=this.#method();static #method(){return 9;}}console.log(Box.read);',
+  },
+  {
+    name: 'static method exists before private field initialization',
+    source:
+      'class Box{static #value=this.#method();static #method(){return 9;}static read(){return this.#value;}}console.log(Box.read());',
+  },
+  {
     name: 'readonly write-only method',
     source:
       'class Box{static #write(){try{Box=1;}catch(error){return error.name;}}static run(){return this.#write();}}console.log(Box.run());',

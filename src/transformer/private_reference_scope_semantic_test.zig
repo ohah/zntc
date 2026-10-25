@@ -405,4 +405,24 @@ test "#4819 private reference creation generator switch owns native helper bindi
         }
     }
     try std.testing.expect(references > 0);
+
+    // A callback-local temp adds a block around the already-owned switch.
+    // Its producer must attach that new lexical parent before finalization.
+    const temp_start = transformer.temp_var_counter;
+    _ = try @import("es_helpers.zig").makeTempVarSpan(&transformer);
+    const wrapped = try transformer.hoistStateMachineTempsAndRestore(built.body, temp_start, transformer.ast.getNode(function).span, &frame.callback_temps);
+    try std.testing.expect(wrapped != built.body);
+    const block_scope = transformer.outputOwnedScope(wrapped).?;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, editor.scopes.items[block_scope.toIndex()].kind);
+    try std.testing.expectEqual(source_scope, editor.scopes.items[block_scope.toIndex()].parent);
+    try std.testing.expectEqual(scope, transformer.outputOwnedScope(built.body).?);
+    try std.testing.expectEqual(block_scope, editor.scopes.items[scope.toIndex()].parent);
+}
+
+test "#4819 private reference creation ES5 static method called before initialization" {
+    try expectES5PrivateReferencesAtCreation("class Box{static read=this.#method();static #method(){return 9;}}console.log(Box.read);");
+}
+
+test "#4819 private reference creation ES5 private field calls static method" {
+    try expectES5PrivateReferencesAtCreation("class Box{static #value=this.#method();static #method(){return 9;}static read(){return this.#value;}}console.log(Box.read());");
 }
