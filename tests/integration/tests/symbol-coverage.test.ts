@@ -6889,7 +6889,83 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('bundled ES5 synchronous using retains the graph when no owning state machine is lowered', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundled-es5-using-retained-graph-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      [
+        "var _stack = 'source-binding';",
+        'var events: string[] = [];',
+        'function make(name: string) {',
+        '  var resource: any = {};',
+        '  resource[Symbol.dispose] = function () { events.push(name); };',
+        '  return resource;',
+        '}',
+        "using unused = make('outer');",
+        'function run() {',
+        "  using _stack2 = make('inner');",
+        "  events.push('body');",
+        '}',
+        'run();',
+        "setTimeout(function () { console.log(events.join(','), _stack); }, 0);",
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+      );
+      expect(mode, `${proc.stderr}`).toContain('semantic_graph=retained');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+      );
+      expect(identity, `${proc.stderr}`).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${identity}`,
+        ).toBe(0);
+      }
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('body,inner,outer source-binding\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('bundled await-using and loop-head lowering keep semantic reanalysis', () => {
+    const stateMachineSource = (body: string, completion: string) =>
+      [
+        'var events: string[] = [];',
+        'function make() { var resource: any = {}; resource[Symbol.dispose] = function () { events.push("dispose"); }; return resource; }',
+        body,
+        completion,
+      ].join('\n');
     const cases = [
       {
         name: 'await-using',
@@ -6914,31 +6990,93 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'sync-using-async-state-machine',
-        target: '--target=es2015',
-        source: [
-          'const events: string[] = [];',
-          'async function run() {',
-          "  using resource = { [Symbol.dispose]() { events.push('dispose'); } };",
-          "  events.push('body');",
-          '}',
-          "run().then(() => console.log(events.join(',')));",
-        ].join('\n'),
+        target: '--target=es5',
+        source: stateMachineSource(
+          'async function run() { using resource = make(); events.push("body"); await Promise.resolve(); }',
+          'run().then(function () { console.log(events.join(",")); });',
+        ),
         output: 'body,dispose\n',
       },
       {
-        name: 'sync-using-generator-state-machine',
+        name: 'sync-using-async-arrow-state-machine',
         target: '--target=es5',
-        source: [
-          'const events: string[] = [];',
-          'function* run() {',
-          "  using resource = { [Symbol.dispose]() { events.push('dispose'); } };",
-          "  events.push('body');",
-          "  yield 'yield';",
-          '}',
-          'for (const value of run()) events.push(value);',
-          "console.log(events.join(','));",
-        ].join('\n'),
-        output: 'body,yield,dispose\n',
+        source: stateMachineSource(
+          'var run = async () => { using resource = make(); events.push("body"); await Promise.resolve(); };',
+          'run().then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-function-expression-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'var run = async function () { using resource = make(); events.push("body"); await Promise.resolve(); };',
+          'run().then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-object-method-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'var runner = { async run() { using resource = make(); events.push("body"); await Promise.resolve(); } };',
+          'runner.run().then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-class-method-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'class Runner { async run() { using resource = make(); events.push("body"); await Promise.resolve(); } }',
+          'new Runner().run().then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-generator-function-expression-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'var run = function* () { using resource = make(); events.push("body"); yield 1; };',
+          'for (var value of run()) {} console.log(events.join(","));',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-generator-object-method-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'var runner = { *run() { using resource = make(); events.push("body"); yield 1; } };',
+          'for (var value of runner.run()) {} console.log(events.join(","));',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-generator-declaration-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'function* run() { using resource = make(); events.push("body"); yield 1; }',
+          'for (var value of run()) {} console.log(events.join(","));',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-generator-declaration-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'async function* run() { using resource = make(); events.push("body"); yield 1; }',
+          'var iterator = run(); iterator.next().then(function () { return iterator.next(); }).then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
+      },
+      {
+        name: 'sync-using-async-generator-object-method-state-machine',
+        target: '--target=es5',
+        source: stateMachineSource(
+          'var runner = { async *run() { using resource = make(); events.push("body"); yield 1; } };',
+          'var iterator = runner.run(); iterator.next().then(function () { return iterator.next(); }).then(function () { console.log(events.join(",")); });',
+        ),
+        output: 'body,dispose\n',
       },
     ];
 
