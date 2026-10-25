@@ -5003,7 +5003,7 @@ pub const SemanticAnalyzer = struct {
 
         const inner_idx = node.data.unary.operand;
         const unresolved_default_identifier = self.isUnresolvedDefaultIdentifier(inner_idx);
-        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx);
+        const needs_facade = module_parser.defaultExportNeedsFacade(self.ast, inner_idx, node.data.unary.flags);
 
         if (needs_facade) {
             // _default facade 심볼 생성 — declareSymbolWithNode 우회 (재선언 검증 불필요)

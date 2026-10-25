@@ -561,8 +561,18 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
             return;
         }
     }
-    try self.write("export default ");
     const inner_idx = node.data.unary.operand;
+    if (node.data.unary.flags & module_parser.EXPORT_DEFAULT_NAMED_DECLARATION != 0 and
+        !inner_idx.isNone() and self.ast.getNode(inner_idx).tag == .identifier_reference)
+    {
+        // The lowering supplied the declaration's exact binding reference.
+        // `export default ref` would snapshot it and lose later binding writes.
+        try self.write("export{");
+        try self.emitNode(inner_idx);
+        try self.write(" as default};");
+        return;
+    }
+    try self.write("export default ");
     // export-default-start 마킹: `export default (function(){})` / `export default
     // (class{})` 처럼 식 형태의 function/class 가 선언문(`export default function(){}`)
     // 으로 오파싱되지 않도록 expression emitter 가 괄호를 친다 (esbuild exportDefaultStart).

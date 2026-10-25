@@ -677,7 +677,9 @@ pub fn buildMetadataForAst(
         var exported_locals: std.StringHashMapUnmanaged(void) = .empty;
         defer exported_locals.deinit(self.allocator);
         for (m.export_bindings) |eb| {
-            if (eb.kind == .local) try exported_locals.put(self.allocator, m.exportBindingLocalName(eb), {});
+            // Facades capture an expression; they are not source lexical
+            // exports, even when an unrelated import is spelled `_default`.
+            if (eb.kind == .local and !eb.has_default_export_facade) try exported_locals.put(self.allocator, m.exportBindingLocalName(eb), {});
         }
 
         // A module waiting on a top-level-await dependency (`in_async_cone`)

@@ -822,7 +822,7 @@ pub const Node = struct {
                 // export_all: extra = [exported_name(0), source(1), attrs_start(2), attrs_len(3)]
                 // `export *` 은 exported_name = .none, `export * as ns` 는 namespace identifier.
                 .export_all_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
-                // export_default: unary = { operand: decl, flags: 0 }
+                // export_default: unary = { operand: decl, flags: module.EXPORT_DEFAULT_NAMED_DECLARATION }
                 .export_default_declaration => .{ .kind = .unary },
                 // jsx_element: extra = [tag(0), attrs_start, attrs_len, children_start, children_len]
                 .jsx_element => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{ .{ 1, 2 }, .{ 3, 4 } } },
