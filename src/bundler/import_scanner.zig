@@ -105,7 +105,19 @@ pub const CjsExportScope = struct {
                         .exports => self.exports_parameter,
                         .none => null,
                     };
-                    if (slot != null and slot.? == id) return true;
+                    if (slot != null and slot.? == id and id < self.symbols.len) {
+                        const symbol = self.symbols[id];
+                        const expected: @import("../semantic/symbol.zig").SyntheticKind = switch (role) {
+                            .module => .cjs_wrapper_module_parameter,
+                            .exports => .cjs_wrapper_exports_parameter,
+                            .none => unreachable,
+                        };
+                        if (symbol.synthetic_kind == expected and symbol.kind == .parameter and symbol.decl_flags.is_parameter) return true;
+                        // The wrapper producer reuses an existing root var/function
+                        // declaration for implicit-parameter redeclarations.
+                        if (symbol.synthetic_kind == null and
+                            (symbol.kind == .variable_var or symbol.kind.isFunctionLike())) return true;
+                    }
                     // Explicit CJS source already owns implicit host parameters:
                     // a root var/function redeclaration shares that binding.
                     // Inspect this reference's existing SID; never search by name.
