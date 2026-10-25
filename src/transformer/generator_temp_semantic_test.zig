@@ -1150,16 +1150,30 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    // State-machine lowering flattens the temporary for-await wrapper block
-    // into switch operations. The source loop scope therefore attaches
-    // directly to the emitted generator callback, which remains nested in the
-    // original async function scope.
-    const wrapper_function = edited.scopes[original_header_scope.toIndex()].parent;
+    // The producer's real wrapper and try-body block scopes survive under
+    // the native generator callback. Every intermediate owner must be live.
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var wrapper_function = edited.scopes[original_header_scope.toIndex()].parent;
+    var blocks: usize = 0;
+    while (!wrapper_function.isNone() and edited.scopes[wrapper_function.toIndex()].kind == .block) {
+        var owners = edited.scope_owner_map.iterator();
+        var live: usize = 0;
+        while (owners.next()) |owner| {
+            if (owner.value_ptr.* != @backingInt(wrapper_function)) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, owner.key_ptr.*) != null);
+            try std.testing.expectEqual(ast_mod.Node.Tag.block_statement, transformer.ast.nodes.items[owner.key_ptr.*].tag);
+            live += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), live);
+        blocks += 1;
+        try std.testing.expect(blocks <= edited.scopes.len);
+        wrapper_function = edited.scopes[wrapper_function.toIndex()].parent;
+    }
+    try std.testing.expectEqual(@as(usize, 2), blocks);
     try std.testing.expect(!wrapper_function.isNone());
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper_function.toIndex()].kind);
     try std.testing.expectEqual(source_function, edited.scopes[wrapper_function.toIndex()].parent);
     var live_owners: usize = 0;
-    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var owners = edited.scope_owner_map.iterator();
     while (owners.next()) |owner| {
         if (owner.value_ptr.* != @backingInt(wrapper_function)) continue;
