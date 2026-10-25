@@ -34,7 +34,7 @@ ImportRecord와 local-role은 graph-facing memory state이며 module codec wire�
 아래 경계는 여전히 별도 필수 잔여다.
 
 - inlineRequires/Metro의 lazy policy, wrapped ESM target 및 guarded source prefix, re-export source execution, source-phase/defer/attribute import, split/preserve/HMR은 기존 admission을 유지한다. 일부 unsupported use가 raw에 남으면 module 전체의 mixed-order gate도 유지한다.
-- moduleSpecifierMap의 original default-spec binding 생성은 기존 `hasMappedImportToSplit` reanalysis gate를 유지한다. rewrite control은 current anchor 전달만 증명하며 same-owner SID birth 완료로 세지 않는다.
+- moduleSpecifierMap의 split producer는 원래 local binding NodeIndex/SID를 default-specifier 역할로 직접 이관한다. [별도 계약](MODULE_MAP_BINDING_IDENTITY.md)은 실제 graph owner와 statement/cache handoff를 설명한다. type-only/unused TypeScript elision과 기존 minifier 검증 실패는 보수적 재분석 경로를 유지한다.
 - foreign CJS/ESM raw wrapper와 raw export getter의 실제 closure Scope/Reference는 이 단계로 제거되지 않는다.
 - 명시 directive 없는 ESM wrapper implicit-strict 두 칸은 native `["strict",42]`, 이전/현재 `["sloppy",42]`의 기존 debt다.
 - 실제 TLA 4개(별도 CJS 2개 정상 control) 및 기존 DCE 5개 실패는 통과 수에 섞지 않는다.

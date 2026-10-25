@@ -9,6 +9,7 @@ const module_parser = @import("../../parser/module.zig");
 const es_helpers = @import("../es_helpers.zig");
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const emotion_mod = @import("emotion.zig");
 const styled_components_mod = @import("styled_components.zig");
 const transformer_mod = @import("../transformer.zig");
@@ -210,6 +211,21 @@ fn findModuleMapTemplate(self: *Transformer, source_idx: NodeIndex) ?[]const u8 
     return null;
 }
 
+/// Verify an existing source import identity before transferring its AST role.
+/// Bare Transformer callers intentionally retain the semantic-less contract.
+pub fn validateMappedImportBinding(self: *Transformer, local: NodeIndex) error{InvalidMappedImportBinding}!void {
+    if (!self.semantic_edit_enabled) return;
+    if (local.isNone() or @backingInt(local) >= self.ast.nodes.items.len or
+        self.ast.getNode(local).tag != .identifier_reference) return error.InvalidMappedImportBinding;
+    const sid = self.getSymbolIdAt(local) orelse return error.InvalidMappedImportBinding;
+    if (sid >= self.symbols.len) return error.InvalidMappedImportBinding;
+    const symbol = self.symbols[sid];
+    if (symbol.kind != .import_binding or !symbol.decl_flags.is_import or
+        symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= self.scopes.len) return error.InvalidMappedImportBinding;
+    const scope = self.scopes[symbol.scope_id.toIndex()];
+    if ((scope.kind != .module and scope.kind != .global) or !scope.parent.isNone()) return error.InvalidMappedImportBinding;
+}
+
 /// 매핑 조건 충족 시 분해. 단일 named → 단일 default 노드 반환. 다중 → 첫 specifier 만
 /// 반환하고 나머지는 trailing_nodes 로 같은 list 에 추가. 조건 미충족 (default/namespace/
 /// alias/type-only) 이면 null 반환 — caller 가 unchanged path 진행.
@@ -231,6 +247,8 @@ fn rewriteImportToPathSplits(
         if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) return null;
         // alias 없는지: imported == local (NodeIndex 동일성)
         if (spec_node.data.binary.left != spec_node.data.binary.right) return null;
+        validateMappedImportBinding(self, spec_node.data.binary.right) catch
+            std.debug.panic("mapped import lost its exact source binding", .{});
     }
 
     var first_result: ?NodeIndex = null;
@@ -238,13 +256,16 @@ fn rewriteImportToPathSplits(
     while (i < x.specs_len) : (i += 1) {
         const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[x.specs_start + i]));
         const spec_node = self.ast.getNode(spec_idx);
-        const name_node = self.ast.getNode(spec_node.data.binary.left);
-        const name_span = name_node.span;
-        const name_text = self.ast.getText(name_span);
+        const local_node = spec_node.data.binary.right;
+        const name_node = self.ast.getNode(local_node);
+        const name_span = name_node.data.string_ref;
+        const raw_name = self.ast.getText(name_span);
+        const name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+        defer if (name_text.ptr != raw_name.ptr) self.allocator.free(name_text);
 
         const new_decl = try buildDefaultImportFromTemplate(
             self,
-            name_span,
+            local_node,
             name_text,
             template,
             node.span,
@@ -256,13 +277,24 @@ fn rewriteImportToPathSplits(
             try self.trailing_nodes.append(self.allocator, new_decl);
         }
     }
+    // Commit the binding-role transfers only after the whole split group and
+    // its trailing-node storage were allocated successfully.
+    i = 0;
+    while (i < x.specs_len) : (i += 1) {
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[x.specs_start + i]));
+        const local_node = self.ast.getNode(spec_idx).data.binary.right;
+        const binding = &self.ast.nodes.items[@backingInt(local_node)];
+        const name = binding.data.string_ref;
+        binding.tag = .import_default_specifier;
+        binding.data = .{ .string_ref = name };
+    }
     return first_result;
 }
 
 /// `import <name> from '<template:name>'` 의 AST 노드 빌드.
 fn buildDefaultImportFromTemplate(
     self: *Transformer,
-    name_span: Span,
+    local_node: NodeIndex,
     name_text: []const u8,
     template: []const u8,
     decl_span: Span,
@@ -274,11 +306,11 @@ fn buildDefaultImportFromTemplate(
     defer self.allocator.free(quoted);
     const path_span = try self.ast.addString(quoted);
 
-    const default_spec = try self.ast.addNode(.{
-        .tag = .import_default_specifier,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
-    });
+    // The original local binding already owns its exact SID, declaration
+    // reference and Module Scope. Transfer its physical role instead of
+    // creating an unbound default specifier and asking a later analyzer to
+    // rediscover that identity from its spelling.
+    const default_spec = local_node;
     const source_node = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = path_span,
@@ -286,11 +318,12 @@ fn buildDefaultImportFromTemplate(
     });
 
     const specs_start = try self.ast.addExtras(&.{@backingInt(default_spec)});
-    return self.addExtraNode(.import_declaration, decl_span, &.{
+    const declaration = try self.addExtraNode(.import_declaration, decl_span, &.{
         specs_start,              1,
         @backingInt(source_node), @backingInt(module_parser.ImportPhase.none),
         0,                        0,
     });
+    return declaration;
 }
 
 /// `'lodash/{name}'` 의 `{name}` placeholder 치환. 첫 occurrence 만 — 일반적 사용처.
