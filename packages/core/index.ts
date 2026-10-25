@@ -1295,7 +1295,7 @@ interface BuildOptionsCommon {
    * such as `Location` with an immutable descriptor (`configurable: false`)
    * and expo-metro-runtime's unguarded `defineProperty` attempt threw, but the
    * mechanism is OS/engine-agnostic — it covers every module factory throw
-   * case. Auto-enabled on the React Native platform. */
+   * case. Auto-enabled on the React Native platform; explicit false disables it. */
   entryErrorGuard?: boolean;
   /** Inject a `console.error` setter intercept into the prologue — console.error
    * calls matching any one of the RegExp source string array are silently
