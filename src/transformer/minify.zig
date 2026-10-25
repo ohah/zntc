@@ -775,10 +775,22 @@ fn decrementRefsImpl(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex, comptime s
 
 pub fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) void {
     for (ast.nodes.items) |node| {
-        if (node.tag != .object_property) continue;
-        if (!node.data.binary.right.isNone()) continue;
-        const key_ni = @backingInt(node.data.binary.left);
-        if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
+        switch (node.tag) {
+            .object_property => {
+                if (!node.data.binary.right.isNone()) continue;
+                const key_ni = @backingInt(node.data.binary.left);
+                if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
+            },
+            .export_specifier => {
+                // Both edges name bindings; neither accepts a value expression.
+                // Implicit exports can share their local/public identifier node.
+                for ([_]NodeIndex{ node.data.binary.left, node.data.binary.right }) |name| {
+                    const raw = @backingInt(name);
+                    if (raw < forbidden.capacity()) forbidden.set(raw);
+                }
+            },
+            else => {},
+        }
     }
 }
 
