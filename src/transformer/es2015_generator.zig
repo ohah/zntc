@@ -229,6 +229,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
             const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            try self.remapCopiedScopeOwner(params_idx, new_params_node);
             const new_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),
                 @backingInt(new_params_node),
@@ -367,6 +368,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // collectBindingIdentifiers가 visitNode를 호출하므로 인덱스 기반 접근 사용
             try collectHoistedVarsRange(self, stmts_start, stmts_len, &hoisted_vars);
 
+            // Initialize each exact function cell once at this body activation.
+            _ = try collectFunctionInitializers(self, body_list.statements, &ops);
             // collectOperations는 AST를 변형하므로 인덱스 루프 사용
             var i_stmts: u32 = 0;
             while (i_stmts < stmts_len) : (i_stmts += 1) {
@@ -753,9 +756,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             std.debug.panic("generator source binding producer changed its exact owner ScopeId", .{});
                     }
                 }
-                const binding = if (origin) |source|
-                    try self.makeUserBinding(temp_span, source)
-                else if (producer.symbol_id) |raw_id| blk: {
+                const binding = if (origin) |source| blk: {
+                    if (!producer.binding.isNone() and producer.binding != source) {
+                        if (self.getSymbolIdAt(producer.binding) != self.getSymbolIdAt(source))
+                            std.debug.panic("generator source cell changed its exact binding", .{});
+                        break :blk producer.binding;
+                    }
+                    break :blk try self.makeUserBinding(temp_span, source);
+                } else if (producer.symbol_id) |raw_id| blk: {
                     if (self.semantic_edit_enabled and producer.owner_scope != wrapper_scope)
                         std.debug.panic("generator temp producer owner changed before hoisting", .{});
                     const captured = try self.createSyntheticTempBindingWithIdentity(
@@ -815,6 +823,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 문을 순회하며 연산을 수집.
         fn collectOperations(self: *Transformer, stmt_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             if (stmt_idx.isNone()) return;
+            if (self.generator_collected_function_declarations.get(@backingInt(stmt_idx))) |sid| {
+                try appendCollectedFunctionAlias(self, stmt_idx, sid, ops);
+                return;
+            }
             const saved_scope = self.generator_operation_scope;
             if (self.semantic_edit_enabled) {
                 const raw = @backingInt(stmt_idx);
@@ -3135,6 +3147,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (slot.found_existing) continue;
                 const node = self.ast.getNode(work.node);
                 const scope = self.outputOwnedScope(work.node) orelse work.scope;
+                if (self.generator_collected_function_roots.fetchRemove(raw)) |entry| {
+                    if (self.outputScopeParent(entry.value) != work.scope)
+                        try self.reparentGeneratedScope(entry.value, work.scope);
+                }
                 const block_owner = switch (node.tag) {
                     .block_statement, .for_statement, .for_in_statement, .for_of_statement, .while_statement, .do_while_statement, .switch_statement, .catch_clause => true,
                     else => false,
@@ -3394,6 +3410,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d`, `_using`, `_` …)로, 만들 때 함수 안에서
         /// 고유하게 지어지므로 이름을 그대로 올린다.
         fn registerStateMachineBindings(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!void {
+            return registerStateMachineBindingsWithHoisting(self, bindings, false);
+        }
+
+        fn registerStateMachineBindingsWithHoisting(self: *Transformer, bindings: []const NodeIndex, force_hoist: bool) Transformer.Error!void {
             for (bindings) |binding| {
                 const bi = @backingInt(binding);
                 const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
@@ -3404,7 +3424,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 블록 스코프가 네이티브인 타깃(chrome49)은 소스 바인딩을 제자리에 둔다. 다만 분석 후
                 // 하강이 만든 바인딩(for-of 의 `catch (_err)`, 이름이 string table 에 있음)은 어느
                 // hoist 스캔에도 없으므로 여기서 선언해야 strict 코드에서 ReferenceError 가 안 난다 (#5769).
-                if (!stateMachineRenamesBlockScope(self)) {
+                if (!stateMachineRenamesBlockScope(self) and !force_hoist) {
                     const name_span = self.ast.getNode(binding).data.string_ref;
                     if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 and !isRegisteredGeneratorBinding(self, binding))
                         _ = try registerGeneratorVar(self, name_span, binding);
@@ -3422,7 +3442,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     continue;
                 }
                 const new_name = self.tableRenameOf(binding) orelse blk: {
-                    const name = self.ast.getText(self.ast.getNode(binding).span);
+                    const raw_name = self.ast.getText(if (force_hoist) self.ast.getNode(binding).data.string_ref else self.ast.getNode(binding).span);
+                    const name = if (force_hoist) try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name) else raw_name;
+                    defer if (name.ptr != raw_name.ptr) self.allocator.free(name);
                     self.block_rename_counter += 1;
                     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
                     const n = try std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}${d}", .{ name, self.block_rename_counter });
@@ -3430,8 +3452,338 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.block_rename_map.?.put(self.allocator, sid, n);
                     break :blk n;
                 };
-                _ = try registerGeneratorVar(self, try self.ast.addString(new_name), binding);
+                const selected_name = if (force_hoist)
+                    try es_helpers.resolveGeneratedNameAvoidingDynamicEval(self, new_name, self.generator_state_machine_scope)
+                else
+                    new_name;
+                if (force_hoist) try self.block_rename_map.?.put(self.allocator, sid, selected_name);
+                _ = try registerGeneratorVar(self, try self.ast.addString(selected_name), binding);
             }
+        }
+
+        fn directFunctionDeclaration(self: *Transformer, statement: NodeIndex) ?NodeIndex {
+            var current = statement;
+            var hops: usize = 0;
+            while (!current.isNone() and hops < self.ast.nodes.items.len) : (hops += 1) {
+                const node = self.ast.getNode(current);
+                if (node.tag == .function_declaration) return current;
+                if (node.tag != .labeled_statement) return null;
+                current = node.data.binary.right;
+            }
+            return null;
+        }
+
+        fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
+            if (self.generator_annex_b_var_bindings.contains(variable)) return;
+            const editor = &self.semantic_editor.?;
+            // An explicit source var/function already has an actual declaration
+            // producer. Only the initial anchorless Annex B var needs a birth.
+            for (editor.references.items) |reference| {
+                if (@backingInt(reference.symbol_id) == variable and reference.flags.declare and !reference.declaration_node_index.isNone()) return;
+            }
+            const symbol = editor.symbols.items[variable];
+            if (symbol.kind != .variable_var or symbol.scope_id.isNone()) @panic("invalid implicit Annex B var storage");
+            const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbol.name);
+            try self.setGeneratedSymbolId(binding, variable);
+            try self.relocateOutputSymbolAs(variable, symbol.scope_id, binding);
+            try self.generator_annex_b_var_bindings.put(self.allocator, variable, binding);
+            try self.generator_function_storage_scopes.put(self.allocator, @backingInt(symbol.scope_id), {});
+        }
+
+        fn appendCollectedFunctionAlias(self: *Transformer, statement: NodeIndex, lexical: u32, ops: *std.ArrayList(Operation)) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or lexical == std.math.maxInt(u32)) return;
+            const editor = &self.semantic_editor.?;
+            const role = (@import("../semantic/annex_b_function.zig").forSymbol(editor.symbols.items, @fromBackingInt(lexical)) catch @panic("invalid lowered generator Annex B role")) orelse return;
+            if (role.state != .lowered) @panic("generator function storage retained native Annex B affinity");
+            const scope = self.generator_operation_scope;
+            const span = self.ast.getNode(statement).span;
+            const variable = editor.symbols.items[@backingInt(role.variable)];
+            const local = editor.symbols.items[lexical];
+            const target = try self.ast.addNode(.{ .tag = .assignment_target_identifier, .span = span, .data = .{ .string_ref = variable.name } });
+            const value = try es_helpers.makeIdentifierRefFromSpan(self, local.name);
+            try self.addSyntheticRefInScope(target, role.variable, scope, .{ .write = true });
+            try self.addSyntheticRefInScope(value, role.lexical, scope, .{ .read = true });
+            try self.trackExactOutputRead(value, lexical);
+            const assignment = try es_helpers.makeAssignStmt(self, target, value, span, 0);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assignment } });
+        }
+
+        /// Implicit V belongs to its initial function environment, even when L
+        /// was collected inside a nested loop helper. Bind once at that actual
+        /// live function owner; never put V in each block/callback's storage.
+        pub fn appendAnnexBVariableStorage(self: *Transformer, root: NodeIndex) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or self.semantic_editor == null) return;
+            const editor = &self.semantic_editor.?;
+            var has_fdi = false;
+            for (editor.symbols.items) |symbol| if (symbol.binding_instantiation.parameter_copy) {
+                has_fdi = true;
+                break;
+            };
+            if (!has_fdi and self.generator_annex_b_var_bindings.count() == 0) return;
+            var owners: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
+            defer owners.deinit(self.allocator);
+            var parameter_owners: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
+            defer parameter_owners.deinit(self.allocator);
+            const Declaration = struct { node: NodeIndex, declarator: NodeIndex, binding: NodeIndex, symbol: u32, scope: ScopeId };
+            var declarations: std.ArrayList(Declaration) = .empty;
+            defer declarations.deinit(self.allocator);
+            const Work = struct { node: NodeIndex, scope: ScopeId };
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = root, .scope = self.programScope() });
+            while (stack.pop()) |work| {
+                const index = work.node;
+                const node = self.ast.getNode(index);
+                const scope = self.outputOwnedScope(index) orelse work.scope;
+                switch (node.tag) {
+                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {
+                        const slot = try owners.getOrPut(self.allocator, @backingInt(scope));
+                        if (slot.found_existing and slot.value_ptr.* != index) @panic("entry storage has ambiguous live function owner");
+                        slot.value_ptr.* = index;
+                        const parameters = self.readNodeIdx(node.data.extra, if (node.tag == .arrow_function_expression) 0 else 1);
+                        var leaves = try ast_walk.bindingIdentifiers(self.allocator, self.ast, parameters, .{});
+                        defer leaves.deinit();
+                        while (try leaves.next()) |binding| if (self.getSymbolIdAt(binding)) |sid| {
+                            const owner = try parameter_owners.getOrPut(self.allocator, sid);
+                            if (owner.found_existing and owner.value_ptr.* != scope) @panic("FDI parameter has ambiguous function owner");
+                            owner.value_ptr.* = scope;
+                        };
+                    },
+                    .variable_declaration => if (self.ast.variableDeclarationKind(node) == .@"var") {
+                        const start = self.readU32(node.data.extra, 1);
+                        const count = self.readU32(node.data.extra, 2);
+                        for (0..count) |i| {
+                            const declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start + i]);
+                            const pattern = self.readNodeIdx(self.ast.getNode(declarator).data.extra, 0);
+                            var leaves = try ast_walk.bindingIdentifiers(self.allocator, self.ast, pattern, .{});
+                            defer leaves.deinit();
+                            while (try leaves.next()) |binding| if (self.getSymbolIdAt(binding)) |sid| {
+                                if (sid < editor.symbols.items.len and editor.symbols.items[sid].binding_instantiation.parameter_copy)
+                                    try declarations.append(self.allocator, .{ .node = index, .declarator = declarator, .binding = binding, .symbol = sid, .scope = self.nearestVarScope(scope) });
+                            };
+                        }
+                    },
+                    else => {},
+                }
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| if (!child.isNone()) {
+                    const skips = @import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(index), @backingInt(child));
+                    try stack.append(self.allocator, .{ .node = child, .scope = if (skips) work.scope else scope });
+                };
+            }
+            for (declarations.items) |declaration| {
+                const role = (@import("../semantic/parameter_body_var.zig").forSymbol(editor.symbols.items, @fromBackingInt(declaration.symbol)) catch @panic("invalid FDI storage role")) orelse @panic("FDI declaration lost its source role");
+                var owner_scope = parameter_owners.get(@backingInt(role.parameter));
+                for (self.parameter_body_var_copies.items) |copy| if (copy.native_fdi_role and copy.body_var_symbol_id == declaration.symbol) {
+                    if (copy.parameter_symbol_id != @backingInt(role.parameter)) @panic("FDI storage copy changed parameter identity");
+                    if (owner_scope) |known| if (known != copy.function_scope) @panic("FDI parameter and copy disagree on function owner");
+                    owner_scope = copy.function_scope;
+                };
+                const owner = owner_scope orelse @panic("FDI storage has no actual parameter function owner");
+                if (declaration.scope == owner) continue;
+                self.generator_function_storage_changed = true;
+                try self.generator_function_storage_scopes.put(self.allocator, @backingInt(owner), {});
+                const declarator = self.ast.getNode(declaration.declarator);
+                if (self.readNodeIdx(declarator.data.extra, 0) != declaration.binding or !self.readNodeIdx(declarator.data.extra, 1).isNone())
+                    @panic("FDI storage move requires its separate initializer operation");
+                const node = self.ast.getNode(declaration.node);
+                const start = self.readU32(node.data.extra, 1);
+                const count = self.readU32(node.data.extra, 2);
+                var kept: std.ArrayList(NodeIndex) = .empty;
+                defer kept.deinit(self.allocator);
+                for (0..count) |i| {
+                    const item: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start + i]);
+                    if (item != declaration.declarator) try kept.append(self.allocator, item);
+                }
+                if (kept.items.len == 0) {
+                    self.ast.nodes.items[@backingInt(declaration.node)] = .{ .tag = .empty_statement, .span = node.span, .data = .{ .none = 0 } };
+                } else {
+                    const list = try self.ast.addNodeList(kept.items);
+                    self.ast.extra_data.items[node.data.extra + 1] = list.start;
+                    self.ast.extra_data.items[node.data.extra + 2] = list.len;
+                }
+                const slot = try self.generator_annex_b_var_bindings.getOrPut(self.allocator, declaration.symbol);
+                if (!slot.found_existing) slot.value_ptr.* = declaration.binding;
+                try self.relocateOutputSymbolAs(declaration.symbol, owner, slot.value_ptr.*);
+            }
+            var bindings = self.generator_annex_b_var_bindings.iterator();
+            while (bindings.next()) |entry| {
+                const symbol = editor.symbols.items[entry.key_ptr.*];
+                const function = owners.get(@backingInt(symbol.scope_id)) orelse @panic("entry var lost its owning function");
+                const node = self.ast.getNode(function);
+                const body_slot: u32 = if (node.tag == .arrow_function_expression) 1 else 2;
+                const body = self.readNodeIdx(node.data.extra, body_slot);
+                const body_node = self.ast.getNode(body);
+                if (body_node.tag != .block_statement and body_node.tag != .function_body) @panic("entry var has no actual function body");
+                const declarator = try es_helpers.makeDeclarator(self, entry.value_ptr.*, .none, node.span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                const replacement = try self.prependStatementsToBody(body, &.{declaration});
+                self.ast.extra_data.items[node.data.extra + body_slot] = @backingInt(replacement);
+            }
+            self.generator_annex_b_var_bindings.clearRetainingCapacity();
+        }
+
+        /// Close the rewritten statement lists before the generic output
+        /// validator runs. Identity and scope fields are never repaired here.
+        pub fn projectFunctionStorageCoordinates(self: *Transformer, root: NodeIndex) Transformer.Error!void {
+            if (!self.generator_function_storage_changed or self.semantic_editor == null) return;
+            const editor = &self.semantic_editor.?;
+            // A program prefix/removal changes every enclosing top-level
+            // bucket. Otherwise the publication stays in the changed function
+            // environments and their actual descendants.
+            const original_root: NodeIndex = @fromBackingInt(@as(u32, @intCast(self.parser_node_count - 1)));
+            const original = self.ast.getNode(original_root);
+            const output = self.ast.getNode(root);
+            if (original.tag == .program and output.tag == .program and original.data.list.len != output.data.list.len)
+                try self.generator_function_storage_scopes.put(self.allocator, @backingInt(self.programScope()), {});
+            // Public import/export/property spellings are not runtime reads,
+            // even when their nodes carry the associated local SID.
+            const value_nodes = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, root);
+            for (value_nodes) |node| try self.generator_function_statement_value_nodes.put(self.allocator, @backingInt(node), {});
+            const projection = @import("../bundler/statement_owner_projection.zig");
+            const contexts = projection.collect(self.allocator, self.ast, root) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                @panic("generator storage has ambiguous statement containment");
+            };
+            var classes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer classes.deinit(self.allocator);
+            var class_ids = self.class_self_symbol_map.valueIterator();
+            while (class_ids.next()) |sid| try classes.put(self.allocator, sid.*, {});
+            var selected: std.ArrayList(@import("../semantic/symbol.zig").Reference) = .empty;
+            defer selected.deinit(self.allocator);
+            var indices: std.ArrayList(usize) = .empty;
+            defer indices.deinit(self.allocator);
+            for (editor.references.items, 0..) |reference, index| {
+                var current = reference.scope_id;
+                var participates = false;
+                var hops: usize = 0;
+                while (!current.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
+                    if (current.toIndex() >= editor.scopes.items.len) @panic("generator statement reference has an invalid owner");
+                    if (self.generator_function_storage_scopes.contains(@backingInt(current))) {
+                        participates = true;
+                        break;
+                    }
+                    current = editor.scopes.items[current.toIndex()].parent;
+                }
+                if (!participates) continue;
+                const node = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
+                const sid = @backingInt(reference.symbol_id);
+                if (sid >= editor.symbols.items.len) @panic("generator storage reference lost its exact SID");
+                const symbol = editor.symbols.items[sid];
+                const live_anchor = !node.isNone() and @backingInt(node) < contexts.len and contexts[@backingInt(node)] != null;
+                const owned_anchorless = reference.flags.declare and node.isNone() and
+                    (classes.contains(sid) or (symbol.kind == .variable_const and symbol.decl_flags.is_default_export and symbol.scope_id == self.programScope()));
+                // Raw preamble and engine bindings have no AST statement. Do
+                // not invent a statement owner for those existing roles.
+                if (!live_anchor and !owned_anchorless) continue;
+                try selected.append(self.allocator, reference);
+                try indices.append(self.allocator, index);
+            }
+            const view = .{
+                .references = selected.items,
+                .symbols = editor.symbols,
+                .scopes = editor.scopes.items,
+                .symbol_ids = editor.symbol_ids.items,
+                .scope_owner_map = editor.scope_owner_map,
+                .class_self_symbol_map = self.class_self_symbol_map,
+            };
+            const projected = (projection.project(self.allocator, self.ast, root, &view) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                @panic("generator storage has an invalid statement role");
+            }) orelse @panic("generator storage lost an exact statement owner");
+            for (projected, indices.items) |reference, index| {
+                editor.references.items[index].stmt_idx = reference.stmt_idx;
+                editor.references.items[index].scope_stmt_idx = reference.scope_stmt_idx;
+                if (!reference.flags.declare and !reference.node_index.isNone()) {
+                    const slot = try self.generator_function_coordinate_handoffs.getOrPut(self.allocator, @backingInt(reference.node_index));
+                    const value: @TypeOf(slot.value_ptr.*) = .{ .symbol_id = reference.symbol_id, .scope = reference.scope_id, .stmt = reference.stmt_idx, .scope_stmt = reference.scope_stmt_idx };
+                    if (slot.found_existing and !std.meta.eql(slot.value_ptr.*, value)) @panic("generator statement node has conflicting producer rows");
+                    slot.value_ptr.* = value;
+                }
+            }
+        }
+
+        fn collectFunctionInitializers(self: *Transformer, list: NodeList, ops: *std.ArrayList(Operation)) Transformer.Error!bool {
+            if (self.semantic_edit_enabled) {
+                const source = self.semantic_editor.?.scopes.items[self.generator_state_machine_scope.toIndex()];
+                if (source.subtree_has_direct_eval or source.subtree_has_with) return false;
+            }
+            const Entry = struct { node: NodeIndex, binding: NodeIndex, name: Span, symbol: ?u32, count: u32 = 1 };
+            var entries: std.ArrayList(Entry) = .empty;
+            defer entries.deinit(self.allocator);
+            var selected: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+            defer selected.deinit(self.allocator);
+            for (0..list.len) |index| {
+                const statement: NodeIndex = @fromBackingInt(self.ast.extra_data.items[list.start + index]);
+                const node = directFunctionDeclaration(self, statement) orelse continue;
+                const source = self.ast.getNode(node);
+                if (self.readNodeIdx(source.data.extra, ast_mod.FunctionExtra.body).isNone()) continue;
+                const origin = self.readNodeIdx(source.data.extra, ast_mod.FunctionExtra.name);
+                if (origin.isNone()) continue;
+                const sid = self.getSymbolIdAt(origin);
+                if (self.semantic_edit_enabled and sid == null) @panic("generator function declaration lost its initial binding SID");
+                try self.generator_collected_function_declarations.put(self.allocator, @backingInt(statement), sid orelse std.math.maxInt(u32));
+                if (sid) |id| {
+                    if (selected.get(id)) |old| {
+                        entries.items[old].node = node;
+                        entries.items[old].count += 1;
+                        continue;
+                    }
+                    try selected.put(self.allocator, id, entries.items.len);
+                }
+                const raw_name = try self.allocator.dupe(u8, self.ast.getText(self.ast.getNode(origin).data.string_ref));
+                defer self.allocator.free(raw_name);
+                const decoded = try @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+                defer if (decoded.ptr != raw_name.ptr) self.allocator.free(decoded);
+                const name = try self.ast.addString(decoded);
+                try entries.append(self.allocator, .{ .node = node, .binding = origin, .name = name, .symbol = sid });
+            }
+            if (entries.items.len != 0) {
+                self.generator_function_storage_changed = true;
+                if (self.semantic_edit_enabled) try self.generator_function_storage_scopes.put(self.allocator, @backingInt(self.generator_state_machine_scope), {});
+            }
+            // Freeze complete declaration groups before changing any L storage.
+            for (entries.items) |*entry| {
+                if (entry.symbol) |sid| if (self.semantic_edit_enabled) {
+                    const editor = &self.semantic_editor.?;
+                    const annex = @import("../semantic/annex_b_function.zig");
+                    if ((annex.forDeclaration(self.ast, self.symbol_ids.items, editor.symbols.items, entry.node) catch @panic("invalid initial generator Annex B role"))) |role| {
+                        _ = annex.markLowered(editor.symbols.items, role.lexical, entry.count) catch @panic("generator Annex B declaration count changed");
+                        try ensureAnnexBVariableStorage(self, @backingInt(role.variable));
+                    }
+                    if (sid >= editor.symbols.items.len) @panic("invalid generator function SID");
+                };
+                try registerStateMachineBindingsWithHoisting(self, &.{entry.binding}, true);
+                const producer_index = self.generator_temp_producer_identities.items.len - 1;
+                const span = self.generator_temp_var_spans.items[producer_index];
+                const binding = if (self.semantic_edit_enabled) try self.makeUserBinding(span, entry.binding) else entry.binding;
+                if (entry.symbol) |sid| try self.relocateOutputSymbolAs(sid, self.generator_state_machine_scope, binding);
+                self.generator_temp_producer_identities.items[producer_index].binding = binding;
+                entry.binding = binding;
+            }
+            for (entries.items) |entry| {
+                const visited = try self.visitNode(entry.node);
+                const output = self.ast.getNode(visited);
+                const e = output.data.extra;
+                const expression = try self.addExtraNode(.function_expression, output.span, &.{
+                    @backingInt(NodeIndex.none), @backingInt(self.readNodeIdx(e, 1)), @backingInt(self.readNodeIdx(e, 2)),
+                    self.readU32(e, 3),          self.readU32(e, 4),
+                });
+                try self.remapCopiedScopeOwner(visited, expression);
+                if (self.semantic_edit_enabled) {
+                    const scope = self.outputOwnedScope(expression) orelse @panic("collected function lost its source ScopeId");
+                    const params = self.readNodeIdx(self.ast.getNode(expression).data.extra, 1);
+                    try self.generator_collected_function_roots.put(self.allocator, @backingInt(expression), self.outputOwnedScope(params) orelse scope);
+                }
+                self.runtime_helpers.keep_names = true;
+                const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
+                const literal = try es_helpers.buildQuotedKeyLiteral(self, entry.name);
+                const value = try es_helpers.makeCallExpr(self, callee, &.{ expression, literal }, output.span);
+                const target = try bindingToAssignTarget(self, entry.binding);
+                const statement = try es_helpers.makeAssignStmt(self, target, value, output.span, 0);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = statement } });
+            }
+            return true;
         }
 
         fn isRegisteredGeneratorBinding(self: *Transformer, binding: NodeIndex) bool {
@@ -3477,6 +3829,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const stmts_start = list.statements.start;
                 const stmts_len = list.statements.len;
                 try registerStateMachineBindings(self, lexical.items);
+                _ = try collectFunctionInitializers(self, list.statements, ops);
                 // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {

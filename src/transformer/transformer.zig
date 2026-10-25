@@ -444,6 +444,18 @@ pub const Transformer = struct {
     /// can be attached with their final output ScopeIds.
     stage3_metadata_binding_ids: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").SymbolId) = .empty,
     generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
+    generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
+    generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    generator_function_storage_changed: bool = false,
+    generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    generator_function_statement_value_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, struct {
+        symbol_id: @import("../semantic/symbol.zig").SymbolId,
+        scope: ScopeId,
+        stmt: u32,
+        scope_stmt: u32,
+    }) = .empty,
     /// Exact pending uses for generated callback temps; these do not use the
     /// temp-name reference chain.
     generator_state_temp_refs: std.ArrayListUnmanaged(GeneratedTempReference) = .empty,

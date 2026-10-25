@@ -113,8 +113,16 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
                 try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, edited.scopes[ref.scope_id.toIndex()].kind);
                 try std.testing.expectEqual(symbol.scope_id, edited.scopes[ref.scope_id.toIndex()].parent);
             }
-            try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
-            try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
+            if (transformer.generator_function_coordinate_handoffs.get(@backingInt(ref.node_index))) |publication| {
+                const actual = output_scope.expectedStatementCoordinates(transformer.ast, &output_parents, @backingInt(ref.node_index)) orelse return error.MissingActualStatementOwner;
+                try std.testing.expectEqual(ref.symbol_id, publication.symbol_id);
+                try std.testing.expectEqual(ref.scope_id, publication.scope);
+                try std.testing.expectEqual(actual.stmt_idx, ref.stmt_idx);
+                try std.testing.expectEqual(actual.scope_stmt_idx, ref.scope_stmt_idx);
+            } else {
+                try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
+                try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
+            }
             try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@backingInt(ref.node_index)]);
             ref_count += 1;
         }

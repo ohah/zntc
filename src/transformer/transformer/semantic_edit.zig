@@ -1003,6 +1003,20 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
 /// Keep conflicts observable without inventing a new ID or adopting a
 /// same-spelled binding. The production entry treats a conflict as a compiler
 /// invariant failure, matching other invalid semantic edits.
+fn generatorStatementScopeParticipates(self: *Transformer, scope: ScopeId) EditorError!bool {
+    if (self.generator_function_storage_scopes.count() == 0) return false;
+    const scopes = self.semantic_editor.?.scopes.items;
+    var current = scope;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (current.toIndex() >= scopes.len) return error.InvalidScope;
+        if (self.generator_function_storage_scopes.contains(@backingInt(current))) return true;
+        current = scopes[current.toIndex()].parent;
+    }
+    if (!current.isNone()) return error.InvalidScope;
+    return false;
+}
+
 pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex, root_scope: ScopeId) EditorError!void {
     const editor = try editorFor(self);
     if (self.outputOwnedScope(root) == null) {
@@ -1168,7 +1182,21 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 // reference scope from this final AST walk.
                 if (scope.isNone() or tracked_index >= self.tracked_runtime_helper_refs.items.len)
                     std.debug.panic("runtime helper reference has no exact output scope", .{});
-                editor.moveReference(work.node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+                const publication = self.generator_function_coordinate_handoffs.get(raw);
+                if (publication == null and self.generator_function_statement_value_nodes.contains(raw) and try generatorStatementScopeParticipates(self, scope)) return error.InvalidNode;
+                const produced = editor.referenceForNode(work.node) catch |err| return editError(err);
+                if (publication) |known| {
+                    const row = produced orelse return error.ReferenceNotFound;
+                    if (known.scope != scope or row.scope_id != known.scope) return error.InvalidScope;
+                    if (row.symbol_id != known.symbol_id or @backingInt(known.symbol_id) != self.tracked_runtime_helper_refs.items[tracked_index].symbol_id) return error.InvalidSymbol;
+                    if (row.stmt_idx != known.stmt or row.scope_stmt_idx != known.scope_stmt) return error.InvalidNode;
+                }
+                editor.moveReference(
+                    work.node,
+                    scope,
+                    if (publication) |known| known.stmt else Reference.NO_STMT,
+                    if (publication) |known| known.scope_stmt else Reference.NO_STMT,
+                ) catch |err| return editError(err);
                 self.tracked_runtime_helper_refs.items[tracked_index].scope = scope;
             } else if (self.exact_output_ref_symbol_ids.get(raw)) |exact_id| {
                 if (scope.isNone() or exact_id >= editor.symbols.items.len)
@@ -1313,13 +1341,24 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
             const symbol: SymbolId = @fromBackingInt(@intCast(reference.raw_id));
             const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
+            const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+            if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
+                std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
+                return error.InvalidNode;
+            }
+            if (publication) |known| {
+                const row = maybe_reference orelse return error.ReferenceNotFound;
+                if (known.scope != reference.scope or row.scope_id != known.scope) return error.InvalidScope;
+                if (known.symbol_id != symbol or row.symbol_id != known.symbol_id) return error.InvalidSymbol;
+                if (row.stmt_idx != known.stmt or row.scope_stmt_idx != known.scope_stmt) return error.InvalidNode;
+            }
             if (maybe_reference != null) {
                 editor.relocateReference(
                     reference.node,
                     reference.scope,
                     symbol,
-                    Reference.NO_STMT,
-                    Reference.NO_STMT,
+                    if (publication) |known| known.stmt else Reference.NO_STMT,
+                    if (publication) |known| known.scope_stmt else Reference.NO_STMT,
                 ) catch |err| return editError(err);
                 editor.updateReferenceFlags(reference.node, reference.flags) catch |err| return editError(err);
             } else {
@@ -1379,6 +1418,18 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         // explicit producer split. Placement never creates or adopts an ID.
         const resolved_id = reference.raw_id;
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
+        const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+        if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
+            std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
+            return error.InvalidNode;
+        }
+        if (publication) |known| {
+            const row = maybe_reference orelse return error.ReferenceNotFound;
+            if (known.scope != reference.scope or row.scope_id != known.scope) return error.InvalidScope;
+            if (@backingInt(known.symbol_id) != resolved_id or row.symbol_id != known.symbol_id) return error.InvalidSymbol;
+            if (row.stmt_idx != known.stmt or row.scope_stmt_idx != known.scope_stmt) return error.InvalidNode;
+            if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[resolved_id].scope_id, reference.scope)) return error.InvalidScope;
+        }
         if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[resolved_id].scope_id, reference.scope)) {
             // The emitted AST can move a declaration behind a function
             // boundary while leaving an old use outside it (for example an
@@ -1396,8 +1447,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             reference.node,
             reference.scope,
             @fromBackingInt(@intCast(resolved_id)),
-            Reference.NO_STMT,
-            Reference.NO_STMT,
+            if (publication) |known| known.stmt else Reference.NO_STMT,
+            if (publication) |known| known.scope_stmt else Reference.NO_STMT,
         ) catch |err| {
             if (err != error.ReferenceNotFound) return editError(err);
         };
