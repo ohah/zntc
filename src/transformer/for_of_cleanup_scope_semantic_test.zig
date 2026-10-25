@@ -54,6 +54,23 @@ fn check(source: []const u8) !void {
             t.generator_state_machine_scope = t.nearestVarScope(source_scope);
         }
         const output = try ForOf.rewriteForOf(&t, input, t.ast.getNode(input), .none, state_machine);
+        const wrapper_list = t.ast.getNode(output).data.list;
+        var temp_ids: [5]u32 = undefined;
+        for (0..3) |index| {
+            const declaration = t.ast.getNode(@fromBackingInt(t.ast.extra_data.items[wrapper_list.start + index]));
+            const declarator = t.ast.getNode(t.ast.readExtraNode(t.ast.readExtra(declaration.data.extra, 1), 0));
+            temp_ids[index] = t.getSymbolIdAt(t.ast.readExtraNode(declarator.data.extra, 0)).?;
+        }
+        const outer_try = t.ast.getNode(@fromBackingInt(t.ast.extra_data.items[wrapper_list.start + 3]));
+        const try_list = t.ast.getNode(outer_try.data.ternary.a).data.list;
+        const emitted_loop = t.ast.getNode(@fromBackingInt(t.ast.extra_data.items[try_list.start]));
+        const initializer = t.ast.getNode(t.ast.readExtraNode(emitted_loop.data.extra, 0));
+        const initializer_list = t.ast.readExtra(initializer.data.extra, 1);
+        for (0..2) |index| {
+            const declarator = t.ast.getNode(t.ast.readExtraNode(initializer_list, @intCast(index)));
+            temp_ids[index + 3] = t.getSymbolIdAt(t.ast.readExtraNode(declarator.data.extra, 0)).?;
+        }
+        var temp_uses: [5]usize = @splat(0);
         const actual_refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, t.ast, output);
         var actual_ref_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
         for (actual_refs) |ref| try actual_ref_nodes.put(a, @backingInt(ref), {});
@@ -107,12 +124,16 @@ fn check(source: []const u8) !void {
                     const is_write = !work.parent.isNone() and t.ast.getNode(work.parent).tag == .assignment_expression and t.ast.getNode(work.parent).data.binary.left == work.node;
                     try std.testing.expectEqual(is_write, ref.flags.write);
                     try std.testing.expectEqual(!is_write, ref.flags.read);
+                    for (temp_ids, 0..) |id, index| if (sid == id) {
+                        temp_uses[index] += 1;
+                    };
                     generated_refs += 1;
                 }
             }
             var children = walk.children(t.ast, node);
             while (children.next()) |child| try stack.append(a, .{ .node = child, .scope = scope, .parent = work.node });
         }
+        try std.testing.expectEqualSlices(usize, &.{ 3, 2, 2, 3, 2 }, &temp_uses);
         try std.testing.expect(generated_scopes >= 8);
         try std.testing.expect(generated_refs >= 13);
     }
