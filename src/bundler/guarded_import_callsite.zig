@@ -46,20 +46,51 @@ fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: B
     return .{ .direct = try direct.esmInitSymbol(), .value = try value.esmInitSymbol() };
 }
 
-const EagerHelper = struct { record: usize, target: SymbolID, bindings: []const usize };
+const EagerHelper = struct { record: usize, target: SymbolID, bindings: []const usize, owns_record: bool = false };
+
+/// Validate the scanner's exact source anchor against its live export syntax.
+/// A different literal (even with the same spelling) cannot own this record.
+fn validateReExportSource(ast: *const ast_mod.Ast, root: NodeIndex, source: NodeIndex) !void {
+    if (source.isNone() or @backingInt(source) >= ast.nodes.items.len or ast.getNode(source).tag != .string_literal) return error.InvalidGuardedReExport;
+    const parser = @import("../parser/module.zig");
+    var owners: usize = 0;
+    var statements = ast.iterateExtraList(ast.getNode(root).data.list);
+    while (statements.next()) |statement| {
+        const node = ast.getNode(statement);
+        const current = switch (node.tag) {
+            .export_named_declaration => parser.readExportNamedExtras(ast, node.data.extra).source,
+            .export_all_declaration => parser.readExportAllExtras(ast, node.data.extra).source,
+            else => continue,
+        };
+        if (current == source) owners += 1;
+    }
+    if (owners != 1) return error.InvalidGuardedReExport;
+}
 
 /// Preserve the existing eager order: this slice owns helper-only eager
-/// records; other eager dependencies must be deferred named reads or already
-/// unwrapped modules executed by the graph's ordinary dependency order.
+/// records and explicit ESM re-exports. Other eager dependencies must be
+/// deferred named reads or unwrapped modules executed by ordinary graph order.
 /// Mixed eager work stays with its current producer until the ordered phase owns it.
-fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, a: std.mem.Allocator) ![]const EagerHelper {
+fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: NodeIndex, a: std.mem.Allocator) ![]const EagerHelper {
     var result: std.ArrayList(EagerHelper) = .empty;
     for (module.import_records, 0..) |record, record_index| {
         if (!record.kind.isEagerEvalDependency() or record.callsite_lowered) continue;
-        if (record.resolved.isNone() or record.kind != .static_import) return &.{};
+        if (record.resolved.isNone()) return &.{};
         const target = graph.getModule(record.resolved) orelse return error.InvalidGuardedImportBinding;
         if (linker.tree_shaker_active and !target.is_included) continue;
         if (target.wrap_kind == .none) continue;
+        if (record.kind == .re_export) {
+            if (module.wrap_kind != .esm or target.wrap_kind != .esm or !target.shouldGuard(true) or target.in_async_cone) return &.{};
+            try validateReExportSource(&module.ast.?, root, record.source_node);
+            var bound = false;
+            for (module.export_bindings) |exported| {
+                if (exported.kind.isAnyReExport() and exported.import_record_index != null and exported.import_record_index.? == record_index) bound = true;
+            }
+            if (!bound) return error.InvalidGuardedReExport;
+            try result.append(a, .{ .record = record_index, .target = try target.esmInitSymbol(), .bindings = &.{}, .owns_record = true });
+            continue;
+        }
+        if (record.kind != .static_import) return &.{};
         var helpers: std.ArrayList(usize) = .empty;
         var ordinary: usize = 0;
         for (module.import_bindings, 0..) |binding, index| {
@@ -255,7 +286,7 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
                 if (supported and calls.items.len != 0) try plans.append(a, .{ .binding = index, .calls = calls.items, .targets = targets });
             }
         }
-        const eager = try eagerHelpers(graph, linker, module, a);
+        const eager = try eagerHelpers(graph, linker, module, root, a);
         if (plans.items.len == 0 and eager.len == 0) continue;
         var editor = try sem.beginEdit(a, ast);
         defer editor.deinit();
@@ -343,6 +374,11 @@ pub fn lower(graph: *@import("graph.zig").ModuleGraph, linker: *@import("linker.
         try added.appendSlice(a, builder.declarations.items);
         try refreshStatementInfo(module, shaker, added.items);
         if (module.transform_cache) |*cache| cache.symbol_ids = sem.symbol_ids;
+        // Publish record ownership only after its real AST calls, semantic
+        // rows and statement metadata have all been validated and committed.
+        for (eager) |owned| if (owned.owns_record) {
+            module.import_records[owned.record].callsite_lowered = true;
+        };
         activated = true;
     }
     if (activated) try @import("runtime_entry_guard_ast.zig").activate(graph, shaker);
@@ -653,4 +689,129 @@ test "guarded unwrapped helpers own Scope0 calls before source global mutations"
         defer std.testing.allocator.free(execution.stderr);
         try std.testing.expectEqualStrings("[\"entry\",42]\n", execution.stdout);
     }
+}
+
+test "guarded reexport callers retain explicit producer ownership" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const Case = struct { body: []const u8 = "export {answer as default} from'./other.mjs';", provider: []const u8 };
+    for ([_]Case{
+        .{ .provider = "export const answer=42;" },
+        .{ .provider = "export let answer=42;" },
+        .{ .provider = "export var answer=42;" },
+        .{ .provider = "export function answer(){return 42;}" },
+        .{ .provider = "export class answer{run(){return 42;}}" },
+        .{ .provider = "export const answer={n:42};" },
+        .{ .provider = "export const answer=[42];" },
+        .{ .provider = "export const answer=(()=>42)();" },
+        .{ .body = "export {default} from'./other.mjs';", .provider = "export default 42;" },
+        .{ .body = "export {renamed as default} from'./other.mjs';", .provider = "const answer=42;export{answer as renamed};" },
+    }) |case| for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import{{value}}from'./dep.mjs';{s}export const marker=7;export{{marker as publicAlias}};globalThis.entryValue=value;globalThis.order.push('entry');", .{case.body});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        try helpers.writeFile(tmp.dir, "second.mjs", "import{value}from'./dep.mjs';globalThis.second=value;");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42;}");
+        const provider = try std.fmt.allocPrint(std.testing.allocator, "globalThis.order=[];globalThis.order.push('other');{s}", .{case.provider});
+        defer std.testing.allocator.free(provider);
+        try helpers.writeFile(tmp.dir, "other.mjs", provider);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const second = try helpers.absPath(&tmp, "second.mjs");
+        defer std.testing.allocator.free(second);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .format = .esm, .code_splitting = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        try std.testing.expectEqual(@TypeOf(module.wrap_kind).esm, module.wrap_kind);
+        try std.testing.expectEqual(@import("types.zig").ImportKind.re_export, module.import_records[1].kind);
+        try std.testing.expect(module.import_records[1].callsite_lowered);
+        const source_ast = &module.ast.?;
+        const current_root = source_ast.transformed_root.?;
+        try validateReExportSource(source_ast, current_root, module.import_records[1].source_node);
+        try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, .none));
+        try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, @fromBackingInt(@as(u32, @intCast(source_ast.nodes.items.len)))));
+        // The other real import's literal is valid syntax, but not the exact
+        // owner of this re-export record.
+        try std.testing.expectError(error.InvalidGuardedReExport, validateReExportSource(source_ast, current_root, module.import_records[0].source_node));
+        const original_binding = module.import_bindings[0];
+        const original_node = original_binding.local_symbol_node.?;
+        const original_sid = original_binding.local_symbol.semanticIndex().?;
+        const semantic = module.semantic.?;
+        try std.testing.expectEqual(original_sid, semantic.symbol_ids[@backingInt(original_node)].?);
+        try std.testing.expectEqual(@TypeOf(semantic.symbols.items[original_sid].kind).import_binding, semantic.symbols.items[original_sid].kind);
+        // Planning is read-only even on malformed anchors or allocation failure.
+        var probe = module.*;
+        var record_copy = [_]@import("types.zig").ImportRecord{module.import_records[1]};
+        record_copy[0].callsite_lowered = false;
+        var export_copy = [_]@import("binding_scanner.zig").ExportBinding{module.export_bindings[0]};
+        export_copy[0].import_record_index = 0;
+        probe.import_records = &record_copy;
+        probe.export_bindings = &export_copy;
+        probe.import_bindings = &.{};
+        var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer scratch.deinit();
+        var probe_linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
+        defer probe_linker.deinit();
+        const valid_plan = try eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator());
+        try std.testing.expectEqual(@as(usize, 1), valid_plan.len);
+        try std.testing.expect(valid_plan[0].owns_record);
+        try std.testing.expect(!record_copy[0].callsite_lowered);
+        for ([_]NodeIndex{ .none, original_node, module.import_records[0].source_node }) |poisoned| {
+            record_copy[0].source_node = poisoned;
+            try std.testing.expectError(error.InvalidGuardedReExport, eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator()));
+            try std.testing.expect(!record_copy[0].callsite_lowered);
+        }
+        record_copy[0].source_node = module.import_records[1].source_node;
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+        try std.testing.expectError(error.OutOfMemory, eagerHelpers(&graph, &probe_linker, &probe, current_root, failing.allocator()));
+        try std.testing.expect(!record_copy[0].callsite_lowered);
+        try std.testing.expect(module.import_records[1].callsite_lowered);
+        probe.wrap_kind = .none;
+        try std.testing.expectEqual(@as(usize, 0), (try eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator())).len);
+        probe.wrap_kind = .esm;
+        {
+            const dependency = graph.moduleAtMut(record_copy[0].resolved).?;
+            const previous = dependency.in_async_cone;
+            defer dependency.in_async_cone = previous;
+            dependency.in_async_cone = true;
+            try std.testing.expectEqual(@as(usize, 0), (try eagerHelpers(&graph, &probe_linker, &probe, current_root, scratch.allocator())).len);
+        }
+        try std.testing.expect(!record_copy[0].callsite_lowered);
+        const target = module.import_records[1].resolved;
+        var init_reads: usize = 0;
+        for (module.import_bindings) |binding| {
+            const foreign = binding.callsite_target orelse continue;
+            if (foreign.role != .esm_init or foreign.symbol.module != target) continue;
+            try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, foreign);
+            const local = binding.local_symbol.semanticIndex().?;
+            for (semantic.references) |reference| {
+                if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+                try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+                try std.testing.expect(reference.stmt_idx != Reference.NO_STMT);
+                try std.testing.expectEqual(reference.stmt_idx, reference.scope_stmt_idx);
+                init_reads += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), init_reads);
+        for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');const d=ns.default;const result=typeof d==='function'?(d.prototype?.run?new d().run():d()):Array.isArray(d)?d[0]:d?.n??d;console.log(JSON.stringify({{keys:Object.keys(ns),result,marker:ns.marker,alias:ns.publicAlias,order:globalThis.order}}));", .{emitted});
+        defer std.testing.allocator.free(script);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("{\"keys\":[\"default\",\"marker\",\"publicAlias\"],\"result\":42,\"marker\":7,\"alias\":7,\"order\":[\"other\",\"entry\"]}\n", execution.stdout);
+    };
 }
