@@ -4,20 +4,20 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
-const roles = @import("../semantic/annex_b_function.zig");
+const roles = @import("../semantic/parameter_body_var.zig");
 
-test "Annex B parameter copy owns exact references before finish in ten ordinary function environments" {
+test "parameter body-var FDI copy owns exact references before finish in ten ordinary environments" {
     const sources = [_][]const u8{
-        "function root(value=1){{function value(){return 42}}return value}",
-        "var root=function(value=1){{function value(){return 42}}return value};",
-        "var root=(value=1)=>{{function value(){return 42}}return value};",
-        "var object={root(value=1){{function value(){return 42}}return value}};",
-        "function root({value}={value:1}){{function value(){return 42}}return value}",
-        "function root(value=1,set=()=>value++){{function value(){return 42}}return value}",
-        "function root(value=1,...rest){{function value(){return 42}}return value}",
-        "function root(value=1){var value;{function value(){return 42}}return value}",
-        "function root(value=1){{function value(){return 41}function value(){return 42}}return value}",
-        "function root(value=1){try{throw 1}catch(error){{function value(){return 42}}}return value}",
+        "function root(value=1){var value;return value}",
+        "var root=function(value=1){var value;return value};",
+        "var root=(value=1)=>{var value;return value};",
+        "var object={root(value=1){var value;return value}};",
+        "function root({value}={value:1}){var value;return value}",
+        "function root(value=1,set=()=>value++){var value;return()=>value}",
+        "function root(value=1,...rest){var value;return[value,rest]}",
+        "function root(value=1){if(false){var value}return value}",
+        "function root(value=1){var value;var value;return value}",
+        "function root(value=1){try{throw 1}catch(error){var value}return value}",
     };
     for (sources, 0..) |source, case_index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -44,25 +44,24 @@ test "Annex B parameter copy owns exact references before finish in ten ordinary
         const output = try transformer.transform();
         const editor = &transformer.semantic_editor.?;
         var observed: usize = 0;
-        for (analyzer.symbols.items, 0..) |symbol, lexical| {
-            if (symbol.annex_b_alias.parameter_source.isNone()) continue;
-            const role = (try roles.forSymbol(editor.symbols.items, @fromBackingInt(@as(u32, @intCast(lexical))))).?;
-            if (role.state != .parameter_lowered) std.debug.print("Annex B copy case {d}: state={s}, plans={d}\n", .{ case_index, @tagName(role.state), transformer.parameter_body_var_copies.items.len });
-            try std.testing.expectEqual(@import("../semantic/symbol.zig").AnnexBFunctionAlias.State.parameter_lowered, role.state);
-            try std.testing.expectEqual(symbol.annex_b_alias.variable, role.variable);
-            try std.testing.expectEqual(symbol.annex_b_alias.parameter_source, role.parameter_source);
-            var mask = try roles.nativeBindingMask(std.testing.allocator, editor.symbols.items);
+        for (analyzer.symbols.items, 0..) |symbol, variable| {
+            if (symbol.parameter_copy.parameter_source.isNone()) continue;
+            const role = (try roles.forSymbol(editor.symbols.items, @fromBackingInt(@as(u32, @intCast(variable))))).?;
+            if (role.state != .lowered) std.debug.print("FDI copy case {d}: state={s}, plans={d}\n", .{ case_index, @tagName(role.state), transformer.parameter_body_var_copies.items.len });
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").ParameterBodyVarCopy.State.lowered, role.state);
+            try std.testing.expectEqual(@as(u32, @intCast(variable)), @as(u32, @backingInt(role.variable)));
+            try std.testing.expectEqual(symbol.parameter_copy.parameter_source, role.parameter);
+            var mask = try @import("../semantic/native_name_affinity.zig").bindingMask(std.testing.allocator, editor.symbols.items);
             defer mask.deinit();
-            try std.testing.expect(mask.isSet(lexical));
-            try std.testing.expect(mask.isSet(@backingInt(role.variable)));
-            try std.testing.expect(!mask.isSet(@backingInt(role.parameter_source)));
+            try std.testing.expect(!mask.isSet(@backingInt(role.variable)));
+            try std.testing.expect(!mask.isSet(@backingInt(role.parameter)));
             var exact_copy: usize = 0;
             const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, transformer.ast, output);
             for (reachable) |raw| {
                 const node = transformer.ast.nodes.items[raw];
                 if (node.tag != .assignment_expression) continue;
                 if (transformer.getSymbolIdAt(node.data.binary.left) != @backingInt(role.variable) or
-                    transformer.getSymbolIdAt(node.data.binary.right) != @backingInt(role.parameter_source)) continue;
+                    transformer.getSymbolIdAt(node.data.binary.right) != @backingInt(role.parameter)) continue;
                 var write = false;
                 var read = false;
                 for (editor.references.items) |reference| {
@@ -70,7 +69,7 @@ test "Annex B parameter copy owns exact references before finish in ten ordinary
                         try std.testing.expectEqual(editor.symbols.items[@backingInt(role.variable)].scope_id, reference.scope_id);
                         write = true;
                     }
-                    if (reference.node_index == node.data.binary.right and reference.symbol_id == role.parameter_source and reference.flags.read) {
+                    if (reference.node_index == node.data.binary.right and reference.symbol_id == role.parameter and reference.flags.read) {
                         try std.testing.expectEqual(editor.symbols.items[@backingInt(role.variable)].scope_id, reference.scope_id);
                         read = true;
                     }

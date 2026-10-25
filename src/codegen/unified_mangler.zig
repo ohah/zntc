@@ -126,7 +126,7 @@ pub fn mangleAll(
         allocator.free(native_masks);
     }
     for (input.modules, 0..) |module, index| {
-        native_masks[index] = try @import("../semantic/annex_b_function.zig").nativeBindingMask(allocator, module.symbols);
+        native_masks[index] = try @import("../semantic/native_name_affinity.zig").bindingMask(allocator, module.symbols);
         initialized_masks += 1;
         for (module.scope_maps) |map| {
             var names = map.iterator();

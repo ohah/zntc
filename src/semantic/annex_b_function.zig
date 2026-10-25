@@ -7,7 +7,6 @@ const SymbolId = symbol_mod.SymbolId;
 pub const Role = struct {
     lexical: SymbolId,
     variable: SymbolId,
-    parameter_source: SymbolId,
     state: symbol_mod.AnnexBFunctionAlias.State,
     source_assignment_count: u32,
 };
@@ -17,21 +16,17 @@ pub fn forSymbol(symbols: []const Symbol, lexical: SymbolId) error{InvalidAnnexB
     const source = symbols[@backingInt(lexical)];
     const alias = source.annex_b_alias;
     if (alias.variable.isNone()) {
-        if (!alias.parameter_source.isNone() or alias.state != .native or alias.source_assignment_count != 0) return error.InvalidAnnexBRole;
+        if (alias.state != .native or alias.source_assignment_count != 0) return error.InvalidAnnexBRole;
         return null;
     }
     if (alias.source_assignment_count == 0) return error.InvalidAnnexBRole;
     if (alias.variable == lexical or @backingInt(alias.variable) >= symbols.len) return error.InvalidAnnexBRole;
     const variable = symbols[@backingInt(alias.variable)];
-    if (variable.kind != .variable_var and variable.kind != .parameter and variable.kind != .function_decl) return error.InvalidAnnexBRole;
+    if (variable.kind != .variable_var and variable.kind != .function_decl) return error.InvalidAnnexBRole;
+    if (!variable.parameter_copy.parameter_source.isNone()) return error.InvalidAnnexBRole;
     if (source.kind != .function_decl and (alias.state != .lowered or source.kind != .variable_var)) return error.InvalidAnnexBRole;
     if (alias.state != .lowered and source.scope_id == variable.scope_id) return error.InvalidAnnexBRole;
-    if (!alias.parameter_source.isNone()) {
-        if (alias.parameter_source == lexical or alias.parameter_source == alias.variable or @backingInt(alias.parameter_source) >= symbols.len or
-            symbols[@backingInt(alias.parameter_source)].kind != .parameter) return error.InvalidAnnexBRole;
-    }
-    if (alias.state == .parameter_lowered and alias.parameter_source.isNone()) return error.InvalidAnnexBRole;
-    return .{ .lexical = lexical, .variable = alias.variable, .parameter_source = alias.parameter_source, .state = alias.state, .source_assignment_count = alias.source_assignment_count };
+    return .{ .lexical = lexical, .variable = alias.variable, .state = alias.state, .source_assignment_count = alias.source_assignment_count };
 }
 
 pub fn forDeclaration(ast: *const ast_mod.Ast, symbol_ids: []const ?u32, symbols: []const Symbol, declaration: ast_mod.NodeIndex) error{InvalidAnnexBRole}!?Role {
@@ -62,14 +57,6 @@ pub fn markLowered(symbols: []Symbol, lexical: SymbolId, source_assignment_count
     return role;
 }
 
-/// Publish only after the generic body producer has appended the exact V=P
-/// assignment. The function's native L/V assignment remains in source syntax.
-pub fn markParameterLowered(symbols: []Symbol, lexical: SymbolId, variable: SymbolId, parameter: SymbolId) error{InvalidAnnexBRole}!void {
-    const role = (try forSymbol(symbols, lexical)) orelse return error.InvalidAnnexBRole;
-    if (role.variable != variable or role.parameter_source != parameter or parameter.isNone()) return error.InvalidAnnexBRole;
-    if (role.state == .native) symbols[@backingInt(lexical)].annex_b_alias.state = .parameter_lowered;
-}
-
 pub fn validate(symbols: []const Symbol) bool {
     for (symbols, 0..) |_, index| _ = forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(index)))) catch return false;
     return true;
@@ -86,7 +73,6 @@ pub fn nativeBindingMask(allocator: @import("std").mem.Allocator, symbols: []con
         if (role.state == .lowered) continue;
         mask.set(@backingInt(role.lexical));
         mask.set(@backingInt(role.variable));
-        if (role.state == .native and !role.parameter_source.isNone()) mask.set(@backingInt(role.parameter_source));
     }
     return mask;
 }

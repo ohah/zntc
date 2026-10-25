@@ -182,12 +182,15 @@ comptime {
         "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
         "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;output_name_hint:[]const u8;" ++
         "requires_uppercase_first_char:bool;" ++
-        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;";
+        "synthetic_owner_id:?semantic.symbol.SymbolId;annex_b_alias:semantic.symbol.AnnexBFunctionAlias;parameter_copy:semantic.symbol.ParameterBodyVarCopy;";
     if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
         @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
-    const annex_alias_sig = "variable:semantic.symbol.SymbolId;parameter_source:semantic.symbol.SymbolId;state:semantic.symbol.AnnexBFunctionAlias.State;source_assignment_count:u32;";
+    const annex_alias_sig = "variable:semantic.symbol.SymbolId;state:semantic.symbol.AnnexBFunctionAlias.State;source_assignment_count:u32;";
     if (!std.mem.eql(u8, fieldSig(symbol_mod.AnnexBFunctionAlias), annex_alias_sig))
         @compileError("Annex B role changed; update the explicit semantic wire layout/version.");
+    const parameter_copy_sig = "parameter_source:semantic.symbol.SymbolId;state:semantic.symbol.ParameterBodyVarCopy.State;";
+    if (!std.mem.eql(u8, fieldSig(symbol_mod.ParameterBodyVarCopy), parameter_copy_sig))
+        @compileError("Parameter/body-var role changed; update the explicit semantic wire layout/version.");
     const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
         "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
     if (!std.mem.eql(u8, fieldSig(Scope), scope_sig))
@@ -251,9 +254,10 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     try putU8(buf, alloc, @intFromBool(s.requires_uppercase_first_char));
     try putU32(buf, alloc, if (s.synthetic_owner_id) |owner| @backingInt(owner) else NULL_U32);
     try putU32(buf, alloc, @backingInt(s.annex_b_alias.variable));
-    try putU32(buf, alloc, @backingInt(s.annex_b_alias.parameter_source));
     try putU32(buf, alloc, @backingInt(s.annex_b_alias.state));
     try putU32(buf, alloc, s.annex_b_alias.source_assignment_count);
+    try putU32(buf, alloc, @backingInt(s.parameter_copy.parameter_source));
+    try putU32(buf, alloc, @backingInt(s.parameter_copy.state));
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
     try putU32(buf, alloc, @backingInt(s.parent));
@@ -341,6 +345,7 @@ fn putNumTexts(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, m: *const std.
 /// semantic 의 relocatable 부분을 `out` 에 직렬화 (append).
 pub fn serialize(sem: *const ModuleSemanticData, out: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
     if (!@import("../semantic/annex_b_function.zig").validate(sem.symbols.items)) return error.InvalidAnnexBRole;
+    if (!@import("../semantic/parameter_body_var.zig").validate(sem.symbols.items)) return error.InvalidParameterBodyVarRole;
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(alloc);
 
@@ -537,9 +542,12 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
     s.synthetic_owner_id = if (owner_id == NULL_U32) null else @fromBackingInt(@intCast(owner_id));
     s.annex_b_alias = .{
         .variable = @fromBackingInt(try r.u32v()),
-        .parameter_source = @fromBackingInt(try r.u32v()),
         .state = std.enums.fromInt(symbol_mod.AnnexBFunctionAlias.State, try r.u32v()) orelse return error.Truncated,
         .source_assignment_count = try r.u32v(),
+    };
+    s.parameter_copy = .{
+        .parameter_source = @fromBackingInt(try r.u32v()),
+        .state = std.enums.fromInt(symbol_mod.ParameterBodyVarCopy.State, try r.u32v()) orelse return error.Truncated,
     };
     return s;
 }
@@ -592,6 +600,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
     const symbols_slice = try arena.alloc(Symbol, symbols_len);
     for (symbols_slice) |*s| s.* = try readSymbol(&r, arena);
     if (!@import("../semantic/annex_b_function.zig").validate(symbols_slice)) return error.Truncated;
+    if (!@import("../semantic/parameter_body_var.zig").validate(symbols_slice)) return error.Truncated;
 
     const scopes_len = try r.u32v();
     const scopes = try arena.alloc(Scope, scopes_len);

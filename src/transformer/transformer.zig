@@ -164,7 +164,7 @@ pub const ParameterBodyVarCopy = struct {
     body_var_symbol_id: u32,
     parameter_symbol_id: u32,
     source_span: Span,
-    annex_b_lexical_symbols: []const u32 = &.{},
+    native_fdi_role: bool = false,
 };
 
 pub const Transformer = struct {

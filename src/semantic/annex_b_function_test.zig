@@ -19,8 +19,8 @@ test "Annex B initial lexical and variable roles in ten source environments" {
         "function root(){const outside=()=>/*outer*/read;try{throw{error:42}}catch({error}){const saved=/*use*/read;function /*decl*/read(){return error}return[saved,outside]}}",
         "function root(){const outside=()=>/*outer*/read;try{throw[42]}catch([error]){const saved=/*use*/read;function /*decl*/read(){return error}return[saved,outside]}}",
         "function root(){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return other()}function other(){return 42}return[saved,outside]}}",
-        "function root(read){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
-        "function root(read=42){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
+        "function root(decoy){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
+        "function root(decoy=42){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
         "function root(){var read;const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
         "function root(){const outside=()=>/*outer*/read;switch(1){case 1:const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}}",
         "function root(){const outside=()=>/*outer*/read;{const saved=/*use*/read;function /*decl*/read(){return 42}return[saved,outside]}{function read(){return 99}}}",
@@ -44,11 +44,6 @@ test "Annex B initial lexical and variable roles in ten source environments" {
         const outer = try nodeAt(&parser.ast, source, "/*outer*/", false);
         const lexical = analyzer.symbol_ids.items[@backingInt(declaration)].?;
         const alias = analyzer.symbols.items[lexical].annex_b_alias;
-        if (index == 6) {
-            try std.testing.expect(!alias.parameter_source.isNone());
-            try std.testing.expect(alias.parameter_source != alias.variable);
-            try std.testing.expectEqual(@import("symbol.zig").SymbolKind.parameter, analyzer.symbols.items[@backingInt(alias.parameter_source)].kind);
-        }
         const early_id = analyzer.symbol_ids.items[@backingInt(early)];
         const outer_id = analyzer.symbol_ids.items[@backingInt(outer)];
         const ok = early_id == lexical and !alias.variable.isNone() and @backingInt(alias.variable) != lexical and outer_id == @backingInt(alias.variable);
@@ -72,6 +67,10 @@ test "Annex B lexical barriers and non-ordinary declarations do not create an ou
         "function root(){{async function /*decl*/read(){}}}",
         "function root(){{function* /*decl*/read(){}}}",
         "function root(){{async function* /*decl*/read(){}}}",
+        "function root(read){{function /*decl*/read(){}}}",
+        "function root(read=1){{function /*decl*/read(){}}}",
+        "function root(read=1){var read;{function /*decl*/read(){}}}",
+        "function root(read=1){function read(){};{function /*decl*/read(){}}}",
         "function root(){for(let read=0;read<1;read++){{function /*decl*/read(){}}}}",
         "function root(){for(let read of []){{function /*decl*/read(){}}}}",
         "function root(){switch(1){case 0:let read;break;case 1:{function /*decl*/read(){}}}}",
@@ -119,7 +118,6 @@ test "Annex B duplicate block declarations share lexical identity and explicit l
     const before_write = analyzer.symbols.items[@backingInt(role.variable)].write_count;
     const lowered = try roles.markLowered(analyzer.symbols.items, id, 2);
     try std.testing.expectEqual(role.variable, lowered.variable);
-    try std.testing.expectEqual(role.parameter_source, lowered.parameter_source);
     try std.testing.expectEqual(@import("symbol.zig").AnnexBFunctionAlias.State.lowered, lowered.state);
     try std.testing.expectEqual(before_read - 2, analyzer.symbols.items[first].reference_count);
     try std.testing.expectEqual(before_write - 2, analyzer.symbols.items[@backingInt(role.variable)].write_count);

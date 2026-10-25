@@ -439,14 +439,19 @@ pub const Codegen = struct {
     /// Source-backed identifiers keep their own span spelling for byte-stable
     /// output when no rename was selected.
     pub fn finalSymbolName(self: *Codegen, sid: u32) ?[]const u8 {
+        const output_sid = if (sid < self.options.semantic_symbols.len)
+            @backingInt(@import("../semantic/native_name_affinity.zig").representative(self.options.semantic_symbols, @fromBackingInt(sid)) catch
+                std.debug.panic("invalid native binding spelling affinity", .{}))
+        else
+            sid;
         if (self.options.linking_metadata) |metadata| {
-            if (metadata.renames.get(sid)) |renamed| return renamed;
+            if (metadata.renames.get(output_sid)) |renamed| return renamed;
         }
         if (self.options.semantic_symbol_name_overrides) |names| {
-            if (names.get(sid)) |name| return name;
+            if (names.get(output_sid)) |name| return name;
         }
-        if (sid < self.options.semantic_symbols.len) {
-            const symbol = self.options.semantic_symbols[sid];
+        if (output_sid < self.options.semantic_symbols.len) {
+            const symbol = self.options.semantic_symbols[output_sid];
             if (symbol.output_name_hint.len > 0 and
                 (self.options.linking_metadata != null or self.options.semantic_symbol_name_overrides != null))
                 return symbol.output_name_hint;

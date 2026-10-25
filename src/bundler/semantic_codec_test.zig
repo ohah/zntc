@@ -462,6 +462,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.requires_uppercase_first_char = false;
             s.synthetic_owner_id = null;
             s.annex_b_alias = .{};
+            s.parameter_copy = .{};
             try symbols.append(a, s);
 
             const scopes = try a.alloc(Scope, 1);
@@ -877,7 +878,7 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "function run(value=1){{function value(){return 42}return value}}");
+    var scanner = try Scanner.init(allocator, "function run(value=1){var value;{function read(){return 42}}return value}");
     var parser = Parser.init(allocator, &scanner);
     _ = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
@@ -890,7 +891,6 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
     }
     try testing.expect(lexical != std.math.maxInt(u32));
     const original = (try roles.forSymbol(analyzer.symbols.items, @fromBackingInt(lexical))).?;
-    try testing.expect(!original.parameter_source.isNone());
     var sem = ModuleSemanticData{
         .symbols = analyzer.symbols,
         .scopes = analyzer.scopes.items,
@@ -903,7 +903,7 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .parameter_lowered, .lowered }) |state| {
+    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .lowered }) |state| {
         sem.symbols.items[lexical].annex_b_alias.state = state;
         var bytes: std.ArrayList(u8) = .empty;
         try codec.serialize(&sem, &bytes, allocator);
@@ -911,9 +911,14 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         const actual = (try roles.forSymbol(restored.symbols.items, @fromBackingInt(lexical))).?;
         try testing.expectEqual(original.lexical, actual.lexical);
         try testing.expectEqual(original.variable, actual.variable);
-        try testing.expectEqual(original.parameter_source, actual.parameter_source);
         try testing.expectEqual(state, actual.state);
         try testing.expectEqual(original.source_assignment_count, actual.source_assignment_count);
+        var observed_copy = false;
+        for (sem.symbols.items, restored.symbols.items) |before, after| {
+            try testing.expectEqualDeep(before.parameter_copy, after.parameter_copy);
+            if (!before.parameter_copy.parameter_source.isNone()) observed_copy = true;
+        }
+        try testing.expect(observed_copy);
         try testing.expectEqualSlices(?u32, sem.symbol_ids, restored.symbol_ids);
         try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, restored.owner_token);
     }
