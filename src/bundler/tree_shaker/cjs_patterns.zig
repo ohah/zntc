@@ -46,10 +46,12 @@ pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool
     return changed;
 }
 
-/// Fold only direct expression-statement branch shapes and return the complete pre-edit
-/// node set that becomes unreachable. The caller can retain semantic identities
-/// by removing references from these exact nodes. If any matching fold has a
-/// different statement shape, leave the AST untouched for full reanalysis.
+/// Remove the dead alternate from expression-statement or block branch shapes
+/// and return the complete pre-edit node set that becomes unreachable. Keep
+/// the if and consequent nodes in place so their graph identities and the
+/// surrounding module's CJS statement shape remain stable. If any matching
+/// fold has a different statement shape, leave the AST untouched for full
+/// reanalysis.
 pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     allocator: std.mem.Allocator,
     ast: *Ast,
@@ -80,16 +82,17 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
 
         const kept = node.data.ternary.b;
         if (kept.isNone() or @backingInt(kept) >= ast.nodes.items.len) return false;
-        if (ast.nodes.items[@backingInt(kept)].tag != .expression_statement) return false;
+        const kept_tag = ast.nodes.items[@backingInt(kept)].tag;
+        if (kept_tag != .expression_statement and kept_tag != .block_statement) return false;
         const alternate = node.data.ternary.c;
         if (!alternate.isNone()) {
             if (@backingInt(alternate) >= ast.nodes.items.len) return false;
-            if (ast.nodes.items[@backingInt(alternate)].tag != .expression_statement) return false;
+            const alternate_tag = ast.nodes.items[@backingInt(alternate)].tag;
+            if (alternate_tag != .expression_statement and alternate_tag != .block_statement) return false;
             try collectDeadAlternateCjsExportIdentifiers(allocator, ast, alternate, &dead_fallback_names);
         }
         try branches.append(allocator, .{
             .if_index = @fromBackingInt(@intCast(i)),
-            .condition = node.data.ternary.a,
             .kept = kept,
             .alternate = alternate,
         });
@@ -99,8 +102,6 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
     for (branches.items) |branch| {
-        try appendSingleNode(allocator, branch.if_index, &seen, removed_nodes, ast.nodes.items.len);
-        try appendSubtreeNodes(allocator, ast, branch.condition, &seen, removed_nodes);
         try appendSubtreeNodes(allocator, ast, branch.alternate, &seen, removed_nodes);
     }
 
@@ -123,8 +124,7 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     // No AST write happens until all candidate node indexes are captured. This
     // keeps allocation or shape failures on the existing full-analysis path.
     for (branches.items) |branch| {
-        const kept_raw = @backingInt(branch.kept);
-        ast.nodes.items[@backingInt(branch.if_index)] = ast.nodes.items[kept_raw];
+        ast.nodes.items[@backingInt(branch.if_index)].data.ternary.c = .none;
     }
     for (setup_statements.items) |stmt_idx| {
         const stmt = ast.nodes.items[@backingInt(stmt_idx)];
@@ -139,7 +139,6 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
 
 const BufferCapabilityFoldBranch = struct {
     if_index: NodeIndex,
-    condition: NodeIndex,
     kept: NodeIndex,
     alternate: NodeIndex,
 };
