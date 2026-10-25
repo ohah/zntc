@@ -138,8 +138,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // so the traversal cursor can still be the enclosing scope.
             const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
                 self.outputOwnedScope(source_idx) orelse std.debug.panic("missing for-of source scope", .{})
-            else if (self.semantic_edit_enabled and register_sm_temps and !self.generator_operation_scope.isNone())
-                self.generator_operation_scope
+            else if (self.semantic_edit_enabled and register_sm_temps)
+                self.outputOwnedScope(source_idx) orelse std.debug.panic("missing generator for-of source scope", .{})
             else
                 self.current_scope;
             const stable_scope = self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0;

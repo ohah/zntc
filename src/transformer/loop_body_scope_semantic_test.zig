@@ -193,11 +193,14 @@ test "loop body lexical owner source 14 captured body cell before visiting outpu
 
 test "loop body oracle generator references keep their selected names" {
     const coverage = @import("symbol_coverage.zig");
-    for ([_]bool{ false, true }) |late_names| {
+    const sources = [_][]const u8{
+        "const log=[];function* run(){for(let index=0;index<2;index++){const value=index;yield 0;log.push(()=>value);}}for(const unused of run());",
+        "function* run(){let sum=0;outer:for(const value of [1,2]){for(const inner of [0,1]){if(value===2)continue outer;sum+=value;}}yield sum;}const it=run();it.next();",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |late_names| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const source = "const log=[];function* run(){for(let index=0;index<2;index++){const value=index;yield 0;log.push(()=>value);}}for(const unused of run());";
         var scanner = try Scanner.init(a, source);
         var parser = Parser.init(a, &scanner);
         parser.configureFromExtension(".mjs");
@@ -205,6 +208,7 @@ test "loop body oracle generator references keep their selected names" {
         var analyzer = Analyzer.init(a, &parser.ast);
         analyzer.is_module = true;
         analyzer.collect_unresolved_reference_nodes = true;
+        analyzer.enable_exact_declaration_anchors = true;
         try analyzer.analyze();
         var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5), .defer_runtime_helper_name_resolution = late_names });
         try t.initSymbolIds(analyzer.symbol_ids.items);
@@ -218,8 +222,8 @@ test "loop body oracle generator references keep their selected names" {
         t.semantic_edit_enabled = true;
         const root = try t.transform();
         const sem = (try t.finishSemanticEdit()).?;
-        var exact = try coverage.checkExact(a, t.ast, root, t.parser_node_count, t.symbol_ids.items, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, t.helper_ref_nodes.items, &sem.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+        var exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(a, t.ast, root, t.parser_node_count, t.symbol_ids.items, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, t.helper_ref_nodes.items, &sem.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, &analyzer.namespace_member_owners, &analyzer.namespace_declaration_owners, analyzer.scopes.items.len);
         try std.testing.expectEqual(@as(usize, 0), exact.scope_resolution_mismatch);
         try std.testing.expect(exact.isClean());
-    }
+    };
 }
