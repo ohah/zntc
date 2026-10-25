@@ -1036,6 +1036,18 @@ const EXACT_MATRIX_REPORT_PREFIXES = [
   'zntc: symbol-identity-post-minify ',
 ] as const;
 
+const EXACT_MATRIX_REPORT_PAYLOAD_MARKERS: Record<
+  (typeof EXACT_MATRIX_REPORT_PREFIXES)[number],
+  string
+> = {
+  'zntc: symbol-identity-transpile-mode ': 'semantic_graph=',
+  'zntc: symbol-source-scope-owner ': 'scope_owner_mismatch=',
+  'zntc: symbol-coverage ': 'new_user_idents=',
+  'zntc: symbol-identity ': 'generated_bindings=',
+  'zntc: synthetic-coverage ': 'bound=',
+  'zntc: symbol-identity-post-minify ': 'bindings=',
+};
+
 function exactMatrixReportProvenanceProblems(stderr: string, expectedFile: string): string[] {
   const expectedPath = expectedFile.replaceAll('\\', '/');
   const expectedFixture = relative(FIXTURE_DIR, expectedFile).replaceAll('\\', '/');
@@ -1044,7 +1056,8 @@ function exactMatrixReportProvenanceProblems(stderr: string, expectedFile: strin
   for (const prefix of EXACT_MATRIX_REPORT_PREFIXES) {
     const reports = lines.filter((line) => line.startsWith(prefix));
     if (reports.length !== 1) continue; // The schema gate reports missing or duplicate rows.
-    if (!reports[0].replaceAll('\\', '/').startsWith(`${prefix}${expectedPath}:`)) {
+    const expectedReportStart = `${prefix}${expectedPath}: ${EXACT_MATRIX_REPORT_PAYLOAD_MARKERS[prefix]}`;
+    if (!reports[0].replaceAll('\\', '/').startsWith(expectedReportStart)) {
       problems.push(`${prefix.trim()} is not attributed to fixture ${expectedFixture}`);
     }
   }
@@ -1250,14 +1263,28 @@ describe('symbol identity coverage gate (#4819)', () => {
     ]);
     const expectedPath = expectedFile.replaceAll('\\', '/');
     const stderr = EXACT_MATRIX_REPORT_PREFIXES.map(
-      (prefix) => `${prefix}${expectedPath}: report payload`,
+      (prefix) =>
+        `${prefix}${expectedPath}: ${EXACT_MATRIX_REPORT_PAYLOAD_MARKERS[prefix]}${prefix === 'zntc: symbol-identity-transpile-mode ' ? 'retained' : '0'}`,
     ).join('\n');
     expect(exactMatrixReportProvenanceProblems(stderr, expectedFile)).toEqual([]);
     const windowsStylePath = expectedPath.replaceAll('/', '\\');
     const windowsStyleReports = EXACT_MATRIX_REPORT_PREFIXES.map(
-      (prefix) => `${prefix}${windowsStylePath}: report payload`,
+      (prefix) =>
+        `${prefix}${windowsStylePath}: ${EXACT_MATRIX_REPORT_PAYLOAD_MARKERS[prefix]}${prefix === 'zntc: symbol-identity-transpile-mode ' ? 'retained' : '0'}`,
     ).join('\n');
     expect(exactMatrixReportProvenanceProblems(windowsStyleReports, expectedFile)).toEqual([]);
+
+    for (const prefix of EXACT_MATRIX_REPORT_PREFIXES) {
+      const expectedPayload = EXACT_MATRIX_REPORT_PAYLOAD_MARKERS[prefix];
+      const mutated = stderr.replace(
+        `${prefix}${expectedPath}: ${expectedPayload}`,
+        `${prefix}${expectedPath}: foreign_payload=`,
+      );
+      expect(
+        exactMatrixReportProvenanceProblems(mutated, expectedFile),
+        `${prefix} payload marker mutation`,
+      ).toContain(`${prefix.trim()} is not attributed to fixture expected-case.mjs`);
+    }
 
     const wrongPaths = [
       expectedPath.replace('/downlevel-oracle/', '/foreign-fixtures/'),
@@ -1265,8 +1292,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       `${expectedPath}.bak`,
       expectedPath.replace('expected-case.mjs', 'different-case.mjs'),
       expectedPath.replace('/downlevel-oracle/', '/nested/downlevel-oracle/'),
+      `${expectedPath}:foreign`,
     ];
-    for (let mutation = 0; mutation < 10; mutation++) {
+    for (let mutation = 0; mutation < 12; mutation++) {
       const prefix = EXACT_MATRIX_REPORT_PREFIXES[mutation % EXACT_MATRIX_REPORT_PREFIXES.length];
       const wrongPath = wrongPaths[Math.floor(mutation / 2)];
       const mutated = stderr.replace(`${prefix}${expectedPath}:`, `${prefix}${wrongPath}:`);
