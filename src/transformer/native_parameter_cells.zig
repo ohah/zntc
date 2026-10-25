@@ -12,7 +12,7 @@ const env = @import("parameter_environment.zig");
 const NodeIndex = ast.NodeIndex;
 
 pub fn applies(self: anytype, node: ast.Node) !bool {
-    if (!self.semantic_edit_enabled or self.options.unsupported.default_params or
+    if (!self.semantic_edit_enabled or self.options.unsupported.default_params or self.options.unsupported.block_scoping or
         !self.options.unsupported.object_spread) return false;
     switch (node.tag) {
         .function, .function_expression, .function_declaration, .arrow_function_expression => {},
