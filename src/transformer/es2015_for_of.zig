@@ -460,6 +460,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span, loop_scope, for_body)),
             });
+            try self.remapCopiedScopeOwner(source_idx, for_stmt);
             return makeBlock(self, &.{ decl, collect, for_stmt }, span);
         }
 

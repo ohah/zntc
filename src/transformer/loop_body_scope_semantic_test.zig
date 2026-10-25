@@ -65,6 +65,19 @@ fn check(source: []const u8, is_async: bool, is_in: bool) !void {
     try std.testing.expect(!new_body.isNone());
     const new_scope = transformer.outputOwnedScope(new_body) orelse return error.MissingLoopBodyScope;
     const editor = &transformer.semantic_editor.?;
+    var loop_owners: usize = 0;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        const emitted_body = switch (node.tag) {
+            .for_statement => transformer.ast.readExtraNode(node.data.extra, 3),
+            .while_statement => node.data.binary.right,
+            else => continue,
+        };
+        if (emitted_body != new_body) continue;
+        const actual_loop: ast.NodeIndex = @fromBackingInt(@intCast(raw));
+        try std.testing.expectEqual(loop_scope, transformer.outputOwnedScope(actual_loop) orelse return error.MissingEmittedLoopOwner);
+        loop_owners += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), loop_owners);
     try std.testing.expectEqual(loop_scope, editor.scopes.items[new_scope.toIndex()].parent);
     if (old_body_scope) |scope| {
         try std.testing.expectEqual(scope, transformer.outputOwnedScope(body).?);
