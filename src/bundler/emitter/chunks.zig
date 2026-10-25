@@ -786,6 +786,20 @@ fn emitChunksImpl(
         var hoisted_directives: std.ArrayList(u8) = .empty;
         defer hoisted_directives.deinit(allocator);
 
+        // A preserve-modules file has its own strictness boundary. Preserve
+        // the source program's strictness outside its initialization wrapper,
+        // where exported function declarations are created. Never apply this
+        // to a mixed chunk: its CommonJS modules may require sloppy semantics.
+        if (options.preserve_modules and options.format == .cjs and chunk.modules.items.len == 1) {
+            if (graph.getModule(chunk.modules.items[0])) |module| {
+                if (module.semantic) |sem| {
+                    if (sem.scopes.len > 0 and sem.scopes[0].is_strict) {
+                        try chunk_output.appendSlice(allocator, "\"use strict\";\n");
+                    }
+                }
+            }
+        }
+
         // 출력 확장자 (cross-chunk import 경로 + 파일명에 공용)
         const ext = options.out_extension_js orelse ".js";
         const chunk_is_user_entry = switch (chunk.kind) {
