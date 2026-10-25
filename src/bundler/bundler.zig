@@ -1717,6 +1717,9 @@ pub const Bundler = struct {
             if (self.options.code_splitting and !self.options.preserve_modules and !self.options.dev_mode and
                 self.options.entry_error_guard and (self.options.format == .esm or self.options.format == .cjs))
                 try @import("runtime_entry_guard_calls.zig").prepare(graph, io);
+            if (self.options.code_splitting and self.options.preserve_modules and !self.options.dev_mode and
+                self.options.entry_error_guard and self.options.format == .esm)
+                try @import("runtime_entry_guard_calls.zig").prepareProvider(graph, io);
 
             // perf/hmr-link-rename-reuse: HMR-incremental 경로에서 가드 통과 시
             // computeRenames 를 skip 하고 초기 빌드 rename_table 을 재주입한다.

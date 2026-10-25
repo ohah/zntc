@@ -1562,6 +1562,7 @@ fn expectDefaultRuntimeOutput(source: []const u8, expected: []const u8) !void {
     });
     defer std.testing.allocator.free(execution.stdout);
     defer std.testing.allocator.free(execution.stderr);
+    if (execution.stderr.len != 0) std.debug.print("default runtime stderr: {s}\n", .{execution.stderr});
     switch (execution.term) {
         .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
         else => return error.TestUnexpectedResult,
@@ -1640,4 +1641,113 @@ test "Default: facade-name import snapshots stay separate from lexical export ad
     const expected = try std.fmt.allocPrint(std.testing.allocator, "42\n42\n{d}\n", .{guard_reads + 1});
     defer std.testing.allocator.free(expected);
     try expectDefaultRuntimeOutput(script, expected);
+}
+
+const preservedPublicCases = [_]struct { name: []const u8, source: []const u8, read: []const u8 }{
+    .{ .name = "anonymous-function", .source = "import{value}from'./dep.mjs';export default function(){return value()}", .read = "ns.default()" },
+    .{ .name = "named-function", .source = "import{value}from'./dep.mjs';export default function read(){return value()}", .read = "ns.default()" },
+    .{ .name = "arrow-expression", .source = "import{value}from'./dep.mjs';export default ()=>value()", .read = "ns.default()" },
+    .{ .name = "class-expression", .source = "import{value}from'./dep.mjs';export default class{read(){return value()}}", .read = "new ns.default().read()" },
+    .{ .name = "named-class", .source = "import{value}from'./dep.mjs';export default class Box{read(){return value()}}", .read = "new ns.default().read()" },
+    .{ .name = "object-expression", .source = "import{value}from'./dep.mjs';export default {read(){return value()}}", .read = "ns.default.read()" },
+    .{ .name = "live-alias", .source = "import{value}from'./dep.mjs';function read(){return value()}export{read as default}", .read = "ns.default()" },
+    .{ .name = "reexport-default", .source = "export{value as default}from'./dep.mjs'", .read = "ns.default()" },
+    .{ .name = "star-and-default", .source = "export*from'./dep.mjs';import{value}from'./dep.mjs';export default function(){return value()}", .read = "ns.default()+ns.value()-42" },
+    .{ .name = "wrapper-name-alias", .source = "import{value}from'./dep.mjs';export{value as init_entry};export default function(){return value()}", .read = "ns.default()+ns.init_entry()-42" },
+};
+
+test "Default: preserved wrapped modules publish public exports and exact guard edges" {
+    for (preservedPublicCases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("preserved public case {s} minify={}\n", .{ case.name, minify });
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        try writeFile(tmp.dir, "entry.mjs", case.source);
+        try writeFile(tmp.dir, "dep.mjs", "export function value(){return 42}");
+        const entry = try absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("../bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .esm, .code_splitting = true, .preserve_modules = true, .strict_execution_order = true, .entry_error_guard = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        // Source callsites own guard invocation. PM does not fabricate a
+        // bootstrap artifact or reverse an entry dependency edge.
+        try std.testing.expectEqual(@as(usize, 0), graph.entry_guard_invocations.items.len);
+        const provider = graph.entry_guard_ast_provider orelse return error.TestUnexpectedResult;
+        if (std.mem.eql(u8, case.name, "wrapper-name-alias")) {
+            const source_module = graph.getModule(graph.path_to_module.get(entry).?).?;
+            var originals: usize = 0;
+            for (source_module.import_bindings) |binding| {
+                if (binding.callsite_target != null or binding.is_helper) continue;
+                originals += 1;
+                try std.testing.expect(binding.guarded_eager_init_lowered);
+                // Only evaluation is lowered. The original binding still owns
+                // its canonical value rename and identifier-only export read.
+                try std.testing.expect(!source_module.import_records[binding.import_record_index].callsite_lowered);
+                const sid = binding.local_symbol.semanticIndex().?;
+                for (source_module.export_bindings) |exported| {
+                    if (exported.has_default_export_facade) continue;
+                    const anchor = exported.local_symbol_node orelse continue;
+                    try std.testing.expectEqual(@as(?u32, sid), source_module.semantic.?.symbol_ids[@backingInt(anchor)]);
+                    try std.testing.expectEqual(@import("../../parser/ast.zig").Node.Tag.identifier_reference, source_module.ast.?.getNode(anchor).tag);
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), originals);
+            try std.testing.expect(!std.mem.eql(u8, source_module.getInitName(null).?, "init_entry"));
+        }
+        try std.testing.expect(provider.active);
+        var guard_reads: usize = 0;
+        var modules = graph.modules.iterator(0);
+        while (modules.next()) |module| {
+            const semantic = module.semantic orelse continue;
+            var source_read_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer source_read_scopes.deinit(std.testing.allocator);
+            var lazy_reads: usize = 0;
+            for (module.import_bindings) |binding| {
+                if (!binding.guarded_lazy_calls_lowered) continue;
+                const local = binding.local_symbol.semanticIndex().?;
+                for (semantic.references) |reference| {
+                    if (@backingInt(reference.symbol_id) != local or !reference.isValueUse()) continue;
+                    try source_read_scopes.put(std.testing.allocator, @backingInt(reference.scope_id), {});
+                    lazy_reads += 1;
+                }
+            }
+            var nested_guard_reads: usize = 0;
+            var nested_init_reads: usize = 0;
+            for (module.import_bindings) |binding| {
+                const target = binding.callsite_target orelse continue;
+                try @import("../runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+                if (target.role != .entry_guard and target.role != .esm_init) continue;
+                if (target.role == .entry_guard) try std.testing.expect(target.symbol.module == provider.module_index);
+                const local = binding.local_symbol.semanticIndex() orelse return error.TestUnexpectedResult;
+                for (semantic.references) |reference| {
+                    if (@backingInt(reference.symbol_id) != local or !reference.flags.read) continue;
+                    try std.testing.expect(!reference.scope_id.isNone());
+                    try std.testing.expect(reference.scope_id.toIndex() < semantic.scopes.len);
+                    if (reference.scope_id.toIndex() != 0) {
+                        try std.testing.expect(source_read_scopes.contains(@backingInt(reference.scope_id)));
+                        if (target.role == .entry_guard) nested_guard_reads += 1 else nested_init_reads += 1;
+                    }
+                    if (target.role == .entry_guard) guard_reads += 1;
+                }
+            }
+            try std.testing.expectEqual(lazy_reads, nested_guard_reads);
+            try std.testing.expectEqual(lazy_reads, nested_init_reads);
+        }
+        try std.testing.expect(guard_reads > 0);
+        for (output.outputs orelse return error.TestUnexpectedResult) |file| {
+            try writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        }
+        const emitted = try absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const ns=await import('file://{s}');console.log({s});", .{ emitted, case.read });
+        defer std.testing.allocator.free(script);
+        try expectDefaultRuntimeOutput(script, "42\n");
+    };
 }

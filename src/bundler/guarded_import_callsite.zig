@@ -16,7 +16,22 @@ const Initializers = struct { direct: SymbolID, value: SymbolID };
 const Call = struct { node: NodeIndex, callee: NodeIndex, symbol: SymbolId, scope: ScopeId, direct_call: bool, shorthand_property: ?NodeIndex };
 const Plan = struct { binding: usize, calls: []const Call, targets: Initializers };
 
+fn hasLiveLocalExport(module: *const Module, sid: u32) bool {
+    const ast = &module.ast.?;
+    const sem = module.semantic.?;
+    for (module.export_bindings) |exported| {
+        if (exported.has_default_export_facade) continue;
+        const anchor = exported.local_symbol_node orelse continue;
+        if (!anchor.isNone() and @backingInt(anchor) < ast.nodes.items.len and @backingInt(anchor) < sem.symbol_ids.len and sem.symbol_ids[@backingInt(anchor)] == sid) return true;
+    }
+    return false;
+}
+
 fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: Binding, sid: u32) !?Initializers {
+    return targetsForPolicy(graph, linker, module, binding, sid, false);
+}
+
+fn targetsForPolicy(graph: anytype, linker: anytype, module: *const Module, binding: Binding, sid: u32, allow_eager_export: bool) !?Initializers {
     if (binding.kind != .named or binding.importsDefault() or binding.is_helper or binding.source_type_only == true or binding.callsite_target != null or binding.guarded_lazy_calls_lowered) return null;
     if (binding.import_record_index >= module.import_records.len) return error.InvalidGuardedImportBinding;
     const record = module.import_records[binding.import_record_index];
@@ -34,15 +49,9 @@ fn targetsFor(graph: anytype, linker: anytype, module: *const Module, binding: B
     for (value.import_bindings) |other| {
         if (other.kind == .namespace and other.local_symbol.semanticIndex() == value_sid) return null;
     }
-    const ast = &module.ast.?;
-    const sem = module.semantic.?;
-    // Source local exports retain the metadata producer's eager policy. Use
-    // exact local anchors, never a spelling lookup to select an identity.
-    for (module.export_bindings) |exported| {
-        if (exported.has_default_export_facade) continue;
-        const anchor = exported.local_symbol_node orelse continue;
-        if (!anchor.isNone() and @backingInt(anchor) < ast.nodes.items.len and @backingInt(anchor) < sem.symbol_ids.len and sem.symbol_ids[@backingInt(anchor)] == sid) return null;
-    }
+    // A live source export must initialize eagerly. Its identifier-only
+    // specifier is never a lazy-read rewrite target.
+    if (!allow_eager_export and hasLiveLocalExport(module, sid)) return null;
     return .{ .direct = try direct.esmInitSymbol(), .value = try value.esmInitSymbol() };
 }
 
@@ -93,6 +102,8 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
         if (record.kind != .static_import) return &.{};
         var helpers: std.ArrayList(usize) = .empty;
         var ordinary: usize = 0;
+        var eager_bindings: std.ArrayList(usize) = .empty;
+        var eager_targets: std.ArrayList(SymbolID) = .empty;
         for (module.import_bindings, 0..) |binding, index| {
             if (binding.import_record_index != record_index) continue;
             if (binding.is_helper) {
@@ -103,9 +114,19 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
                 if (module.wrap_kind != .esm) return &.{};
                 const local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = module.index, .ast = &module.ast.?, .symbol_ids = module.semantic.?.symbol_ids, .symbols = module.semantic.?.symbols.items });
                 const sid = local.semanticIndex() orelse return &.{};
-                if (try targetsFor(graph, linker, module, binding, sid) == null) return &.{};
-                ordinary += 1;
+                if (try targetsFor(graph, linker, module, binding, sid) == null) {
+                    if (!graph.preserve_modules or !hasLiveLocalExport(module, sid)) return &.{};
+                    const targets = try targetsForPolicy(graph, linker, module, binding, sid, true) orelse return &.{};
+                    try eager_bindings.append(a, index);
+                    try eager_targets.append(a, targets.direct);
+                    if (!targets.value.eql(targets.direct)) try eager_targets.append(a, targets.value);
+                } else ordinary += 1;
             }
+        }
+        if (eager_bindings.items.len != 0) {
+            if (helpers.items.len != 0 or ordinary != 0) return &.{};
+            for (eager_targets.items) |initializer| try result.append(a, .{ .record = record_index, .target = initializer, .bindings = eager_bindings.items });
+            continue;
         }
         if (helpers.items.len == 0 and ordinary == 0) return &.{};
         if (helpers.items.len != 0) {

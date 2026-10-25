@@ -2459,8 +2459,8 @@ pub fn emitModule(
             }
             if (esm_result.entry_chain) |chain| allocator.free(chain);
         }
-        // Preserve-modules has its own public wrapper export writer in chunks.
-        if (is_entry and options.format == .esm and !options.preserve_modules) {
+        // Each preserve-modules file also owns its public ESM export surface.
+        if (is_entry and options.format == .esm) {
             if (metadata) |md| if (md.final_export_entries) |entries| {
                 if (try entry_exports.appendWrappedEsmEntryExports(allocator, wrapped_code, entries, options.minify_whitespace)) |combined| {
                     allocator.free(wrapped_code);
