@@ -36,6 +36,11 @@ fn checkCells(source: []const u8) !void {
         }
     }
     try std.testing.expect(!owner.isNone());
+    // Actual lexical cells require native block scoping; retaining native
+    // defaults alone (for example Safari 10's compatibility set) is insufficient.
+    transformer.options.unsupported.block_scoping = true;
+    try std.testing.expect(!(try cells.applies(&transformer, transformer.ast.getNode(owner))));
+    transformer.options.unsupported.block_scoping = false;
     const scope = transformer.outputOwnedScope(owner).?;
     try transformer.buildBlockRenameMap();
     const before = transformer.ast.getNode(owner);
