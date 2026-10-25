@@ -3267,6 +3267,10 @@ fn checkExactImpl(
     const cjs_wrapper = exactCjsWrapperBindings(ast, root, symbols, scopes, scope_maps, scope_owner_map);
     if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
     for (scopes, 0..) |scope, scope_i| {
+        const inherits_parent_strictness = switch (scope.kind) {
+            .block, .switch_block, .catch_clause => true,
+            else => false,
+        };
         const strictness_issue: ?[]const u8 = if (scope.kind == .class_body and !scope.is_strict)
             "class-body-must-be-strict"
         else if (scope.kind == .module and !scope.is_strict)
@@ -3274,6 +3278,10 @@ fn checkExactImpl(
         else if (!scope.parent.isNone() and exactValidScope(scopes, scope.parent) and
             scopes[scope.parent.toIndex()].is_strict and !scope.is_strict)
             "strict-parent-inheritance"
+        else if (inherits_parent_strictness and !scope.parent.isNone() and
+            exactValidScope(scopes, scope.parent) and
+            scope.is_strict != scopes[scope.parent.toIndex()].is_strict)
+            "lexical-scope-must-match-parent-strictness"
         else
             null;
         if (strictness_issue) |issue| {
@@ -7342,6 +7350,159 @@ test "exact identity audit rejects appended scopes without a reachable AST owner
     );
     try std.testing.expect(wrong_owner_kind.scope_owner_mismatch >= 1);
     try std.testing.expect(!wrong_owner_kind.isClean());
+}
+
+test "exact identity audit rejects over-strict lexical scopes at ten nesting depths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const nested_block_counts = [_]usize{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    for (nested_block_counts) |block_count| {
+        var ast = Ast.init(allocator, "");
+        const empty_statement = try ast.addNode(.{
+            .tag = .empty_statement,
+            .span = .EMPTY,
+            .data = .{ .none = 0 },
+        });
+        const block_nodes = try allocator.alloc(NodeIndex, block_count);
+        var child = empty_statement;
+        var block_index = block_count;
+        while (block_index > 0) {
+            block_index -= 1;
+            const list = try ast.addNodeList(&.{child});
+            block_nodes[block_index] = try ast.addNode(.{
+                .tag = .block_statement,
+                .span = .EMPTY,
+                .data = .{ .list = list },
+            });
+            child = block_nodes[block_index];
+        }
+        const root_list = try ast.addNodeList(&.{child});
+        const root = try ast.addNode(.{
+            .tag = .program,
+            .span = .EMPTY,
+            .data = .{ .list = root_list },
+        });
+
+        const scopes = try allocator.alloc(Scope, block_count + 1);
+        scopes[0] = .{ .parent = .none, .kind = .global, .is_strict = false };
+        for (block_nodes, 0..) |_, index| {
+            scopes[index + 1] = .{
+                .parent = @fromBackingInt(@intCast(index)),
+                .kind = .block,
+                .is_strict = false,
+            };
+        }
+        const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), scopes.len);
+        for (scope_maps) |*scope_map| scope_map.* = .empty;
+        const symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
+        @memset(symbol_ids, null);
+        var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        try scope_owner_map.put(allocator, @backingInt(root), 0);
+        for (block_nodes, 0..) |block, index| {
+            try scope_owner_map.put(allocator, @backingInt(block), @intCast(index + 1));
+        }
+        const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+        const correct = try checkExactWithScopeBoundary(
+            allocator,
+            &ast,
+            root,
+            @intCast(ast.nodes.items.len),
+            symbol_ids,
+            &.{},
+            scopes,
+            scope_maps,
+            &scope_owner_map,
+            &.{},
+            &.{},
+            &.{},
+            &unresolved,
+            &explicit_globals,
+            &origins,
+            scopes.len - 1,
+        );
+        try std.testing.expectEqual(@as(usize, 0), correct.scope_strictness_mismatch);
+
+        scopes[block_count].is_strict = true;
+        const hostile = try checkExactWithScopeBoundary(
+            allocator,
+            &ast,
+            root,
+            @intCast(ast.nodes.items.len),
+            symbol_ids,
+            &.{},
+            scopes,
+            scope_maps,
+            &scope_owner_map,
+            &.{},
+            &.{},
+            &.{},
+            &unresolved,
+            &explicit_globals,
+            &origins,
+            scopes.len - 1,
+        );
+        try std.testing.expectEqual(@as(usize, 1), hostile.scope_strictness_mismatch);
+        const finding = hostile.first_scope_strictness_mismatch.?;
+        try std.testing.expectEqual(@as(u32, @intCast(block_count)), finding.scope_id);
+        try std.testing.expectEqual(@as(?u32, @intCast(block_count - 1)), finding.parent_scope_id);
+        try std.testing.expectEqualStrings(
+            "lexical-scope-must-match-parent-strictness",
+            finding.issue,
+        );
+    }
+
+    for ([_]ScopeKind{ .switch_block, .catch_clause }) |kind| {
+        var ast = Ast.init(allocator, "");
+        const root_list = try ast.addNodeList(&.{});
+        const root = try ast.addNode(.{
+            .tag = .program,
+            .span = .EMPTY,
+            .data = .{ .list = root_list },
+        });
+        const scopes = [_]Scope{
+            .{ .parent = .none, .kind = .global, .is_strict = false },
+            .{ .parent = @fromBackingInt(@intCast(0)), .kind = kind, .is_strict = false },
+        };
+        const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
+        var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        try scope_owner_map.put(allocator, @backingInt(root), 0);
+        const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        var hostile_scopes = scopes;
+        hostile_scopes[1].is_strict = true;
+        const hostile = try checkExactWithScopeBoundary(
+            allocator,
+            &ast,
+            root,
+            @intCast(ast.nodes.items.len),
+            &.{},
+            &.{},
+            &hostile_scopes,
+            &scope_maps,
+            &scope_owner_map,
+            &.{},
+            &.{},
+            &.{},
+            &unresolved,
+            &explicit_globals,
+            &origins,
+            1,
+        );
+        try std.testing.expectEqual(@as(usize, 1), hostile.scope_strictness_mismatch);
+        const finding = hostile.first_scope_strictness_mismatch.?;
+        try std.testing.expectEqual(@as(u32, 1), finding.scope_id);
+        try std.testing.expectEqual(@as(?u32, 0), finding.parent_scope_id);
+        try std.testing.expectEqualStrings(
+            "lexical-scope-must-match-parent-strictness",
+            finding.issue,
+        );
+    }
 }
 
 test "exact identity audit excludes statement labels from variable references" {

@@ -1819,7 +1819,9 @@ test "exact scope audit enforces strictness inheritance and intrinsic strict sco
     var sloppy_class_scopes = valid_scopes;
     sloppy_class_scopes[3].is_strict = false;
     const sloppy_class = try checkScopeStrictnessFixture(allocator, &ast, root, &sloppy_class_scopes);
-    try std.testing.expectEqual(@as(usize, 1), sloppy_class.scope_strictness_mismatch);
+    // The direct class invariant fails, and its still-strict child block no
+    // longer inherits from the now-sloppy parent.
+    try std.testing.expectEqual(@as(usize, 2), sloppy_class.scope_strictness_mismatch);
     try std.testing.expectEqualStrings(
         "class-body-must-be-strict",
         sloppy_class.first_scope_strictness_mismatch.?.issue,
