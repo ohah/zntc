@@ -1111,7 +1111,10 @@ pub const Linker = struct {
                             return error.InvalidNewTargetCaptureOutputBinding;
                     },
                     .this_capture_binding => {
-                        if (!is_variable_local or symbol.scope_id.isNone() or
+                        const valid_kind = is_variable_local or symbol.kind == .parameter;
+                        const valid_scope = !symbol.scope_id.isNone() and symbol.scope_id.toIndex() < semantic.scopes.len and
+                            (symbol.kind != .parameter or semantic.scopes[symbol.scope_id.toIndex()].kind == .function);
+                        if (!valid_kind or !valid_scope or
                             !std.mem.eql(u8, symbol.output_name_hint, "_this"))
                             return error.InvalidThisCaptureOutputBinding;
                     },

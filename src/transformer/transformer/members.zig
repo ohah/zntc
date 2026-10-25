@@ -233,6 +233,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
 
     // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
     const capture_frame = es_helpers.pushCaptureFrame(self);
+    if (is_ctor) {
+        const class_owner = es_helpers.classConstructorOwner(self, source_owner, node).?;
+        self.native_parameter_this_snapshot_allowed = self.ast.readExtraNode(self.ast.getNode(class_owner).data.extra, ast_mod.ClassExtra.super).isNone();
+    }
     const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
     self.native_parameter_list_retained_for_dynamic_lookup = false;
     defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;

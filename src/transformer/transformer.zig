@@ -416,6 +416,10 @@ pub const Transformer = struct {
     /// Prepared wrapper parameter for lexical new.target in native defaults.
     /// Its binding and scope exist before any arrow child is visited.
     native_parameter_arrow_capture: ?@import("es_helpers.zig").TempIdentityCapture = null,
+    native_parameter_arrow_this_capture: ?@import("es_helpers.zig").NativeParameterThisCapture = null,
+    /// Only initialized this environments can be snapshotted in native params.
+    /// Derived constructors and their lexical arrows retain their live binding.
+    native_parameter_this_snapshot_allowed: bool = true,
     /// Generated refs whose producer already selected an exact SymbolId are
     /// bound by node handle after the final output-scope walk; output spelling
     /// is never used to select their identity. Some producers also reserve the
