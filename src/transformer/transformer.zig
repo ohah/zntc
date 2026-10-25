@@ -853,10 +853,10 @@ pub const Transformer = struct {
     }
 
     /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.
-    /// `class` / `class_private_field` 옵션 둘 중 하나라도 켜져 있고, 현재 visit 중인
-    /// class 가 private field 를 갖고 있을 때 true.
+    /// 공통 private lowering 계획이 활성이고 현재 class 에 추출한
+    /// private field/method mapping 이 있을 때 true.
     pub inline fn hasActivePrivateFieldLowering(self: *const Transformer) bool {
-        return (self.options.unsupported.class or self.options.unsupported.class_private_field) and
+        return self.options.unsupported.privateLoweringPlan().fields and
             (self.current_private_fields.len > 0 or self.current_private_methods.len > 0);
     }
 

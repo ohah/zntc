@@ -64,12 +64,12 @@ pub fn instanceMemberMoves(self: anytype, member: ast.Node, private_fields_move:
     if (flags & (ast.PropertyFlags.is_static | ast.PropertyFlags.is_abstract | ast.PropertyFlags.is_declare) != 0) return false;
     const key = self.ast.getNode(self.ast.readExtraNode(member.data.extra, 0));
     if (key.tag == .private_identifier)
-        return unsupported.class or (if (member.tag == .method_definition) unsupported.class_private_method else unsupported.class_private_field);
+        return if (member.tag == .method_definition) unsupported.privateLoweringPlan().methods else unsupported.privateLoweringPlan().fields;
     if (member.tag == .property_definition)
         return unsupported.class or unsupported.class_field or !self.options.use_define_for_class_fields or
             (private_fields_move and self.ast.readExtra(member.data.extra, ast.PropertyExtra.deco_len) == 0);
     return member.tag == .accessor_property and
-        (unsupported.class or (unsupported.decorator_auto_accessor and unsupported.class_private_field));
+        (unsupported.class or (unsupported.decorator_auto_accessor and unsupported.privateLoweringPlan().fields));
 }
 
 fn initializerObservesDynamicEnvironment(self: anytype, root: NodeIndex) !bool {
@@ -106,7 +106,7 @@ fn initializerObservesDynamicEnvironment(self: anytype, root: NodeIndex) !bool {
 
 pub fn classLowersPrivateFields(self: anytype, members: ast.NodeList) bool {
     const unsupported = self.options.unsupported;
-    if (!unsupported.class and !unsupported.class_private_field) return false;
+    if (!unsupported.privateLoweringPlan().fields) return false;
     for (self.ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
         const member = self.ast.nodes.items[raw];
         if (member.tag != .property_definition and member.tag != .accessor_property) continue;

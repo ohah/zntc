@@ -51,6 +51,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
     const as_expression = node.tag == .class_expression or
         (node.tag == .class_declaration and self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone());
     const e = node.data.extra;
+    const private_plan = self.options.unsupported.privateLoweringPlan();
 
     // 낮춰야 할 public class field 가 **실제로 있을 때만** fast path 를 벗어난다 (#4629).
     // 필드를 constructor/정적 문장으로 옮기는 기계가 assign-semantics 경로에만 있어서인데,
@@ -73,8 +74,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // 이름을 보고 proto_chain 활성화 → super-prop access 시 raw extends inline (side-effect
         // 중복) 회피. body_idx 만 미리 읽어 classBodyHasStaticPrivateMember 검사.
         const _anon_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
-        const _lower_pm_pre = self.options.unsupported.class_private_method;
-        const _lower_pf_pre = self.options.unsupported.class_private_field;
+        const _lower_pm_pre = private_plan.methods;
+        const _lower_pf_pre = private_plan.fields;
         var prepared_wrapper_scope: ScopeId = .none;
         var generated_class_self_symbol_id: ?u32 = null;
         if ((_lower_pm_pre or _lower_pf_pre) and as_expression and new_name.isNone() and
@@ -163,8 +164,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             // declarator) 로 program top 에 leak (TSC: expressions thisInInvalidContexts /
             // thisInInvalidContextsExternalModule 회귀).
             // → 옵션 활성 *AND* body 에 실제 lowering 대상이 있을 때만 V8 path 진입.
-            const lower_pm_pre = self.options.unsupported.class_private_method;
-            const lower_pf_pre = self.options.unsupported.class_private_field;
+            const lower_pm_pre = private_plan.methods;
+            const lower_pf_pre = private_plan.fields;
             const lower_sb_pre = self.options.unsupported.class_static_block;
             const probe_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
             const v8_alias_emittable = (lower_pm_pre or lower_pf_pre or lower_sb_pre) and
@@ -275,8 +276,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             pf_mappings.deinit(self.allocator);
         }
 
-        const lower_pm = self.options.unsupported.class_private_method;
-        const lower_pf = self.options.unsupported.class_private_field;
+        const lower_pm = private_plan.methods;
+        const lower_pf = private_plan.fields;
         // VANON fix: tmp name 합성은 이미 V8 fix 앞에서 처리됨 (위 _anon_body_idx 블록). 여기선 no-op.
         var had_private_methods = false;
         var had_private_fields = false;

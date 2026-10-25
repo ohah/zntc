@@ -273,6 +273,16 @@ pub const UnsupportedFeatures = packed struct(Bits) {
         return self.class or self.class_private_field or self.class_private_method;
     }
 
+    pub const PrivateLoweringPlan = struct { methods: bool, fields: bool };
+
+    /// The output contract forbids all raw private syntax once either private
+    /// feature needs lowering. Every declaration and reference producer must
+    /// share this plan, even when the target supports fields but not methods.
+    pub fn privateLoweringPlan(self: UnsupportedFeatures) PrivateLoweringPlan {
+        const lower = self.requiresPrivateDownlevel();
+        return .{ .methods = lower, .fields = lower };
+    }
+
     /// object literal method shorthand 를 `key: function` 형태로 낮춰야 하는 타겟인지.
     /// object_extensions 미지원이면 전부 변환 대상이고, Hermes/RN 처럼 shorthand 자체는
     /// 지원하지만 async/generator method 만 낮춰야 하는 경우도 포함. node 단위 정밀 판정 전에
@@ -1506,4 +1516,14 @@ test "RN target — <= / < 는 가장 보수적(테이블 최저)" {
     const oldest = @as(Bits, @bitCast(fromReactNativeVersion(0, 70)));
     try std.testing.expectEqual(oldest, @as(Bits, @bitCast(fromReactNativeVersionSpec("<=0.84").?)));
     try std.testing.expectEqual(oldest, @as(Bits, @bitCast(fromReactNativeVersionSpec("<0.84").?)));
+}
+
+test "common private lowering plan closes partial feature combinations" {
+    const cases = [_]UnsupportedFeatures{ .{}, .{ .class = true }, .{ .class_private_method = true }, .{ .class_private_field = true }, .{ .class_private_method = true, .class_private_field = true } };
+    for (cases) |features| {
+        const plan = features.privateLoweringPlan();
+        const expected = features.class or features.class_private_method or features.class_private_field;
+        try std.testing.expectEqual(expected, plan.methods);
+        try std.testing.expectEqual(expected, plan.fields);
+    }
 }
