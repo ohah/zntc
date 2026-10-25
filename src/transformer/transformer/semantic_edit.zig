@@ -2621,7 +2621,7 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
     const new_tag = self.ast.getNode(new).tag;
     if (old_tag != new_tag and
         !(old_tag == .arrow_function_expression and new_tag == .function_expression) and
-        !(old_tag == .for_of_statement and new_tag == .for_statement) and
+        !((old_tag == .for_of_statement or old_tag == .for_in_statement) and new_tag == .for_statement) and
         !(old_tag == .for_await_of_statement and new_tag == .while_statement) and
         !(old_tag == .class_expression and new_tag == .class_declaration) and
         !(old_tag == .class_declaration and new_tag == .class_expression) and
