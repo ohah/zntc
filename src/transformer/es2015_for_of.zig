@@ -629,7 +629,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                         self.generator_state_machine_scope,
                     );
                 }
-
             }
             return ref;
         }
@@ -643,7 +642,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     if (output_scope.isNone()) std.debug.panic("generator for-in reference has no planned output scope", .{});
                     try self.trackExactOutputReferenceInScope(ref, @backingInt(symbol_id), output_scope);
                 }
-
             }
             return ref;
         }
