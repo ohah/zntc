@@ -507,17 +507,18 @@ test "guarded lazy source calls preserve late reporter and argument evaluation o
 test "guarded imported value reads keep exact local identity scope and receivers" {
     const Bundler = @import("bundler.zig").Bundler;
     const helpers = @import("test_helpers.zig");
-    const Case = struct { body: []const u8, dependency: []const u8 = "export function value(){return 42;}", expected: []const u8 = "42\n", reads: usize = 1 };
+    const Case = struct { body: []const u8, dependency: []const u8 = "export function value(){return 42;}", expected: []const u8 = "42\n", reads: usize = 1, shorthand_key: ?[]const u8 = null };
     for ([_]Case{
         .{ .body = "function run(__zntc_guarded){return value;}globalThis.actual=run(null)();" },
         .{ .body = "function run(__zntc_guarded){return typeof value;}globalThis.actual=run(null);", .expected = "function\n" },
-        .{ .body = "function run(__zntc_guarded){return {value};}globalThis.actual=run(null).value();", .dependency = "globalThis.__guardValueReady=true;export function value(){return globalThis.__guardValueReady?42:-1;}" },
+        .{ .body = "function run(__zntc_guarded){return {value};}globalThis.actual=run(null).value();", .dependency = "globalThis.__guardValueReady=true;export function value(){return globalThis.__guardValueReady?42:-1;}", .shorthand_key = "value" },
         .{ .body = "function run(__zntc_guarded){return [value];}globalThis.actual=run(null)[0]();" },
         .{ .body = "function run(__zntc_guarded){return [...value];}globalThis.actual=run(null)[0];", .dependency = "export const value=[42];" },
         .{ .body = "function run(__zntc_guarded){return new value() instanceof value;}globalThis.actual=run(null);", .expected = "true\n", .reads = 2 },
         .{ .body = "function run(__zntc_guarded){return value`text`;}globalThis.actual=run(null);" },
         .{ .body = "function run(__zntc_guarded){return value.call(undefined);}globalThis.actual=run(null);" },
         .{ .body = "function run(__zntc_guarded){return value?.();}globalThis.actual=run(null);" },
+        .{ .body = "function run(__zntc_guarded,choose){return choose?value:value;}globalThis.actual=run(null,false).n;", .dependency = "export const value={n:42};", .reads = 2 },
         .{ .body = "function run(__zntc_guarded){return value.run();}globalThis.actual=run(null);", .dependency = "export const value={run(){return this===value;}};", .expected = "true\n" },
     }) |case| {
         var tmp = std.testing.tmpDir(.{});
@@ -566,6 +567,20 @@ test "guarded imported value reads keep exact local identity scope and receivers
             try std.testing.expect(reference.stmt_idx != Reference.NO_STMT and reference.scope_stmt_idx != Reference.NO_STMT);
         }
         try std.testing.expectEqual(case.reads, reads);
+        if (case.shorthand_key) |expected_key| {
+            var keys: usize = 0;
+            for (try walk.collectReachableNodeIndices(module.parse_arena.?.allocator(), ast)) |raw| {
+                const property = ast.nodes.items[raw];
+                if (property.tag != .object_property or property.data.binary.right.isNone()) continue;
+                if (ast.getNode(property.data.binary.right).tag != .sequence_expression) continue;
+                const key = property.data.binary.left;
+                keys += 1;
+                try std.testing.expectEqualStrings(expected_key, ast.getText(ast.getNode(key).span));
+                try std.testing.expectEqual(@as(?u32, null), sem.symbol_ids[@backingInt(key)]);
+                for (sem.references) |reference| try std.testing.expect(reference.node_index != key);
+            }
+            try std.testing.expectEqual(@as(usize, 1), keys);
+        }
         try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
         for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
         const emitted = try helpers.absPath(&tmp, "entry.js");

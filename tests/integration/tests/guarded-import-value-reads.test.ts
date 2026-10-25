@@ -77,6 +77,18 @@ const cases = [
     'events.push("initialize");export function value(parts,arg){events.push("tag");return arg;}',
   ],
   [
+    'conditional separate reads',
+    'function run(__zntc_guarded,choose){return choose?value:value;}events.push(run(null,false).n);',
+    [42],
+    'export const value={n:42};',
+  ],
+  [
+    'multiple read identity',
+    'function run(__zntc_guarded){return [value,value];}const pair=run(null);events.push([pair[0]===pair[1],pair[0].n,globalThis.initializations]);',
+    [[true, 42, 1]],
+    'globalThis.initializations=(globalThis.initializations||0)+1;export const value={n:42};',
+  ],
+  [
     'late returned function',
     'globalThis.load=function(__zntc_guarded){return value;};',
     ['report:dependency', 42],
