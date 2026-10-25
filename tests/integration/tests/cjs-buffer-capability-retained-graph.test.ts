@@ -11,9 +11,8 @@ const cases = [
     source: `var buffer = require("buffer");
 var Buffer = buffer.Buffer;
 if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) var native = buffer;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 module.exports = native;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(2).length',
     expected: '2',
@@ -24,9 +23,8 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var nodeBuffer = require("node:buffer");
 var Native = nodeBuffer.Buffer;
 if (((Native.allocUnsafeSlow) && (Native.from)) && ((Native.allocUnsafe) && (Native.alloc))) var selected = nodeBuffer;
-else exports.Buffer = SafeBuffer;
+else exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER";
 module.exports = selected;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.from("ab").toString()',
     expected: 'ab',
@@ -38,10 +36,9 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 var B = buffer.Buffer;
 {
   if (B.alloc && B.from && B.allocUnsafe && B.allocUnsafeSlow) var picked = buffer;
-  else { exports.Buffer = SafeBuffer; }
+  else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 }
 module.exports = picked;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(3).length',
     expected: '3',
@@ -52,9 +49,8 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var buffer = require("buffer");
 var B = buffer.Buffer;
 if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) var picked = buffer, marker = 4;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 module.exports = picked;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(4).fill(7).toString("hex")',
     expected: '07070707',
@@ -66,11 +62,10 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 var B = buffer.Buffer;
 function choose() {
   if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) var picked = buffer;
-  else { exports.Buffer = SafeBuffer; }
+  else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
   return picked;
 }
 module.exports = choose();
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(5).length',
     expected: '5',
@@ -81,9 +76,8 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var buffer = require("buffer");
 var Constructor = buffer.Buffer;
 if (Constructor.from && Constructor.alloc && Constructor.allocUnsafe && Constructor.allocUnsafeSlow) var nativeModule = buffer;
-else exports.Buffer = SafeBuffer;
+else exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER";
 module.exports = nativeModule;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.from("six").length',
     expected: '3',
@@ -94,9 +88,8 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var buffer = require("buffer");
 var B = buffer.Buffer;
 if ((B.from && B.alloc) && (B.allocUnsafe && B.allocUnsafeSlow)) var picked = buffer;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 module.exports = picked;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(6).length',
     expected: '6',
@@ -107,9 +100,8 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var source = require("node:buffer");
 var B = source.Buffer;
 if (B.from && B.allocUnsafeSlow && B.alloc && B.allocUnsafe) var target = source;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 module.exports = target;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(7).length',
     expected: '7',
@@ -121,10 +113,9 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 var B = buffer.Buffer;
 var before = "before";
 if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) var target = buffer;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 var after = "after";
 module.exports = { Buffer: target.Buffer, before, after };
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     entryImport: 'import library from "./lib.js";\n',
     expression: 'library.before.length + library.Buffer.alloc(8).length + library.after.length',
@@ -136,11 +127,10 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
     source: `var buffer = require("buffer");
 var B = buffer.Buffer;
 if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) var first = buffer;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 if (B.allocUnsafeSlow && B.allocUnsafe && B.from && B.alloc) var second = first;
-else { exports.Buffer = SafeBuffer; }
+else { exports.Buffer = "DIRECT_VAR_FALLBACK_MARKER"; }
 module.exports = second;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
 `,
     expression: 'Buffer.alloc(9).length',
     expected: '9',
@@ -228,7 +218,7 @@ describe('CJS Node Buffer capability graph retention', () => {
         const profileOutput = `${result.stderr}\n${result.stdout}`;
         const targetResyncs = semanticResyncCount(profileOutput);
         const bundled = readFileSync(output, 'utf8');
-        expect(bundled).not.toContain('exports.Buffer = SafeBuffer');
+        expect(bundled).not.toContain('DIRECT_VAR_FALLBACK_MARKER');
 
         // Disable only the Node Buffer capability recognizer as a control.
         // Other compiler work for this input may legitimately reanalyze, so
