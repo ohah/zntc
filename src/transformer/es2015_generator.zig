@@ -1117,14 +1117,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const item = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[self.readU32(declaration.data.extra, 1)]));
                         node.data.ternary.a = try nativeAssignmentPattern(self, self.readNodeIdx(item.data.extra, 0), nativeWriteScope(self, scope), true);
                     }
-                    const body = try rewriteNativeStateVars(self, node.data.ternary.c, scope);
-                    // The for-of producer prepends its head assignment and merges
-                    // a block's children. Keep the original source block as a child
-                    // so its existing lexical scope remains an actual output owner.
-                    node.data.ternary.c = if (!body.isNone() and self.ast.getNode(body).tag == .block_statement)
-                        try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{body}) } })
-                    else
-                        body;
+                    // The common loop-body producer preserves the original
+                    // block and creates the head's actual lexical boundary.
+                    node.data.ternary.c = try rewriteNativeStateVars(self, node.data.ternary.c, scope);
                 },
                 .switch_statement, .switch_case => {
                     const extra = node.data.extra;
