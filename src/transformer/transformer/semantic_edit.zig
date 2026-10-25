@@ -3066,6 +3066,29 @@ pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex
 /// original `arguments` Reference can be removed after final reachability.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
     const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
+    if (self.native_field_capture_plan) |plan| {
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (self.semantic_edit_enabled and self.capture_frame != 0 and plan.scope == self.capture_scope and
+            scopeWithin(scopes, self.current_scope, plan.scope) and kind == .this_value)
+        {
+            if (plan.scope != self.capture_scope) std.debug.panic("field capture lost its actual constructor scope", .{});
+            if (plan.this_declaration.isNone()) {
+                const saved_scope = self.current_scope;
+                self.current_scope = plan.scope;
+                defer self.current_scope = saved_scope;
+                const initializer = try es_helpers.makeThisExpr(self, source_span);
+                plan.this_declaration = try self.buildVarDecl("_this", initializer, source_span);
+                try self.bindLexicalCapture(plan.this_declaration, .this_value);
+                plan.symbol_id = self.capture_binding_ids.get(captureKey(self.capture_frame, .this_value)) orelse
+                    std.debug.panic("field capture declaration has no exact identity", .{});
+            }
+            const id = plan.symbol_id orelse std.debug.panic("field capture lost its declaration identity", .{});
+            try self.bindLexicalCaptureToExistingSymbol(.this_value, @fromBackingInt(id));
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
+            try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
+            return;
+        }
+    }
     if (self.capture_frame == 0) {
         if (self.semantic_edit_enabled) {
             const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;

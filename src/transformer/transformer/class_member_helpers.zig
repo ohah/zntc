@@ -129,6 +129,7 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
 pub const FieldInitializerPlan = struct {
     scope: ScopeId = .none,
     constructor_shell: NodeIndex = .none,
+    capture: @import("../transformer.zig").NativeFieldCapturePlan = .{},
 };
 
 /// Allocate the actual constructor owner before any moved initializer is
@@ -300,6 +301,21 @@ pub fn classifyPropertyDefinition(
                 try @import("../class_strict_context.zig").moveSourceReferences(self, init_idx, saved_initializer_scope, saved_initializer_scope, ctx.field_initializer_plan.scope);
                 self.current_scope = ctx.field_initializer_plan.scope;
             }
+            const field_capture_env = if (!ctx.field_initializer_plan.scope.isNone() and self.options.unsupported.arrow and !self.options.unsupported.class)
+                es_helpers.pushArrowEnv(self)
+            else
+                null;
+            defer if (field_capture_env) |env| es_helpers.popArrowEnv(self, env);
+            const saved_field_capture_plan = self.native_field_capture_plan;
+            defer self.native_field_capture_plan = saved_field_capture_plan;
+            if (field_capture_env) |env| {
+                const capture = &ctx.field_initializer_plan.capture;
+                if (capture.frame == 0) capture.frame = env.capture.active_frame;
+                capture.scope = ctx.field_initializer_plan.scope;
+                self.capture_frame = capture.frame;
+                self.capture_scope = capture.scope;
+                self.native_field_capture_plan = capture;
+            }
             const saved_new_target_ctx = self.new_target_ctx;
             self.new_target_ctx = .field_initializer;
             const pe = @import("../parameter_environment.zig");
@@ -442,6 +458,12 @@ pub fn classifyMethodDefinition(
     const is_ctor = !is_static and es_helpers.isConstructorKey(self, self.readNodeIdx(me, ast_mod.MethodExtra.key));
 
     if (is_ctor) {
+        const saved_field_capture_plan = self.native_field_capture_plan;
+        defer self.native_field_capture_plan = saved_field_capture_plan;
+        if (!ctx.field_initializer_plan.scope.isNone() and self.options.unsupported.arrow and !self.options.unsupported.class) {
+            ctx.field_initializer_plan.capture.scope = ctx.field_initializer_plan.scope;
+            self.native_field_capture_plan = &ctx.field_initializer_plan.capture;
+        }
         // constructor parameter decorator → class-level __decorateClass에 포함
         if (self.options.experimental_decorators) {
             try self.collectParamDecorators(ctx.ctor_param_decos, params_list_m);
@@ -505,7 +527,7 @@ pub fn applyFieldAssignments(
     if (!plan.scope.isNone()) self.current_scope = plan.scope;
     if (existing_constructor) |ctor_idx| {
         // 기존 constructor의 body에 field assignments 삽입
-        const updated_ctor = try insertFieldAssignmentsIntoConstructor(self, ctor_idx, fields, has_super);
+        const updated_ctor = try insertFieldAssignmentsIntoConstructor(self, ctor_idx, fields, has_super, plan.capture.this_declaration);
         // position으로 직접 교체 (선형 검색 불필요)
         if (existing_constructor_pos) |pos| {
             class_members.items[pos] = updated_ctor;
@@ -680,6 +702,7 @@ pub fn insertFieldAssignmentsIntoConstructor(
     ctor_idx: NodeIndex,
     fields: []const FieldAssignment,
     has_super: bool,
+    capture_declaration: NodeIndex,
 ) Error!NodeIndex {
     // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     const ctor_node = self.ast.getNode(ctor_idx);
@@ -699,9 +722,11 @@ pub fn insertFieldAssignmentsIntoConstructor(
     const insert_pos: u32 = if (has_super) (findSuperCallInsertPos(self, body_idx) orelse 0) else 0;
 
     // field assignments 를 먼저 빌드 (buildThisAssignment 가 AST 변형 — splice 전에 완료).
-    const field_stmts = try self.allocator.alloc(NodeIndex, fields.len);
+    const prefix: usize = if (capture_declaration.isNone()) 0 else 1;
+    const field_stmts = try self.allocator.alloc(NodeIndex, fields.len + prefix);
     defer self.allocator.free(field_stmts);
-    for (fields, 0..) |field, i| field_stmts[i] = try buildThisAssignment(self, field);
+    if (prefix != 0) field_stmts[0] = capture_declaration;
+    for (fields, 0..) |field, i| field_stmts[i + prefix] = try buildThisAssignment(self, field);
 
     const new_body = try spliceBlockStmtsAt(self, body_idx, insert_pos, field_stmts);
 
@@ -929,6 +954,9 @@ pub fn buildConstructorWithFieldAssignments(
         const empty_params = try self.ast.addNodeList(&.{});
         break :blk try self.ast.addFormalParameters(empty_params, zero_span);
     };
+
+    // The field capture reads `this` only after a derived super() has returned.
+    if (!plan.capture.this_declaration.isNone()) try self.scratch.append(self.allocator, plan.capture.this_declaration);
 
     // this.x = value 할당들
     for (fields) |field| {

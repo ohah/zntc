@@ -52,6 +52,7 @@ pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
+pub const NativeFieldCapturePlan = struct { frame: u32 = 0, scope: ScopeId = .none, this_declaration: NodeIndex = .none, symbol_id: ?u32 = null };
 pub const DeferredGeneratorLoopMigration = struct {
     loop_function: NodeIndex,
     body: NodeIndex,
@@ -389,6 +390,7 @@ pub const Transformer = struct {
     capture_ref_by_origin: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     capture_frame: u32 = 0,
+    native_field_capture_plan: ?*NativeFieldCapturePlan = null,
     next_capture_frame: u32 = 1,
     /// Formal-parameter initializers evaluate in a separate environment from
     /// the function body. Downleveled arrows there must capture lexical values

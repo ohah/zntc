@@ -577,7 +577,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 self.outputOwnedScope(source_idx) orelse @panic("class field lowering has no source scope")
             else
                 self.current_scope,
-            initializer_plan,
+            ctx.field_initializer_plan,
         );
     }
 
