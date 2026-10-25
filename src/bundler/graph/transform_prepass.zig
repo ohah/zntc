@@ -4948,6 +4948,87 @@ fn awaitBelongsToRetainableAsyncFunction(
     return false;
 }
 
+/// Return true when a using declaration is owned by a function that will be
+/// rewritten into an async/generator state machine for this target. A target
+/// may downlevel those features even when the using declaration belongs to a
+/// separate synchronous function or the module body, so target flags alone are
+/// too broad a reason to discard the edited semantic graph. Malformed ancestry
+/// fails closed.
+fn functionUsesLoweredStateMachine(is_async: bool, is_generator: bool, options: TransformOptions) bool {
+    if (is_async and is_generator) {
+        return options.unsupported.async_generator or options.unsupported.async_await or
+            options.unsupported.generator;
+    }
+    if (is_async) return options.unsupported.async_await;
+    return is_generator and options.unsupported.generator;
+}
+
+fn usingHasLoweredStateMachineOwner(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    using_node: u32,
+    options: TransformOptions,
+) bool {
+    var current = parents.get(using_node) orelse return true;
+    var hops: usize = 0;
+    while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (current >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[current];
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function => {
+                const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return true;
+                const flags = ast.extra_data.items[flags_at];
+                const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+                const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+                return functionUsesLoweredStateMachine(is_async, is_generator, options);
+            },
+            .arrow_function_expression => {
+                const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return true;
+                return (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0 and
+                    options.unsupported.async_await;
+            },
+            .method_definition => {
+                const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
+                if (flags_at >= ast.extra_data.items.len) return true;
+                const flags = ast.extra_data.items[flags_at];
+                const is_async = (flags & ast_mod.MethodFlags.is_async) != 0;
+                const is_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
+                return functionUsesLoweredStateMachine(is_async, is_generator, options);
+            },
+            .program => return false,
+            else => current = parents.get(current) orelse return true,
+        }
+    }
+    return true;
+}
+
+test "using state-machine predicate follows syntax and target support" {
+    const es5: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) };
+    const esnext: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.esnext) };
+    var async_await_only = esnext;
+    async_await_only.unsupported.async_await = true;
+    var generator_only = esnext;
+    generator_only.unsupported.generator = true;
+    try std.testing.expect(!functionUsesLoweredStateMachine(false, false, es5));
+    try std.testing.expect(functionUsesLoweredStateMachine(true, false, es5));
+    try std.testing.expect(functionUsesLoweredStateMachine(false, true, es5));
+    try std.testing.expect(functionUsesLoweredStateMachine(true, true, es5));
+    try std.testing.expect(!functionUsesLoweredStateMachine(true, false, esnext));
+    try std.testing.expect(!functionUsesLoweredStateMachine(false, true, esnext));
+    try std.testing.expect(!functionUsesLoweredStateMachine(true, true, esnext));
+    try std.testing.expect(functionUsesLoweredStateMachine(true, true, async_await_only));
+    try std.testing.expect(!functionUsesLoweredStateMachine(false, true, async_await_only));
+    try std.testing.expect(functionUsesLoweredStateMachine(true, true, generator_only));
+    try std.testing.expect(!functionUsesLoweredStateMachine(true, false, generator_only));
+
+    var async_generator_only = esnext;
+    async_generator_only.unsupported.async_generator = true;
+    try std.testing.expect(functionUsesLoweredStateMachine(true, true, async_generator_only));
+    try std.testing.expect(!functionUsesLoweredStateMachine(false, true, async_generator_only));
+}
+
 /// Arrow lowering edits the existing graph and creates only output function
 /// scopes plus explicitly tracked captures. Native `await` and `yield` add no
 /// binding or scope edges. Tagged-template lowering registers its cache
@@ -5481,15 +5562,16 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
+                var retained_using_declaration = false;
                 if (options.unsupported.using and kind.isUsing()) {
                     // Synchronous using declarations directly owned by a
                     // program or block list are rewritten with exact generated
-                    // bindings, references, and scopes. Await-using,
-                    // switch/loop-head declarations, and combinations with
-                    // async/generator state-machine lowering stay on semantic
-                    // reanalysis because they add control-flow ownership.
-                    if (kind != .using or options.unsupported.async_await or
-                        options.unsupported.generator or options.unsupported.async_generator) return false;
+                    // bindings, references, and scopes. Await-using, loop-head
+                    // declarations, and using regions inside a function that
+                    // actually lowers to an async/generator state machine stay
+                    // on semantic reanalysis because they add control-flow
+                    // ownership. Unrelated target flags do not veto this path.
+                    if (kind != .using) return false;
                     if (!source_parent_map_ready) {
                         if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
                         source_parent_map_ready = true;
@@ -5498,9 +5580,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     if (parent_raw >= ast.nodes.items.len) return false;
                     const parent_tag = ast.nodes.items[parent_raw].tag;
                     if (parent_tag != .program and parent_tag != .block_statement) return false;
+                    if (usingHasLoweredStateMachineOwner(ast, &source_parent_map, @intCast(raw_idx), options)) return false;
                     found_lowered_using = true;
+                    retained_using_declaration = true;
                 }
-                if (options.unsupported.block_scoping and kind != .@"var" and
+                if (options.unsupported.block_scoping and kind != .@"var" and !retained_using_declaration and
                     !lowered_for_in_heads.contains(raw_idx) and
                     !lowered_for_of_heads.contains(raw_idx) and
                     !lowered_classic_for_heads.contains(raw_idx)) return false;
