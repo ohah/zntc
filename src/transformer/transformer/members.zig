@@ -316,7 +316,11 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         var capture_stmts: [3]NodeIndex = undefined;
         var capture_count: usize = 0;
 
-        if (self.needs_this_var) {
+        const field_owns_this = if (self.native_field_capture_plan) |plan|
+            plan.scope == self.capture_scope and !plan.this_declaration.isNone()
+        else
+            false;
+        if (self.needs_this_var and !field_owns_this) {
             const this_init = try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = node.span,
