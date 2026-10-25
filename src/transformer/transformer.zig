@@ -442,6 +442,7 @@ pub const Transformer = struct {
     /// Exact generated `var` bindings emitted beside a state-machine callback.
     /// They are registered only after the callback scope exists, so references
     /// can be attached with their final output ScopeIds.
+    stage3_metadata_binding_ids: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").SymbolId) = .empty,
     generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
     /// Exact pending uses for generated callback temps; these do not use the
     /// temp-name reference chain.

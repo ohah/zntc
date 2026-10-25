@@ -159,6 +159,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.class_key_super_contexts.deinit(self.allocator);
     self.capture_binding_ids.deinit(self.allocator);
     self.bound_temp_symbols.deinit(self.allocator);
+    self.stage3_metadata_binding_ids.deinit(self.allocator);
     self.generator_state_bindings.deinit(self.allocator);
     self.generator_temp_producer_identities.deinit(self.allocator);
     self.generator_state_temp_refs.deinit(self.allocator);

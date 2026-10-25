@@ -70,6 +70,21 @@ fn markLateStage3OutputSymbol(
     if (graph_output_name) symbol.output_name_hint = try editor.allocator.dupe(u8, output_name_hint);
 }
 
+// These exact writes receive their existing class-self identity when the
+// wrapper/static-block owners are assembled, before a containing generator
+// visits or moves them. No output walk is needed to create their rows.
+fn attachClassNameWrite(self: *Transformer, node: NodeIndex, raw_id: u32, scope: ScopeId) Error!void {
+    if (self.getSymbolIdAt(node)) |existing| {
+        if (existing != raw_id) std.debug.panic("Stage 3 class write changed its source identity", .{});
+    } else try self.setGeneratedSymbolId(node, raw_id);
+    self.ast.nodes.items[@backingInt(node)].tag = .assignment_target_identifier;
+    const no_stmt = @import("../../semantic/symbol.zig").Reference.NO_STMT;
+    self.semantic_editor.?.addCopiedReference(node, @fromBackingInt(raw_id), scope, .{ .write = true }, no_stmt, no_stmt) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        std.debug.panic("invalid Stage 3 class write: {s}", .{@errorName(err)});
+    };
+}
+
 fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex {
     const declaration = self.ast.getNode(declaration_idx);
     if (declaration.tag != .variable_declaration) std.debug.panic("Stage 3 generated local is not a variable declaration", .{});
@@ -187,6 +202,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer self.allocator.free(class_name_text);
     const inner_name_span = try self.ast.addString(class_name_text);
     const inner_binding = try self.makeUserBinding(inner_name_span, class_name_origin);
+    if (!class_name_origin.isNone()) {
+        if (self.class_self_symbol_map.get(@backingInt(source_idx))) |class_self_id| {
+            try self.rebindOutputBinding(inner_binding, class_self_id);
+        }
+    }
 
     // body 멤버 순회: member decorator 수집
     var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
@@ -1001,6 +1021,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_const,
             metadata_block_scope,
         )) orelse std.debug.panic("Stage 3 metadata binding has no SymbolId", .{});
+        try self.stage3_metadata_binding_ids.put(self.allocator, @backingInt(metadata_binding), metadata_symbol);
         try markLateStage3OutputSymbol(
             self,
             metadata_late_output_name,
@@ -1163,11 +1184,6 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // symbol belongs to the wrapper's `var Foo`, not the ES5 `_Class` helper.
     if (self.semantic_edit_enabled and !class_name_origin.isNone())
         try self.generated_class_self_relocated_to_wrapper.put(self.allocator, @backingInt(inner_class), {});
-    if (!class_name_origin.isNone()) {
-        if (self.class_self_symbol_map.get(@backingInt(source_idx))) |class_self_id| {
-            try self.rebindOutputBinding(inner_binding, class_self_id);
-        }
-    }
 
     // IIFE 내부: var Foo = class { ... }; 선언과 재대입은 위에서 만든 exact binding을 공유한다.
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
@@ -1285,11 +1301,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         }
         const inner_symbol_id = self.getSymbolIdAt(inner_binding) orelse
             std.debug.panic("Stage 3 class wrapper binding has no exact SymbolId", .{});
-        try self.trackExactOutputReference(return_name, inner_symbol_id);
+        try attachClassNameWrite(self, return_name, inner_symbol_id, arrow_scope);
         if (class_name_write_refs.items.len > 0) {
             if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class reassign has no output scope", .{});
             for (class_name_write_refs.items) |reference| {
-                try self.trackExactOutputReference(reference, inner_symbol_id);
+                try attachClassNameWrite(self, reference, inner_symbol_id, metadata_block_scope);
             }
         }
     }

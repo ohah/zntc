@@ -173,6 +173,24 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.static_elements.items) |elem| {
                 switch (elem) {
                     .raw_stmt => |raw| {
+                        // Stage 3 creates this exact metadata binding in its
+                        // static block. Flattening emits the declaration in
+                        // the class IIFE, so transfer its SID before visiting
+                        // any initializer or callback that reads it.
+                        if (self.semantic_edit_enabled and self.ast.getNode(raw).tag == .variable_declaration) {
+                            const declaration = self.ast.getNode(raw);
+                            const start = self.readU32(declaration.data.extra, 1);
+                            const len = self.readU32(declaration.data.extra, 2);
+                            for (0..len) |i| {
+                                const declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start + i]);
+                                const binding = self.readNodeIdx(self.ast.getNode(declarator).data.extra, 0);
+                                const identity = self.stage3_metadata_binding_ids.fetchRemove(@backingInt(binding)) orelse continue;
+                                const sid = @backingInt(identity.value);
+                                if (self.getSymbolIdAt(binding) != sid)
+                                    std.debug.panic("flattened Stage 3 metadata lost its producer identity", .{});
+                                try self.relocateOutputSymbolAs(sid, output_scope, binding);
+                            }
+                        }
                         const visited = blk: {
                             const saved_scope = self.current_scope;
                             self.current_scope = output_scope;
