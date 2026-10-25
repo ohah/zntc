@@ -105,7 +105,15 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     const symbols = input.symbols;
     const scope_maps = input.scope_maps;
     const source = input.source;
-    const skip_symbols = input.skip_symbols;
+    var native_symbols = try @import("../semantic/annex_b_function.zig").nativeBindingMask(allocator, symbols);
+    defer native_symbols.deinit();
+    if (input.skip_symbols) |existing| {
+        var it = existing.iterator(.{});
+        while (it.next()) |index| if (index < symbols.len) {
+            native_symbols.set(index);
+        };
+    }
+    const skip_symbols: ?std.DynamicBitSet = native_symbols;
 
     const scope_count = scopes.len;
     const symbol_count = symbols.len;

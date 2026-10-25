@@ -942,9 +942,6 @@ fn outputBindingTargetScope(
     return lexical_scope;
 }
 
-/// Several sloppy block functions with one name all alias the analyzer's
-/// var-scope function symbol (Annex B: each block declaration, when
-/// evaluated, assigns that var binding). They are one runtime binding.
 fn sameIdentifierStringValue(allocator: std.mem.Allocator, lhs: []const u8, rhs: []const u8) EditorError!bool {
     if (std.mem.eql(u8, lhs, rhs)) return true;
     const lhs_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, lhs);
@@ -952,35 +949,6 @@ fn sameIdentifierStringValue(allocator: std.mem.Allocator, lhs: []const u8, rhs:
     const rhs_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, rhs);
     defer if (rhs_name.ptr != rhs.ptr) allocator.free(rhs_name);
     return std.mem.eql(u8, lhs_name, rhs_name);
-}
-
-fn isAnnexBBlockFunctionAliasGroup(self: *Transformer, editor: *SemanticEditor, groups: []const OutputBindingGroup, raw_id: u32) EditorError!bool {
-    const scopes = editor.scopes.items;
-    const symbol = editor.symbols.items[raw_id];
-    // A same-named `var` shares the binding too (#5803), so its symbol may be a var.
-    if (!(symbol.kind.isFunctionLike() or symbol.kind == .variable_var) or symbol.scope_id.isNone() or
-        symbol.scope_id.toIndex() >= scopes.len) return false;
-    if (!scopes[symbol.scope_id.toIndex()].kind.isVarScope()) return false;
-    const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
-    var has_block_function = false;
-    for (groups) |group| {
-        // This validates an already selected ID; it never selects one by name.
-        // Scope/function shape cannot legitimize an unrelated copied var ID.
-        if (!try sameIdentifierStringValue(self.allocator, symbol_name, group.name)) {
-            const renames = self.block_rename_map orelse return false;
-            const renamed = renames.get(raw_id) orelse return false;
-            if (!try sameIdentifierStringValue(self.allocator, renamed, group.name)) return false;
-        }
-        if (group.kind != symbol.kind or group.lexical_scope.isNone() or group.lexical_scope.toIndex() >= scopes.len) return false;
-        const lexical = scopes[group.lexical_scope.toIndex()];
-        // The unchanged outer var declaration participates in validation too.
-        if (group.lexical_scope == symbol.scope_id and group.target_scope == symbol.scope_id) continue;
-        if (lexical.kind.isVarScope() or lexical.is_strict or !group.is_function_declaration) return false;
-        has_block_function = true;
-        if (self.nearestVarScope(group.lexical_scope) != symbol.scope_id) return false;
-        if (self.ast.getNode(group.first_node).tag != .binding_identifier) return false;
-    }
-    return has_block_function;
 }
 
 fn isNamedFunctionExpressionBinding(self: *Transformer, parent: NodeIndex, binding: NodeIndex) bool {
@@ -1301,14 +1269,6 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         var group_end = group_cursor + 1;
         while (group_end < binding_groups.items.len and binding_groups.items[group_end].raw_id == raw_id) : (group_end += 1) {}
         if (raw_id >= editor.symbols.items.len) std.debug.panic("synthetic output binding has invalid SymbolId", .{});
-        // Splitting these would give each block its own identity, so
-        // mangling names them apart and the outer reads see only one (#5773).
-        if (group_end - group_cursor > 1 and
-            try isAnnexBBlockFunctionAliasGroup(self, editor, binding_groups.items[group_cursor..group_end], @intCast(raw_id)))
-        {
-            group_cursor = group_end;
-            continue;
-        }
         if (group_end - group_cursor != 1) return error.InvalidSymbol;
         if (!binding_groups.items[group_cursor].needs_placement) {
             group_cursor = group_end;

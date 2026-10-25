@@ -543,7 +543,7 @@ test "SemanticAnalyzer: sloppy if-body duplicate function allowed (Annex B, #441
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-test "Annex B block function with long escaped name aliases the var binding" {
+test "Annex B block function with long escaped name retains a distinct lexical alias role" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -595,7 +595,8 @@ test "Annex B block function with long escaped name aliases the var binding" {
     const actual_id = block_function_id orelse return error.MissingBlockFunction;
     const reference_id = function_reference_id orelse return error.MissingFunctionReference;
     try std.testing.expect(expected_id != other_id);
-    try std.testing.expectEqual(expected_id, actual_id);
+    try std.testing.expect(expected_id != actual_id);
+    try std.testing.expectEqual(expected_id, @as(u32, @backingInt(analyzer.symbols.items[actual_id].annex_b_alias.variable)));
     try std.testing.expectEqual(other_id, reference_id);
     try std.testing.expect(analyzer.unresolved_references.contains(unresolved_name[0..]));
     const scope_id = analyzer.symbols.items[expected_id].scope_id;

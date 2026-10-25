@@ -138,6 +138,28 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
     const Params = @import("es2015_params.zig").ES2015Params(Self);
     const source_symbols = symbolsOf(self);
     const scopes = scopesOf(self);
+    const ParameterBodyKey = struct { scope: ScopeId, parameter: u32 };
+    const AnnexParameterTarget = struct { variable: u32, lexicals: std.ArrayList(u32) = .empty };
+    var annex_by_parameter: std.AutoHashMapUnmanaged(ParameterBodyKey, AnnexParameterTarget) = .empty;
+    defer {
+        var values = annex_by_parameter.valueIterator();
+        while (values.next()) |target| target.lexicals.deinit(self.allocator);
+        annex_by_parameter.deinit(self.allocator);
+    }
+    var annex_variables = try std.DynamicBitSet.initEmpty(self.allocator, source_symbols.len);
+    defer annex_variables.deinit();
+    for (source_symbols, 0..) |_, lexical| {
+        const role = (@import("../semantic/annex_b_function.zig").forSymbol(source_symbols, @fromBackingInt(@as(u32, @intCast(lexical)))) catch
+            std.debug.panic("invalid initial Annex B parameter role", .{})) orelse continue;
+        const variable = source_symbols[@backingInt(role.variable)];
+        annex_variables.set(@backingInt(role.variable));
+        if (role.parameter_source.isNone()) continue;
+        const entry = try annex_by_parameter.getOrPut(self.allocator, .{ .scope = variable.scope_id, .parameter = @backingInt(role.parameter_source) });
+        if (!entry.found_existing) entry.value_ptr.* = .{ .variable = @backingInt(role.variable) };
+        if (entry.value_ptr.variable != @backingInt(role.variable))
+            std.debug.panic("one parameter has conflicting Annex B body variable identities", .{});
+        try entry.value_ptr.lexicals.append(self.allocator, @intCast(lexical));
+    }
     var reserved: std.StringHashMapUnmanaged(void) = .empty;
     defer reserved.deinit(self.allocator);
     for (source_symbols) |symbol| try reserveIdentifier(self, &reserved, self.ast.getText(symbol.name));
@@ -200,6 +222,16 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         for (body_nodes) |raw| {
             if (raw >= self.ast.nodes.items.len) continue;
             const declaration = self.ast.nodes.items[raw];
+            if (declaration.tag == .function_declaration) {
+                const name = self.ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name);
+                if (!name.isNone()) if (self.getSymbolIdAt(name)) |lexical| {
+                    const role = (@import("../semantic/annex_b_function.zig").forSymbol(source_symbols, @fromBackingInt(lexical)) catch
+                        std.debug.panic("invalid Annex B body-variable producer role", .{})) orelse continue;
+                    const variable = source_symbols[@backingInt(role.variable)];
+                    if (!role.parameter_source.isNone() and variable.scope_id == function_scope)
+                        try body_vars.put(self.allocator, @backingInt(role.variable), variable.declaration_span);
+                };
+            }
             if (declaration.tag != .variable_declaration or self.ast.variableDeclarationKind(declaration) != .@"var") continue;
             const extra = declaration.data.extra;
             if (extra + 2 >= self.ast.extra_data.items.len) continue;
@@ -250,7 +282,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         defer split_by_source.deinit(self.allocator);
         for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
             const param: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_param));
-            var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
+            var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{ .cover_grammar_assignment = true });
             defer bindings.deinit();
             while (try bindings.next()) |binding| {
                 const source_id = self.getSymbolIdAt(binding) orelse continue;
@@ -296,7 +328,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             const current_scope_maps = scopeMapsOf(self);
             for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
                 const param: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_param));
-                var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
+                var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{ .cover_grammar_assignment = true });
                 defer bindings.deinit();
                 while (try bindings.next()) |binding| {
                     const parameter_raw = self.getSymbolIdAt(binding) orelse continue;
@@ -304,24 +336,41 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
                     const parameter = current_symbols[parameter_raw];
                     if (parameter.kind != .parameter) continue;
                     const name = self.ast.getText(parameter.name);
-                    const body_raw = current_scope_maps[scope_raw].get(name) orelse continue;
+                    const exact_annex_body = annex_by_parameter.get(.{ .scope = function_scope, .parameter = parameter_raw });
+                    const body_raw = if (exact_annex_body) |exact| exact.variable else current_scope_maps[scope_raw].get(name) orelse continue;
                     if (body_raw >= current_symbols.len) continue;
+                    // Alias variables are consumed only through the typed
+                    // parameter role. The legacy ordinary-var lookup cannot
+                    // restore a missing alias source or override a hoisted fn.
+                    if (exact_annex_body == null and body_raw < annex_variables.capacity() and annex_variables.isSet(body_raw)) continue;
                     const body_id: u32 = @intCast(body_raw);
-                    const body_var_span = body_vars.get(body_id) orelse continue;
+                    const body_var_span = body_vars.get(body_id) orelse if (exact_annex_body != null)
+                        current_symbols[body_raw].declaration_span
+                    else
+                        continue;
                     if (body_id == parameter_raw or
                         current_symbols[body_raw].scope_id != function_scope) continue;
 
                     try split_parameters.put(self.allocator, parameter_raw, {});
-                    const already_copied = for (self.parameter_body_var_copies.items) |copy| {
+                    const already_copied = for (self.parameter_body_var_copies.items) |*copy| {
                         if (copy.function_scope == function_scope and copy.body_var_symbol_id == body_id and
-                            copy.parameter_symbol_id == parameter_raw) break true;
+                            copy.parameter_symbol_id == parameter_raw)
+                        {
+                            if (exact_annex_body) |exact| if (copy.annex_b_lexical_symbols.len == 0) {
+                                copy.annex_b_lexical_symbols = try self.allocator.dupe(u32, exact.lexicals.items);
+                            };
+                            break true;
+                        }
                     } else false;
                     if (!already_copied) {
+                        const lexical_symbols = if (exact_annex_body) |exact| try self.allocator.dupe(u32, exact.lexicals.items) else &.{};
+                        errdefer self.allocator.free(lexical_symbols);
                         try self.parameter_body_var_copies.append(self.allocator, .{
                             .function_scope = function_scope,
                             .body_var_symbol_id = body_id,
                             .parameter_symbol_id = parameter_raw,
                             .source_span = body_var_span,
+                            .annex_b_lexical_symbols = lexical_symbols,
                         });
                     }
                 }

@@ -461,6 +461,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.synthetic_kind = null;
             s.requires_uppercase_first_char = false;
             s.synthetic_owner_id = null;
+            s.annex_b_alias = .{};
             try symbols.append(a, s);
 
             const scopes = try a.alloc(Scope, 1);
@@ -870,4 +871,50 @@ test "semantic_codec: import expression use scopes survive cache independently f
     const first = scope_entries.next().?.*;
     editor.node_scope_provenance.getPtr(first).?.scope = @fromBackingInt(@as(u32, 0));
     try testing.expectError(error.InvalidScope, editor.finish());
+}
+
+test "semantic_codec: Annex B lexical variable parameter roles round-trip without identity reconstruction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function run(value=1){{function value(){return 42}return value}}");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const roles = @import("../semantic/annex_b_function.zig");
+    var lexical: u32 = std.math.maxInt(u32);
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (!symbol.annex_b_alias.variable.isNone()) lexical = @intCast(index);
+    }
+    try testing.expect(lexical != std.math.maxInt(u32));
+    const original = (try roles.forSymbol(analyzer.symbols.items, @fromBackingInt(lexical))).?;
+    try testing.expect(!original.parameter_source.isNone());
+    var sem = ModuleSemanticData{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .parameter_lowered, .lowered }) |state| {
+        sem.symbols.items[lexical].annex_b_alias.state = state;
+        var bytes: std.ArrayList(u8) = .empty;
+        try codec.serialize(&sem, &bytes, allocator);
+        const restored = try codec.deserialize(bytes.items, allocator);
+        const actual = (try roles.forSymbol(restored.symbols.items, @fromBackingInt(lexical))).?;
+        try testing.expectEqual(original.lexical, actual.lexical);
+        try testing.expectEqual(original.variable, actual.variable);
+        try testing.expectEqual(original.parameter_source, actual.parameter_source);
+        try testing.expectEqual(state, actual.state);
+        try testing.expectEqual(original.source_assignment_count, actual.source_assignment_count);
+        try testing.expectEqualSlices(?u32, sem.symbol_ids, restored.symbol_ids);
+        try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, restored.owner_token);
+    }
 }
