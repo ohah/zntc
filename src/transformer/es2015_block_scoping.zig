@@ -634,7 +634,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                                 try collectBindingNodes(self, self.ast.readExtraNode(declarator.data.extra, 0), &declared);
                             }
                             for (declared.items) |binding| {
-                                const id = self.getSymbolIdAt(binding) orelse std.debug.panic("extracted body var has no producer SID", .{});
+                                const id = self.getSymbolIdAt(binding) orelse std.debug.panic("extracted body var has no producer SID: node={d} name={s}", .{ @backingInt(binding), self.ast.getText(self.ast.getNode(binding).span) });
                                 try self.relocateOutputSymbolAs(id, owner, binding);
                                 const symbol = &self.semantic_editor.?.symbols.items[id];
                                 symbol.kind = .variable_var;
@@ -862,7 +862,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     );
                 }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
-                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
                 if (!await_driver and self.options.unsupported.generator) try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,
@@ -876,7 +875,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (!is_generator and self.semantic_edit_enabled) {
                 const function_scope = self.outputOwnedScope(func_expr) orelse try self.addGeneratedFunctionScope(call_scope, func_expr);
                 try self.reparentGeneratedBodyScopes(call_scope, function_scope, transformed_body);
-                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
             }
 
             // The body temps were allocated before this extracted function
@@ -886,7 +884,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (body_temp_bindings.items.len > 0 and self.semantic_edit_enabled) {
                 if (call_scope.isNone())
                     std.debug.panic("extracted loop body temps have no exact source scope", .{});
-                const function_scope = generator_function_scope orelse
+                const function_scope = generator_function_scope orelse self.outputOwnedScope(func_expr) orelse
                     try self.addGeneratedFunctionScope(call_scope, func_expr);
                 try self.bindGeneratedFunctionTemps(
                     call_scope,
@@ -895,6 +893,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     body_temp_bindings.items,
                     span,
                 );
+            }
+
+            if (self.semantic_edit_enabled) {
+                const function_scope = self.outputOwnedScope(func_expr) orelse @panic("extracted body has no exact function owner");
+                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
             }
 
             // --- var _loop = function(...) { ... } ---

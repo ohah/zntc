@@ -5,7 +5,7 @@ const helpers = @import("es_helpers.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Span = @import("../lexer/token.zig").Span;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
-const Slot = struct { name: Span, id: SymbolId };
+const Slot = struct { name: Span, id: ?SymbolId };
 pub const Driver = struct { statements: []ast.NodeIndex, value: ast.NodeIndex };
 
 fn block(self: anytype, statements: []const ast.NodeIndex, span: Span) !ast.NodeIndex {
@@ -18,7 +18,7 @@ fn slot(self: anytype, prefix: []const u8, scope: ScopeId, span: Span) !struct {
     const previous = self.current_scope;
     self.current_scope = scope;
     defer self.current_scope = previous;
-    const id = (try self.declareSyntheticVar(binding, span)).?;
+    const id = try self.declareSyntheticVar(binding, span);
     return .{ .value = .{ .name = self.ast.getNode(binding).data.string_ref, .id = id }, .binding = binding };
 }
 fn ref(self: anytype, value: Slot, scope: ScopeId, span: Span, write: bool) !ast.NodeIndex {
@@ -108,7 +108,7 @@ pub fn build(self: anytype, call: ast.NodeIndex, scope: ScopeId, span: Span) !Dr
     var error_counter: u32 = 0;
     const error_name = try self.buildUniqueNameAvoidingDynamicEval("_awaitError", &error_counter, catch_scope);
     const error_binding = try helpers.makeExactSyntheticBinding(self, error_name);
-    const error_id = (try self.declareSyntheticInScope(error_binding, span, .catch_binding, catch_scope)).?;
+    const error_id = try self.declareSyntheticInScope(error_binding, span, .catch_binding, catch_scope);
     const error_ref = try helpers.makeExactSyntheticRef(self, error_name);
     try self.addSyntheticRefInScope(error_ref, error_id, catch_scope, .{ .read = true });
     const thrown = try invoke(self, iterator.value, catch_scope, "throw", &.{error_ref}, span);

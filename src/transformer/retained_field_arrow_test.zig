@@ -225,11 +225,12 @@ test "retained field arrow has exact factory bindings and references before fina
     }
 }
 
-test "retained field arrow low-level graphless receiver output stays executable" {
+test "retained field arrow low-level graphless receiver and loop output stays executable" {
     const sources = [_][]const u8{
         "class Box{value=7;read=()=>this.value}console.log(new Box().read());",
         "function build(){class Box{value=8;read=()=>this.value}return new Box().read()}console.log(build.call({value:1}));",
         "class Box{value=9;read=()=>()=>this.value}console.log(new Box().read()());",
+        "const trace=[];async function make(){const all=[];for(let i=0;i<2;i++){await Promise.resolve();all.push(()=>i);trace.push(i)}trace.push(all.map(read=>read()).join(':'))}make();Promise.resolve().then(()=>trace.push('a')).then(()=>trace.push('b')).then(()=>trace.push('c'));setTimeout(()=>console.log(trace.join(',')),0);",
     };
     for (sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
