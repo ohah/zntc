@@ -95,7 +95,12 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const var_scope = if (register_semantics) variableScope(self, loop_scope) else ScopeId.none;
             const wrapper_scope = if (register_semantics) self.outputScopeParent(loop_scope) else ScopeId.none;
             const loop_ref_scope = if (register_semantics) loop_scope else source_loop_scope;
-            const wrapper_ref_scope = if (register_semantics) wrapper_scope else source_loop_scope;
+            const wrapper_ref_scope = if (register_semantics)
+                wrapper_scope
+            else if (register_sm_temps and self.semantic_edit_enabled)
+                outer_scope
+            else
+                source_loop_scope;
             const temp_owner_scope = if (self.generator_state_machine_scope.isNone()) loop_scope else self.generator_state_machine_scope;
             const temp_scope = if (register_sm_temps and self.semantic_edit_enabled)
                 self.nearestVarScope(temp_owner_scope)
@@ -160,7 +165,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const value_ref = try makeRef(self, step_temp, body_scope, .{ .read = true }, register_semantics, register_sm_temps);
             if (self.semantic_edit_enabled and register_sm_temps and !register_semantics) {
                 const symbol = step_temp.symbol_id orelse std.debug.panic("for-await body step has no creation identity", .{});
-                try self.addSyntheticRefInScope(value_ref, symbol, body_scope, .{ .read = true });
+                try self.addSyntheticReferenceEdgeInScope(value_ref, symbol, body_scope, .{ .read = true });
             }
             const value = try es_helpers.makeStaticMember(self, value_ref, try es_helpers.makePropertyName(self, "value"), span);
             const while_stmt = try self.ast.addNode(.{ .tag = .while_statement, .span = span, .data = .{ .binary = .{
@@ -182,19 +187,32 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .right = .none,
                 .flags = 0,
             } } });
-            const catch_scope = if (register_semantics)
-                try self.addGeneratedCatchScope(wrapper_scope, catch_clause)
+            const register_catch_semantics = register_semantics or (register_sm_temps and self.semantic_edit_enabled);
+            const catch_parent_scope = if (register_semantics) wrapper_scope else outer_scope;
+            const catch_scope = if (register_catch_semantics)
+                try self.addGeneratedCatchScope(catch_parent_scope, catch_clause)
             else
                 ScopeId.none;
-            const err_symbol = if (register_semantics) try self.declareSyntheticInScope(err_binding, span, .catch_binding, catch_scope) else null;
-            const err_ref = try makeRef(self, .{ .node = err_binding, .name_span = err_binding_name, .symbol_id = err_symbol }, catch_scope, .{ .read = true }, register_semantics, false);
+            const err_symbol = if (register_catch_semantics)
+                try self.declareSyntheticInScope(err_binding, span, .catch_binding, catch_scope)
+            else
+                null;
+            const err_ref = try makeRef(
+                self,
+                .{ .node = err_binding, .name_span = err_binding_name, .symbol_id = err_symbol },
+                catch_scope,
+                .{ .read = true },
+                register_semantics,
+                register_sm_temps,
+            );
             const error_prop = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makePropertyName(self, "error"),
                 .right = err_ref,
                 .flags = 0,
             } } });
             const error_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{error_prop}) } });
-            const catch_write = try makeRef(self, errobj_temp, wrapper_ref_scope, .{ .write = true }, register_semantics, register_sm_temps);
+            const catch_ref_scope = if (register_catch_semantics) catch_scope else wrapper_ref_scope;
+            const catch_write = try makeRef(self, errobj_temp, catch_ref_scope, .{ .write = true }, register_semantics, register_sm_temps);
             const set_errobj = try es_helpers.makeAssignStmt(self, catch_write, error_obj, span, 0);
             const catch_body = try block(self, &.{set_errobj}, span);
             var catch_node = self.ast.getNode(catch_clause);
@@ -240,9 +258,8 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             if (register_sm_temps and self.semantic_edit_enabled) {
                 const generated_wrapper_scope = try self.addGeneratedScope(outer_scope, wrapper, .block);
                 if (!source_loop_scope.isNone()) try self.reparentGeneratedScope(source_loop_scope, generated_wrapper_scope);
-                const generated_catch_scope = try self.addGeneratedCatchScope(generated_wrapper_scope, catch_clause);
-                const generated_catch_symbol = try self.declareSyntheticInScope(err_binding, span, .catch_binding, generated_catch_scope);
-                try self.addSyntheticRefInScope(err_ref, generated_catch_symbol, generated_catch_scope, .{ .read = true });
+                if (catch_scope.isNone()) std.debug.panic("generator for-await catch has no producer scope", .{});
+                try self.reparentGeneratedScope(catch_scope, generated_wrapper_scope);
                 try self.remapCopiedScopeOwner(source_idx, while_stmt);
             }
             return wrapper;
@@ -267,7 +284,13 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 try self.trackGeneratorStateReference(node, binding.symbol_id, scope, flags);
             } else if (register_sm_temps and self.semantic_edit_enabled) {
                 const symbol_id = binding.symbol_id orelse std.debug.panic("for-await temp reference has no exact SymbolId", .{});
-                try self.trackExactOutputReference(node, @backingInt(symbol_id));
+                if (self.state_machine_depth > 0) {
+                    if (!self.options.unsupported.generator)
+                        std.debug.panic("for-await temp reference entered a state machine without generator lowering", .{});
+                    try self.trackGeneratorStateReference(node, symbol_id, scope, flags);
+                } else {
+                    try self.trackExactOutputReference(node, @backingInt(symbol_id));
+                }
             }
             return node;
         }
