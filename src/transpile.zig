@@ -305,7 +305,11 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
                     facts.has_runtime_sensitive_syntax = true;
-                    facts.has_lenient_unhandled_runtime_syntax = true;
+                    // using/await using lowering creates cleanup scopes,
+                    // bindings, and helper references in the edited semantic
+                    // graph. Typed .unknown input can therefore keep that graph
+                    // just like .ts input; other unsupported lenient runtime
+                    // syntax remains guarded by its own facts above.
                 }
             },
 
@@ -2887,6 +2891,22 @@ test "#4819 class lowering reuses transform semantic graph" {
         .minify_identifiers = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
     }, &parser));
+
+    var unsupported_scanner = try Scanner.init(
+        allocator,
+        "import Runtime = require('runtime'); interface Resource { value: number; } " ++
+            "function run(resource: Resource) { using local: Resource = resource; return Runtime.wrap(local); }",
+    );
+    var unsupported_parser = Parser.init(allocator, &unsupported_scanner);
+    unsupported_parser.configureFromExtension(".mjs");
+    unsupported_parser.source_mode = .js_lenient;
+    _ = try unsupported_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), unsupported_parser.errors.items.len);
+    try std.testing.expect(unsupported_parser.is_module);
+    try std.testing.expect(!canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &unsupported_parser));
 }
 
 test "#4819 React Refresh output reuses transform semantic graph" {
@@ -3373,6 +3393,31 @@ test "#4819 native and downlevel using reuse the transform graph" {
     output_analyzer.is_module = true;
     try output_analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+}
+
+test "#6193 lenient typed using reuses exact transform graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "interface Resource { value: number; [Symbol.dispose](): void; [Symbol.asyncDispose](): Promise<void>; } " ++
+        "function run(resource: Resource) { using local: Resource = resource; return local; } " ++
+        "async function wait(resource: Resource) { await using local: Resource = resource; return local; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    const facts = try collectAstFacts(allocator, &parser.ast);
+    try std.testing.expect(facts.has_typescript_syntax);
+    try std.testing.expect(!facts.has_lenient_unhandled_runtime_syntax);
+
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+    try std.testing.expect(canMangleWithTransformSemantic(.{
+        .minify_identifiers = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, &parser));
 }
 
 test "#4819 standalone using locals choose final spellings from their SymbolIds" {
