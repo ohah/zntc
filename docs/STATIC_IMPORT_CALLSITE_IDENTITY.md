@@ -17,6 +17,7 @@
 - `static_import_callsite.zig`: 현재 import specifier의 exact local NodeIndex→SID와 scanner가 보존한 original binding anchor의 SID를 연결한다. scope-map/local spelling/cached local SID로 binding을 재선택하지 않는다. supported anchor가 없거나 record 범위가 잘못되면 `InvalidCallsiteBinding`을 반환한다.
 - source Reference는 현재 semantic snapshot의 SID로 한 번 분류한다. 각 새 callee Reference는 그 source Reference의 실제 ScopeId에서 생성한다. generic 출력 walk로 scope를 고치지 않는다.
 - `runtime_callsite_builder.zig`: module arena에서 실제 local import binding SID, declaration AST, import record, foreign role/SID/owner handle을 생성한다. 배열 확장은 amortized capacity를 유지한다. target 검증은 `runtime_callsite_targets.zig`의 known role 슬롯과 비교하며 이름 검색으로 복구하지 않는다.
+- compiler import record는 binding-only edge이며 `callsite_lowered=true`로 생성한다. strict-order/async-cone metadata의 eager loop가 별도 raw initializer를 만들지 않는다. 그렇지 않으면 wrapped 소비자의 내부 dynamic import가 `run / dep / 42` 대신 `dep / run / 42`로 실행되는 기존 결함이 있었다. CJS/ESM target을 실제 실행으로 대조한다.
 - 기존 source Reference는 일괄 제거한다. 원래 source import declaration을 program에서 제거하고, source record의 `callsite_lowered`를 표시한다. `linker/metadata.zig`는 이 source record의 raw preamble와 expression rename을 모두 생략한다. 생성한 compiler import는 기존 exact-target 분기를 사용한다.
 - program owner는 새 root로 명시 이관하며 editor finish 결과와 transform-cache ID 배열을 동일 snapshot으로 갱신한다. 두 번 semantic analysis를 실행하지 않는다.
 

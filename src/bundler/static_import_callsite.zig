@@ -392,3 +392,28 @@ test "static named callsites retain source order at mixed raw dependency boundar
         }
     };
 }
+
+test "static named callsites keep compiler binding edges out of eager initialization" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_]bool{ false, true }) |esm| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import('./consumer.mjs').then(m=>m.run());");
+        try helpers.writeFile(tmp.dir, "consumer.mjs", if (esm) "export function run(){console.log('run');return import('./dep.mjs').then(m=>console.log(m.value));}" else "export function run(){console.log('run');return import('./dep.cjs').then(m=>console.log(m.value));}");
+        try helpers.writeFile(tmp.dir, "dep.cjs", "console.log('dep');exports.value=42;");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "console.log('dep');export const value=42;");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true, .strict_execution_order = true };
+        var bundler = Bundler.init(std.testing.allocator, options);
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("run\ndep\n42\n", execution.stdout);
+    }
+}
