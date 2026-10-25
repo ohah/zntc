@@ -613,6 +613,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 const symbol = binding.symbol_id orelse std.debug.panic("loop body temp has no creation identity", .{});
                 try self.addSyntheticRefInScope(ref, symbol, scope, .{ .read = true });
+                // Per-iteration extraction can move this computed value into
+                // a generated callback whose switch ScopeId does not exist yet.
                 if (self.state_machine_depth > 0) try self.trackExactOutputReference(ref, @backingInt(symbol));
             }
             return ref;
@@ -623,11 +625,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 const symbol_id = binding.symbol_id orelse std.debug.panic("for-in temp reference has no exact SymbolId", .{});
                 if (self.state_machine_depth > 0) {
-                    // Generator operation collection runs before the callback's
-                    // output scopes are attached. Preserve the producer-chosen
-                    // identity now; finishSemanticEdit will register its exact
-                    // reference and access mode from the emitted AST ancestry.
-                    try self.trackExactOutputReference(ref, @backingInt(symbol_id));
+                    // State-machine construction reserves its switch scope
+                    // before collecting operations. Preserve that exact final
+                    // reference scope with the producer identity; finalization
+                    // checks the emitted AST still places this use there.
+                    const output_scope = self.generator_native_var_scope;
+                    if (output_scope.isNone()) std.debug.panic("generator for-in reference has no reserved switch ScopeId", .{});
+                    try self.trackExactOutputReferenceInScope(ref, @backingInt(symbol_id), output_scope);
                 } else {
                     try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
                 }

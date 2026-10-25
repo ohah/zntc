@@ -262,6 +262,15 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     // never inherited from the replaced source identifier.
     if (self.capture_ref_by_origin.contains(new_i)) return;
 
+    if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
+        if (self.exact_output_ref_scope_ids.get(new_i)) |existing_scope| {
+            if (existing_scope != planned_scope)
+                std.debug.panic("copied generated reference changed its producer-selected output ScopeId", .{});
+        } else {
+            try self.exact_output_ref_scope_ids.put(self.allocator, new_i, planned_scope);
+        }
+    }
+
     // Some producers deliberately remap a copied reference to a different
     // output identity, such as a Worklet class-self reference copied into its
     // reconstructed class. Preserve that exact handoff across this generic

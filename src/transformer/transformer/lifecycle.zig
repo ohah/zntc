@@ -153,6 +153,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.capture_refs.deinit(self.allocator);
     self.capture_ref_by_origin.deinit(self.allocator);
     self.exact_output_ref_symbol_ids.deinit(self.allocator);
+    self.exact_output_ref_scope_ids.deinit(self.allocator);
     self.generated_super_call_assignments.deinit(self.allocator);
     self.class_key_super_contexts.deinit(self.allocator);
     self.capture_binding_ids.deinit(self.allocator);
