@@ -113,6 +113,117 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             return captures;
         }
 
+        const WithCaptureWork = struct {
+            node: NodeIndex,
+            in_with: bool,
+            arrow_scope: @import("../semantic/scope.zig").ScopeId,
+        };
+
+        fn arrowLexicalRoot(self: *Transformer, owner: NodeIndex) @import("../semantic/scope.zig").ScopeId {
+            const params = self.readNodeIdx(self.ast.getNode(owner).data.extra, 0);
+            return (if (!params.isNone()) self.outputOwnedScope(params) else null) orelse
+                self.outputOwnedScope(owner) orelse .none;
+        }
+
+        fn argumentsCaptureNeeded(self: *Transformer, node: NodeIndex, arrow_scope: @import("../semantic/scope.zig").ScopeId) bool {
+            if (!self.semantic_edit_enabled or arrow_scope.isNone()) return true;
+            const id = self.getSymbolIdAt(node) orelse return true;
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            var cursor = symbols[id].scope_id;
+            while (!cursor.isNone()) {
+                if (cursor == arrow_scope) return false;
+                cursor = scopes[cursor.toIndex()].parent;
+            }
+            return true;
+        }
+
+        fn pushWithDecorators(self: *Transformer, stack: *std.ArrayList(WithCaptureWork), work: WithCaptureWork, extra: u32, start_slot: u32, len_slot: u32) std.mem.Allocator.Error!void {
+            const start = self.readU32(extra, start_slot);
+            const len = self.readU32(extra, len_slot);
+            for (self.ast.extra_data.items[start .. start + len]) |raw| {
+                var child = work;
+                child.node = @fromBackingInt(raw);
+                try stack.append(self.allocator, child);
+            }
+        }
+
+        /// Only captures evaluated in an arrow's inner with-body can have
+        /// generated aliases intercepted. Its object expression, ordinary
+        /// function bodies, and class-owned initializers use other contexts.
+        pub fn lexicalCapturesInWith(self: *Transformer, source_owner: NodeIndex) std.mem.Allocator.Error!LexicalCaptureInfo {
+            if (self.outputOwnedScope(source_owner)) |scope| {
+                const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                if (scope.toIndex() < scopes.len and !scopes[scope.toIndex()].subtree_has_with) return .{};
+            }
+            // Property names may carry identifier_reference tags too. Reuse
+            // the runtime-edge visitor so `object.arguments` is not a capture.
+            const runtime_references = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, source_owner);
+            defer self.allocator.free(runtime_references);
+            var reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer reference_nodes.deinit(self.allocator);
+            for (runtime_references) |reference| try reference_nodes.put(self.allocator, @backingInt(reference), {});
+            var stack: std.ArrayList(WithCaptureWork) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(WithCaptureWork, void) = .empty;
+            defer seen.deinit(self.allocator);
+            var captures: LexicalCaptureInfo = .{};
+            try stack.append(self.allocator, .{ .node = source_owner, .in_with = false, .arrow_scope = arrowLexicalRoot(self, source_owner) });
+            while (stack.pop()) |entry| {
+                const idx = entry.node;
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len or seen.contains(entry)) continue;
+                try seen.put(self.allocator, entry, {});
+                const node = self.ast.getNode(idx);
+                if (idx != source_owner and isLexicalValueBoundary(node.tag)) continue;
+                var work = entry;
+                if (node.tag == .arrow_function_expression) work.arrow_scope = arrowLexicalRoot(self, idx);
+                if (idx != source_owner) switch (node.tag) {
+                    .method_definition, .property_definition, .accessor_property => {
+                        work.node = self.readNodeIdx(node.data.extra, 0);
+                        try stack.append(self.allocator, work);
+                        const method = node.tag == .method_definition;
+                        try pushWithDecorators(self, &stack, entry, node.data.extra, if (method) ast_mod.MethodExtra.deco_start else ast_mod.PropertyExtra.deco_start, if (method) ast_mod.MethodExtra.deco_len else ast_mod.PropertyExtra.deco_len);
+                        continue;
+                    },
+                    .static_block => continue,
+                    else => {},
+                };
+                if (node.tag == .with_statement) {
+                    work.node = node.data.binary.left;
+                    try stack.append(self.allocator, work);
+                    work.node = node.data.binary.right;
+                    work.in_with = true;
+                    try stack.append(self.allocator, work);
+                    continue;
+                }
+                if (work.in_with) switch (node.tag) {
+                    .this_expression => captures.this_value = true,
+                    .super_expression => captures.super_value = true,
+                    .meta_property => if (node.data.none == 1) {
+                        captures.new_target_value = true;
+                    },
+                    .identifier_reference => {
+                        const raw_name = self.ast.identifierNameText(node);
+                        var decode_buffer: [64]u8 = undefined;
+                        const name = if (std.mem.indexOfScalar(u8, raw_name, '\\') != null)
+                            Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse raw_name
+                        else
+                            raw_name;
+                        if (reference_nodes.contains(@backingInt(idx)) and std.mem.eql(u8, name, "arguments") and argumentsCaptureNeeded(self, idx, work.arrow_scope)) captures.arguments_value = true;
+                    },
+                    else => {},
+                };
+                if (node.tag == .class_declaration or node.tag == .class_expression)
+                    try pushWithDecorators(self, &stack, work, node.data.extra, ast_mod.ClassExtra.deco_start, ast_mod.ClassExtra.deco_len);
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| {
+                    work.node = child;
+                    try stack.append(self.allocator, work);
+                }
+            }
+            return captures;
+        }
+
         /// A direct eval argument that is not a statically written string can
         /// observe any generated lexical-capture binding in this arrow's
         /// closure. Preserve the arrow instead of guessing synthetic names.
@@ -169,6 +280,14 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         /// by a preserved arrow's lexical `super`. Keep the whole class when a
         /// `with` body can make that preservation necessary.
         pub fn hasLexicalSuperArrow(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!bool {
+            return hasLexicalSuperArrowMode(self, root, false);
+        }
+
+        pub fn hasLexicalSuperArrowInWith(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!bool {
+            return hasLexicalSuperArrowMode(self, root, true);
+        }
+
+        fn hasLexicalSuperArrowMode(self: *Transformer, root: NodeIndex, inner_with_only: bool) std.mem.Allocator.Error!bool {
             var stack: std.ArrayList(NodeIndex) = .empty;
             defer stack.deinit(self.allocator);
             var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -184,7 +303,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 if (idx != root and isLexicalValueBoundary(node.tag)) continue;
 
                 if (node.tag == .arrow_function_expression) {
-                    const captures = try lexicalCaptures(self, idx);
+                    const captures = if (inner_with_only) try lexicalCapturesInWith(self, idx) else try lexicalCaptures(self, idx);
                     if (captures.super_value) return true;
                 }
                 if (node.tag == .class_declaration or node.tag == .class_expression) {

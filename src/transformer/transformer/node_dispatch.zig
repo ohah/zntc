@@ -194,8 +194,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const object_super_needs_lowering = self.options.unsupported.class or
                 (self.options.unsupported.needsObjectMethodDownlevel() and
                     es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node));
-            if (self.with_statement_depth > 0 and object_super_needs_lowering and
-                try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx))
+            if (object_super_needs_lowering and
+                ((self.with_statement_depth > 0 and try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx)) or
+                    try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrowInWith(self, idx)))
             {
                 // Replacing an object method with a function erases the home
                 // object context required by a retained lexical-super arrow.
@@ -624,7 +625,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 es2015_arrow.LexicalCaptureInfo{};
             const capture_needs_downlevel = (arrow_needs_downlevel and captures.any()) or
                 (self.options.unsupported.new_target and captures.new_target_value);
-            if (self.with_statement_depth > 0 and capture_needs_downlevel) {
+            const inner_with_captures = if (arrow_needs_downlevel or self.options.unsupported.new_target)
+                try es2015_arrow.ES2015Arrow(Transformer).lexicalCapturesInWith(self, idx)
+            else
+                es2015_arrow.LexicalCaptureInfo{};
+            const inner_with_needs_downlevel = (arrow_needs_downlevel and inner_with_captures.any()) or
+                (self.options.unsupported.new_target and inner_with_captures.new_target_value);
+            if ((self.with_statement_depth > 0 and capture_needs_downlevel) or inner_with_needs_downlevel) {
                 if (self.static_block_class_name != null and self.this_depth == 0)
                     self.used_unsupported_static_initializer_dynamic_scope = true;
                 // The emitted arrow keeps the actual dynamic environment. A

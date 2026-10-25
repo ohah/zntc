@@ -119,8 +119,9 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             };
             try self.remapCopiedScopeOwner(m_idx, new_fn);
 
-            // key도 방문 (computed_property_key 내부 expr 등)
-            const new_key = try self.visitNode(key_idx);
+            // Only computed keys evaluate an expression in the outer context.
+            // A static name such as `arguments` must keep its property role.
+            const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) try self.visitNode(key_idx) else key_idx;
 
             return self.ast.addNode(.{
                 .tag = .object_property,
