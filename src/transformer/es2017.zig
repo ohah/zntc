@@ -55,6 +55,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 const raw = @backingInt(idx);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
+                try self.relocateNodeScopeProvenance(idx, source, inner);
                 const owner = self.transformed_scope_owner_map.get(raw) orelse
                     editor.scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw);
                 if (owner) |scope_raw| {

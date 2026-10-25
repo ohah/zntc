@@ -357,7 +357,7 @@ test "single output import callsites own exact references through ten source con
         try helpers.writeFile(tmp.dir, "dep.mjs", "export const answer=43;");
         const entry = try helpers.absPath(&tmp, "entry.mjs");
         defer std.testing.allocator.free(entry);
-        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true, .unsupported = if (context >= 5 and context < 9) .{ .arrow = true, .class = true, .class_field = true } else .{} };
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .inline_dynamic_imports = true, .unsupported = if (context >= 5 and context < 9) @import("../transformer/compat.zig").fromESTarget(.es5) else .{} };
         var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
         defer cache.deinit();
         var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);

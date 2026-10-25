@@ -597,6 +597,15 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 self.unlinked_parameter_bindings = null;
                 defer lr.body_stmts.deinit(self.allocator);
+                // Parameter initializers now execute in the emitted function
+                // body. Move direct expression provenance and nested lexical
+                // roots at this producer, before publishing the new body.
+                if (self.semantic_edit_enabled) {
+                    if (self.outputOwnedScope(params_idx)) |parameter_scope| {
+                        for (lr.body_stmts.items) |statement|
+                            try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                    }
+                }
                 try moveLoweredPatternParameterBindings(self, params_list, self.current_scope);
                 try moveUnlinkedParameterBindings(self, unlinked_parameters.items, self.current_scope);
                 const parameter_initializer_len = lr.body_stmts.items.len;
@@ -661,6 +670,12 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 //  없음. object rest 만 temp+body 분해.)
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
+                if (self.semantic_edit_enabled) {
+                    if (self.outputOwnedScope(params_idx)) |parameter_scope| {
+                        for (lr.body_stmts.items) |statement|
+                            try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                    }
+                }
 
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                 self.ast.extra_data.items[e + 0] = @backingInt(new_params_node);
@@ -690,6 +705,75 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 }
             },
             else => {},
+        }
+    }
+}
+
+test "lowered parameter import provenance moves before generic output validation" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+    for ([_][]const u8{
+        "function read(value=import('./dep.cjs')){let body=1;return value}",
+        "function read(value=()=>import('./dep.cjs')){let body=1;return value}",
+        "const object={read(value=import('./dep.cjs')){let body=1;return value}};",
+    }, 0..) |source, context| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        var body_scope: ScopeId = .none;
+        for (analyzer.symbols.items) |symbol|
+            if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "body")) {
+                body_scope = symbol.scope_id;
+            };
+        try std.testing.expect(!body_scope.isNone());
+        var entries = analyzer.node_scope_provenance.iterator();
+        const entry = entries.next().?;
+        const import_node = entry.key_ptr.*;
+        const original_scope = entry.value_ptr.scope;
+        try std.testing.expect(original_scope != body_scope);
+        var transformer = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es5), .emit_runtime_helper_imports = false });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.semantic_edit_enabled = true;
+        const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(transformer.ast.nodes.items.len - 1)));
+        try transformer.buildBlockRenameMap();
+        const visited_root = try transformer.visitNode(root);
+        try transformer.registerGeneratedFunctionScopes(visited_root, transformer.programScope());
+        const live = try ast_walk.collectReachableNodeIndicesFrom(a, transformer.ast, visited_root);
+        const parameter_scope = analyzer.scopes.items[body_scope.toIndex()].parent;
+        var parameter_owners: usize = 0;
+        for (live) |raw| {
+            const owner: NodeIndex = @fromBackingInt(raw);
+            if (transformer.outputOwnedScope(owner) != @as(?ScopeId, body_scope)) continue;
+            const function = transformer.ast.getNode(owner);
+            if (function.tag != .function_declaration and function.tag != .function_expression and function.tag != .method_definition) continue;
+            const parameters = transformer.readNodeIdx(function.data.extra, 1);
+            try std.testing.expectEqual(@as(?ScopeId, parameter_scope), transformer.outputOwnedScope(parameters));
+            parameter_owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), parameter_owners);
+        try lowerAllFunctionParams(&transformer, visited_root);
+        const editor = &transformer.semantic_editor.?;
+        const moved = editor.node_scope_provenance.get(import_node).?;
+        try std.testing.expectEqual(import_node, moved.source_node);
+        if (context != 1) {
+            try std.testing.expectEqual(body_scope, moved.scope);
+        } else {
+            try std.testing.expectEqual(original_scope, moved.scope);
+            try std.testing.expectEqual(body_scope, editor.scopes.items[original_scope.toIndex()].parent);
         }
     }
 }

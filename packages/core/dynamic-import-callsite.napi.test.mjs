@@ -94,6 +94,16 @@ describe('dynamic import actual callsite references (#4819)', () => {
     }
   }
 
+  for (const mode of modes) {
+    for (const format of ['esm', 'cjs', 'iife']) {
+      it(`async generator callsite owners ${format} ${JSON.stringify(mode)}`, () => {
+        const source =
+          "async function* read(){yield (await import('./dep.cjs')).answer;}read().next().then(value=>console.log(value.value));";
+        assert.equal(execute(source, { ...mode, format }).stdout, '42');
+      });
+    }
+  }
+
   const evalCases = [
     ["eval('__dynamicImport=0');", '42'],
     ["console.log(eval('typeof __dynamicImport'));", 'undefined\n42'],

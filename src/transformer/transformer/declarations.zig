@@ -361,6 +361,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     const none = @backingInt(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(params_idx_old, new_params_node);
     const result = try self.addExtraNode(node.tag, node.span, &.{
         @backingInt(new_name), @backingInt(new_params_node),
         @backingInt(new_body), self.readU32(e, 3),
