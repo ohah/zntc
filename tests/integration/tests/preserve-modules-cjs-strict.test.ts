@@ -28,9 +28,10 @@ const inputs = [
 describe('preserve-modules CommonJS files preserve source strictness', () => {
   for (const hashbang of ['banner', 'intro'] as const)
     for (const platform of ['node', 'react-native'] as const)
-      for (const [name, dep, expression] of inputs)
+      for (const [inputIndex, [name, dep, expression]] of inputs.entries())
         for (const minify of [false, true]) {
-          test(`${hashbang} ${platform} ${name} minify=${minify}`, async () => {
+          const lineEnd = ['\n', '\r\n', '\r', '\u2028', '\u2029'][inputIndex % 5]!;
+          test(`${hashbang} ${JSON.stringify(lineEnd)} ${platform} ${name} minify=${minify}`, async () => {
             const { dir, cleanup } = await createFixture({
               'entry.mjs': `import {read} from './dep.mjs';import sloppy from './sloppy.cjs';console.log(${expression},(0,sloppy)())`,
               'dep.mjs': `'use client';${dep}`,
@@ -52,11 +53,11 @@ describe('preserve-modules CommonJS files preserve source strictness', () => {
                 minify,
                 banner:
                   hashbang === 'banner'
-                    ? '#!/usr/bin/env node\nglobalThis.pmStrictBanner=1;'
+                    ? `#!/usr/bin/env node${lineEnd}globalThis.pmStrictBanner=1;`
                     : undefined,
                 intro:
                   hashbang === 'intro'
-                    ? '#!/usr/bin/env node\nglobalThis.pmStrictIntro=1;'
+                    ? `#!/usr/bin/env node${lineEnd}globalThis.pmStrictIntro=1;`
                     : 'globalThis.pmStrictIntro=1;',
               });
               expect(result.errors).toEqual([]);
@@ -73,7 +74,7 @@ describe('preserve-modules CommonJS files preserve source strictness', () => {
               expect(stderr).toBe('');
               expect(stdout).toBe('true true\n');
               const output = await readFile(join(dir, 'out/dep.js'), 'utf8');
-              expect(output.startsWith('#!/usr/bin/env node\n')).toBe(true);
+              expect(output).toMatch(/^#!\/usr\/bin\/env node(?:\r\n|[\n\r\u2028\u2029])/);
               expect(output.indexOf('"use strict";')).toBeGreaterThanOrEqual(0);
               expect(output.indexOf('"use strict";')).toBeLessThan(
                 output.indexOf(

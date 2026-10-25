@@ -802,11 +802,23 @@ fn emitChunksImpl(
                         const prefix = if (banner_js != null) &banner_js else &intro_js;
                         if (prefix.*) |text| {
                             if (std.mem.startsWith(u8, text, "#!")) {
-                                const end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+                                var end = text.len;
+                                var rest = text.len;
+                                for ([_][]const u8{ "\n", "\r", "\xe2\x80\xa8", "\xe2\x80\xa9" }) |terminator| {
+                                    if (std.mem.indexOf(u8, text, terminator)) |at| {
+                                        if (at < end) {
+                                            end = at;
+                                            rest = at + terminator.len;
+                                        }
+                                    }
+                                }
+                                if (end < text.len and text[end] == '\r' and rest < text.len and text[rest] == '\n') rest += 1;
                                 try chunk_output.appendSlice(allocator, text[0..end]);
+                                // Normalize the hashbang terminator so generated
+                                // line accounting sees the same one physical line.
                                 try chunk_output.append(allocator, '\n');
                                 directive_start = chunk_output.items.len;
-                                prefix.* = if (end < text.len) text[end + 1 ..] else null;
+                                prefix.* = if (rest < text.len) text[rest..] else null;
                             }
                         }
                         try chunk_output.appendSlice(allocator, "\"use strict\";\n");
