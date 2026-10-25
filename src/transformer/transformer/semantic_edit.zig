@@ -749,6 +749,8 @@ const OutputBindingCandidate = struct {
     target_scope: ScopeId,
     kind: SymbolKind,
     name: []const u8,
+    canonical_name: []const u8,
+    canonical_name_owned: bool,
     needs_placement: bool,
     is_function_declaration: bool,
 };
@@ -767,13 +769,14 @@ fn outputBindingCandidateLessThan(_: void, lhs: OutputBindingCandidate, rhs: Out
     if (lhs.raw_id != rhs.raw_id) return lhs.raw_id < rhs.raw_id;
     if (lhs.target_scope != rhs.target_scope) return lhs.target_scope.toIndex() < rhs.target_scope.toIndex();
     if (lhs.kind != rhs.kind) return @backingInt(lhs.kind) < @backingInt(rhs.kind);
-    return std.mem.lessThan(u8, lhs.name, rhs.name);
+    return std.mem.lessThan(u8, lhs.canonical_name, rhs.canonical_name);
 }
 
 fn sameOutputBindingGroup(lhs: OutputBindingCandidate, rhs: OutputBindingCandidate) bool {
-    // The producer-selected identity owns redeclarations, including escaped
-    // and decoded spellings of the same source identifier.
-    return lhs.raw_id == rhs.raw_id and lhs.target_scope == rhs.target_scope and lhs.kind == rhs.kind;
+    // Redeclarations share the producer ID and storage scope. Their actual
+    // identifier StringValue (or exact ID-keyed output alias) must agree too.
+    return lhs.raw_id == rhs.raw_id and lhs.target_scope == rhs.target_scope and lhs.kind == rhs.kind and
+        std.mem.eql(u8, lhs.canonical_name, rhs.canonical_name);
 }
 
 fn containsNodeInExtraList(ast: *const ast_mod.Ast, start: u32, len: u32, child: u32) bool {
@@ -949,12 +952,7 @@ fn sameIdentifierStringValue(allocator: std.mem.Allocator, lhs: []const u8, rhs:
     return std.mem.eql(u8, lhs_name, rhs_name);
 }
 
-fn isAnnexBBlockFunctionAliasGroup(
-    self: *Transformer,
-    editor: *SemanticEditor,
-    groups: []const OutputBindingGroup,
-    raw_id: u32,
-) EditorError!bool {
+fn isAnnexBBlockFunctionAliasGroup(self: *Transformer, editor: *SemanticEditor, groups: []const OutputBindingGroup, raw_id: u32) EditorError!bool {
     const scopes = editor.scopes.items;
     const symbol = editor.symbols.items[raw_id];
     // A same-named `var` shares the binding too (#5803), so its symbol may be a var.
@@ -964,13 +962,14 @@ fn isAnnexBBlockFunctionAliasGroup(
     const symbol_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
     var has_block_function = false;
     for (groups) |group| {
+        // This validates an already selected ID; it never selects one by name.
+        // Scope/function shape cannot legitimize an unrelated copied var ID.
+        if (!try sameIdentifierStringValue(self.allocator, symbol_name, group.name)) {
+            const renames = self.block_rename_map orelse return false;
+            const renamed = renames.get(raw_id) orelse return false;
+            if (!try sameIdentifierStringValue(self.allocator, renamed, group.name)) return false;
+        }
         if (group.kind != symbol.kind or group.lexical_scope.isNone() or group.lexical_scope.toIndex() >= scopes.len) return false;
-        // Scope and AST role alone do not prove this binding is an Annex B
-        // alias of the source symbol. Validate the spelling against the
-        // producer-owned name, decoding Unicode escapes without choosing an ID
-        // by name. Otherwise an unrelated `function inner` can inherit `var
-        // value`'s ID and pass this exception.
-        if (!try sameIdentifierStringValue(self.allocator, symbol_name, group.name)) return false;
         const lexical = scopes[group.lexical_scope.toIndex()];
         // The unchanged outer var declaration participates in validation too.
         if (group.lexical_scope == symbol.scope_id and group.target_scope == symbol.scope_id) continue;
@@ -1049,7 +1048,10 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
     var output_refs: std.ArrayList(OutputReferenceScope) = .empty;
     defer output_refs.deinit(self.allocator);
     var output_bindings: std.ArrayList(OutputBindingCandidate) = .empty;
-    defer output_bindings.deinit(self.allocator);
+    defer {
+        for (output_bindings.items) |binding| if (binding.canonical_name_owned) self.allocator.free(binding.canonical_name);
+        output_bindings.deinit(self.allocator);
+    }
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
         if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
@@ -1154,13 +1156,27 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                     else
                         outputBindingTargetScope(self, editor, &non_simple_parameter_scopes, scope, symbol, is_declaration_name, output_var);
                     if (!target_scope.isNone()) {
+                        const name = try self.ast.getTextStable(self.allocator, node.data.string_ref);
+                        var identity_spelling = name;
+                        if (self.block_rename_map) |renames| {
+                            if (renames.get(id)) |renamed| {
+                                const source_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+                                if (!try sameIdentifierStringValue(self.allocator, name, source_name) and
+                                    !try sameIdentifierStringValue(self.allocator, name, renamed)) return error.InvalidSymbol;
+                                identity_spelling = renamed;
+                            }
+                        }
+                        const canonical_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, identity_spelling);
+                        errdefer if (canonical_name.ptr != identity_spelling.ptr) self.allocator.free(canonical_name);
                         try output_bindings.append(self.allocator, .{
                             .node = work.node,
                             .raw_id = id,
                             .lexical_scope = scope,
                             .target_scope = target_scope,
                             .kind = symbol.kind,
-                            .name = try self.ast.getTextStable(self.allocator, node.data.string_ref),
+                            .name = name,
+                            .canonical_name = canonical_name,
+                            .canonical_name_owned = canonical_name.ptr != identity_spelling.ptr,
                             .needs_placement = symbol.synthetic_name.len > 0 or symbol.scope_id != target_scope,
                             .is_function_declaration = is_declaration_name,
                         });
@@ -1255,12 +1271,9 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         if (raw_id >= editor.symbols.items.len) std.debug.panic("synthetic output binding has invalid SymbolId", .{});
         // Splitting these would give each block its own identity, so
         // mangling names them apart and the outer reads see only one (#5773).
-        if (group_end - group_cursor > 1 and try isAnnexBBlockFunctionAliasGroup(
-            self,
-            editor,
-            binding_groups.items[group_cursor..group_end],
-            @intCast(raw_id),
-        )) {
+        if (group_end - group_cursor > 1 and
+            try isAnnexBBlockFunctionAliasGroup(self, editor, binding_groups.items[group_cursor..group_end], @intCast(raw_id)))
+        {
             group_cursor = group_end;
             continue;
         }

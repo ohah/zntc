@@ -20,10 +20,10 @@ const sources = [_][]const u8{
     "var value=1;function f(arg=0){}",
 };
 
-const Mode = enum { valid, duplicated_id, colliding_placement };
+const Mode = enum { valid, duplicated_id, colliding_placement, same_scope_duplicated_id };
 
 fn runStorageCase(source: []const u8, mode: Mode) !void {
-    const broken = mode == .duplicated_id;
+    const broken = mode == .duplicated_id or mode == .same_scope_duplicated_id;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -74,7 +74,7 @@ fn runStorageCase(source: []const u8, mode: Mode) !void {
     transformer.semantic_edit_enabled = true;
     const scope = transformer.outputOwnedScope(owner).?;
     transformer.current_scope = scope;
-    const name_span = try transformer.ast.addString(parser.ast.getText(source_name_span));
+    const name_span = try transformer.ast.addString(if (mode == .same_scope_duplicated_id) "other_value" else parser.ast.getText(source_name_span));
     const binding = if (broken)
         try transformer.makeUserBinding(name_span, outer_binding)
     else
@@ -90,7 +90,7 @@ fn runStorageCase(source: []const u8, mode: Mode) !void {
     const value = try transformer.ast.addNode(transformer.ast.getNode(original_value));
     const declaration = try es.makeVarDeclaration(&transformer, &.{try es.makeDeclarator(&transformer, binding, value, name_span)}, .@"var", name_span);
     const read = try transformer.ast.addNode(.{ .tag = .return_statement, .span = name_span, .data = .{ .unary = .{ .operand = reference, .flags = 0 } } });
-    if (mode == .colliding_placement) {
+    if (mode == .colliding_placement or mode == .same_scope_duplicated_id) {
         transformer.ast.nodes.items[@backingInt(body)].data.list = try transformer.ast.addNodeList(&.{read});
         const current = transformer.ast.getNode(root).data.list;
         var statements: std.ArrayList(ast.NodeIndex) = .empty;
@@ -161,11 +161,15 @@ test "storage identities are not merged into same-spelled var storage" {
     try runAllStorageCases(.colliding_placement);
 }
 
-test "Annex B shape cannot legitimize a different producer binding identity" {
+test "storage identities reject different same-scope storage with one producer ID" {
+    try runAllStorageCases(.same_scope_duplicated_id);
+}
+
+fn runAnnexBCase(source: []const u8, broken: bool, renamed: bool, equivalent_spelling: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "var value = 1; if (true) { function inner() {} }");
+    var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".js");
     const root = try parser.parse();
@@ -202,11 +206,40 @@ test "Annex B shape cannot legitimize a different producer binding identity" {
     // Simulate a producer assigning the unrelated outer `value` identity to
     // the block function. Final placement must reject it before Annex B can
     // treat scope and function-declaration shape as sufficient evidence.
-    transformer.symbol_ids.items[@backingInt(function_name)] = outer_id;
-    try std.testing.expectError(
-        error.InvalidSymbol,
-        edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope()),
-    );
+    if (broken) transformer.symbol_ids.items[@backingInt(function_name)] = outer_id;
+    if (equivalent_spelling) |spelling| {
+        transformer.ast.nodes.items[@backingInt(function_name)].data.string_ref = try transformer.ast.addString(spelling);
+    }
+    if (renamed) {
+        const span = try transformer.ast.addString("typed_output_alias");
+        transformer.ast.nodes.items[@backingInt(function_name)].data.string_ref = span;
+        transformer.block_rename_map = .empty;
+        try transformer.block_rename_map.?.put(allocator, outer_id, "typed_output_alias");
+    }
+    if (broken) {
+        try std.testing.expectError(error.InvalidSymbol, edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope()));
+    } else {
+        try edit.bindOutputScopesAndReferencesChecked(&transformer, root, transformer.programScope());
+        try std.testing.expectEqual(outer_id, transformer.getSymbolIdAt(function_name).?);
+    }
+    try std.testing.expectEqual(analyzer.symbols.items.len, transformer.semantic_editor.?.symbols.items.len);
+}
+
+test "Annex B shape cannot legitimize a different producer binding identity" {
+    try runAnnexBCase("var value=1;if(true){function inner(){}}", true, false, null);
+}
+
+test "Annex B producer spelling validation preserves Unicode and typed output aliases" {
+    try runAnnexBCase("var value=1;if(true){function value(){}}", false, false, null);
+    try runAnnexBCase("var value=1;if(true){function v\\u0061lue(){}}", false, false, null);
+    try runAnnexBCase("var value=1;if(true){function value(){}}", false, true, null);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const long_name: [512]u8 = @splat('a');
+    const escaped = try std.fmt.allocPrint(a, "\\u0061{s}", .{long_name[1..]});
+    const source = try std.fmt.allocPrint(a, "var {s}=1;if(true){{function {s}(){{}}}}", .{ &long_name, &long_name });
+    try runAnnexBCase(source, false, false, escaped);
 }
 
 test "Annex B accepts a same-name alias with a long escaped spelling" {
@@ -217,12 +250,10 @@ test "Annex B accepts a same-name alias with a long escaped spelling" {
     const plain_name = try allocator.alloc(u8, name_len);
     @memset(plain_name, 'a');
     var escaped_name: std.ArrayList(u8) = .empty;
-    defer escaped_name.deinit(allocator);
     for (0..name_len) |_| try escaped_name.appendSlice(allocator, "\\u0061");
     try std.testing.expect(escaped_name.items.len > 256);
 
     var source: std.ArrayList(u8) = .empty;
-    defer source.deinit(allocator);
     try source.appendSlice(allocator, "var ");
     try source.appendSlice(allocator, plain_name);
     try source.appendSlice(allocator, "=1;if(true){function ");

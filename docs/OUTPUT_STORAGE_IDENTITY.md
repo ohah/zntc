@@ -13,11 +13,17 @@ unchanged source bindings. Otherwise a copied source ID could appear to have
 only one output location and steal the original declaration's identity.
 Unchanged counterparts do not trigger new placement or scope bridging.
 
-Groups use the exact producer ID, target scope and symbol kind. Raw spelling
-is not identity: an escaped source declaration and a decoded plugin var
-redeclaration can share the same ID. Actual sloppy Annex B block function
-aliases retain their shared var identity; unrelated variable declarations do
-not qualify for that exception. Resource/try-block var placement cannot cross
+Groups validate the exact producer ID, target scope, symbol kind and identifier
+StringValue. Unicode escapes and decoded plugin var redeclarations can describe
+the same storage. An explicit ID-keyed output alias can also describe that same
+storage; it is validated against the producer's name and never used to select an
+ID by spelling. Different same-scope names cannot silently share an ID.
+
+Actual sloppy Annex B block function aliases retain their shared var identity.
+The existing source name or explicit ID-keyed alias must match too: merely being
+a sloppy block function in the same var scope cannot legitimize an unrelated
+copied ID. Decoding has no fixed-size identifier limit. Unrelated variable
+declarations do not qualify for this exception. Resource/try-block var placement cannot cross
 a function's var boundary.
 
 ## Validation boundaries
@@ -25,11 +31,13 @@ a function's var boundary.
 Ten source contexts cover global var/let/const, functions, arrows, anonymous
 functions, async functions, generators, object methods/getters, class
 methods/static methods and non-simple parameters. Each runs a valid
-creation-time identity case and an invalid duplicated producer ID case. Four
-var contexts also move independent storage into an occupied var scope.
+creation-time identity case, an invalid copied ID in a different storage scope,
+and a different same-scope name with that ID. Four var contexts also move independent storage into an occupied var scope.
 The tests inspect binding IDs, actual Reference rows, reference scopes,
 symbol/scope counts, exact coverage and ID-keyed codegen names. Existing NAPI
 plugin tests cover legitimate var redeclarations, including Unicode escapes.
+An independent review added an unrelated Annex B function negative, plus ordinary,
+escaped, ID-keyed alias and long equivalent-spelling positive controls.
 
 Before removing the legacy branches, an instrumented baseline observed no
 late split or merge events in 7,459 unit tests and 7,248 CLI invocations of
