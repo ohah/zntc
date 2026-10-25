@@ -441,6 +441,31 @@ fn hasStableRuntimeImports(
     return true;
 }
 
+/// A mapped split preserves its source binding nodes. TypeScript additionally
+/// needs every runtime binding to have an exact value read, so import elision
+/// cannot remove a declaration while this graph is retained.
+fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *const ast_mod.Ast) bool {
+    if (self.flow or isFlowPath(module.path)) return false;
+    if (!ast.is_typescript) return module.module_type == .js;
+    const semantic = &(module.semantic orelse return false);
+    var value_used: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer value_used.deinit(self.allocator);
+    for (semantic.references) |reference| {
+        if (reference.isValueUse()) value_used.put(self.allocator, @backingInt(reference.symbol_id), {}) catch return false;
+    }
+    for (module.import_bindings) |binding| {
+        const local = binding_scanner_mod.resolveImportLocalSymbol(binding, .{
+            .module_index = module.index,
+            .ast = ast,
+            .symbol_ids = semantic.symbol_ids,
+            .symbols = semantic.symbols.items,
+        });
+        const sid = local.semanticIndex() orelse return false;
+        if (!value_used.contains(sid)) return false;
+    }
+    return true;
+}
+
 /// Plain JavaScript imports are not elided by type-only import handling. A
 /// console-drop edit can therefore refresh their module records from the
 /// transformed AST and keep the same semantic graph, provided this is the only
@@ -523,7 +548,7 @@ fn isSupportedStaticNamedReExport(ast: *const ast_mod.Ast, export_decl: module_p
 /// static named re-export subset preserves its loader record through lowering.
 /// Namespace exports, attributes, and string names still require the full
 /// graph resync path.
-fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
+fn hasSupportedTopLevelExportDeclarations(module: *const Module, allow_import_binding_exports: bool) bool {
     const ast = &(module.ast orelse return false);
     const semantic = &(module.semantic orelse return false);
     var specifier_count: usize = 0;
@@ -597,6 +622,7 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
                 .async_generator_decl,
                 .class_decl,
                 => {},
+                .import_binding => if (!allow_import_binding_exports) return false,
                 else => return false,
             }
 
@@ -6883,11 +6909,13 @@ fn canKeepPrepassSemanticGraph(
     // Metadata options alone are a no-op without decorators. Legacy options
     // also normalize class fields to assign semantics, checked separately
     // below even when the source has no decorated node.
+    // Path-split imports reuse their original local binding nodes/SIDs at the
+    // producer; metadata rescan supplies the new source edges without replacing
+    // the module-local semantic owner.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_simple_define) or
-        options.hasMappedImportToSplit(ast) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast)) or
         (ast.has_decorator and has_legacy_decorator_options and !retained_legacy_decorators)) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
@@ -6898,8 +6926,12 @@ fn canKeepPrepassSemanticGraph(
     if (has_top_level_await and options.unsupported.top_level_await) return false;
     // Label and console deletion update the module-local TLA bit from the
     // retained AST after editing.
-    if (!hasSupportedTopLevelExportDeclarations(module)) return false;
-    const allow_nonverbatim_javascript_imports = canRetainPlainJavaScriptImportsForConsoleDrop(
+    const has_mapped_import_split = options.hasMappedImportToSplit(ast);
+    if (has_mapped_import_split and (self.flow or isFlowPath(module.path))) return false;
+    if (!hasSupportedTopLevelExportDeclarations(module, has_mapped_import_split)) return false;
+    const allow_mapped_runtime_imports = has_mapped_import_split and
+        canRetainMappedRuntimeImports(self, module, ast);
+    const allow_nonverbatim_javascript_imports = allow_mapped_runtime_imports or canRetainPlainJavaScriptImportsForConsoleDrop(
         self,
         module,
         ast,
@@ -7188,6 +7220,64 @@ fn reindexMinifiedSemanticReferences(
         const context = contexts[@backingInt(node_index)] orelse return null;
         if (context.stmt_idx == SemanticReference.NO_STMT or
             context.scope_stmt_idx == SemanticReference.NO_STMT) return null;
+        reference.stmt_idx = context.stmt_idx;
+        reference.scope_stmt_idx = context.scope_stmt_idx;
+    }
+    return updated;
+}
+
+/// Path splits keep every source binding/reference identity, but can move
+/// statement buckets. Native class-self declarations use their typed class
+/// role anchor rather than a separate declaration leaf.
+fn reindexMappedImportReferences(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    semantic: *const ModuleSemanticData,
+) !?[]SemanticReference {
+    const contexts = collectMinifiedStatementContexts(allocator, ast, root) catch return null;
+    const updated = try allocator.dupe(SemanticReference, semantic.references);
+    var class_contexts: std.AutoHashMapUnmanaged(u32, ?MinifiedStatementContext) = .empty;
+    defer class_contexts.deinit(allocator);
+    for (updated) |reference| {
+        if (reference.flags.declare and reference.declaration_node_index.isNone())
+            try class_contexts.put(allocator, @backingInt(reference.symbol_id), null);
+    }
+    if (class_contexts.count() != 0) {
+        var class_scope_contexts: std.AutoHashMapUnmanaged(u32, MinifiedStatementContext) = .empty;
+        defer class_scope_contexts.deinit(allocator);
+        var owners = semantic.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (raw >= contexts.len) return null;
+            const context = contexts[raw] orelse continue;
+            const tag = ast.nodes.items[raw].tag;
+            if (tag != .class_declaration and tag != .class_expression) continue;
+            const slot = try class_scope_contexts.getOrPut(allocator, entry.value_ptr.*);
+            if (slot.found_existing and !std.meta.eql(slot.value_ptr.*, context)) return null;
+            slot.value_ptr.* = context;
+        }
+        var classes = semantic.class_self_symbol_map.valueIterator();
+        while (classes.next()) |sid| {
+            const slot = class_contexts.getPtr(sid.*) orelse continue;
+            if (sid.* >= semantic.symbols.items.len) return null;
+            const symbol = semantic.symbols.items[sid.*];
+            if (symbol.kind != .class_decl or symbol.scope_id.isNone() or
+                symbol.scope_id.toIndex() >= semantic.scopes.len or
+                semantic.scopes[symbol.scope_id.toIndex()].kind != .class_body) return null;
+            // The class-self table retains the initial source role; the actual
+            // current class node owns that same exact ScopeId after AST copies.
+            slot.* = class_scope_contexts.get(@backingInt(symbol.scope_id)) orelse return null;
+        }
+    }
+    for (updated) |*reference| {
+        const node = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
+        const context = if (node.isNone() and reference.flags.declare)
+            (class_contexts.get(@backingInt(reference.symbol_id)) orelse return null) orelse return null
+        else if (!node.isNone() and @backingInt(node) < contexts.len)
+            contexts[@backingInt(node)] orelse return null
+        else
+            return null;
         reference.stmt_idx = context.stmt_idx;
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
@@ -9508,6 +9598,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var allow_es5_async_method_super_get = false;
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
+    const has_mapped_import_split = opts.hasMappedImportToSplit(ast_ptr);
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(
@@ -9654,36 +9745,38 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
     }
-    // Removing a labeled statement or console call can shift statement indices
-    // and detach declarations or source scopes. Reindex the surviving graph,
+    // Removing a labeled statement or console call, or splitting a mapped
+    // import, can shift statement indices and detach declarations or scopes. Reindex the surviving graph,
     // then retain it only when the exact gate proves live bindings, references,
     // owners, counts, and statement coordinates still agree. Any uncertain
     // case uses the analyzer below.
     if (can_keep_semantic_graph and
-        (hasDroppedLabeledStatement(ast_ptr, opts.drop_labels) or retained_simple_console_drops))
+        (hasDroppedLabeledStatement(ast_ptr, opts.drop_labels) or retained_simple_console_drops or has_mapped_import_split))
     {
         if (module.semantic) |*semantic| {
-            const updated_references = reindexMinifiedSemanticReferences(
-                arena_alloc,
-                transformer.ast,
-                root,
-                semantic.references,
-            ) catch null;
+            const updated_references = if (has_mapped_import_split)
+                reindexMappedImportReferences(arena_alloc, transformer.ast, root, semantic) catch null
+            else
+                reindexMinifiedSemanticReferences(arena_alloc, transformer.ast, root, semantic.references) catch null;
             if (updated_references) |references| {
                 semantic.references = references;
                 transformer.references = references;
-                can_keep_semantic_graph = canRetainMinifiedSemanticGraph(
-                    arena_alloc,
-                    transformer.ast,
-                    root,
-                    semantic.symbols.items,
-                    semantic.scopes,
-                    semantic.references,
-                    transformer.symbol_ids.items,
-                    &semantic.unresolved_references,
-                    &semantic.scope_owner_map,
-                    null,
-                );
+                // A path split preserves every binding/reference node and
+                // scope. Only statement coordinates change. Deletion passes
+                // still need the stronger live-edge/minifier validation.
+                if (hasDroppedLabeledStatement(ast_ptr, opts.drop_labels) or retained_simple_console_drops)
+                    can_keep_semantic_graph = canRetainMinifiedSemanticGraph(
+                        arena_alloc,
+                        transformer.ast,
+                        root,
+                        semantic.symbols.items,
+                        semantic.scopes,
+                        semantic.references,
+                        transformer.symbol_ids.items,
+                        &semantic.unresolved_references,
+                        &semantic.scope_owner_map,
+                        null,
+                    );
             } else {
                 can_keep_semantic_graph = false;
             }
