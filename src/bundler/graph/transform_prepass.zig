@@ -7227,8 +7227,8 @@ fn reindexMinifiedSemanticReferences(
 }
 
 /// Path splits keep every source binding/reference identity, but can move
-/// statement buckets. Native class-self declarations use their typed class
-/// role anchor rather than a separate declaration leaf.
+/// statement buckets. Native class-self and anonymous default-facade
+/// declarations use their exact initial-producer roles instead of a leaf.
 fn reindexMappedImportReferences(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -7237,13 +7237,21 @@ fn reindexMappedImportReferences(
 ) !?[]SemanticReference {
     const contexts = collectMinifiedStatementContexts(allocator, ast, root) catch return null;
     const updated = try allocator.dupe(SemanticReference, semantic.references);
-    var class_contexts: std.AutoHashMapUnmanaged(u32, ?MinifiedStatementContext) = .empty;
-    defer class_contexts.deinit(allocator);
+    var anchorless_contexts: std.AutoHashMapUnmanaged(u32, ?MinifiedStatementContext) = .empty;
+    defer anchorless_contexts.deinit(allocator);
     for (updated) |reference| {
         if (reference.flags.declare and reference.declaration_node_index.isNone())
-            try class_contexts.put(allocator, @backingInt(reference.symbol_id), null);
+            try anchorless_contexts.put(allocator, @backingInt(reference.symbol_id), null);
     }
-    if (class_contexts.count() != 0) {
+    if (anchorless_contexts.count() != 0) {
+        for (ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .export_default_declaration) continue;
+            const context = contexts[raw] orelse continue;
+            const sid = (try @import("../default_facade_identity.zig").symbolAt(ast, @fromBackingInt(@as(u32, @intCast(raw))), semantic.symbol_ids, semantic.symbols.items)) orelse continue;
+            const slot = anchorless_contexts.getPtr(sid) orelse continue;
+            if (slot.*) |previous| if (!std.meta.eql(previous, context)) return null;
+            slot.* = context;
+        }
         var class_scope_contexts: std.AutoHashMapUnmanaged(u32, MinifiedStatementContext) = .empty;
         defer class_scope_contexts.deinit(allocator);
         var owners = semantic.scope_owner_map.iterator();
@@ -7259,7 +7267,7 @@ fn reindexMappedImportReferences(
         }
         var classes = semantic.class_self_symbol_map.valueIterator();
         while (classes.next()) |sid| {
-            const slot = class_contexts.getPtr(sid.*) orelse continue;
+            const slot = anchorless_contexts.getPtr(sid.*) orelse continue;
             if (sid.* >= semantic.symbols.items.len) return null;
             const symbol = semantic.symbols.items[sid.*];
             if (symbol.kind != .class_decl or symbol.scope_id.isNone() or
@@ -7273,11 +7281,13 @@ fn reindexMappedImportReferences(
     for (updated) |*reference| {
         const node = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
         const context = if (node.isNone() and reference.flags.declare)
-            (class_contexts.get(@backingInt(reference.symbol_id)) orelse return null) orelse return null
+            (anchorless_contexts.get(@backingInt(reference.symbol_id)) orelse return null) orelse return null
         else if (!node.isNone() and @backingInt(node) < contexts.len)
             contexts[@backingInt(node)] orelse return null
         else
             return null;
+        if (node.isNone() and reference.flags.declare and semantic.symbols.items[@backingInt(reference.symbol_id)].decl_flags.is_default_export and
+            reference.scope_id.toIndex() != 0) return null;
         reference.stmt_idx = context.stmt_idx;
         reference.scope_stmt_idx = context.scope_stmt_idx;
     }
