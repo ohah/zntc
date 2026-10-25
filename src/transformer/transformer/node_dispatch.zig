@@ -805,7 +805,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitBinaryNode(idx);
         },
         .binding_property => visitBindingProperty(self, idx, node),
-        .assignment_pattern => self.visitBinaryNode(idx),
+        .assignment_pattern => if (self.native_parameter_initializer_frame != 0 and self.native_parameter_initializer_frame == self.capture_frame)
+            self.visitParameterNode(idx)
+        else
+            self.visitBinaryNode(idx),
         .accessor_property => self.visitAccessorProperty(node),
 
         // === 리프 노드: 그대로 복사 (자식 없음) ===

@@ -75,6 +75,21 @@ const cases = [
     source:
       "function Parent(get=()=>class{[new.target===Parent?'yes':'no'](){return 7}}){return get}const Result=new Parent()();console.log(new Result().yes());",
   },
+  {
+    name: 'arraydefault named parameter default',
+    source:
+      'function Parent(get=([read=()=>new.target]=[])=>read){return get}console.log(Parent()().name,new Parent()()()===Parent)',
+  },
+  {
+    name: 'objectdefault named parameter default',
+    source:
+      'function Parent(get=({read=()=>new.target}={})=>read){return get}console.log(Parent()().name,new Parent()()()===Parent)',
+  },
+  {
+    name: 'escapedname named parameter default',
+    source:
+      'function Parent(get=(r\\u0065ad=()=>new.target)=>read){return get}console.log(Parent()().name,new Parent()()()===Parent)',
+  },
 ];
 
 describe('native parameter arrow reference birth', () => {
