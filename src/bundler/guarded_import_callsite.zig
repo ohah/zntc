@@ -598,3 +598,59 @@ test "guarded imported value reads keep exact local identity scope and receivers
         try std.testing.expectEqualStrings(case.expected, execution.stdout);
     }
 }
+
+test "guarded unwrapped helpers own Scope0 calls before source global mutations" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\",\"sideEffects\":false}");
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import{value}from'./dep.mjs';class Box{run(){return value();}}events.push('entry',new Box().run());Object.defineProperty(globalThis,'global',{configurable:true,get(){events.push('late-global');return globalThis;}});");
+        try helpers.writeFile(tmp.dir, "second.mjs", "import{value}from'./dep.mjs';globalThis.second=value;");
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42;}");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const second = try helpers.absPath(&tmp, "second.mjs");
+        defer std.testing.allocator.free(second);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{ entry, second }, .platform = .react_native, .code_splitting = true, .entry_error_guard = true, .strict_execution_order = true, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        var bundler = Bundler.initWithGraph(std.testing.allocator, options, &cache, &graph);
+        defer bundler.deinit();
+        const output = try bundler.bundle(std.testing.io);
+        defer output.deinit(std.testing.allocator);
+        try std.testing.expect(!output.hasErrors());
+        const module = graph.getModule(graph.path_to_module.get(entry).?).?;
+        try std.testing.expectEqual(@TypeOf(module.wrap_kind).none, module.wrap_kind);
+        var helpers_owned: usize = 0;
+        var guard_reads: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (binding.is_helper and binding.guarded_eager_init_lowered) helpers_owned += 1;
+            const target = binding.callsite_target orelse continue;
+            if (target.role != .entry_guard and target.role != .esm_init) continue;
+            try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, target);
+            const local = binding.local_symbol.semanticIndex().?;
+            for (module.semantic.?.references) |reference| {
+                if (@backingInt(reference.symbol_id) != local or !reference.isValueUse()) continue;
+                guard_reads += 1;
+                try std.testing.expectEqual(@as(usize, 0), reference.scope_id.toIndex());
+                try std.testing.expect(reference.stmt_idx != Reference.NO_STMT);
+                try std.testing.expectEqual(reference.stmt_idx, reference.scope_stmt_idx);
+            }
+        }
+        try std.testing.expect(helpers_owned != 0 and guard_reads >= 2);
+        try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+        for (output.outputs.?) |file| try helpers.writeFile(tmp.dir, std.fs.path.basename(file.path), file.contents);
+        const emitted = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(emitted);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "globalThis.events=[];await import('file://{s}');console.log(JSON.stringify(events));", .{emitted});
+        defer std.testing.allocator.free(script);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "--input-type=module", "-e", script }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        try std.testing.expectEqualStrings("[\"entry\",42]\n", execution.stdout);
+    }
+}

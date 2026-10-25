@@ -1530,6 +1530,14 @@ fn emitChunksImpl(
         const ModSortCtx = struct {
             graph: *const ModuleGraph,
             fn lessThan(ctx: @This(), a: ModuleIndex, b: ModuleIndex) bool {
+                // This real AST module owns the guard's captured global/state.
+                // Its Scope0 initialization must precede every consumer body;
+                // the ordinary module emitter still publishes it exactly once.
+                if (ctx.graph.entry_guard_ast_provider) |provider| {
+                    const a_provider = a == provider.module_index;
+                    const b_provider = b == provider.module_index;
+                    if (a_provider != b_provider) return a_provider;
+                }
                 const ma = ctx.graph.getModule(a);
                 const mb = ctx.graph.getModule(b);
                 if (ma == null or mb == null) {
