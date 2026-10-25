@@ -82,6 +82,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.semantic_edit_enabled)
         try self.registerGeneratedFunctionScopes(root, self.programScope());
 
+    try @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*)).appendAnnexBVariableStorage(self, root);
     try @import("../parameter_environment.zig").prependBodyFunctionNames(self, root);
 
     // Pass 2: ES2015 params lowering 일괄 적용
@@ -188,6 +189,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
 
     if (self.semantic_edit_enabled) {
         try self.completeGeneratedStateSymbols(root, self.programScope());
+        try @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*)).projectFunctionStorageCoordinates(self, root);
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 
@@ -609,8 +611,10 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 // roots at this producer, before publishing the new body.
                 if (self.semantic_edit_enabled) {
                     if (self.outputOwnedScope(params_idx)) |parameter_scope| {
-                        for (lr.body_stmts.items) |statement|
+                        for (lr.body_stmts.items) |statement| {
                             try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                            try @import("../class_strict_context.zig").moveSourceReferences(self, statement, parameter_scope, parameter_scope, self.current_scope);
+                        }
                     }
                 }
                 try moveLoweredPatternParameterBindings(self, params_list, self.current_scope);
@@ -679,8 +683,10 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 defer lr.body_stmts.deinit(self.allocator);
                 if (self.semantic_edit_enabled) {
                     if (self.outputOwnedScope(params_idx)) |parameter_scope| {
-                        for (lr.body_stmts.items) |statement|
+                        for (lr.body_stmts.items) |statement| {
                             try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                            try @import("../class_strict_context.zig").moveSourceReferences(self, statement, parameter_scope, parameter_scope, self.current_scope);
+                        }
                     }
                 }
 

@@ -98,3 +98,23 @@ pub fn expectedScope(
     }
     return null;
 }
+
+/// Independently ascend the emitted AST parent map to its actual statement lists.
+pub fn expectedStatementCoordinates(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), node: u32) ?struct { stmt_idx: u32, scope_stmt_idx: u32 } {
+    var child = node;
+    var top: ?u32 = null;
+    var local: ?u32 = null;
+    var hops: usize = 0;
+    while (parents.get(child)) |parent| : (hops += 1) {
+        if (hops >= ast.nodes.items.len or parent >= ast.nodes.items.len) return null;
+        const owner = ast.nodes.items[parent];
+        if (owner.tag == .program or owner.tag == .block_statement) {
+            const list = owner.data.list;
+            const index = std.mem.indexOfScalar(u32, ast.extra_data.items[list.start .. list.start + list.len], child) orelse return null;
+            if (local == null) local = @intCast(index);
+            if (owner.tag == .program) top = @intCast(index);
+        }
+        child = parent;
+    }
+    return .{ .stmt_idx = top orelse return null, .scope_stmt_idx = local orelse return null };
+}

@@ -485,6 +485,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 );
             };
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
+            try self.remapCopiedScopeOwner(params_idx, outer_params_node);
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),

@@ -72,6 +72,7 @@ test {
     _ = @import("symbol_coverage_test.zig");
     _ = @import("loop_semantic_test.zig");
     _ = @import("generator_state_semantic_test.zig");
+    _ = @import("generator_case_reference_scope_test.zig");
     _ = @import("generated_temp_identity_semantic_test.zig");
     _ = @import("es2020_temp_identity_semantic_test.zig");
     _ = @import("manual_captured_temp_deferred_identity_semantic_test.zig");
