@@ -137,14 +137,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const iter_counter = self.temp_var_counter - 1;
             // Labeled for-of lowering enters here without visitNode(source_idx),
             // so the traversal cursor can still be the enclosing scope.
-            const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
+            const loop_scope = if (self.semantic_edit_enabled)
                 self.outputOwnedScope(source_idx) orelse std.debug.panic("missing for-of source scope", .{})
-            else if (self.semantic_edit_enabled and register_sm_temps)
-                self.outputOwnedScope(source_idx) orelse std.debug.panic("missing generator for-of source scope", .{})
             else
                 self.current_scope;
             const stable_scope = self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0;
-            const outer_scope = if (stable_scope) self.outputScopeParent(loop_scope) else self.current_scope;
+            const outer_scope = if (self.semantic_edit_enabled) self.outputScopeParent(loop_scope) else self.current_scope;
+            const wrapper = try loop_scopes.createBlock(self, outer_scope, span);
+            const try_body = try loop_scopes.createBlock(self, wrapper.scope, span);
+            const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = .none, .right = .none, .flags = 0 } } });
+            const catch_scope = try self.addGeneratedCatchScope(wrapper.scope, catch_clause);
+            const catch_body = try loop_scopes.createBlock(self, catch_scope, span);
+            const outer_finally = try loop_scopes.createBlock(self, wrapper.scope, span);
+            const close_body = try loop_scopes.createBlock(self, outer_finally.scope, span);
+            const error_finally = try loop_scopes.createBlock(self, outer_finally.scope, span);
+            if (self.semantic_edit_enabled) try self.reparentGeneratedScope(loop_scope, try_body.scope);
             const generated_temp_scope = if (self.semantic_edit_enabled and register_sm_temps)
                 self.generator_state_machine_scope
             else
@@ -218,7 +225,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // init: var _d = __values(iterable), _e
             self.runtime_helpers.values = true;
-            const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__values"), &.{right}, span);
+            const values_call = blk: {
+                const previous_scope = self.current_scope;
+                self.current_scope = loop_scope;
+                defer self.current_scope = previous_scope;
+                break :blk try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__values"), &.{right}, span);
+            };
             const iter_binding = try es_helpers.makeSyntheticBinding(self, iter);
             // State-machine collection and a pending `_loop` extraction can move
             // this var into a generated function after this AST is built.
@@ -288,8 +300,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @backingInt(for_init), @backingInt(for_test), @backingInt(for_update), @backingInt(for_body),
             });
-            // This iterator loop is the source for-of's lexical boundary. Its
-            // synthetic try/block wrappers do not introduce source scopes.
+            // Keep the source loop's exact lexical boundary below the actual
+            // generated try block; cleanup blocks have their own ScopeIds.
             // Keep the exact source owner before visiting the rewritten tree;
             // then copied iterator loops can carry that same ScopeId onward.
             try self.remapCopiedScopeOwner(source_idx, for_stmt);
@@ -306,23 +318,18 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const err_catch_write = try makeRefFromSpan(self, err_val);
             const catch_binding = try es_helpers.makeExactSyntheticBinding(self, "_err");
             const catch_param_read = try es_helpers.makeExactSyntheticRef(self, "_err");
-            const catch_body = try makeBlock(self, &.{
+            try loop_scopes.fillBlock(self, catch_body.node, &.{
                 try es_helpers.makeExprStmt(self, try makeAssign(self, did_catch_write, try es_helpers.makeBoolLiteral(self, true), span), span),
                 try es_helpers.makeExprStmt(self, try makeAssign(self, err_catch_write, catch_param_read, span), span),
-            }, span);
-            const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
-                .left = catch_binding,
-                .right = catch_body,
-                .flags = 0,
-            } } });
+            });
+            self.ast.nodes.items[@backingInt(catch_clause)].data.binary = .{ .left = catch_binding, .right = catch_body.node, .flags = 0 };
             if (self.semantic_edit_enabled) {
-                const catch_scope = try self.addGeneratedCatchScope(outer_scope, catch_clause);
                 const catch_symbol = (try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope)) orelse
                     std.debug.panic("generated for-of catch binding has no SymbolId", .{});
-                try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
+                try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_body.scope, .{ .read = true });
                 if (stable_scope or register_sm_temps or self.pending_loop_extraction_depth != 0) {
-                    try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_scope, .{ .write = true });
-                    try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_scope, .{ .write = true });
+                    try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_body.scope, .{ .write = true });
+                    try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_body.scope, .{ .write = true });
                 }
 
                 if (stable_scope) {
@@ -338,39 +345,44 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // finally { try { if (!_a && _d.return != null) _d.return(); } finally { if (_b) throw _c; } }
             // The finally wrapper is outside the source for-of lexical scope.
-            const ret_member = try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span);
+            const ret_member = try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, close_body.scope), try es_helpers.makePropertyName(self, "return"), span);
             const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
-                .left = try es_helpers.makeUnaryNot(self, try makeForOfRef(self, norm, norm_symbol, outer_scope, .{ .read = true }), span),
+                .left = try es_helpers.makeUnaryNot(self, try makeForOfRef(self, norm, norm_symbol, close_body.scope, .{ .read = true }), span),
                 .right = try es_helpers.makeNeqNull(self, ret_member, span),
                 .flags = @backingInt(token_mod.Kind.amp2),
             } } });
-            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
+            const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, close_body.scope), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
                 .a = close_cond,
                 .b = try es_helpers.makeExprStmt(self, close_call, span),
                 .c = .none,
             } } });
-            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try makeForOfRef(self, err_val, err_symbol, outer_scope, .{ .read = true }), .flags = 0 } } });
+            const rethrow = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = try makeForOfRef(self, err_val, err_symbol, error_finally.scope, .{ .read = true }), .flags = 0 } } });
             const rethrow_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeForOfRef(self, did_err, did_symbol, outer_scope, .{ .read = true }),
+                .a = try makeForOfRef(self, did_err, did_symbol, error_finally.scope, .{ .read = true }),
                 .b = rethrow,
                 .c = .none,
             } } });
+            try loop_scopes.fillBlock(self, close_body.node, &.{close_if});
+            try loop_scopes.fillBlock(self, error_finally.node, &.{rethrow_if});
             const inner_try = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeBlock(self, &.{close_if}, span),
+                .a = close_body.node,
                 .b = .none,
-                .c = try makeBlock(self, &.{rethrow_if}, span),
+                .c = error_finally.node,
             } } });
 
+            try loop_scopes.fillBlock(self, try_body.node, &.{loop_stmt});
+            try loop_scopes.fillBlock(self, outer_finally.node, &.{inner_try});
             const try_stmt = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeBlock(self, &.{loop_stmt}, span),
+                .a = try_body.node,
                 .b = catch_clause,
-                .c = try makeBlock(self, &.{inner_try}, span),
+                .c = outer_finally.node,
             } } });
 
             // 블록으로 감싼 단일 노드 — pending_nodes 를 쓰면 중첩 for-of 에서 안쪽이 바깥
             // 본문 밖으로 빠져나간다.
-            return makeBlock(self, &.{ norm_decl, did_decl, err_decl, try_stmt }, span);
+            try loop_scopes.fillBlock(self, wrapper.node, &.{ norm_decl, did_decl, err_decl, try_stmt });
+            return wrapper.node;
         }
 
         /// 상태 기계용 for-in 풀이 (#4746 2단계). 방문 없이 AST 만 재구성하고, 상태 기계가 결과를

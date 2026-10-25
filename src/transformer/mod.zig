@@ -112,3 +112,7 @@ test {
     _ = @import("plugins/rn_codegen/mod.zig");
     _ = @import("plugins/rn_codegen_plugin_test.zig");
 }
+
+test {
+    _ = @import("for_of_cleanup_scope_semantic_test.zig");
+}
