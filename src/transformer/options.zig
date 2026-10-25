@@ -1090,6 +1090,7 @@ test "arrow capture bindings require graph pre-pass but ordinary arrows do not" 
         .{ .source = "const plain = () => 1;", .needs_prepass = false },
         .{ .source = "const captured = () => this;", .needs_prepass = true },
         .{ .source = "function f() { return () => arguments[0]; }", .needs_prepass = true },
+        .{ .source = "function f(options = { [globalThis.key]: () => this }) { return options; }", .needs_prepass = true },
         .{ .source = "function f() { return () => argum\\u0065nts[0]; }", .needs_prepass = true },
         .{ .source = "function f() { return () => new.target; }", .needs_prepass = true },
         .{ .source = "function f() { return () => function nested() { return this; }; }", .needs_prepass = false },

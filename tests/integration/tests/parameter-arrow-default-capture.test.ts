@@ -119,6 +119,68 @@ const cases = [
       });
     `,
   },
+  {
+    name: 'computed parameter property restores a captured arrow name through graph imports',
+    source: `
+      globalThis.key = 'read';
+      const host = {};
+      function run(value = { [globalThis.key]: () => this }) {
+        const fn = value[globalThis.key];
+        return [fn.name, fn() === this];
+      }
+      console.log(JSON.stringify(run.call(host)));
+    `,
+  },
+  {
+    name: 'named-property stack does not call patched array prototype methods',
+    source: `
+      const originalPush = Array.prototype.push;
+      const originalPop = Array.prototype.pop;
+      let calls = 0;
+      Array.prototype.push = function (value) { calls++; return originalPush.call(this, value); };
+      Array.prototype.pop = function () { calls++; return originalPop.call(this); };
+      globalThis.key = 'read';
+      function run(value = { [globalThis.key]: () => this }) { return value[globalThis.key].name; }
+      const name = run.call({});
+      Array.prototype.push = originalPush;
+      Array.prototype.pop = originalPop;
+      console.log(name, calls);
+    `,
+  },
+  {
+    name: 'keep-names helper captures object intrinsics before source mutation',
+    source: `
+      const originalCreate = Object.create;
+      const originalDefineProperty = Object.defineProperty;
+      let calls = 0;
+      Object.create = function () { calls++; return originalCreate.apply(this, arguments); };
+      Object.defineProperty = function () { calls++; return originalDefineProperty.apply(this, arguments); };
+      function run(value = { read: () => this }) { return value.read.name; }
+      const name = run.call({});
+      Object.create = originalCreate;
+      Object.defineProperty = originalDefineProperty;
+      console.log(name, calls);
+    `,
+  },
+  {
+    name: 'symbol description getter is captured with source Object and Symbol shadows',
+    source: `
+      const objectConstructor = globalThis.Object;
+      const symbolConstructor = globalThis.Symbol;
+      const descriptor = objectConstructor.getOwnPropertyDescriptor(symbolConstructor.prototype, 'description');
+      let calls = 0;
+      objectConstructor.defineProperty(symbolConstructor.prototype, 'description', {
+        configurable: true,
+        get: function () { calls++; return descriptor.get.call(this); },
+      });
+      const key = symbolConstructor('read');
+      function run(value = { [key]: () => this }) { return value[key].name; }
+      const name = run.call({});
+      objectConstructor.defineProperty(symbolConstructor.prototype, 'description', descriptor);
+      const Object = 1, Symbol = 2;
+      console.log(name, calls, Object, Symbol);
+    `,
+  },
 ] as const;
 
 describe('parameter arrow this/arguments captures precede default checks (#4819)', () => {

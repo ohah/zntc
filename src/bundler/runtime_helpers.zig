@@ -1111,8 +1111,33 @@ pub fn appendToBinaryRuntimeNamed(
 /// `__name(fn, name[, prefix])`. A runtime computed key (#5527) may be a
 /// symbol (SetFunctionName: "[description]") or a primitive; an object key is
 /// left unnamed so its toString is not called a second time.
-pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty, create) { return function(target, value, prefix) { var type = typeof value; if (type === \"symbol\") { var description = value.description; value = description === void 0 ? \"\" : \"[\" + description + \"]\"; } else if (value !== null && (type === \"object\" || type === \"function\")) return target; var descriptor = create(null); descriptor.value = prefix ? prefix + \" \" + value : \"\" + value; descriptor.configurable = true; return defineProperty(target, \"name\", descriptor); }; })(({}).constructor.defineProperty, ({}).constructor.create);\n";
-pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d,c){return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor.defineProperty,({}).constructor.create);";
+pub const KEEP_NAMES_RUNTIME =
+    \\var __name = (function(ObjectConstructor, globalObject) {
+    \\  var objectCreate = ObjectConstructor.create;
+    \\  var objectDefineProperty = ObjectConstructor.defineProperty;
+    \\  var objectGetOwnPropertyDescriptor = ObjectConstructor.getOwnPropertyDescriptor;
+    \\  var symbolConstructor = globalObject && globalObject.Symbol;
+    \\  var descriptionDescriptor = symbolConstructor && symbolConstructor.prototype
+    \\    ? objectGetOwnPropertyDescriptor(symbolConstructor.prototype, "description")
+    \\    : null;
+    \\  var descriptionGetter = descriptionDescriptor && descriptionDescriptor.get;
+    \\  var getSymbolDescription = descriptionGetter && descriptionGetter.call.bind(descriptionGetter);
+    \\  return function(target, value, prefix) {
+    \\    var type = typeof value;
+    \\    if (type === "symbol") {
+    \\      var description = getSymbolDescription ? getSymbolDescription(value) : value.description;
+    \\      value = description === void 0 ? "" : "[" + description + "]";
+    \\    } else if (value !== null && (type === "object" || type === "function")) return target;
+    \\    var descriptor = objectCreate(null);
+    \\    descriptor.value = prefix ? prefix + " " + value : "" + value;
+    \\    descriptor.configurable = true;
+    \\    return objectDefineProperty(target, "name", descriptor);
+    \\  };
+    \\})(({}).constructor, typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : null);
+    \\
+;
+pub const KEEP_NAMES_RUNTIME_MIN =
+    "var " ++ NAMES.NAME_MIN ++ "=(function(O,g){var c=O.create,d=O.defineProperty,e=O.getOwnPropertyDescriptor,S=g&&g.Symbol,D=S&&S.prototype?e(S.prototype,\"description\"):null,G=D&&D.get,Q=G&&G.call.bind(G);return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=Q?Q(v):v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;var x=c(null);x.value=p?p+\" \"+v:\"\"+v;x.configurable=true;return d(t,\"name\",x)}})(({}).constructor,typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:typeof self!==\"undefined\"?self:typeof window!==\"undefined\"?window:null);";
 
 /// Carry a converted computed key across its property's value evaluation so an
 /// immediately created captured arrow can receive the name inferred by the
@@ -1120,19 +1145,21 @@ pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d,c){
 pub const NAMED_PROPERTY_RUNTIME =
     \\var __namedProperty = (function() {
     \\  var keys = [];
+    \\  var pushKey = [].constructor.prototype.push.bind(keys);
+    \\  var popKey = [].constructor.prototype.pop.bind(keys);
     \\  return function(begin, value) {
     \\    if (begin) {
-    \\      keys.push(value);
+    \\      pushKey(value);
     \\      return value;
     \\    }
-    \\    var key = keys.pop();
+    \\    var key = popKey();
     \\    __name(value, key);
     \\    return value;
     \\  };
     \\})();
     \\
 ;
-pub const NAMED_PROPERTY_RUNTIME_MIN = "var " ++ NAMES.NAMED_PROPERTY_MIN ++ "=(function(){var k=[];return function(b,v){if(b){k.push(v);return v}var n=k.pop();" ++ NAMES.NAME_MIN ++ "(v,n);return v}})();";
+pub const NAMED_PROPERTY_RUNTIME_MIN = "var " ++ NAMES.NAMED_PROPERTY_MIN ++ "=(function(){var k=[],p=[].constructor.prototype.push.bind(k),o=[].constructor.prototype.pop.bind(k);return function(b,v){if(b){p(v);return v}var n=o();" ++ NAMES.NAME_MIN ++ "(v,n);return v}})();";
 
 // ============================================================
 // Private Method (ES2022 downlevel)
