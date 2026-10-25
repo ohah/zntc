@@ -118,7 +118,8 @@ suppress only legacy evaluation already represented by actual AST calls.
 This plain admission is limited to non-dev PM ESM/CJS with inline requires and
 excludes async-cone sources/targets. Non-PM, dev and async-cone negative controls
 keep their graph unchanged. Native CLI controls check zero ErrorUtils reads.
-The NAPI React Native option currently ORs the guard with its preset, so an
-explicit false there does not exercise this plain path; that option-policy bug
-remains separate. The current runtime proof uses actual native CLI and direct
-BundleOptions false, without changing preset behavior in this slice.
+Native CLI and direct BundleOptions callers can select this plain path. The
+NAPI React Native option also honors an explicit `entryErrorGuard: false`;
+omitting that option retains the React Native guard default. Synchronous and
+asynchronous API calls use the same policy without creating a guard provider
+for the explicit-false path.

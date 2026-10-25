@@ -969,7 +969,8 @@ pub fn parseBuildOptions(
         // 않아 LayoutAnimation 등에서 JSI getObject assert 실패로 크래시 발생.
         .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.configurable_exports),
         .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.strict_execution_order),
-        .entry_error_guard = getObjectBool(env, opts_obj, "entryErrorGuard", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.entry_error_guard),
+        // RN supplies the default; an explicit false remains an override.
+        .entry_error_guard = getObjectBool(env, opts_obj, "entryErrorGuard", platform == .react_native and bundler_mod.RN_BOOL_PRESET.entry_error_guard),
         .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.worklet_transform),
         .worklet_plugin_version = ownStr(env, opts_obj, "workletPluginVersion", owned_strings),
         // ZNTC native codegen — default 가 RN preset (platform=react-native 시 true). 사용자가
