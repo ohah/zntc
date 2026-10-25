@@ -92,7 +92,7 @@ const AstFacts = struct {
     has_flow_runtime_syntax_without_complete_graph: bool = false,
     /// Runtime syntax whose edited graph is not certified in legacy JS parser mode.
     has_lenient_unhandled_runtime_syntax: bool = false,
-    /// A local const enum is safe only after every output reference is proven erased.
+    /// A const enum is safe only after every output reference is proven erased.
     has_lenient_const_enum_runtime_syntax: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
@@ -196,11 +196,10 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 const extra = node.data.extra;
                 // A non-const ambient enum is erased by the transformer and
-                // contributes no runtime binding to the emitted graph. Local
-                // const enums are admitted only after the output graph proves
-                // their exact identity has no surviving binding or reference.
-                // Ambient const enums and every other nonzero/unknown flag stay
-                // on the analyzer path.
+                // contributes no runtime binding to the emitted graph. Const
+                // enums are admitted only after the output graph proves their
+                // identity and name have no surviving binding or reference.
+                // Every other nonzero/unknown flag stays on the analyzer path.
                 const is_plain_ambient_enum = extra < ast.extra_data.items.len and
                     ast.extra_data.items.len - extra > 3 and
                     ast.extra_data.items[extra + 3] == 2;
@@ -208,7 +207,7 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                     ast.extra_data.items[extra + 3]
                 else
                     std.math.maxInt(u32);
-                if (flags == 1) {
+                if (flags == 1 or flags == 3) {
                     facts.has_lenient_const_enum_runtime_syntax = true;
                 } else if (!is_plain_ambient_enum and flags != 0) {
                     facts.has_lenient_unhandled_runtime_syntax = true;
@@ -674,10 +673,12 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
     return canMangleWithTransformFacts(options, parser, facts, false);
 }
 
-/// After transformation, admit a local const enum only when its exact source
-/// SymbolId has no binding or reference left in the output tree. This proves
-/// that the enum declaration and every use were erased or inlined in the same
-/// edited graph; dynamic/member-unhandled uses stay on the analyzer path.
+/// After transformation, admit a const enum only when its exact source
+/// SymbolId has no binding or reference left in the output tree. Ambient const
+/// enum declarations may lack a runtime SymbolId, so their decoded name must be
+/// absent too. This proves the declaration and every use were erased or inlined
+/// in the same edited graph; surviving member/global uses stay on the analyzer
+/// path.
 fn canMangleWithTransformSemanticAfterEdit(
     options: TranspileOptions,
     parser: *const Parser,
@@ -687,11 +688,11 @@ fn canMangleWithTransformSemanticAfterEdit(
     const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     const may_admit_erased_const_enum = facts.has_lenient_const_enum_runtime_syntax and
         !facts.has_lenient_unhandled_runtime_syntax and
-        localConstEnumIdentitiesAreAbsentFromOutput(transformer, root);
+        constEnumIdentitiesAreAbsentFromOutput(transformer, root);
     return canMangleWithTransformFacts(options, parser, facts, may_admit_erased_const_enum);
 }
 
-fn localConstEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, root: ast_mod.NodeIndex) bool {
+fn constEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, root: ast_mod.NodeIndex) bool {
     const ast = transformer.ast;
     if (root.isNone()) return false;
     const reachable = ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, ast, root) catch return false;
@@ -701,32 +702,41 @@ fn localConstEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, 
     defer enum_symbol_ids.deinit(transformer.allocator);
     var enum_names: std.StringHashMapUnmanaged(void) = .empty;
     defer enum_names.deinit(transformer.allocator);
-    var found_local_const_enum = false;
+    var ambient_const_enum_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer ambient_const_enum_names.deinit(transformer.allocator);
+    var found_const_enum = false;
     for (ast.nodes.items) |node| {
         if (node.tag != .ts_enum_declaration) continue;
         const extra = node.data.extra;
         if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
-        if (ast.extra_data.items[extra + 3] != 1) continue;
-        found_local_const_enum = true;
+        const flags = ast.extra_data.items[extra + 3];
+        if (flags != 1 and flags != 3) continue;
+        const is_ambient_const_enum = flags == 3;
+        found_const_enum = true;
 
         const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
         if (name_idx.isNone() or @backingInt(name_idx) >= transformer.symbol_ids.items.len) return false;
-        const enum_symbol_id = transformer.symbol_ids.items[@backingInt(name_idx)] orelse return false;
-        if (enum_symbol_id >= transformer.symbols.len) return false;
-        const symbol = transformer.symbols[enum_symbol_id];
-        if (symbol.scope_id.isNone()) return false;
-
         const name_node = ast.getNode(name_idx);
-        if (symbol.name.start != name_node.span.start or symbol.name.end != name_node.span.end) return false;
+        if (transformer.symbol_ids.items[@backingInt(name_idx)]) |enum_symbol_id| {
+            if (enum_symbol_id >= transformer.symbols.len) return false;
+            const symbol = transformer.symbols[enum_symbol_id];
+            if (symbol.scope_id.isNone()) return false;
+            if (symbol.name.start != name_node.span.start or symbol.name.end != name_node.span.end) return false;
+            enum_symbol_ids.put(transformer.allocator, enum_symbol_id, {}) catch return false;
+        } else if (!is_ambient_const_enum) {
+            // A local declaration must always carry its exact source identity.
+            return false;
+        }
         const enum_name = Scanner.decodeIdentifierEscapesAlloc(
             transformer.allocator,
             ast.getText(name_node.span),
         ) catch return false;
         if (enum_name.len == 0) return false;
-        enum_symbol_ids.put(transformer.allocator, enum_symbol_id, {}) catch return false;
         enum_names.put(transformer.allocator, enum_name, {}) catch return false;
+        if (is_ambient_const_enum)
+            ambient_const_enum_names.put(transformer.allocator, enum_name, {}) catch return false;
     }
-    if (!found_local_const_enum) return false;
+    if (!found_const_enum) return false;
 
     for (reachable) |raw| {
         const output_node = ast.getNode(@fromBackingInt(@intCast(raw)));
@@ -736,6 +746,13 @@ fn localConstEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, 
             null;
         if (output_symbol_id) |symbol_id| {
             if (enum_symbol_ids.contains(symbol_id)) return false;
+            if (output_node.tag == .identifier_reference or output_node.tag == .binding_identifier) {
+                const output_name = Scanner.decodeIdentifierEscapesAlloc(
+                    transformer.allocator,
+                    ast.getText(output_node.span),
+                ) catch return false;
+                if (ambient_const_enum_names.contains(output_name)) return false;
+            }
         } else if (output_node.tag == .identifier_reference or output_node.tag == .binding_identifier) {
             const output_name = Scanner.decodeIdentifierEscapesAlloc(
                 transformer.allocator,

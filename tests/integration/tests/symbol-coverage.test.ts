@@ -2320,7 +2320,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('lenient local const enums retain only fully erased exact identities', () => {
+  test('lenient const enums retain only fully erased exact identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-const-enum-'));
     const cases = [
       {
@@ -2389,6 +2389,33 @@ describe('symbol identity coverage gate (#4819)', () => {
         ].join('\n'),
       },
       {
+        name: 'ambient-const-enum-unused',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'declare const enum Ambient { Value = 42 }',
+          'const value = 1;',
+          'console.log(value);',
+        ].join('\n'),
+      },
+      {
+        name: 'ambient-const-enum-type-only-use',
+        graph: 'retained',
+        runtime: true,
+        source: [
+          'declare const enum Ambient { Value = 42 }',
+          'type AmbientValue = Ambient;',
+          'const value: AmbientValue = 1;',
+          'console.log(value);',
+        ].join('\n'),
+      },
+      {
+        name: 'ambient-nonconst-enum-control',
+        graph: 'retained',
+        runtime: true,
+        source: 'declare enum Ambient { Value = 42 } console.log(typeof Ambient);',
+      },
+      {
         name: 'nested-function-scope',
         graph: 'reanalyzed',
         runtime: true,
@@ -2399,6 +2426,18 @@ describe('symbol identity coverage gate (#4819)', () => {
           '}',
           'console.log(read());',
         ].join('\n'),
+      },
+      {
+        name: 'ambient-const-enum-surviving-member-reference',
+        graph: 'reanalyzed',
+        runtime: false,
+        source: 'declare const enum Ambient { Value = 42 } console.log(Ambient.Value);',
+      },
+      {
+        name: 'ambient-const-enum-surviving-typeof-reference',
+        graph: 'reanalyzed',
+        runtime: true,
+        source: 'declare const enum Ambient { Value = 42 } console.log(typeof Ambient);',
       },
       {
         name: 'surviving-typeof-reference',
