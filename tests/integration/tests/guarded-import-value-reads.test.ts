@@ -89,6 +89,16 @@ const cases = [
     'globalThis.initializations=(globalThis.initializations||0)+1;export const value={n:42};',
   ],
   [
+    'guard import alias decoy',
+    'function run(__import_callsite_0){return value;}events.push(run(null)());',
+    [42],
+  ],
+  [
+    'initializer import alias decoy',
+    'function run(__import_callsite_1){return value;}events.push(run(null)());',
+    [42],
+  ],
+  [
     'late returned function',
     'globalThis.load=function(__zntc_guarded){return value;};',
     ['report:dependency', 42],
