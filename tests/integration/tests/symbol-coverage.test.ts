@@ -607,6 +607,7 @@ function transpileGraphModeProblems(
   stderr: string,
   required: boolean,
   expectedMode?: 'retained' | 'reanalyzed',
+  expectedFile?: string,
 ): string[] {
   const prefix = 'zntc: symbol-identity-transpile-mode ';
   const reports = stderr.split(/\r?\n/).filter((line) => line.startsWith(prefix));
@@ -620,9 +621,23 @@ function transpileGraphModeProblems(
   }
 
   const marker = ': semantic_graph=';
-  const markerIndex = reports[0].lastIndexOf(marker);
-  if (markerIndex <= prefix.length) return ['malformed transpile graph-mode report'];
-  const mode = reports[0].slice(markerIndex + marker.length);
+  let mode: string;
+  if (expectedFile !== undefined) {
+    const normalizedReport = reports[0].replaceAll('\\', '/');
+    const expectedPrefix = `${prefix}${expectedFile.replaceAll('\\', '/')}${marker}`;
+    if (!normalizedReport.startsWith(expectedPrefix)) {
+      return ['transpile graph-mode report is not attributed to the expected input'];
+    }
+    mode = normalizedReport.slice(expectedPrefix.length);
+  } else {
+    const markers = reports[0].match(/: semantic_graph=/g) ?? [];
+    if (markers.length !== 1) {
+      return [`transpile graph-mode fields=${markers.length}, expected 1`];
+    }
+    const markerIndex = reports[0].indexOf(marker);
+    if (markerIndex <= prefix.length) return ['malformed transpile graph-mode report'];
+    mode = reports[0].slice(markerIndex + marker.length);
+  }
   if (mode !== 'retained' && mode !== 'reanalyzed') {
     return [`malformed transpile graph mode ${mode}`];
   }
@@ -3411,8 +3426,8 @@ describe('symbol identity coverage gate (#4819)', () => {
   }
 
   test('standalone transpile mode report is required and exact for identifier minification', () => {
-    const retained =
-      'zntc: symbol-identity-transpile-mode /tmp/case.unknown: semantic_graph=retained';
+    const prefix = 'zntc: symbol-identity-transpile-mode ';
+    const retained = `${prefix}/tmp/case.unknown: semantic_graph=retained`;
     const reanalyzed = retained.replace('semantic_graph=retained', 'semantic_graph=reanalyzed');
 
     expect(transpileGraphModeProblems(retained, true, 'retained')).toEqual([]);
@@ -3423,6 +3438,31 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(transpileGraphModeProblems(retained + '\n' + retained, true)).toContain(
       'transpile graph-mode reports=2, expected 1',
     );
+    const duplicateMode = retained.replace(
+      ': semantic_graph=retained',
+      ': semantic_graph=unknown: semantic_graph=retained',
+    );
+    expect(transpileGraphModeProblems(duplicateMode, true, 'retained')).toContain(
+      'transpile graph-mode fields=2, expected 1',
+    );
+    const pathWithModeMarker = '/tmp/case: semantic_graph=filename.unknown';
+    expect(
+      transpileGraphModeProblems(
+        `${prefix}${pathWithModeMarker}: semantic_graph=retained`,
+        true,
+        'retained',
+        pathWithModeMarker,
+      ),
+    ).toEqual([]);
+    const windowsPath = String.raw`C:\tmp\case.unknown`;
+    expect(
+      transpileGraphModeProblems(
+        `${prefix}${windowsPath}: semantic_graph=retained`,
+        true,
+        'retained',
+        windowsPath,
+      ),
+    ).toEqual([]);
     expect(
       transpileGraphModeProblems(
         retained.replace('semantic_graph=retained', 'semantic_graph=unknown'),
@@ -3432,6 +3472,18 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(transpileGraphModeProblems(reanalyzed, true, 'retained')).toContain(
       'transpile semantic_graph=reanalyzed, expected retained',
     );
+    expect(transpileGraphModeProblems(`${retained} future=0`, true)).toContain(
+      'malformed transpile graph mode retained future=0',
+    );
+    expect(transpileGraphModeProblems(`${retained}\r\n`, true, 'retained')).toEqual([]);
+    expect(
+      transpileGraphModeProblems(
+        `${prefix}/tmp/not-case.unknown: semantic_graph=retained`,
+        true,
+        'retained',
+        '/tmp/case.unknown',
+      ),
+    ).toContain('transpile graph-mode report is not attributed to the expected input');
     expect(transpileGraphModeProblems('', false)).toEqual([]);
     expect(transpileGraphModeProblems(retained, false)).toContain(
       'transpile graph-mode reports=1, expected 0',
@@ -27451,7 +27503,12 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               );
             }
             const requiresTranspileMode = mode.includes('--minify-identifiers');
-            for (const modeProblem of transpileGraphModeProblems(stderr, requiresTranspileMode)) {
+            for (const modeProblem of transpileGraphModeProblems(
+              stderr,
+              requiresTranspileMode,
+              undefined,
+              file,
+            )) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${modeProblem}: ${stderr}`,
               );
