@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createFixture, ZNTC_BIN } from './helpers';
 
 const cli = process.env.ZNTC_PRIVATE_SCOPE_CLI ?? ZNTC_BIN;
-const cases = [
+const cases: Array<{ name: string; source: string; filename?: string; reference?: string }> = [
   {
     name: 'static descriptor',
     source: 'class Box{static #value=1;static read(){return this.#value;}}console.log(Box.read());',
@@ -92,6 +92,14 @@ const cases = [
       'class Box{static #value=this.#method();static #method(){return 9;}static read(){return this.#value;}}console.log(Box.read());',
   },
   {
+    name: 'Flow auto-accessor getter owns private backing reads',
+    filename: 'input.flow',
+    source:
+      "// @flow\nconst value = 'outer';\nconst _value = 99;\n\nfunction build(start: number): string {\n  class Counter {\n    accessor value: number = start;\n\n    add(value: number): number {\n      const local = value;\n      this.value += local;\n      return this.value;\n    }\n  }\n\n  return new Counter().add(2) + ':' + value + ':' + _value;\n}\n\nconsole.log(build(40));\n",
+    reference:
+      "const value='outer';const _value=99;function build(start){class Counter{#storage=start;get value(){return this.#storage;}set value(value){this.#storage=value;}add(value){const local=value;this.value+=local;return this.value;}}return new Counter().add(2)+':'+value+':'+_value;}console.log(build(40));",
+  },
+  {
     name: 'readonly write-only method',
     source:
       'class Box{static #write(){try{Box=1;}catch(error){return error.name;}}static run(){return this.#write();}}console.log(Box.run());',
@@ -109,11 +117,15 @@ describe('private references carry creation-time owner identity (#4819)', () => 
       for (const bundle of [false, true]) {
         for (const minify of [[], ['--minify-identifiers'], ['--minify']]) {
           test(`${fixture.name}: ${target}, ${bundle ? 'bundle' : 'standalone'}, ${minify.join(' ') || 'plain'}`, async () => {
-            const created = await createFixture({ 'input.cjs': fixture.source });
+            const filename = fixture.filename ?? 'input.cjs';
+            const files: Record<string, string> = { [filename]: fixture.source };
+            if (fixture.reference) files['reference.cjs'] = fixture.reference;
+            const created = await createFixture(files);
             cleanup = created.cleanup;
-            const input = join(created.dir, 'input.cjs');
+            const input = join(created.dir, filename);
             const output = join(created.dir, 'output.cjs');
-            const native = spawnSync('node', [input], { encoding: 'utf8' });
+            const nativeInput = fixture.reference ? join(created.dir, 'reference.cjs') : input;
+            const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
             expect(native.status, native.stderr).toBe(0);
             const built = spawnSync(
               cli,

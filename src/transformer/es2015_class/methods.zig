@@ -59,7 +59,7 @@ pub fn Methods(comptime Transformer: type) type {
             const flags = self.readU32(me, MethodExtra.flags);
             const is_generated_setter = source_member_idx.isNone() and
                 (flags & ast_mod.MethodFlags.is_setter) != 0;
-            const generated_scope = if (self.semantic_edit_enabled and is_generated_setter)
+            const generated_scope = if (self.semantic_edit_enabled and source_member_idx.isNone())
                 try self.reserveGeneratedFunctionScope(reference_scope)
             else
                 ScopeId.none;
@@ -79,7 +79,7 @@ pub fn Methods(comptime Transformer: type) type {
             // function scope is only known here, after the containing class has
             // been lowered; bind those handles directly instead of scanning the
             // finished function for a matching spelling/span.
-            if (!generated_scope.isNone()) {
+            if (is_generated_setter and !generated_scope.isNone()) {
                 if (generated_setter_parameter.isNone() or generated_setter_value_reference.isNone())
                     std.debug.panic("generated accessor setter lost its exact value handles", .{});
                 if (params_len != 1 or @as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[params_start]))) != generated_setter_parameter)
