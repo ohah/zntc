@@ -100,6 +100,11 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
         const tag = editor.ast.getNode(node).tag;
         if (tag == .class_declaration or tag == .class_expression) try wanted.put(a, node, {});
     }
+    // Anonymous default exports already carry their facade SID on the export
+    // declaration itself, although their declaration Reference has no leaf.
+    for (editor.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .export_default_declaration) try wanted.put(a, @fromBackingInt(@as(u32, @intCast(raw))), {});
+    }
     var owners: std.AutoHashMapUnmanaged(NodeIndex, u32) = .empty;
     const list = editor.ast.getNode(root).data.list;
     var statements = editor.ast.iterateExtraList(list);
@@ -113,8 +118,8 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
             found.value_ptr.* = index;
         }
     }
-    const ClassContext = struct { node: NodeIndex, statement: u32 };
-    var class_contexts: std.AutoHashMapUnmanaged(u32, ClassContext) = .empty;
+    const OwnerContext = struct { node: NodeIndex, statement: u32 };
+    var class_contexts: std.AutoHashMapUnmanaged(u32, OwnerContext) = .empty;
     scope_owners = editor.scope_owner_map.iterator();
     while (scope_owners.next()) |entry| {
         const node: NodeIndex = @fromBackingInt(entry.key_ptr.*);
@@ -125,9 +130,29 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
         if (slot.found_existing and slot.value_ptr.node != node) return error.AmbiguousGuardedClassOwner;
         slot.value_ptr.* = .{ .node = node, .statement = statement };
     }
+    var default_contexts: std.AutoHashMapUnmanaged(u32, OwnerContext) = .empty;
+    var live_anchors = owners.iterator();
+    while (live_anchors.next()) |entry| {
+        const node = entry.key_ptr.*;
+        const raw = @backingInt(node);
+        if (editor.ast.getNode(node).tag != .export_default_declaration or raw >= editor.symbol_ids.items.len) continue;
+        const sid = editor.symbol_ids.items[raw] orelse continue;
+        if (sid >= editor.symbols.items.len) return error.InvalidGuardedDefaultFacade;
+        const symbol = editor.symbols.items[sid];
+        if (!symbol.decl_flags.is_default_export or symbol.kind != .variable_const or symbol.scope_id.toIndex() != 0) continue;
+        const slot = try default_contexts.getOrPut(a, sid);
+        if (slot.found_existing and slot.value_ptr.node != node) return error.AmbiguousGuardedDefaultFacade;
+        slot.value_ptr.* = .{ .node = node, .statement = entry.value_ptr.* };
+    }
     for (editor.references.items) |*reference| {
         const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
         reference.stmt_idx = owners.get(anchor) orelse Reference.NO_STMT;
+        if (anchor.isNone() and reference.flags.declare) {
+            if (default_contexts.get(@backingInt(reference.symbol_id))) |context| {
+                if (reference.scope_id.toIndex() != 0) return error.InvalidGuardedDefaultFacade;
+                reference.stmt_idx = context.statement;
+            }
+        }
         if (anchor.isNone() and reference.flags.declare and class_self_ids.contains(@backingInt(reference.symbol_id))) {
             const symbol = editor.symbols.items[@backingInt(reference.symbol_id)];
             const scope = symbol.scope_id;
@@ -311,6 +336,9 @@ test "guarded lazy source calls preserve original callee identity and actual nes
         "class Box{run(__zntc_guarded){const offset=1;return value()+offset-1;}}globalThis.actual=new Box().run(null);",
         "function* run(__zntc_guarded){yield value();}globalThis.actual=run(null).next().value;",
         "const Box=class Inner{static self(){return Inner;}run(){return value();}};globalThis.actual=new Box().run();",
+        "export default function(){return value();}globalThis.actual=42;",
+        "export default (globalThis.load=function(){return value();});globalThis.actual=globalThis.load();",
+        "function* source(){yield 0;}export default (globalThis.load=function(){return value()+source().next().value;});globalThis.actual=globalThis.load();",
         "class Box{static self(){return Box;}run(){return value();}}globalThis.actual=new Box().run();",
         "function* source(){yield 0;}class Box{static self(){return Box;}run(){return value()+source().next().value;}}globalThis.actual=new Box().run();",
         "function* source(){yield 0;}function run(){const Box=class Inner{static self(){return Inner;}run(){return value()+source().next().value;}};return new Box().run();}globalThis.actual=run();",
@@ -387,7 +415,13 @@ test "guarded lazy source calls preserve original callee identity and actual nes
                     const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
                     if (!anchor.isNone() and @backingInt(anchor) == raw) try std.testing.expectEqual(top_index, reference.stmt_idx);
                     if (!reference.flags.declare or !anchor.isNone()) continue;
-                    const scope = sem.symbols.items[@backingInt(reference.symbol_id)].scope_id;
+                    const symbol = sem.symbols.items[@backingInt(reference.symbol_id)];
+                    if (ast.nodes.items[raw].tag == .export_default_declaration and symbol.decl_flags.is_default_export and sem.symbol_ids[raw] == @as(?u32, @backingInt(reference.symbol_id))) {
+                        try std.testing.expectEqual(top_index, reference.stmt_idx);
+                        try std.testing.expectEqual(top_index, reference.scope_stmt_idx);
+                        continue;
+                    }
+                    const scope = symbol.scope_id;
                     const owner_scope = sem.scope_owner_map.get(raw) orelse continue;
                     const tag = ast.nodes.items[raw].tag;
                     if (owner_scope != scope.toIndex() or (tag != .class_declaration and tag != .class_expression)) continue;
