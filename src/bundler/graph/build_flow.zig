@@ -1720,6 +1720,7 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
         // Compiler-owned prelude source receives a fresh initial analysis per build.
         if (self.interop_ast_provider) |provider| if (provider.module_index == m.index) continue;
         if (self.dynamic_import_ast_provider) |provider| if (provider.module_index == m.index) continue;
+        if (self.entry_guard_ast_provider) |provider| if (provider.module_index == m.index) continue;
         // Disabled modules have no parse payload to reuse. Some receive a
         // parse_arena only to own graph-generated runtime SymbolIds, which must
         // not turn them into cache entries that no discovery path can hit.

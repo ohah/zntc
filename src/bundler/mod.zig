@@ -136,6 +136,7 @@ test {
     _ = @import("interop_callsite.zig");
     _ = @import("static_import_callsite.zig");
     _ = @import("runtime_dynamic_import_ast.zig");
+    _ = @import("runtime_entry_guard_ast.zig");
     _ = @import("semantic_codec_test.zig");
     _ = @import("module_codec_test.zig");
     _ = @import("disk_cache_test.zig");

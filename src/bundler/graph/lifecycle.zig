@@ -44,6 +44,7 @@ pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGr
 pub fn reset(self: *ModuleGraph) void {
     self.interop_ast_provider = null;
     self.dynamic_import_ast_provider = null;
+    self.entry_guard_ast_provider = null;
     for (self.owned_diagnostic_strings.items) |s| self.allocator.free(s);
     self.owned_diagnostic_strings.clearRetainingCapacity();
     self.diagnostics.clearRetainingCapacity();
