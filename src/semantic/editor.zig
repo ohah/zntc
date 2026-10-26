@@ -2772,7 +2772,12 @@ test "enum outer binding exact reanchor preserves source var tuples and rejects 
     try editor.references.append(a, second);
     const read = try tree.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
     try editor.addReference(read, id, source_scope, .{ .read = true }, 7, 8);
+    const other_name = try tree.addString("other");
+    const other_binding = try tree.addNode(.{ .tag = .binding_identifier, .span = other_name, .data = .{ .string_ref = other_name } });
+    const other_id = try editor.declare(other_binding, other_name, Span.EMPTY, root, .variable_var, 9, 10);
     const before = try a.dupe(Reference, editor.references.items);
+    try std.testing.expectError(error.InvalidSymbol, editor.reanchorDeclarationFromNode(&tree, source, output, other_id));
+    for (before, editor.references.items) |expected, actual| try std.testing.expect(std.meta.eql(expected, actual));
     var foreign = Ast.init(a, "");
     const foreign_name = try foreign.addString("E");
     const foreign_source = try foreign.addNode(.{ .tag = .binding_identifier, .span = foreign_name, .data = .{ .string_ref = foreign_name } });
@@ -2794,14 +2799,14 @@ test "enum outer binding exact reanchor preserves source var tuples and rejects 
     try std.testing.expectEqual(@as(usize, 2), try editor.reanchorDeclarationFromNode(&tree, source, output, id));
     for (before, editor.references.items) |original, actual| {
         var expected = original;
-        if (expected.flags.declare) expected.declaration_node_index = output;
+        if (expected.flags.declare and expected.symbol_id == id) expected.declaration_node_index = output;
         try std.testing.expect(std.meta.eql(expected, actual));
     }
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
     try editor.reparentScope(source_scope, target_scope);
     try editor.relocateSymbolAsPreservingAnchors(id, target_scope, output);
     for (editor.references.items) |reference| {
-        if (reference.flags.declare) {
+        if (reference.flags.declare and reference.symbol_id == id) {
             try std.testing.expectEqual(output, reference.declaration_node_index);
             try std.testing.expectEqual(target_scope, reference.scope_id);
         }

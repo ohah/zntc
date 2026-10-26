@@ -120,7 +120,19 @@ fn checkBirth(source: []const u8, es5: bool) !void {
         try std.testing.expect(reference.flags.write and reference.flags.read and !reference.flags.declare);
         try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
         try std.testing.expectEqual(expected, reference.scope_id);
-        try std.testing.expect(t.outputOwnedScope(@fromBackingInt(raw.*)).? != expected);
+        const iife_scope = t.outputOwnedScope(@fromBackingInt(raw.*)).?;
+        try std.testing.expect(iife_scope != expected);
+        // Outer storage may be renamed independently. Its source-origin span
+        // still anchors the distinct source IIFE parameter environment.
+        var parameter_id: ?usize = null;
+        for (editor.symbols.items, 0..) |symbol, sid| {
+            if (symbol.scope_id != iife_scope or symbol.synthetic_kind != .enum_iife_parameter) continue;
+            try std.testing.expect(parameter_id == null);
+            parameter_id = sid;
+        }
+        try std.testing.expect(parameter_id != null);
+        try std.testing.expectEqual(parameter_id, editor.scope_maps.items[iife_scope.toIndex()].get(t.ast.getText(t.ast.getNode(target).span)));
+        try std.testing.expect(parameter_id.? != id);
         enum_writes += 1;
     }
     try std.testing.expectEqual(original_names.items.len, enum_writes);
