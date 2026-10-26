@@ -1477,6 +1477,8 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},value=2){function a(){return 9}var a;eval('a');return [a(),value]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest}){var a;function a(){return 9}eval('a');return a()}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest},value=2,code){var arguments;try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},undefined,String.fromCharCode(95,98))" },
+        .{ .source = "function read({a,...rest},code){try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},String.fromCharCode(95,98))" },
+        .{ .source = "function read({a,...rest},code){return JSON.stringify(eval(code))}", .call = "read({a:1,b:2},String.fromCharCode(114,101,115,116))" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();

@@ -43,6 +43,8 @@ pub const RestArgumentsOwner = struct {
 const NativeArgumentsShape = struct {
     has_expressions: bool,
     first_default: u32,
+    source_tail_binding: NodeIndex = .none,
+    source_tail_id: ?u32 = null,
 };
 
 pub fn ES2015Params(comptime Transformer: type) type {
@@ -407,7 +409,30 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     break;
                 }
             }
-            return .{ .has_expressions = expressions, .first_default = cutoff };
+            var source_tail: NodeIndex = .none;
+            var source_tail_id: ?u32 = null;
+            if (!expressions) {
+                const nodes = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, owner.params_node);
+                defer self.allocator.free(nodes);
+                find_rest: for (nodes) |raw| {
+                    const pattern = self.ast.nodes.items[raw];
+                    if (pattern.tag != .object_pattern) continue;
+                    for (0..pattern.data.list.len) |offset| {
+                        const member = self.ast.getNode(self.ast.readExtraNode(pattern.data.list.start, @intCast(offset)));
+                        if (member.tag != .rest_element and member.tag != .spread_element) continue;
+                        const binding = member.data.unary.operand;
+                        if (self.ast.getNode(binding).tag != .binding_identifier) @panic("object rest tail has no exact source binding");
+                        const id = self.getSymbolIdAt(binding) orelse @panic("object rest tail has no source identity");
+                        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                        if (symbols[id].kind != .parameter or symbols[id].scope_id != owner.body_scope) @panic("native tail cannot reuse another parameter environment");
+                        source_tail = binding;
+                        source_tail_id = id;
+                        break :find_rest;
+                    }
+                }
+                if (source_tail_id == null) @panic("expression-free object rest has no native tail carrier");
+            }
+            return .{ .has_expressions = expressions, .first_default = cutoff, .source_tail_binding = source_tail, .source_tail_id = source_tail_id };
         }
 
         /// Plan the environment of the actual emitted native formals before
@@ -773,10 +798,24 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         self.scratch.items[slot] = try self.ast.addNode(.{ .tag = .assignment_pattern, .span = old.span, .data = .{ .binary = .{ .left = self.scratch.items[slot], .right = empty, .flags = 0 } } });
                     }
                 } else {
-                    const name = try es_helpers.makeTempVarSpan(self);
-                    const binding = try es_helpers.makeSyntheticBinding(self, name);
-                    _ = try registerDestructuringTempIdentityInScope(self, binding, name, span, .parameter, native_formal_scope orelse self.current_scope);
-                    es_helpers.consumeTempVarSpan(self, name);
+                    const binding = if (!shape.has_expressions) source_binding: {
+                        const id = shape.source_tail_id orelse @panic("native rest tail lost its source cell");
+                        if (shape.source_tail_binding.isNone() or self.getSymbolIdAt(shape.source_tail_binding) != @as(?u32, id)) @panic("native rest tail changed its exact source binding");
+                        const editor = if (self.semantic_editor) |*value| value else unreachable;
+                        const symbol = editor.symbols.items[id];
+                        if (symbol.scope_id != self.current_scope or symbol.kind != .parameter) @panic("native rest tail changed its shared storage owner");
+                        const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+                        const output = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(name));
+                        editor.attachVarRedeclaration(output, @fromBackingInt(id), self.current_scope) catch @panic("native rest formal cannot claim its source cell");
+                        try self.setGeneratedSymbolId(output, id);
+                        break :source_binding output;
+                    } else new_binding: {
+                        const name = try es_helpers.makeTempVarSpan(self);
+                        const output = try es_helpers.makeSyntheticBinding(self, name);
+                        _ = try registerDestructuringTempIdentityInScope(self, output, name, span, .parameter, native_formal_scope orelse self.current_scope);
+                        es_helpers.consumeTempVarSpan(self, name);
+                        break :new_binding output;
+                    };
                     const formal = if (shape.has_expressions)
                         try self.ast.addNode(.{ .tag = .assignment_pattern, .span = span, .data = .{ .binary = .{ .left = binding, .right = try es_helpers.makeVoidZero(self, span), .flags = 0 } } })
                     else
