@@ -805,6 +805,8 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // ctor 주입: 기존 constructor에 prepend, 없으면 새로 생성.
             if (ctor_init_stmts.items.len > 0) {
+                if (!self.options.unsupported.class)
+                    try @import("native_constructor_timing.zig").registerPlacementOwner(self, constructor_scope);
                 if (ctor_pos) |pos| {
                     body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
                 } else {

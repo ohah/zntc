@@ -10,6 +10,16 @@ pub const Plan = struct {
     named_value: bool,
 };
 
+/// A moved-initializer producer supplies its actual reserved constructor
+/// function scope. This records placement ownership, not timing eligibility.
+pub fn registerPlacementOwner(self: anytype, scope: ScopeId) !void {
+    if (!self.semantic_edit_enabled) return;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != .function)
+        @panic("constructor placement producer has no actual function scope");
+    try self.native_constructor_placement_scopes.put(self.allocator, @backingInt(scope), {});
+}
+
 pub fn publication(self: anytype, raw: u32) ?@import("transformer.zig").StatementPublication {
     const native = self.native_constructor_statement_handoffs.get(raw);
     const generator = self.generator_function_coordinate_handoffs.get(raw);
@@ -21,7 +31,7 @@ pub fn publication(self: anytype, raw: u32) ?@import("transformer.zig").Statemen
 /// Publish placement after actual owner assembly. Never infer binding identity.
 pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
     if (!self.semantic_edit_enabled or self.semantic_editor == null or
-        (self.native_constructor_timing_plans.count() == 0 and self.native_constructor_reference_origins.count() == 0)) return;
+        (self.native_constructor_timing_plans.count() == 0 and self.native_constructor_placement_scopes.count() == 0 and self.native_constructor_reference_origins.count() == 0)) return;
     const coordinates = @import("../semantic/statement_coordinates.zig").collect(self.allocator, self.ast, root) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => std.debug.panic("native constructor statement ownership is invalid: {s}", .{@errorName(err)}),
@@ -49,7 +59,7 @@ pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
         var hops: usize = 0;
         while (!selected and !scope.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
             if (scope.toIndex() >= editor.scopes.items.len) @panic("native constructor coordinate row has an invalid scope");
-            if (self.native_constructor_timing_plans.contains(@backingInt(scope))) {
+            if (self.native_constructor_timing_plans.contains(@backingInt(scope)) or self.native_constructor_placement_scopes.contains(@backingInt(scope))) {
                 selected = true;
                 break;
             }

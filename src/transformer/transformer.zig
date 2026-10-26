@@ -410,6 +410,7 @@ pub const Transformer = struct {
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
     native_constructor_timing_plans: std.AutoHashMapUnmanaged(u32, @import("native_constructor_timing.zig").Plan) = .empty,
     native_constructor_timing_fields: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    native_constructor_placement_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
     native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,

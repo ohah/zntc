@@ -135,6 +135,15 @@ fn checkBirth(source: []const u8) !void {
             break;
         }
     }
+    if (selected == null) {
+        origins = t.native_constructor_reference_origins.iterator();
+        while (origins.next()) |entry| {
+            if (parents.contains(entry.key_ptr.*) and entry.value_ptr.scope != t.programScope() and t.native_constructor_statement_handoffs.contains(entry.key_ptr.*)) {
+                selected = entry.key_ptr.*;
+                break;
+            }
+        }
+    }
     const raw = selected orelse return error.NoConstructorHelperBirthTuple;
     const publication = t.native_constructor_statement_handoffs.get(raw).?;
     const edit = @import("transformer/semantic_edit.zig");

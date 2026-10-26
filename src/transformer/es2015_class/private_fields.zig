@@ -566,6 +566,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id)
             else
                 try es_helpers.makeSyntheticRef(self, wm_name);
+            if (self.semantic_edit_enabled and !self.options.unsupported.class) {
+                if (field_mapping) |mapping| {
+                    const id = mapping.symbol_id orelse @panic("private collection reference lost its producer SID");
+                    try @import("../native_constructor_guard.zig").recordReference(self, wm_ref, @fromBackingInt(id), self.current_scope, .{ .read = true });
+                }
+            }
             return buildWeakCollectionCall(self, wm_ref, method, obj_idx, extra_arg_indices, span);
         }
 
