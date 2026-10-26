@@ -161,6 +161,9 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
     var facts: AstFacts = .{};
 
     for (ast.nodes.items) |node| {
+        if (isLenientUnhandledRuntimeSyntax(ast, node)) {
+            facts.has_lenient_unhandled_runtime_syntax = true;
+        }
         if (std.mem.startsWith(u8, @tagName(node.tag), "ts_")) {
             facts.has_typescript_syntax = true;
         }
@@ -207,17 +210,12 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 // enums are admitted only after the output graph proves their
                 // identity and name have no surviving binding or reference.
                 // Every other nonzero/unknown flag stays on the analyzer path.
-                const is_plain_ambient_enum = extra < ast.extra_data.items.len and
-                    ast.extra_data.items.len - extra > 3 and
-                    ast.extra_data.items[extra + 3] == 2;
                 const flags = if (extra < ast.extra_data.items.len and ast.extra_data.items.len - extra > 3)
                     ast.extra_data.items[extra + 3]
                 else
                     std.math.maxInt(u32);
                 if (flags == 1 or flags == 3) {
                     facts.has_lenient_const_enum_runtime_syntax = true;
-                } else if (!is_plain_ambient_enum and flags != 0) {
-                    facts.has_lenient_unhandled_runtime_syntax = true;
                 }
             },
 
@@ -229,27 +227,15 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_runtime_sensitive_syntax = true;
                 facts.has_flow_runtime_syntax_without_complete_graph = true;
                 const name_idx = node.data.binary.left;
-                const body_idx = node.data.binary.right;
                 const name_is_valid = !name_idx.isNone() and @backingInt(name_idx) < ast.nodes.items.len;
                 const name_node = if (name_is_valid) ast.getNode(name_idx) else undefined;
                 const has_global_name = name_is_valid and name_node.tag == .binding_identifier and
                     std.mem.eql(u8, ast.getText(name_node.span), "global");
-                const plain_ambient_namespace = node.data.binary.flags == 1 and
-                    name_is_valid and name_node.tag == .binding_identifier and
-                    !has_global_name and
-                    !body_idx.isNone() and @backingInt(body_idx) < ast.nodes.items.len and
-                    (ast.getNode(body_idx).tag == .block_statement or
-                        ast.getNode(body_idx).tag == .ts_module_declaration);
                 const ambient_string_module = node.data.binary.flags == 1 and
                     name_is_valid and name_node.tag == .string_literal;
                 const ambient_global_namespace = node.data.binary.flags == 1 and has_global_name;
                 if (ambient_string_module) facts.has_lenient_ambient_string_module = true;
                 if (ambient_global_namespace) facts.has_lenient_ambient_global_namespace = true;
-                if ((has_global_name and !ambient_global_namespace) or (node.data.binary.flags != 0 and
-                    !plain_ambient_namespace and !ambient_string_module and !ambient_global_namespace))
-                {
-                    facts.has_lenient_unhandled_runtime_syntax = true;
-                }
             },
 
             // Import-equals is rewritten to a const declaration by the
@@ -258,7 +244,6 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             // symbol reconstruction.
             .ts_import_equals_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             .ts_type_reference => {
@@ -277,13 +262,11 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             // reference and an ordinary `.exports` property name.
             .ts_export_assignment => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // `export as namespace` is erased and carries no runtime references or bindings.
             .ts_namespace_export_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // Flow match is fully lowered by the semantic editor: its generated
@@ -291,21 +274,18 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             // already part of the transform graph.
             .flow_match_expression => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // Flow enum declaration and references have exact source SymbolIds;
             // codegen emits the declaration name through the same symbol-aware path.
             .flow_enum_declaration => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             // Flow component-with-ref adds the helper binding and call reference
             // to the same transform graph, including when its body lowers JSX.
             .flow_component_wrapper => {
                 facts.has_runtime_sensitive_syntax = true;
-                facts.has_lenient_unhandled_runtime_syntax = true;
             },
 
             .variable_declaration => {
@@ -324,6 +304,59 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
     }
 
     return facts;
+}
+
+/// Runtime syntax that remains outside the audited transform-semantic graph in
+/// lenient JavaScript mode. Keep this classifier shared by the source-fact gate
+/// and the erased ambient-module containment proof below.
+fn isLenientUnhandledRuntimeSyntax(ast: *const Ast, node: ast_mod.Node) bool {
+    return switch (node.tag) {
+        .ts_enum_declaration => blk: {
+            const extra = node.data.extra;
+            const flags = if (extra < ast.extra_data.items.len and ast.extra_data.items.len - extra > 3)
+                ast.extra_data.items[extra + 3]
+            else
+                std.math.maxInt(u32);
+            const is_plain_ambient_enum = flags == 2;
+            break :blk flags != 0 and flags != 1 and flags != 3 and !is_plain_ambient_enum;
+        },
+        .ts_module_declaration => blk: {
+            const name_idx = node.data.binary.left;
+            const body_idx = node.data.binary.right;
+            const name_is_valid = !name_idx.isNone() and @backingInt(name_idx) < ast.nodes.items.len;
+            const name_node = if (name_is_valid) ast.getNode(name_idx) else undefined;
+            const has_global_name = name_is_valid and name_node.tag == .binding_identifier and
+                std.mem.eql(u8, ast.getText(name_node.span), "global");
+            const plain_ambient_namespace = node.data.binary.flags == 1 and
+                name_is_valid and name_node.tag == .binding_identifier and
+                !has_global_name and
+                !body_idx.isNone() and @backingInt(body_idx) < ast.nodes.items.len and
+                (ast.getNode(body_idx).tag == .block_statement or
+                    ast.getNode(body_idx).tag == .ts_module_declaration);
+            const ambient_string_module = node.data.binary.flags == 1 and
+                name_is_valid and name_node.tag == .string_literal;
+            const ambient_global_namespace = node.data.binary.flags == 1 and has_global_name;
+            break :blk (has_global_name and !ambient_global_namespace) or
+                (node.data.binary.flags != 0 and !plain_ambient_namespace and
+                    !ambient_string_module and !ambient_global_namespace);
+        },
+        .ts_import_equals_declaration,
+        .ts_export_assignment,
+        .ts_namespace_export_declaration,
+        .flow_match_expression,
+        .flow_enum_declaration,
+        .flow_component_wrapper,
+        => true,
+        else => false,
+    };
+}
+
+fn isAmbientGlobalNamespaceDeclaration(ast: *const Ast, node: ast_mod.Node) bool {
+    if (node.tag != .ts_module_declaration or node.data.binary.flags != 1) return false;
+    const name_idx = node.data.binary.left;
+    if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return false;
+    const name_node = ast.getNode(name_idx);
+    return name_node.tag == .binding_identifier and std.mem.eql(u8, ast.getText(name_node.span), "global");
 }
 
 // 한 함수 / 한 var 리스트 / 한 import 절에서 매칭되는 import 이름 수의 상한.
@@ -709,8 +742,7 @@ fn canMangleWithTransformSemanticAfterEdit(
         !facts.has_lenient_unhandled_runtime_syntax and
         constEnumIdentitiesAreAbsentFromOutput(transformer, root);
     const may_admit_erased_ambient_string_module = facts.has_lenient_ambient_string_module and
-        !facts.has_lenient_unhandled_runtime_syntax and
-        erasedAmbientStringModuleHasNoOutputSemanticFacts(transformer, root);
+        erasedAmbientStringModuleContainsLenientGraphBlockers(transformer, root);
     const may_admit_erased_ambient_global_namespace = facts.has_lenient_ambient_global_namespace and
         !facts.has_lenient_unhandled_runtime_syntax and
         erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(transformer, root);
@@ -876,6 +908,52 @@ fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
     return erasedAmbientNamespaceHasNoOutputSemanticFacts(transformer, root, .string_module);
 }
 
+/// An ambient external module is type-only, so its analyzer-skipped subtree may
+/// contain syntax that would normally force lenient-mode reanalysis. Admit that
+/// syntax only when the existing exact erasure proof succeeds and every import
+/// or otherwise unsupported node is structurally inside one of those erased
+/// source subtrees.
+fn erasedAmbientStringModuleContainsLenientGraphBlockers(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    if (!erasedAmbientStringModuleHasNoOutputSemanticFacts(transformer, root)) return false;
+
+    const ast = transformer.ast;
+    const source_count = transformer.parser_node_count;
+    if (source_count == 0 or source_count > ast.nodes.items.len) return false;
+
+    var ambient_subtree_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ambient_subtree_nodes.deinit(transformer.allocator);
+    var found_module = false;
+    for (ast.nodes.items[0..source_count], 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 1) continue;
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return false;
+        if (ast.getNode(name_idx).tag != .string_literal) continue;
+        found_module = true;
+
+        const subtree = ast_walk.collectReachableNodeIndicesFrom(
+            transformer.allocator,
+            ast,
+            @fromBackingInt(@intCast(raw)),
+        ) catch return false;
+        defer transformer.allocator.free(subtree);
+        for (subtree) |source_raw| {
+            if (source_raw >= source_count) return false;
+            ambient_subtree_nodes.put(transformer.allocator, source_raw, {}) catch return false;
+        }
+    }
+    if (!found_module) return false;
+
+    for (ast.nodes.items[0..source_count], 0..) |node, raw| {
+        if (node.tag != .import_declaration and !isLenientUnhandledRuntimeSyntax(ast, node) and
+            !isAmbientGlobalNamespaceDeclaration(ast, node)) continue;
+        if (!ambient_subtree_nodes.contains(@intCast(raw))) return false;
+    }
+    return true;
+}
+
 fn erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -919,12 +997,13 @@ fn canMangleWithTransformFacts(
     // Parser-removed `declare` names stay out of the runtime AST. Their sideband
     // is consumed by type-only export elision before analysis and does not make
     // the emitted semantic graph differ from the transform graph.
-    if (parser.source_mode == .js_lenient) return !facts.has_import_declaration and
+    if (parser.source_mode == .js_lenient) return (!facts.has_import_declaration or exact_ambient_string_module_graph) and
         (!facts.has_typescript_syntax or
-            (!facts.has_lenient_unhandled_runtime_syntax and
+            ((!facts.has_lenient_unhandled_runtime_syntax or exact_ambient_string_module_graph) and
                 (!facts.has_lenient_const_enum_runtime_syntax or exact_const_enum_graph) and
                 (!facts.has_lenient_ambient_string_module or exact_ambient_string_module_graph) and
-                (!facts.has_lenient_ambient_global_namespace or exact_ambient_global_namespace_graph)));
+                (!facts.has_lenient_ambient_global_namespace or exact_ambient_global_namespace_graph or
+                    exact_ambient_string_module_graph)));
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2767,7 +2846,8 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
 
     var ambient_scanner = try Scanner.init(
         allocator,
-        "declare module 'ambient' { export const value: number; } const live = 42; console.log(live);",
+        "declare module 'ambient' { import type { Value } from './types'; export const value: Value; } " ++
+            "const live = 42; console.log(live);",
     );
     var ambient_parser = Parser.init(allocator, &ambient_scanner);
     ambient_parser.configureFromExtension(".unknown");
@@ -2784,6 +2864,7 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     transformer.symbols = analyzer.symbols.items;
     const output_root = try transformer.visitNode(source_root);
     try std.testing.expect(erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &ambient_parser, &transformer, output_root));
 
     var module_idx: ?ast_mod.NodeIndex = null;
@@ -2808,11 +2889,15 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     const original_binding_id = transformer.symbol_ids.items[binding_raw];
 
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, .none));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, .none));
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, module_node_idx));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, module_node_idx));
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, source_binding_idx));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, source_binding_idx));
 
     transformer.ast.nodes.items[module_raw].data.binary.flags = 0;
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &ambient_parser, &transformer, output_root));
     transformer.ast.nodes.items[module_raw] = original_module;
 
@@ -2821,19 +2906,23 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     const original_name = transformer.ast.nodes.items[name_raw];
     transformer.ast.nodes.items[name_raw].tag = .binding_identifier;
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     transformer.ast.nodes.items[name_raw] = original_name;
 
     transformer.ast.nodes.items[module_raw].data.binary.right = @fromBackingInt(
         @intCast(transformer.ast.nodes.items.len + 1),
     );
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     transformer.ast.nodes.items[module_raw] = original_module;
     transformer.ast.nodes.items[module_raw].data.binary.right = name_idx;
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     transformer.ast.nodes.items[module_raw] = original_module;
 
     transformer.symbol_ids.items[binding_raw] = 0;
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &ambient_parser, &transformer, output_root));
     transformer.symbol_ids.items[binding_raw] = original_binding_id;
 
@@ -2847,12 +2936,14 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     const original_symbols = transformer.symbols;
     transformer.symbols = &fake_symbols;
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     transformer.symbols = original_symbols;
 
     const original_symbol_ids = try allocator.dupe(?u32, transformer.symbol_ids.items);
     defer allocator.free(original_symbol_ids);
     transformer.symbol_ids.shrinkRetainingCapacity(0);
     try std.testing.expect(!erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
     transformer.symbol_ids.clearRetainingCapacity();
     try transformer.symbol_ids.appendSlice(allocator, original_symbol_ids);
 
@@ -2871,6 +2962,48 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     _ = try import_equals_parser.parse();
     try std.testing.expect(import_equals_parser.is_module);
     try std.testing.expect(!canMangleWithTransformSemantic(minify, &import_equals_parser));
+}
+
+test "#6193 erased ambient module proof rejects lenient syntax outside its subtree" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "declare module 'ambient' { import type { Value } from './types'; export const value: Value; } " ++
+        "import { outside } from './outside'; console.log(outside);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    parser.source_mode = .js_lenient;
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.is_module);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(erasedAmbientStringModuleHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedAmbientStringModuleContainsLenientGraphBlockers(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
 }
 
 test "#6193 extensionless ambient global namespace retains the graph only after exact erasure proof" {
