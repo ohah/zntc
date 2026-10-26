@@ -8,7 +8,7 @@ pub const collect = @import("../semantic/statement_coordinates.zig").collect;
 
 /// Path splits keep every source binding/reference identity, but can move
 /// statement buckets. Native class-self and anonymous default-facade
-/// declarations use their exact initial-producer roles instead of a leaf.
+/// declarations and native/IIFE entry roles use their exact producers instead of a leaf.
 pub fn project(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -17,7 +17,7 @@ pub fn project(
 ) !?[]SemanticReference {
     const contexts = collect(allocator, ast, root) catch return null;
     const updated = try allocator.dupe(SemanticReference, semantic.references);
-    var implicit_contexts = (try @import("implicit_arguments_statement_owner.zig").collect(
+    var entry_contexts = (try @import("implicit_arguments_statement_owner.zig").collect(
         allocator,
         ast,
         contexts,
@@ -26,7 +26,7 @@ pub fn project(
         &semantic.scope_owner_map,
         semantic.references,
     )) orelse return null;
-    defer implicit_contexts.deinit(allocator);
+    defer entry_contexts.deinit(allocator);
     var anchorless_contexts: std.AutoHashMapUnmanaged(u32, ?Context) = .empty;
     defer anchorless_contexts.deinit(allocator);
     for (updated) |reference| {
@@ -73,7 +73,7 @@ pub fn project(
             // current class node owns that same exact ScopeId after AST copies.
             slot.* = class_scope_contexts.get(@backingInt(symbol.scope_id)) orelse return null;
         }
-        var implicit = implicit_contexts.iterator();
+        var implicit = entry_contexts.iterator();
         while (implicit.next()) |entry| {
             const slot = anchorless_contexts.getPtr(entry.key_ptr.*) orelse return null;
             if (slot.*) |previous| if (!std.meta.eql(previous, entry.value_ptr.*)) return null;

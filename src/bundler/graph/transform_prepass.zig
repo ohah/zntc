@@ -7559,7 +7559,8 @@ fn canRetainMinifiedSemanticGraph(
         return rejectMinifiedGraphGate(failure, .invalid_declaration);
     defer implicit_contexts.deinit(allocator);
     for (symbols, 0..) |symbol, sid| {
-        if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments and
+        if (symbol.kind == .parameter and
+            (symbol.synthetic_kind == .implicit_arguments or symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter) and
             !implicit_contexts.contains(@intCast(sid)))
             return rejectMinifiedGraphGate(failure, .invalid_declaration);
     }
