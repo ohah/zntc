@@ -196,6 +196,163 @@ test "define undefined replacement emits void zero and removes the local edge" {
     try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[symbol_id].reference_count);
 }
 
+test "define identifier paths attach their root to the use-site SymbolId" {
+    const define_values = [_][]const u8{
+        "globalThis.reader.readFlag",
+        "globalThis.reader.readFlag()",
+        "globalThis.reader.readFlag(argument)",
+        "globalThis.reader.readFlag(argument + 1)",
+        "globalThis.reader.readFlag(argument ? 1 : 2)",
+        "globalThis.reader.readFlag(-argument)",
+        "globalThis.reader.readFlag((argument + 1))",
+        "globalThis.reader.readFlag(argument ?? 2)",
+        "globalThis.reader?.readFlag(argument)",
+        "globalThis.reader.readFlag?.(argument)",
+        "globalThis.reader.readFlag(`v${argument}`)",
+        "globalThis.reader.readFlag([argument, 2])",
+        "globalThis.reader.readFlag({ value: argument })",
+        "globalThis.reader.readFlag({ argument })",
+        "gl\\u006fbalThis.reader.readFlag",
+    };
+    for (define_values) |define_value| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = "function read(globalThis, argument) { console.log(FLAG); }";
+
+        var scanner = try Scanner.init(allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+
+        var global_this_symbol: ?u32 = null;
+        var argument_symbol: ?u32 = null;
+        var replacement_span: ?Span = null;
+        for (analyzer.symbols.items, 0..) |symbol, raw| {
+            const name = parser.ast.getText(symbol.name);
+            if (std.mem.eql(u8, name, "globalThis")) global_this_symbol = @intCast(raw);
+            if (std.mem.eql(u8, name, "argument")) argument_symbol = @intCast(raw);
+        }
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .identifier_reference or
+                !std.mem.eql(u8, parser.ast.getText(node.span), "FLAG")) continue;
+            try std.testing.expect(replacement_span == null);
+            replacement_span = node.span;
+        }
+        const expected_symbol = global_this_symbol orelse return error.MissingGlobalThisSymbol;
+        const source_define_span = replacement_span orelse return error.MissingDefineSourceReference;
+
+        const defines = [_]transformer_mod.DefineEntry{.{ .key = "FLAG", .value = define_value }};
+        var transformer = try Transformer.init(allocator, &parser.ast, .{ .define = &defines });
+        defer transformer.deinit();
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+        transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.semantic_edit_enabled = true;
+
+        const output_root = try transformer.transform();
+        const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(
+            allocator,
+            transformer.ast,
+            output_root,
+        );
+        defer allocator.free(reachable);
+        var found_ordered_member_chain = false;
+        var found_define_call = false;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag == .call_expression and node.span.start == source_define_span.start and
+                node.span.end == source_define_span.end)
+            {
+                found_define_call = true;
+            }
+            if (node.tag != .static_member_expression) continue;
+            const outer_extra = node.data.extra;
+            if (outer_extra >= transformer.ast.extra_data.items.len or
+                transformer.ast.extra_data.items.len - outer_extra < 3) continue;
+            const outer_property_idx: NodeIndex = @fromBackingInt(
+                @intCast(transformer.ast.extra_data.items[outer_extra + 1]),
+            );
+            if (outer_property_idx.isNone() or @backingInt(outer_property_idx) >= transformer.ast.nodes.items.len or
+                !std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(outer_property_idx).span), "readFlag"))
+                continue;
+            const reader_idx: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[outer_extra]));
+            if (reader_idx.isNone() or @backingInt(reader_idx) >= transformer.ast.nodes.items.len) continue;
+            const reader = transformer.ast.getNode(reader_idx);
+            if (reader.tag != .static_member_expression) continue;
+            const reader_extra = reader.data.extra;
+            if (reader_extra >= transformer.ast.extra_data.items.len or
+                transformer.ast.extra_data.items.len - reader_extra < 3) continue;
+            const reader_property_idx: NodeIndex = @fromBackingInt(
+                @intCast(transformer.ast.extra_data.items[reader_extra + 1]),
+            );
+            if (reader_property_idx.isNone() or @backingInt(reader_property_idx) >= transformer.ast.nodes.items.len or
+                !std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(reader_property_idx).span), "reader"))
+                continue;
+            const root_idx: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[reader_extra]));
+            if (root_idx.isNone() or @backingInt(root_idx) >= transformer.ast.nodes.items.len) continue;
+            const root_node = transformer.ast.getNode(root_idx);
+            if (root_node.tag == .identifier_reference and
+                std.mem.eql(u8, transformer.ast.getText(root_node.span), "globalThis"))
+            {
+                found_ordered_member_chain = true;
+            }
+        }
+        try std.testing.expect(found_ordered_member_chain);
+        try std.testing.expectEqual(std.mem.indexOfScalar(u8, define_value, '(') != null, found_define_call);
+        const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
+        var found_generated_root = false;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != expected_symbol) continue;
+            const ref_node = transformer.ast.getNode(reference.node_index);
+            if (ref_node.tag != .identifier_reference or
+                !std.mem.eql(u8, transformer.ast.getText(ref_node.span), "globalThis")) continue;
+            found_generated_root = true;
+        }
+        try std.testing.expect(found_generated_root);
+        try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[expected_symbol].reference_count);
+        if (std.mem.indexOf(u8, define_value, "argument") != null) {
+            const expected_argument = argument_symbol orelse return error.MissingArgumentSymbol;
+            var found_generated_argument = false;
+            for (edited.references) |reference| {
+                if (@backingInt(reference.symbol_id) != expected_argument) continue;
+                var reference_is_reachable = false;
+                for (reachable) |reachable_node| {
+                    if (reachable_node == @backingInt(reference.node_index)) {
+                        reference_is_reachable = true;
+                        break;
+                    }
+                }
+                if (!reference_is_reachable) continue;
+                const ref_node = transformer.ast.getNode(reference.node_index);
+                if (ref_node.tag == .identifier_reference and
+                    std.mem.eql(u8, transformer.ast.getText(ref_node.span), "argument"))
+                {
+                    found_generated_argument = true;
+                }
+            }
+            try std.testing.expect(found_generated_argument);
+            try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[expected_argument].reference_count);
+        }
+    }
+}
+
 test "#4819 anonymous default class binding lookup fails closed without semantic identity" {
     var ast = Ast.init(std.testing.allocator, "");
     defer ast.deinit();

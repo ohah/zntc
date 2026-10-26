@@ -128,6 +128,308 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(native.stdout);
   }
 
+  test('define identifier paths bind generated roots at the replacement scope', async () => {
+    const cases = [
+      {
+        name: 'member chain',
+        defineValue: 'globalThis.reader.readFlag',
+        source:
+          'function read(globalThis) { console.log(FLAG()); }\nread({ reader: { readFlag() { return 7; } } });',
+        expected: '7',
+      },
+      {
+        name: 'zero-argument call',
+        defineValue: 'globalThis.reader.readFlag()',
+        source:
+          'function read(globalThis) { console.log(FLAG); }\nread({ reader: { readFlag() { return 7; } } });',
+        expected: '7',
+      },
+      {
+        name: 'one lexical argument',
+        defineValue: 'globalThis.reader.readFlag(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'binary expression argument',
+        defineValue: 'globalThis.reader.readFlag(argument + 1)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'binary operator precedence',
+        defineValue: 'globalThis.reader.readFlag(first + second * 2)',
+        source:
+          'function read(globalThis, first, second) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 10, 15);',
+        expected: '40',
+      },
+      {
+        name: 'logical expression argument',
+        defineValue: 'globalThis.reader.readFlag(argument || 41)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 0);',
+        expected: '41',
+      },
+      {
+        name: 'conditional expression argument',
+        defineValue: 'globalThis.reader.readFlag(argument ? 41 : 7)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 0);',
+        expected: '7',
+      },
+      {
+        name: 'unary expression argument',
+        defineValue: 'globalThis.reader.readFlag(-argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 40);',
+        expected: '-40',
+      },
+      {
+        name: 'parenthesized expression argument',
+        defineValue: 'globalThis.reader.readFlag((argument + 1))',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'nullish expression argument',
+        defineValue: 'globalThis.reader.readFlag(argument ?? 41)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, null);',
+        expected: '41',
+      },
+      {
+        name: 'optional member path',
+        defineValue: 'globalThis.reader?.readFlag(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'computed member path',
+        defineValue: 'globalThis["reader"].readFlag(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'optional call path',
+        defineValue: 'globalThis.reader.readFlag?.(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'template literal argument',
+        defineValue: 'globalThis.reader.readFlag(`v${argument}`)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value; } } }, 40);',
+        expected: 'v40',
+      },
+      {
+        name: 'array expression argument',
+        defineValue: 'globalThis.reader.readFlag([argument, 2])',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value[0] + value[1]; } } }, 40);',
+        expected: '42',
+      },
+      {
+        name: 'object expression argument',
+        defineValue: 'globalThis.reader.readFlag({ value: argument })',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value.value + 2; } } }, 40);',
+        expected: '42',
+      },
+      {
+        name: 'object shorthand argument',
+        defineValue: 'globalThis.reader.readFlag({ argument })',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value.argument + 2; } } }, 40);',
+        expected: '42',
+      },
+      {
+        name: 'computed object key argument',
+        defineValue: 'globalThis.reader.readFlag({ [argument]: 42 })',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value[40]; } } }, 40);',
+        expected: '42',
+      },
+      {
+        name: 'member expression argument',
+        defineValue: 'globalThis.reader.readFlag(argument.value)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, { value: 40 });',
+        expected: '41',
+      },
+      {
+        name: 'multiple lexical arguments',
+        defineValue: 'globalThis.reader.sum(first, second)',
+        source:
+          'function read(globalThis, first, second) { console.log(FLAG); }\nread({ reader: { sum(a, b) { return a + b; } } }, 19, 23);',
+        expected: '42',
+      },
+      {
+        name: 'nested calls',
+        defineValue: 'globalThis.reader.wrap(globalThis.reader.readFlag(argument))',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; }, wrap(value) { return value + 1; } } }, 40);',
+        expected: '42',
+      },
+      {
+        name: 'numeric literal argument',
+        defineValue: 'globalThis.reader.readFlag(40)',
+        source:
+          'function read(globalThis) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } });',
+        expected: '41',
+      },
+      {
+        name: 'string literal argument',
+        defineValue: 'globalThis.reader.readFlag("answer")',
+        source:
+          'function read(globalThis) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + "!"; } } });',
+        expected: 'answer!',
+      },
+      {
+        name: 'boolean literal argument',
+        defineValue: 'globalThis.reader.readFlag(true)',
+        source:
+          'function read(globalThis) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value ? 7 : 0; } } });',
+        expected: '7',
+      },
+      {
+        name: 'null literal argument',
+        defineValue: 'globalThis.reader.readFlag(null)',
+        source:
+          'function read(globalThis) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value === null ? 7 : 0; } } });',
+        expected: '7',
+      },
+      {
+        name: 'keyword property name',
+        defineValue: 'globalThis.reader.default(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { default(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'escaped root identifier',
+        defineValue: 'gl\\u006fbalThis.reader.readFlag(argument)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'trailing argument comma',
+        defineValue: 'globalThis.reader.readFlag(argument,)',
+        source:
+          'function read(globalThis, argument) { console.log(FLAG); }\nread({ reader: { readFlag(value) { return value + 1; } } }, 40);',
+        expected: '41',
+      },
+      {
+        name: 'arrow expression captures the use-site binding',
+        defineValue: '(() => shared)()',
+        source: 'const shared = 42; console.log(FLAG);',
+        expected: '42',
+      },
+      {
+        name: 'function expression captures the use-site binding',
+        defineValue: '(function () { return shared; })()',
+        source: 'const shared = 43; console.log(FLAG);',
+        expected: '43',
+      },
+      {
+        name: 'assignment expression writes the use-site binding',
+        defineValue: '(shared = 7)',
+        source: 'let shared = 1; console.log(FLAG, shared);',
+        expected: '7 7',
+      },
+      {
+        name: 'direct eval in an opaque expression sees the original local name',
+        defineValue: 'eval("shared")',
+        source: 'const shared = 44; console.log(FLAG);',
+        expected: '44',
+      },
+      {
+        name: 'with in an opaque function expression sees the original local name',
+        defineValue: '(function () { with ({}) return shared; })()',
+        source: 'const shared = 45; console.log(FLAG);',
+        expected: '45',
+      },
+    ] as const;
+    const fixture = await createFixture(
+      Object.fromEntries(cases.map((scenario, index) => [`case-${index}.js`, scenario.source])),
+    );
+    cleanup = fixture.cleanup;
+
+    for (const [index, scenario] of cases.entries()) {
+      const file = `case-${index}.js`;
+      const input = join(fixture.dir, file);
+      const output = join(fixture.dir, `${file}.out.js`);
+      const result = await runZntc(
+        [input, '-o', output, '--minify-identifiers', `--define:FLAG=${scenario.defineValue}`],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, result.stderr).toBe(0);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(identity, `${file}: ${result.stdout}\n${result.stderr}`).toBeDefined();
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      expect(identity).toMatch(/unclassified_reference=0(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+
+      const execution = await runNode(output);
+      expect(execution.stderr, `${scenario.name}: ${result.stdout}\n${result.stderr}`).toBe('');
+      expect(execution.stdout, scenario.name).toBe(scenario.expected);
+    }
+  });
+
+  test('define call roots retain lexical identities through direct-eval console reanalysis', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'const globalThis = { reader: { readFlag() { return 7; } } };',
+        "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; }",
+        'process.stdout.write(String(read(40)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--drop=console',
+        '--minify-identifiers',
+        '--define:__FLAG__=globalThis.reader.readFlag()',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'reanalyzed',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    expect(identity).toMatch(/unclassified_reference=0(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout).toBe('47');
+  });
+
   test('single-file minifier renames enum IIFE parameters by SymbolId', async () => {
     const fixture = await createFixture({
       'input.ts': `
@@ -192,6 +494,96 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const transformed = await runNode(output);
     expect(native.stdout).toBe('11 12 8');
     expect(transformed.stdout).toBe(native.stdout);
+  });
+
+  test('bundle define arrow captures retain their cross-module lexical symbol', async () => {
+    const fixture = await createFixture({
+      'entry.js': [
+        "import { read, getA } from './a.js';",
+        "import { get } from './b.js';",
+        'console.log(read(), getA(), get());',
+      ].join('\n'),
+      'a.js': [
+        'const shared = 41;',
+        'export function read() { const shared = 42; return FLAG; }',
+        'export function getA() { return shared; }',
+      ].join('\n'),
+      'b.js': 'const shared = 100; export function get() { return shared; }',
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'entry.js');
+    for (const [label, value] of [
+      ['arrow', '(() => shared)()'],
+      ['function', '(function () { return shared; })()'],
+    ]) {
+      const output = join(fixture.dir, `output-${label}.cjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          input,
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          '--minify-identifiers',
+          `--define:FLAG=${value}`,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, result.stderr).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, 'a.js', 'reanalyzed');
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const execution = await runNode(output);
+      expect(execution.stderr).toBe('');
+      expect(execution.stdout.trim()).toBe('42 41 100');
+    }
+  });
+
+  test('bundle define assignment writes retain their cross-module lexical symbol', async () => {
+    const fixture = await createFixture({
+      'entry.js': [
+        "import { readModule, readLocal, getA } from './a.js';",
+        "import { get } from './b.js';",
+        "console.log(readModule(), getA(), readLocal().join(':'), getA(), get(), typeof globalThis.shared);",
+      ].join('\n'),
+      'a.js': [
+        'let shared = 41;',
+        'export function readModule() { return FLAG; }',
+        'export function getA() { return shared; }',
+        'export function readLocal() { let shared = 42; const value = FLAG; return [value, shared]; }',
+      ].join('\n'),
+      'b.js': 'const shared = 100; export function get() { return shared; }',
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'entry.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+        '--define:FLAG=(shared=7)',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(result.stderr, 'a.js', 'reanalyzed');
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('7 7 7:7 7 100 undefined');
   });
 
   test('type-erased TypeScript imports and bindings reuse one semantic graph', async () => {
