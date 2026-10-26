@@ -609,84 +609,142 @@ pub const LoweredConstructorOwner = struct {
 };
 pub const LoweredSiteError = std.mem.Allocator.Error || error{ InvalidScope, InvalidSymbol, InvalidNode };
 
-pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!void {
-    if (marker.native or index.isNone() or @backingInt(index) >= self.ast.nodes.items.len) return error.InvalidNode;
+/// Non-owning access to an actual graph. Finished certificates use its const
+/// slices; creators retain the editor's indexed uniqueness checks.
+pub const LoweredSiteGraph = struct {
+    symbols: []const @import("../../semantic/symbol.zig").Symbol,
+    scopes: []const @import("../../semantic/scope.zig").Scope,
+    symbol_ids: []const ?u32,
+    references: []const @import("../../semantic/symbol.zig").Reference,
+    editor: ?*@import("../../semantic/editor.zig").SemanticEditor = null,
+
+    fn getSymbolIdAt(self: *const @This(), node: NodeIndex) ?u32 {
+        if (node.isNone() or @backingInt(node) >= self.symbol_ids.len) return null;
+        return self.symbol_ids[@backingInt(node)];
+    }
+
+    fn referenceForNode(self: *const @This(), node: NodeIndex) LoweredSiteError!?@import("../../semantic/symbol.zig").Reference {
+        if (self.editor) |editor| return editor.referenceForNode(node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        };
+        if (node.isNone()) return error.InvalidNode;
+        var found: ?@import("../../semantic/symbol.zig").Reference = null;
+        for (self.references) |row| {
+            if (row.node_index != node) continue;
+            if (found != null) return error.InvalidNode;
+            found = row;
+        }
+        return found;
+    }
+};
+
+const LoweredSiteNodes = struct { node: Node, result_assignment: Node, call: Node, check: Node };
+
+fn validateLoweredSuperSyntax(ast: *const ast_mod.Ast, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!LoweredSiteNodes {
+    if (marker.native or index.isNone() or @backingInt(index) >= ast.nodes.items.len) return error.InvalidNode;
     if (marker.constructor_frame != owner.frame or marker.constructor_scope != owner.scope or marker.use_scope != use_scope) return error.InvalidScope;
     if (marker.target_symbol != owner.target or !std.meta.eql(marker.flags, ReferenceFlags{ .write = true })) return error.InvalidSymbol;
-    const node = self.ast.getNode(index);
+    const node = ast.getNode(index);
     if (node.tag != .assignment_expression or node.data.binary.right.isNone() or
-        marker.result_assignment.isNone() or @backingInt(marker.result_assignment) >= self.ast.nodes.items.len) return error.InvalidNode;
-    const result_assignment = self.ast.getNode(marker.result_assignment);
+        marker.result_assignment.isNone() or @backingInt(marker.result_assignment) >= ast.nodes.items.len) return error.InvalidNode;
+    const result_assignment = ast.getNode(marker.result_assignment);
     if (result_assignment.tag != .assignment_expression or result_assignment.data.binary.right.isNone()) return error.InvalidNode;
-    const call = self.ast.getNode(result_assignment.data.binary.right);
+    const call = ast.getNode(result_assignment.data.binary.right);
     if (call.tag != .call_expression) return error.InvalidNode;
-    if (marker.evaluation_sequence.isNone() or @backingInt(marker.evaluation_sequence) >= self.ast.nodes.items.len) return error.InvalidNode;
-    const evaluation = self.ast.getNode(marker.evaluation_sequence);
+    if (marker.evaluation_sequence.isNone() or @backingInt(marker.evaluation_sequence) >= ast.nodes.items.len) return error.InvalidNode;
+    const evaluation = ast.getNode(marker.evaluation_sequence);
     if (evaluation.tag != .sequence_expression or evaluation.data.list.len != 3 or
-        self.ast.readExtraNode(evaluation.data.list.start, 0) != marker.result_assignment) return error.InvalidNode;
-    const binding_site = self.ast.readExtraNode(evaluation.data.list.start, 2);
+        ast.readExtraNode(evaluation.data.list.start, 0) != marker.result_assignment) return error.InvalidNode;
+    const binding_site = ast.readExtraNode(evaluation.data.list.start, 2);
     if (binding_site != index) {
-        const placed = self.ast.getNode(binding_site);
+        const placed = ast.getNode(binding_site);
         if (placed.tag != .sequence_expression or placed.data.list.len < 3 or
-            self.ast.readExtraNode(placed.data.list.start, 0) != index) return error.InvalidNode;
+            ast.readExtraNode(placed.data.list.start, 0) != index) return error.InvalidNode;
     }
-    const check = self.ast.getNode(self.ast.readExtraNode(evaluation.data.list.start, 1));
-    if (check.tag != .call_expression or self.ast.readExtra(check.data.extra, 2) != 1) return error.InvalidNode;
-    if (!self.semantic_edit_enabled) return;
+    const check = ast.getNode(ast.readExtraNode(evaluation.data.list.start, 1));
+    if (check.tag != .call_expression or ast.readExtra(check.data.extra, 2) != 1) return error.InvalidNode;
+    return .{ .node = node, .result_assignment = result_assignment, .call = call, .check = check };
+}
+
+fn validateLoweredSuperSemantics(ast: *const ast_mod.Ast, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId, nodes: LoweredSiteNodes, graph: LoweredSiteGraph) LoweredSiteError!void {
+    const node = nodes.node;
+    const result_assignment = nodes.result_assignment;
+    const call = nodes.call;
+    const check = nodes.check;
     if (marker.pending_result_producer_id != 0) return error.InvalidSymbol;
-    const editor = if (self.semantic_editor) |*value| value else return error.InvalidNode;
-    if (owner.scope.isNone() or use_scope.isNone() or owner.scope.toIndex() >= editor.scopes.items.len or use_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[owner.scope.toIndex()].kind != .function) return error.InvalidScope;
-    const target = self.getSymbolIdAt(node.data.binary.left) orelse return error.InvalidSymbol;
-    if (target >= editor.symbols.items.len or editor.symbols.items[target].scope_id != owner.scope or editor.symbols.items[target].kind != .variable_var) return error.InvalidSymbol;
+    if (owner.scope.isNone() or use_scope.isNone() or owner.scope.toIndex() >= graph.scopes.len or use_scope.toIndex() >= graph.scopes.len or graph.scopes[owner.scope.toIndex()].kind != .function) return error.InvalidScope;
+    const target = graph.getSymbolIdAt(node.data.binary.left) orelse return error.InvalidSymbol;
+    if (target >= graph.symbols.len or graph.symbols[target].scope_id != owner.scope or graph.symbols[target].kind != .variable_var) return error.InvalidSymbol;
     const result_id = marker.result_symbol orelse return error.InvalidSymbol;
-    if (@backingInt(result_id) >= editor.symbols.items.len or marker.result_scope.isNone() or
-        marker.result_scope.toIndex() >= editor.scopes.items.len or
-        editor.scopes.items[marker.result_scope.toIndex()].kind != .function or
-        editor.symbols.items[@backingInt(result_id)].scope_id != marker.result_scope or
-        editor.symbols.items[@backingInt(result_id)].kind != .variable_var) return error.InvalidSymbol;
-    if (self.getSymbolIdAt(result_assignment.data.binary.left) != @backingInt(result_id) or
-        self.getSymbolIdAt(node.data.binary.right) != @backingInt(result_id)) return error.InvalidSymbol;
+    if (@backingInt(result_id) >= graph.symbols.len or marker.result_scope.isNone() or
+        marker.result_scope.toIndex() >= graph.scopes.len or
+        graph.scopes[marker.result_scope.toIndex()].kind != .function or
+        graph.symbols[@backingInt(result_id)].scope_id != marker.result_scope or
+        graph.symbols[@backingInt(result_id)].kind != .variable_var) return error.InvalidSymbol;
+    if (graph.getSymbolIdAt(result_assignment.data.binary.left) != @backingInt(result_id) or
+        graph.getSymbolIdAt(node.data.binary.right) != @backingInt(result_id)) return error.InvalidSymbol;
     for ([_]struct { node: NodeIndex, flags: ReferenceFlags }{
         .{ .node = result_assignment.data.binary.left, .flags = .{ .write = true } },
         .{ .node = node.data.binary.right, .flags = .{ .read = true } },
     }) |use| {
-        const result_row = (editor.referenceForNode(use.node) catch |err| switch (err) {
+        const result_row = (graph.referenceForNode(use.node) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidNode,
         }) orelse return error.InvalidNode;
         if (result_row.scope_id != use_scope) return error.InvalidScope;
         if (result_row.symbol_id != result_id or !std.meta.eql(result_row.flags, use.flags)) return error.InvalidSymbol;
     }
-    const callee = self.ast.readExtraNode(call.data.extra, 0);
-    const callee_id = self.getSymbolIdAt(callee) orelse return error.InvalidSymbol;
+    const callee = ast.readExtraNode(call.data.extra, 0);
+    const callee_id = graph.getSymbolIdAt(callee) orelse return error.InvalidSymbol;
     if (marker.target_symbol != @as(SymbolId, @fromBackingInt(target)) or marker.callee_symbol != @as(SymbolId, @fromBackingInt(callee_id))) return error.InvalidSymbol;
-    const row = (editor.referenceForNode(node.data.binary.left) catch |err| switch (err) {
+    const row = (graph.referenceForNode(node.data.binary.left) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidNode,
     }) orelse return error.InvalidNode;
     if (row.scope_id != use_scope) return error.InvalidScope;
     if (row.symbol_id != marker.target_symbol.? or !std.meta.eql(row.flags, marker.flags)) return error.InvalidSymbol;
-    const call_row = (editor.referenceForNode(callee) catch |err| switch (err) {
+    const call_row = (graph.referenceForNode(callee) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidNode,
     }) orelse return error.InvalidNode;
     if (call_row.scope_id != use_scope) return error.InvalidScope;
     if (call_row.symbol_id != marker.callee_symbol.? or !call_row.flags.read) return error.InvalidSymbol;
-    const check_callee = self.ast.readExtraNode(check.data.extra, 0);
-    const live_this = self.ast.readExtraNode(self.ast.readExtra(check.data.extra, 1), 0);
+    const check_callee = ast.readExtraNode(check.data.extra, 0);
+    const live_this = ast.readExtraNode(ast.readExtra(check.data.extra, 1), 0);
     for ([_]struct { node: NodeIndex, id: ?SymbolId }{
         .{ .node = check_callee, .id = marker.check_symbol },
         .{ .node = live_this, .id = marker.target_symbol },
     }) |use| {
         const expected = use.id orelse return error.InvalidSymbol;
-        if (self.getSymbolIdAt(use.node) != @backingInt(expected)) return error.InvalidSymbol;
-        const check_row = (editor.referenceForNode(use.node) catch |err| switch (err) {
+        if (graph.getSymbolIdAt(use.node) != @backingInt(expected)) return error.InvalidSymbol;
+        const check_row = (graph.referenceForNode(use.node) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidNode,
         }) orelse return error.InvalidNode;
         if (check_row.scope_id != use_scope) return error.InvalidScope;
         if (check_row.symbol_id != expected or !std.meta.eql(check_row.flags, ReferenceFlags{ .read = true })) return error.InvalidSymbol;
     }
+}
+
+pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!void {
+    const nodes = try validateLoweredSuperSyntax(self.ast, index, marker, owner, use_scope);
+    if (!self.semantic_edit_enabled) return;
+    const editor = if (self.semantic_editor) |*value| value else return error.InvalidNode;
+    return validateLoweredSuperSemantics(self.ast, marker, owner, use_scope, nodes, .{
+        .symbols = editor.symbols.items,
+        .scopes = editor.scopes.items,
+        .symbol_ids = self.symbol_ids.items,
+        .references = editor.references.items,
+        .editor = editor,
+    });
+}
+
+/// Validate a completed owner's exact arrays without reconstructing or
+/// temporarily reattaching a SemanticEditor after its finish boundary.
+pub fn validateLoweredSuperSiteInGraph(ast: *const ast_mod.Ast, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId, graph: LoweredSiteGraph) LoweredSiteError!void {
+    const nodes = try validateLoweredSuperSyntax(ast, index, marker, owner, use_scope);
+    return validateLoweredSuperSemantics(ast, marker, owner, use_scope, nodes, graph);
 }
 
 /// Only creator-recorded lowered calls belonging to this constructor frame

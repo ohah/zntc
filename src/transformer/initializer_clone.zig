@@ -190,6 +190,8 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
             if (!source.native and source.pending_result_producer_id != 0)
                 @panic("cloned super result has no published producer identity");
             var copied = source;
+            // source_call is an external original input anchor, not an owned
+            // output edge. Only generated output nodes/scopes/SIDs remap.
             copied.constructor_scope = result.scope(source.constructor_scope);
             copied.use_scope = result.scope(source.use_scope);
             if (source.target_symbol) |id| copied.target_symbol = result.sid(id);
