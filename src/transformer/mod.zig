@@ -105,6 +105,7 @@ test {
     _ = @import("retained_private_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
+    _ = @import("rest_native_arguments_semantic_test.zig");
     _ = @import("object_super_semantic_test.zig");
     _ = @import("flow_match_semantic_test.zig");
     _ = @import("generated_name_eval_semantic_test.zig");

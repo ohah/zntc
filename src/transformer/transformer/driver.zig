@@ -653,7 +653,12 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (self.options.unsupported.default_params and
                     try sloppyBodyReadsArguments(self, self.current_scope, source_body_idx))
                     self.unlinked_parameter_bindings = &unlinked_parameters;
-                var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
+                var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2ForFunction(self, params_list, node.span, .{
+                    .ast_owner = self.ast,
+                    .function_node = @fromBackingInt(@as(u32, @intCast(i))),
+                    .params_node = params_idx,
+                    .body_scope = self.current_scope,
+                });
                 self.unlinked_parameter_bindings = null;
                 defer lr.body_stmts.deinit(self.allocator);
                 // Parameter initializers now execute in the emitted function

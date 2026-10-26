@@ -30,6 +30,15 @@ const es_helpers = @import("es_helpers.zig");
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
 
+/// Ephemeral ownership proof from the caller's current AST, never persisted
+/// or reconstructed from an identifier spelling.
+pub const RestArgumentsOwner = struct {
+    ast_owner: *const ast_mod.Ast,
+    function_node: NodeIndex,
+    params_node: NodeIndex,
+    body_scope: @import("../semantic/scope.zig").ScopeId,
+};
+
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
         /// The emitted formal parameter and body declarations have different
@@ -235,7 +244,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, false);
+            return lowerParamsImpl(self, params, span, false, null);
         }
 
         pub fn lowerParamsPass2(
@@ -243,7 +252,78 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, true);
+            return lowerParamsImpl(self, params, span, true, null);
+        }
+
+        /// Structural mistakes are not an invitation to create a global.
+        /// Valid but unsupported source environments retain the existing path.
+        pub fn restArgumentsOwner(
+            self: *Transformer,
+            params: NodeList,
+            owner: RestArgumentsOwner,
+        ) error{InvalidRestArgumentsOwner}!?RestArgumentsOwner {
+            if (!self.semantic_edit_enabled) return null;
+            if (owner.ast_owner != self.ast or owner.function_node.isNone() or owner.params_node.isNone() or owner.body_scope.isNone() or
+                @backingInt(owner.function_node) >= self.ast.nodes.items.len or @backingInt(owner.params_node) >= self.ast.nodes.items.len)
+                return error.InvalidRestArgumentsOwner;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            if (owner.body_scope.toIndex() >= scopes.len or owner.body_scope.toIndex() >= maps.len or
+                scopes[owner.body_scope.toIndex()].kind != .function or self.outputOwnedScope(owner.function_node) != owner.body_scope or
+                self.current_scope != owner.body_scope)
+                return error.InvalidRestArgumentsOwner;
+            const function = self.ast.getNode(owner.function_node);
+            const params_offset: u32 = switch (function.tag) {
+                .function_declaration, .function_expression, .function, .method_definition => ast_mod.FunctionExtra.params,
+                .arrow_function_expression => ast_mod.ArrowExtra.params,
+                else => return error.InvalidRestArgumentsOwner,
+            };
+            if (!self.ast.hasExtra(function.data.extra, params_offset) or self.ast.readExtraNode(function.data.extra, params_offset) != owner.params_node)
+                return error.InvalidRestArgumentsOwner;
+            const formal = self.ast.getNode(owner.params_node);
+            if (formal.tag != .formal_parameters or formal.data.list.start != params.start or formal.data.list.len != params.len or
+                params.start > self.ast.extra_data.items.len or params.len > self.ast.extra_data.items.len - params.start)
+                return error.InvalidRestArgumentsOwner;
+            if (function.tag == .arrow_function_expression) return null;
+            const raw_flags = if (self.ast.hasExtra(function.data.extra, ast_mod.FunctionExtra.flags)) self.ast.readExtra(function.data.extra, ast_mod.FunctionExtra.flags) else return error.InvalidRestArgumentsOwner;
+            const flags = if (function.tag == .method_definition) ast_mod.methodFlagsToFunctionFlags(raw_flags) else raw_flags;
+            if (flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) != 0) return null;
+            if (self.outputOwnedScope(owner.params_node)) |parameter_scope| {
+                if (parameter_scope != owner.body_scope) {
+                    if (parameter_scope.isNone() or parameter_scope.toIndex() >= scopes.len or scopes[parameter_scope.toIndex()].kind != .function or
+                        scopes[owner.body_scope.toIndex()].parent != parameter_scope) return error.InvalidRestArgumentsOwner;
+                    return null;
+                }
+            }
+            // A scope-map spelling is only a collision veto. Typed role rows
+            // select the engine, and makeNativeArgumentsRef creates its read.
+            const slot = maps[owner.body_scope.toIndex()].get("arguments");
+            var engine: ?usize = null;
+            for (symbols, 0..) |symbol, sid| {
+                if (symbol.scope_id != owner.body_scope or symbol.synthetic_kind != .implicit_arguments) continue;
+                if (engine != null or slot != sid) return error.InvalidRestArgumentsOwner;
+                engine = sid;
+                if (symbol.kind != .parameter and symbol.kind != .variable_var) return error.InvalidRestArgumentsOwner;
+            }
+            if (slot) |sid| {
+                if (sid >= symbols.len or symbols[sid].scope_id != owner.body_scope) return error.InvalidRestArgumentsOwner;
+                const symbol = symbols[sid];
+                if (symbol.synthetic_kind == .implicit_arguments) {
+                    if (engine != sid) return error.InvalidRestArgumentsOwner;
+                    if (symbol.kind == .variable_var) return null;
+                } else {
+                    if (symbol.synthetic_kind != null) return error.InvalidRestArgumentsOwner;
+                    return null;
+                }
+            }
+            return owner;
+        }
+
+        pub fn lowerParamsPass2ForFunction(self: *Transformer, params: NodeList, span: Span, owner: RestArgumentsOwner) Transformer.Error!LowerResult {
+            const native_owner = restArgumentsOwner(self, params, owner) catch
+                @panic("rest parameter producer has invalid actual function ownership");
+            return lowerParamsImpl(self, params, span, true, native_owner);
         }
 
         fn lowerParamsImpl(
@@ -251,6 +331,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
             comptime pass2: bool,
+            rest_owner: ?RestArgumentsOwner,
         ) Transformer.Error!LowerResult {
             const param_scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(param_scratch_top);
@@ -304,10 +385,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         // `...[c, d = c]`: the slice goes to a temp and the pattern
                         // reads it, like a destructured parameter. A pattern left on
                         // the `var` stayed ES2015 syntax (#5668).
-                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span);
+                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span, rest_owner);
                         continue;
                     }
-                    const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span);
+                    const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span, rest_owner);
                     try body_stmts.append(self.allocator, rest_stmt);
                     // rest를 params에 넣지 않음
                     continue;
@@ -720,6 +801,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             start_index: usize,
             body_stmts: *std.ArrayList(NodeIndex),
             span: Span,
+            rest_owner: ?RestArgumentsOwner,
         ) Transformer.Error!void {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
@@ -731,7 +813,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 .variable_var,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
-            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span));
+            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span, rest_owner));
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -759,7 +841,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
         }
 
         /// var rest = [].slice.call(arguments, N)
-        fn buildRestSlice(self: *Transformer, binding: NodeIndex, start_index: usize, span: Span) Transformer.Error!NodeIndex {
+        fn buildRestSlice(self: *Transformer, binding: NodeIndex, start_index: usize, span: Span, rest_owner: ?RestArgumentsOwner) Transformer.Error!NodeIndex {
             // [] (empty array)
             const empty_arr_list = try self.ast.addNodeList(&.{});
             const empty_arr = try self.ast.addNode(.{
@@ -777,7 +859,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const slice_call = try es_helpers.makeStaticMember(self, slice_member, call_prop, span);
 
             // arguments
-            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            const args_ref = if (rest_owner) |owner|
+                try self.makeNativeArgumentsRef(owner.body_scope, owner.body_scope, span)
+            else
+                try es_helpers.makeGlobalRef(self, "arguments");
 
             // start_index number
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_index));
