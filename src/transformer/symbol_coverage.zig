@@ -1695,6 +1695,26 @@ fn isNamespaceBodyBlock(
     return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
 }
 
+fn canonicalNamespaceBodyOwner(
+    ast: *const Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    body: u32,
+) ?u32 {
+    if (body >= ast.nodes.items.len) return null;
+    const tag = ast.nodes.items[body].tag;
+    if (tag != .block_statement and tag != .ts_module_block) return null;
+    const primary = parents.get(body) orelse return null;
+    if (primary >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[primary];
+    if (node.tag != .ts_module_declaration or node.data.binary.flags != 0 or
+        @backingInt(node.data.binary.right) != body) return null;
+    const scope = owners.get(body) orelse return null;
+    if (scope >= scopes.len or scopes[scope].kind != .function or owners.get(primary) != scope) return null;
+    return primary;
+}
+
 fn staticBlockBodyOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
     const owner = parents.get(block) orelse return null;
     if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
@@ -3147,6 +3167,7 @@ fn checkExactImpl(
         if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
             if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .class_static_block) continue;
         }
+        if (canonicalNamespaceBodyOwner(ast, &parent_by_node, scope_owner_map, scopes, raw) != null) continue;
         const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
         if (first_owner.found_existing) {
             if (first_owner.value_ptr.* != raw) {
@@ -9031,4 +9052,77 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
     );
     try std.testing.expectEqual(@as(usize, 1), report.unproven_external_reference);
     try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit admits only canonical namespace body aliases" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "namespace N { { let local = 1; } } namespace M {}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var sem = Analyzer.init(a, &parser.ast);
+    sem.is_ts = true;
+    sem.collect_unresolved_reference_nodes = true;
+    try sem.analyze();
+    try std.testing.expectEqual(@as(usize, 0), sem.errors.items.len);
+    var primary: ?u32 = null;
+    var sibling: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration) continue;
+        if (primary == null) primary = @intCast(raw) else sibling = @intCast(raw);
+    }
+    const p = primary.?;
+    const body = @backingInt(parser.ast.nodes.items[p].data.binary.right);
+    const scope = sem.scope_owner_map.get(p).?;
+    const sibling_scope = sem.scope_owner_map.get(sibling.?).?;
+    try std.testing.expect(scope != sibling_scope);
+    const body_node = parser.ast.nodes.items[body];
+    const nested = parser.ast.extra_data.items[body_node.data.list.start];
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    try parents.put(a, body, p);
+    try parents.put(a, nested, body);
+    try sem.scope_owner_map.put(a, body, scope);
+    try std.testing.expectEqual(p, canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body).?);
+    const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const canonical = try checkExact(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), sem.symbol_ids.items, sem.symbols.items, sem.scopes.items, sem.scope_maps.items, &sem.scope_owner_map, sem.references.items, &.{}, &.{}, &empty_nodes, &empty_nodes, &origins);
+    try std.testing.expectEqual(@as(usize, 0), canonical.duplicate_scope_owner);
+    // A live nested lexical block sharing the same number is still a second
+    // owner, not the canonical namespace body edge.
+    const nested_scope = sem.scope_owner_map.get(nested).?;
+    try sem.scope_owner_map.put(a, nested, scope);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, nested) == null);
+    const duplicate = try checkExact(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), sem.symbol_ids.items, sem.symbols.items, sem.scopes.items, sem.scope_maps.items, &sem.scope_owner_map, sem.references.items, &.{}, &.{}, &empty_nodes, &empty_nodes, &origins);
+    try std.testing.expectEqual(@as(usize, 1), duplicate.duplicate_scope_owner);
+    try sem.scope_owner_map.put(a, nested, nested_scope);
+    try sem.scope_owner_map.put(a, body, sibling_scope);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, scope);
+    _ = sem.scope_owner_map.remove(p);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, p, scope);
+    const original = parser.ast.nodes.items[p];
+    parser.ast.nodes.items[p].data.binary.flags = 1;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    parser.ast.nodes.items[p] = original;
+    try parents.put(a, body, sibling.?);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try parents.put(a, body, p);
+    const original_body = parser.ast.nodes.items[body];
+    parser.ast.nodes.items[body].tag = .empty_statement;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    parser.ast.nodes.items[body] = original_body;
+    _ = sem.scope_owner_map.remove(body);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, @intCast(sem.scopes.items.len));
+    try sem.scope_owner_map.put(a, p, @intCast(sem.scopes.items.len));
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, scope);
+    try sem.scope_owner_map.put(a, p, scope);
+    const scopes = try a.dupe(Scope, sem.scopes.items);
+    scopes[scope].kind = .block;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, scopes, body) == null);
 }
