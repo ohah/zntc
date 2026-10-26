@@ -53,6 +53,8 @@ pub const TreeShaker = struct {
     linker: *const Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMapUnmanaged(void) = .empty,
+    /// Exact folded-if/kept-assignment relations, scoped to this shake run.
+    node_buffer_folded_exports: std.AutoHashMapUnmanaged(u64, cjs_patterns.FoldedNodeBufferExport) = .empty,
     entry_set: std.DynamicBitSet,
     /// markAllExportsUsed 의 re-export source 확장 방문 여부.
     /// `*` sentinel 은 다른 경로에서 먼저 찍힐 수 있으므로 recursion guard 와 분리한다.
@@ -153,6 +155,7 @@ pub const TreeShaker = struct {
     }
 
     pub fn deinit(self: *TreeShaker) void {
+        self.node_buffer_folded_exports.deinit(self.allocator);
         // Module 에 mirror 한 borrowed pointer 가 dangling 되지 않도록 먼저 null.
         for (0..self.graph.moduleCount()) |i| {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
@@ -277,6 +280,10 @@ pub const TreeShaker = struct {
     /// included는 단조가 아님 — 축소(미사용 제거)와 확장(canonical/side-effect 전파)이 교차.
     /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
+        // Production creates a fresh shaker per build. Keep this public entry
+        // conservative for a reused graph/shaker too: no prior AST's fact may
+        // authorize a statement in a new analysis run.
+        self.node_buffer_folded_exports.clearRetainingCapacity();
         const mod_count = self.graph.moduleCount();
 
         // re_export_star_targets bitset 한 번 build — tryMarkReExportNsSubset 가 fixpoint
@@ -1680,7 +1687,11 @@ pub const TreeShaker = struct {
         for (infos.stmts, 0..) |stmt, si| {
             const stmt_ni: usize = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            if (!cjs_patterns.isModuleExportsAssignedNodeBufferObject(ast, ast.nodes.items[stmt_ni], &buffer_names)) continue;
+            if (!cjs_patterns.isModuleExportsAssignedNodeBufferObject(ast, ast.nodes.items[stmt_ni], &buffer_names)) {
+                const key = (@as(u64, mod_idx) << 32) | @as(u64, @intCast(stmt_ni));
+                const fact = self.node_buffer_folded_exports.get(key) orelse continue;
+                if (!cjs_patterns.foldedNodeBufferExportIsCurrent(m, ast, @fromBackingInt(@as(u32, @intCast(stmt_ni))), fact)) continue;
+            }
             if (reachable_stmts[mod_idx] == null) {
                 reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
@@ -2422,12 +2433,15 @@ pub const TreeShaker = struct {
             var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer removed_nodes.deinit(self.allocator);
             var needs_semantic_reanalysis = false;
-            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModule(
+            var folded_exports: std.ArrayListUnmanaged(cjs_patterns.FoldedNodeBufferExport) = .empty;
+            defer folded_exports.deinit(self.allocator);
+            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
                 self.allocator,
                 m,
                 ast,
                 &removed_nodes,
                 &needs_semantic_reanalysis,
+                &folded_exports,
             ) catch false;
             if (retained_folded) {
                 if (needs_semantic_reanalysis) {
@@ -2448,6 +2462,10 @@ pub const TreeShaker = struct {
                 else
                     false;
                 if (retained) {
+                    for (folded_exports.items) |fact| {
+                        const key = (@as(u64, @intCast(i)) << 32) | @as(u64, @backingInt(fact.statement));
+                        try self.node_buffer_folded_exports.put(self.allocator, key, fact);
+                    }
                     self.markAstMutated(m);
                 } else {
                     // The retained candidate has already removed the alternate.

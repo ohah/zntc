@@ -241,6 +241,249 @@ test "Buffer fallback function preflight rejects a foreign AST with identical nu
     var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
     var needs = false;
     try std.testing.expect(!try patterns.foldNodeBufferCapabilityIfsForModule(a, &f.module, &foreign, &removed, &needs));
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    const before_symbols = try a.dupe(Symbol, f.module.semantic.?.symbols.items);
+    const before_references = try a.dupe(Reference, f.module.semantic.?.references);
+    const before_ids = try a.dupe(?u32, f.module.semantic.?.symbol_ids);
+    // Exercise the actual production API too, not only its compatibility
+    // wrapper. Identical numeric nodes/SIDs cannot authorize a foreign AST.
+    try std.testing.expect(!try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, &foreign, &removed, &needs, &facts));
+    try std.testing.expectEqual(@as(usize, 0), facts.items.len);
+    try std.testing.expectEqualDeep(before_symbols, f.module.semantic.?.symbols.items);
+    try std.testing.expectEqualDeep(before_references, f.module.semantic.?.references);
+    try std.testing.expectEqualDeep(before_ids, f.module.semantic.?.symbol_ids);
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(foreign.nodes.items));
     try std.testing.expect(try f.fold(a, &removed));
+}
+
+test "Buffer folded export facts preserve the actual kept assignment for named reachability" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[0]);
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    var needs = false;
+    try std.testing.expect(try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, &f.module.ast.?, &removed, &needs, &facts));
+    try std.testing.expect(!needs);
+    try std.testing.expectEqual(@as(usize, 1), facts.items.len);
+    const fact = facts.items[0];
+    const current_ast = &f.module.ast.?;
+    try std.testing.expectEqual(fact.kept, current_ast.getNode(fact.statement).data.ternary.b);
+    const kept_node = current_ast.getNode(fact.kept);
+    try std.testing.expectEqual(@as(u32, 1), kept_node.data.list.len);
+    const actual_statement: NodeIndex = @fromBackingInt(current_ast.extra_data.items[kept_node.data.list.start]);
+    try std.testing.expectEqual(fact.assignment, current_ast.getNode(actual_statement).data.unary.operand);
+    try std.testing.expectEqual(fact.object_reference, current_ast.getNode(fact.assignment).data.binary.right);
+    try std.testing.expect(patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+    var wrong = fact;
+    wrong.object_symbol = f.sid;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    wrong = fact;
+    wrong.module_symbol = f.sid;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    wrong = fact;
+    wrong.assignment = f.function;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    wrong = fact;
+    wrong.kept = f.function;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    var foreign = try ast_mod.Ast.cloneForTransformer(current_ast, a);
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, &foreign, fact.statement, fact));
+    const original = current_ast.nodes.items[@backingInt(fact.statement)];
+    current_ast.nodes.items[@backingInt(fact.statement)].data.ternary.c = fact.kept;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+    current_ast.nodes.items[@backingInt(fact.statement)] = original;
+    try std.testing.expect(patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+}
+
+test "Buffer module fold ignores orphan pre-minify if and block copies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[0]);
+    const current_ast = &f.module.ast.?;
+    const old_root: NodeIndex = @fromBackingInt(@as(u32, @intCast(current_ast.nodes.items.len - 1)));
+    const program = current_ast.getNode(old_root);
+    const program_scope = f.module.semantic.?.scope_owner_map.get(@backingInt(old_root)).?;
+    var actual_if: NodeIndex = .none;
+    for (current_ast.extra_data.items[program.data.list.start..][0..program.data.list.len]) |raw| {
+        if (current_ast.nodes.items[raw].tag == .if_statement) {
+            actual_if = @fromBackingInt(raw);
+            break;
+        }
+    }
+    const branch = current_ast.getNode(actual_if);
+    const old_alternate = current_ast.getNode(branch.data.ternary.c);
+    const orphan_alternate = try current_ast.addListNode(.block_statement, old_alternate.span, old_alternate.data.list);
+    var orphan = branch;
+    orphan.data.ternary.c = orphan_alternate;
+    const orphan_if = try current_ast.addNode(orphan);
+    const new_root = try current_ast.addNode(program);
+    try f.module.semantic.?.scope_owner_map.put(a, @backingInt(new_root), program_scope);
+    const old_ids = f.module.semantic.?.symbol_ids;
+    const ids = try a.alloc(?u32, current_ast.nodes.items.len);
+    @memset(ids, null);
+    @memcpy(ids[0..old_ids.len], old_ids);
+    f.module.semantic.?.symbol_ids = ids;
+    try std.testing.expect(!f.module.semantic.?.scope_owner_map.contains(@backingInt(orphan_alternate)));
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    var needs = false;
+    try std.testing.expect(try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, current_ast, &removed, &needs, &facts));
+    try std.testing.expect(!needs);
+    try std.testing.expect(current_ast.getNode(actual_if).data.ternary.c.isNone());
+    try std.testing.expectEqual(orphan_alternate, current_ast.getNode(orphan_if).data.ternary.c);
+    try std.testing.expectEqual(@as(usize, 1), facts.items.len);
+    try std.testing.expectEqual(actual_if, facts.items[0].statement);
+    for (removed.items) |node| try std.testing.expect(node != orphan_if and node != orphan_alternate);
+}
+
+test "Buffer constructor export facts follow actual initializer object identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[3]);
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    var needs = false;
+    try std.testing.expect(try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, &f.module.ast.?, &removed, &needs, &facts));
+    try std.testing.expectEqual(@as(usize, 1), facts.items.len);
+    const fact = facts.items[0];
+    try std.testing.expectEqual(.buffer_constructor, fact.kind);
+    const current_ast = &f.module.ast.?;
+    const sem = &f.module.semantic.?;
+    try std.testing.expectEqual(@as(?u32, fact.object_symbol), sem.symbol_ids[@backingInt(current_ast.getNode(fact.assignment).data.binary.right)]);
+    var initializer: NodeIndex = .none;
+    for (current_ast.nodes.items) |node| {
+        if (node.tag != .variable_declarator) continue;
+        const binding = current_ast.readExtraNode(node.data.extra, 0);
+        if (sem.symbol_ids[@backingInt(binding)] != fact.object_symbol) continue;
+        initializer = current_ast.readExtraNode(node.data.extra, 2);
+    }
+    try std.testing.expectEqual(.static_member_expression, current_ast.getNode(initializer).tag);
+    const dependency = current_ast.readExtraNode(current_ast.getNode(initializer).data.extra, 0);
+    try std.testing.expectEqual(@as(?u32, fact.buffer_object_symbol), sem.symbol_ids[@backingInt(dependency)]);
+    try std.testing.expect(fact.object_symbol != fact.buffer_object_symbol);
+    try std.testing.expect(patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+    var wrong = fact;
+    wrong.kind = .module_object;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    wrong = fact;
+    wrong.buffer_object_symbol = f.sid;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, wrong));
+    const old = sem.symbol_ids[@backingInt(dependency)];
+    @constCast(sem.symbol_ids)[@backingInt(dependency)] = fact.object_symbol;
+    try std.testing.expect(!patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+    @constCast(sem.symbol_ids)[@backingInt(dependency)] = old;
+    try std.testing.expect(patterns.foldedNodeBufferExportIsCurrent(&f.module, current_ast, fact.statement, fact));
+}
+
+test "Buffer named constructor export prunes the actual dead fallback declaration" {
+    for ([_]bool{ false, true }) |minify| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const helpers = @import("../test_helpers.zig");
+        try helpers.writeFile(tmp.dir, "entry.js", "import { Buffer } from './lib.js'; console.log(Buffer.alloc(4).length);");
+        try helpers.writeFile(tmp.dir, "lib.js", prefix ++ "if(" ++ condition ++ "){exports.Buffer=B}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 'BUFFER_CTOR_FALLBACK_MARKER'}SafeBuffer.from='BUFFER_CTOR_SETUP_MARKER';");
+        const entry = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var b = @import("../bundler.zig").Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .minify_syntax = minify });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "BUFFER_CTOR_FALLBACK_MARKER") == null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "BUFFER_CTOR_SETUP_MARKER") == null);
+    }
+}
+
+test "Buffer export fact preflight validates kept and constructor dependency read tuples atomically" {
+    for ([_]bool{ false, true }) |dependency_read| {
+        for (0..6) |mutation| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var f = try Fixture.init(a, sources[3]);
+            const current_ast = &f.module.ast.?;
+            const sem = &f.module.semantic.?;
+            var target: NodeIndex = .none;
+            // Select the kept export's actual RHS by its structural edge.
+            for (current_ast.nodes.items) |node| {
+                if (node.tag != .if_statement) continue;
+                const kept = current_ast.getNode(node.data.ternary.b);
+                const raw = current_ast.extra_data.items[kept.data.list.start];
+                const assignment = current_ast.getNode(current_ast.getNode(@fromBackingInt(raw)).data.unary.operand);
+                target = assignment.data.binary.right;
+                break;
+            }
+            if (dependency_read) {
+                const value_id = sem.symbol_ids[@backingInt(target)].?;
+                for (current_ast.nodes.items) |node| {
+                    if (node.tag != .variable_declarator) continue;
+                    const binding = current_ast.readExtraNode(node.data.extra, 0);
+                    if (sem.symbol_ids[@backingInt(binding)] != value_id) continue;
+                    const initializer = current_ast.readExtraNode(node.data.extra, 2);
+                    target = current_ast.readExtraNode(current_ast.getNode(initializer).data.extra, 0);
+                }
+            }
+            var index: usize = 0;
+            for (sem.references, 0..) |row, i| if (row.node_index == target) {
+                index = i;
+                break;
+            };
+            const original = try a.dupe(Reference, sem.references);
+            const rows = @constCast(sem.references);
+            switch (mutation) {
+                0 => rows[index].scope_id = @fromBackingInt(f.function_scope),
+                1 => rows[index].flags.write = true,
+                2 => rows[index].flags.type_context = true,
+                3 => rows[index].symbol_id = @fromBackingInt(f.sid),
+                4 => rows[index].node_index = .none,
+                5 => {
+                    const duplicate = try a.alloc(Reference, rows.len + 1);
+                    @memcpy(duplicate[0..rows.len], rows);
+                    duplicate[rows.len] = rows[index];
+                    sem.references = duplicate;
+                },
+                else => unreachable,
+            }
+            const malformed = try a.dupe(Reference, sem.references);
+            const before = try a.dupe(ast_mod.Node, current_ast.nodes.items);
+            var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+            var needs = false;
+            try std.testing.expect(!try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, current_ast, &removed, &needs, &facts));
+            try std.testing.expectEqualDeep(malformed, sem.references);
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before), std.mem.sliceAsBytes(current_ast.nodes.items));
+            sem.references = original;
+            try std.testing.expect(try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, current_ast, &removed, &needs, &facts));
+            try std.testing.expectEqual(@as(usize, 1), facts.items.len);
+        }
+    }
+}
+
+test "Buffer folded export facts are reset before a new TreeShaker analysis run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[0]);
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    var needs = false;
+    try std.testing.expect(try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(a, &f.module, &f.module.ast.?, &removed, &needs, &facts));
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = @import("../linker.zig").Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    linker.populateImportSymbols();
+    var shaker = try @import("../tree_shaker.zig").TreeShaker.init(std.testing.allocator, &graph, &linker);
+    defer shaker.deinit();
+    try shaker.node_buffer_folded_exports.put(std.testing.allocator, 0, facts.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), shaker.node_buffer_folded_exports.count());
+    try shaker.analyze(&.{});
+    try std.testing.expectEqual(@as(usize, 0), shaker.node_buffer_folded_exports.count());
 }
