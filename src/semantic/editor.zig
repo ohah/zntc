@@ -1323,6 +1323,44 @@ pub const SemanticEditor = struct {
         self.references.shrinkRetainingCapacity(write);
     }
 
+    /// Discard declaration rows anchored at one exact, removed binding node.
+    /// Other declarations and reads/writes of this same SymbolId remain live.
+    /// Declaration rows use node_index=.none, so removeReference cannot select
+    /// them by their binding anchor.
+    pub fn removeDeclarationAtNode(self: *SemanticEditor, binding: NodeIndex, expected: SymbolId) Error!usize {
+        if (!self.validSymbol(expected)) return error.InvalidSymbol;
+        if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
+            self.ast.getNode(binding).tag != .binding_identifier) return error.InvalidNode;
+        const raw = @backingInt(binding);
+        if (raw >= self.symbol_ids.items.len or self.symbol_ids.items[raw] != @backingInt(expected)) return error.InvalidSymbol;
+        // Validate the complete selection before changing the graph.
+        var matches: usize = 0;
+        for (self.references.items) |reference| {
+            if (!reference.flags.declare or reference.declaration_node_index != binding) continue;
+            if (reference.symbol_id != expected) return error.InvalidSymbol;
+            matches += 1;
+        }
+        if (matches == 0) return error.ReferenceNotFound;
+        if (matches != 1) return error.DuplicateBinding;
+        var write: usize = 0;
+        var removed: usize = 0;
+        for (self.references.items) |reference| {
+            if (reference.flags.declare and reference.declaration_node_index == binding) {
+                self.removeCounts(reference.symbol_id, reference.flags);
+                removed += 1;
+                continue;
+            }
+            self.references.items[write] = reference;
+            write += 1;
+        }
+        self.references.shrinkRetainingCapacity(write);
+        self.reference_index.clearRetainingCapacity();
+        self.reference_index_built = false;
+        // This operation removes only the declaration row. The producer owns
+        // detaching its discarded AST binding, and any runtime mapping survives.
+        return removed;
+    }
+
     /// Remove the semantic declaration for a local const whose exact binding
     /// node is unreachable after syntax minification. The caller must remove
     /// every reference first. Keep the SymbolId row stable as an orphaned slot;

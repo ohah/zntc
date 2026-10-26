@@ -66,9 +66,11 @@ is bound; source lexical storage is handed to the actual wrapper declaration.
 Driver storage, dynamic eval/with, partial capability combinations, wrapped class
 declaration block-scoping, cache/import/export boundaries, final public API
 oracles, final-state implementation mutants and normal push checks remain due.
-The generator dependency has separately exposed a bundled sloppy Annex B alias
-spelling regression during fair native/baseline/candidate validation; that result
-is not covered by the direct-transpile field matrix above. Native non-simple
+The generator dependency's bundled sloppy Annex B alias spelling regression
+was repaired with canonical storage carriers in #6355. Its required broader
+oracle then exposed a separate bundled using-for-await publication-authority
+regression; that main regression is being repaired independently. Neither is
+covered by the direct-transpile field matrix above. Native non-simple
 arguments environments and captured IIFE argument lifetimes remain separate
 uncompleted obligations of the arguments dependency.
 
@@ -80,3 +82,22 @@ before/after-super, inferred function/class-name, and native-parameter
 super-call reentrancy controls pass. No native-field timing producer has been implemented here. Handwritten
 parameter-environment prototypes match two native reentry/private-brand examples;
 they do not establish complete FDI, naming, scope, eval or target support.
+
+The proposed activation protocol has four additional explicit native comparisons:
+a callback run by a field, a throwing field followed by a destructuring catch
+parameter, a private-brand failure before the first field, and nested construction.
+All four match in Node. These controls assemble the bridge explicitly; they do
+not exercise a production AST transform. The runtime template has no receiver
+properties and detaches the completed activation's setter and previous frame.
+The two runtime protocol tests pass in the 23-test focused Zig selection.
+
+The constructor-body scope prerequisite has independently passed 21 focused unit
+tests, including exact reference scopes and statement coordinates before an
+output walker. The function-cell prerequisite now covers eleven native inputs.
+Its exact declaration lifecycle removes rows by declaration_node_index and
+preserves formal anchors and source-var rows, including multiple rows sharing
+one anchor. The composed scope, function-cell and runtime prerequisites pass a
+25-test focused selection on the main62a base. The 73-input field matrix also
+passes all 146 native comparisons on that base. These prerequisites still have
+no production constructor-bridge caller. The final constructor-body assembly
+must also publish its changed statement coordinates before validation.

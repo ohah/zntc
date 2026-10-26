@@ -129,4 +129,5 @@ test {
 test {
     _ = @import("retained_field_arrow_test.zig");
     _ = @import("native_constructor_body_scope.zig");
+    _ = @import("native_constructor_function_cells.zig");
 }
