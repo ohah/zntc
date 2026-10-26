@@ -221,10 +221,12 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     file: '4819-namespace-iife-params.ts',
     target: TARGETS[0],
     expectedStdout: '[109,102]\n',
+    // Namespace IIFEs reuse their original scopes. Observe their actual
+    // parameter identities and declaration anchors instead of fresh scopes.
     observations: [
-      { report: 'exact', field: 'namespace_iife_params', minimum: 1 },
-      { report: 'exact', field: 'generated_references', minimum: 1 },
-      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 2 },
+      { report: 'exact', field: 'namespace_iife_params', minimum: 3 },
+      { report: 'exact', field: 'generated_references', minimum: 6 },
+      { report: 'exact', field: 'declaration_anchors_checked', minimum: 13 },
     ],
   },
   {
@@ -1845,7 +1847,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
-      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=2',
+      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=3,exact.generated_references>=6,exact.declaration_anchors_checked>=13',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
       '4819-native-parameter-arrow-cells.mjs:es2015:exact.generated_bindings>=2,exact.generated_references>=5,exact.declaration_anchors_checked>=5,strict.marked_synthetic>=1',
     ]);
