@@ -2381,3 +2381,37 @@ test "Codegen #3110: minify_syntax off → 변환 안 함 (anti-regression)" {
     defer r.deinit();
     try std.testing.expectEqualStrings("function h(){if(c)return a;return b;}", r.output);
 }
+
+test "Codegen: enum runtime prelude keeps native local declarations in ESM factories" {
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "enum E{A=arguments.length}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=(()=>arguments.length)()}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number(arguments[0]===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>arguments[0])()===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=(arguments[0].marker=7)}", .expected = "7 7\n" },
+        .{ .source = "enum E{A=Number(this===undefined)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>this)()===undefined)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=arguments.length+arguments.length}", .expected = "2 7\n" },
+        .{ .source = "enum E{A=Number(arguments[0]===E),B=Number((()=>arguments[0])()===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>arguments)()[0]===E)}", .expected = "1 7\n" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("enum ESM prelude source={s} minify={}\n", .{ case.source, minify });
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}{s}", .{ case.source[0 .. case.source.len - 1], ",Z=(()=>arguments.length)()};let after=7;" });
+        defer std.testing.allocator.free(source);
+        var result = try e2eFull(std.testing.allocator, source, .{ .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) }, .{ .esm_var_assign_only = true, .minify_whitespace = minify }, ".ts");
+        defer result.deinit();
+        // The outer factory's bindings are supplied by its hoist scan. The
+        // enum's actual ordinary IIFE must still declare its own locals.
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "var after") == null);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "\"use strict\";var E,after;{s}console.log(E.A,after);", .{result.output});
+        defer std.testing.allocator.free(script);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        if (native.term != .exited or native.term.exited != 0 or !std.mem.eql(u8, case.expected, native.stdout))
+            std.debug.print("enum ESM output={s}\nstdout={s}stderr={s}\n", .{ result.output, native.stdout, native.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+    };
+}

@@ -141,6 +141,11 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // ordinary IIFE body; emit its statements without adding a nested scope.
     const prelude = self.ast.readExtraNode(e, ast_mod.EnumExtra.runtime_prelude);
     if (!prelude.isNone()) {
+        // These statements execute inside the enum's ordinary function, not
+        // at the enclosing ESM factory's hoisted declaration boundary.
+        const saved_assign_only = self.options.esm_var_assign_only;
+        self.options.esm_var_assign_only = false;
+        defer self.options.esm_var_assign_only = saved_assign_only;
         const body = self.ast.getNode(prelude);
         std.debug.assert(body.tag == .block_statement);
         for (0..body.data.list.len) |index| {
