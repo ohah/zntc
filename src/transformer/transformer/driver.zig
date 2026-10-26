@@ -315,6 +315,54 @@ fn moveLoweredPatternParameterBindings(
     }
 }
 
+/// Lowering a non-simple parameter list removes its native parameter carrier.
+/// An unused engine keeps its exact identity at the emitted ordinary function;
+/// observable/captured engines and colliding source bindings need their own protocol.
+fn moveUnusedParameterEngine(self: anytype, function_owner: NodeIndex, old_params: NodeIndex, new_params: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!void {
+    if (!self.semantic_edit_enabled or body_scope.isNone() or self.outputOwnedScope(function_owner) != body_scope) return;
+    const function = self.ast.getNode(function_owner);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return,
+    }
+    if (self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params) != new_params) return;
+    const source_scope = self.outputOwnedScope(old_params) orelse return;
+    if (source_scope == body_scope or source_scope.isNone()) return;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
+    if (source_scope.toIndex() >= scopes.len or body_scope.toIndex() >= scopes.len or
+        source_scope.toIndex() >= maps.len or body_scope.toIndex() >= maps.len or
+        scopes[source_scope.toIndex()].kind != .function or scopes[body_scope.toIndex()].kind != .function or
+        scopes[body_scope.toIndex()].parent != source_scope or maps[body_scope.toIndex()].get("arguments") != null) return;
+    const params = self.ast.getNode(new_params).data.list;
+    for (0..params.len) |offset| {
+        if (@import("../native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(params.start, @intCast(offset))) == null) return;
+    }
+    var selected: ?u32 = null;
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        if (symbol.scope_id == body_scope) return;
+        if (symbol.scope_id != source_scope) continue;
+        if (symbol.kind != .parameter or symbol.reference_count != 0 or symbol.write_count != 0 or selected != null) return;
+        selected = @intCast(sid);
+    }
+    const id = selected orelse return;
+    if (maps[source_scope.toIndex()].get("arguments") != @as(?usize, id) or
+        self.native_arguments_declaration_origins.contains(id)) return;
+    var declarations: usize = 0;
+    for (references) |row| {
+        if (@backingInt(row.symbol_id) != id) continue;
+        if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or row.scope_id != source_scope or
+            !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .declare = true }))) return;
+        declarations += 1;
+    }
+    if (declarations != 1) return;
+    try self.moveSymbolToOutputScope(id, body_scope);
+    try @import("../native_arguments.zig").record(self, @fromBackingInt(id), body_scope);
+}
+
 /// Bindings of identifier parameters lowered into body `var`s move to the
 /// body scope, like lowered pattern bindings.
 fn moveUnlinkedParameterBindings(
@@ -637,6 +685,8 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                 self.ast.extra_data.items[e + 1] = @backingInt(new_params_node);
+                if (body_wrapper_scope == null and function_flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) == 0)
+                    try moveUnusedParameterEngine(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
 
                 if (lr.body_stmts.items.len > 0) {
                     const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
@@ -790,5 +840,188 @@ test "lowered parameter import provenance moves before generic output validation
             try std.testing.expectEqual(original_scope, moved.scope);
             try std.testing.expectEqual(body_scope, editor.scopes.items[original_scope.toIndex()].parent);
         }
+    }
+}
+
+test "lowered unused native arguments keeps its SID at the actual function owner" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+    for ([_][]const u8{
+        "function read(value=1){let body=1;return value+body}",
+        "const read=function(value=1){let body=1;return value+body};",
+        "const object={read(value=1){let body=1;return value+body}};",
+        "function read(value={}){let body=1;return value+body}",
+        "function read(value=[]){let body=1;return value+body}",
+    }) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var body_scope: ScopeId = .none;
+        var engine: ?u32 = null;
+        for (analyzer.symbols.items, 0..) |symbol, id| {
+            if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "body")) body_scope = symbol.scope_id;
+            if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments) {
+                try std.testing.expect(engine == null);
+                engine = @intCast(id);
+            }
+        }
+        const id = engine orelse return error.MissingNativeEngine;
+        const source_scope = analyzer.symbols.items[id].scope_id;
+        try std.testing.expect(!body_scope.isNone() and source_scope != body_scope);
+        var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es5), .emit_runtime_helper_imports = false });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.unresolved_references = &analyzer.unresolved_references;
+        t.semantic_edit_enabled = true;
+        const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
+        try t.buildBlockRenameMap();
+        const output = try t.visitNode(root);
+        try t.registerGeneratedFunctionScopes(output, t.programScope());
+        try lowerAllFunctionParams(&t, output);
+        const editor = &t.semantic_editor.?;
+        var actual_owners: usize = 0;
+        var actual_owner: ?u32 = null;
+        const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+        for (live) |raw| {
+            const owner: NodeIndex = @fromBackingInt(raw);
+            if (t.outputOwnedScope(owner) != body_scope) continue;
+            const function = t.ast.getNode(owner);
+            switch (function.tag) {
+                .function, .function_expression, .function_declaration, .method_definition => {},
+                else => continue,
+            }
+            const params = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+            try std.testing.expect(t.outputOwnedScope(params) == null);
+            actual_owners += 1;
+            actual_owner = raw;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_owners);
+        try std.testing.expectEqual(@as(?ScopeId, body_scope), t.native_arguments_declaration_origins.get(id));
+        // Final program assembly changes positions, never the engine identity.
+        const empty = try t.ast.addNode(.{ .tag = .empty_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .none = 0 } });
+        const old_list = t.ast.getNode(output).data.list;
+        const entries = try a.alloc(NodeIndex, old_list.len + 1);
+        entries[0] = empty;
+        for (0..old_list.len) |offset| entries[offset + 1] = t.ast.readExtraNode(old_list.start, @intCast(offset));
+        t.ast.nodes.items[@backingInt(output)].data.list = try t.ast.addNodeList(entries);
+        try @import("../native_arguments.zig").publish(&t, output);
+        const contexts = try @import("../../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+        const expected_context = contexts[actual_owner.?].?;
+        try std.testing.expectEqual(@as(u32, 1), expected_context.stmt_idx);
+        try std.testing.expectEqual(body_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[body_scope.toIndex()].get("arguments"));
+        try std.testing.expect(editor.scope_maps.items[source_scope.toIndex()].get("arguments") == null);
+        var declarations: usize = 0;
+        for (editor.references.items) |row| {
+            if (@backingInt(row.symbol_id) != id) continue;
+            try std.testing.expect(row.flags.declare and row.node_index.isNone() and row.declaration_node_index.isNone());
+            try std.testing.expectEqual(body_scope, row.scope_id);
+            try std.testing.expectEqual(expected_context.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(expected_context.scope_stmt_idx, row.scope_stmt_idx);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+    }
+}
+
+test "lowered unused native arguments rejects malformed ownership without identity recovery" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+    const Mutation = enum { owner_missing, owner_wrong_valid_scope, body_parent, source_map_wrong_valid_sid, target_occupied, hidden_target_engine, wrong_kind, wrong_role, duplicate_declaration, missing_declaration, wrong_declaration_scope, observable_row, counted_reference, unpublished_parameters, non_simple_parameters };
+    for (std.enums.values(Mutation)) |mutation| {
+        errdefer std.debug.print("unused engine rejected ownership mutation: {s}\n", .{@tagName(mutation)});
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, "function read(value=1){let body=1;return body}");
+        var parser = Parser.init(a, &scanner);
+        const root = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var engine: ?u32 = null;
+        var body_binding: ?u32 = null;
+        for (analyzer.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind == .implicit_arguments) engine = @intCast(index);
+            if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "body")) body_binding = @intCast(index);
+        }
+        const id = engine orelse return error.MissingNativeEngine;
+        const body_id = body_binding orelse return error.MissingBodyBinding;
+        const old_scope = analyzer.symbols.items[id].scope_id;
+        const body_scope: ScopeId = analyzer.symbols.items[body_id].scope_id;
+        var t = try Transformer.init(a, &parser.ast, .{});
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.semantic_edit_enabled = true;
+        // Start an editor without changing the known source identity.
+        try t.moveSymbolToOutputScope(id, old_scope);
+        const editor = &t.semantic_editor.?;
+        const owner = t.ast.readExtraNode(t.ast.getNode(root).data.list.start, 0);
+        const extra = t.ast.getNode(owner).data.extra;
+        const old_params = t.ast.readExtraNode(extra, ast_mod.FunctionExtra.params);
+        var new_params = try t.ast.addFormalParameters(.{ .start = 0, .len = 0 }, t.ast.getNode(old_params).span);
+        t.ast.extra_data.items[extra + ast_mod.FunctionExtra.params] = @backingInt(new_params);
+        var declaration: ?usize = null;
+        for (editor.references.items, 0..) |row, index| if (@backingInt(row.symbol_id) == id and row.flags.declare) {
+            try std.testing.expect(declaration == null);
+            declaration = index;
+        };
+        const row_index = declaration orelse return error.MissingNativeDeclaration;
+        switch (mutation) {
+            .owner_missing => {
+                _ = t.scope_owner_map.remove(@backingInt(owner));
+                _ = editor.scope_owner_map.remove(@backingInt(owner));
+            },
+            .owner_wrong_valid_scope => try t.transformed_scope_owner_map.put(a, @backingInt(owner), @backingInt(t.programScope())),
+            .body_parent => editor.scopes.items[body_scope.toIndex()].parent = t.programScope(),
+            .source_map_wrong_valid_sid => try editor.scope_maps.items[old_scope.toIndex()].put(a, "arguments", body_id),
+            .target_occupied => try editor.scope_maps.items[body_scope.toIndex()].put(a, "arguments", body_id),
+            .hidden_target_engine => {
+                var hidden = editor.symbols.items[id];
+                hidden.scope_id = body_scope;
+                try editor.symbols.append(a, hidden);
+            },
+            .wrong_kind => editor.symbols.items[id].kind = .variable_var,
+            .wrong_role => editor.symbols.items[id].synthetic_kind = .enum_iife_parameter,
+            .duplicate_declaration => try editor.references.append(a, editor.references.items[row_index]),
+            .missing_declaration => editor.references.items[row_index].flags.declare = false,
+            .wrong_declaration_scope => editor.references.items[row_index].scope_id = t.programScope(),
+            .observable_row => editor.references.items[row_index].flags.read = true,
+            .counted_reference => editor.symbols.items[id].reference_count = 1,
+            .unpublished_parameters => t.ast.extra_data.items[extra + ast_mod.FunctionExtra.params] = @backingInt(old_params),
+            .non_simple_parameters => {
+                new_params = old_params;
+                t.ast.extra_data.items[extra + ast_mod.FunctionExtra.params] = @backingInt(old_params);
+            },
+        }
+        const symbol_count = editor.symbols.items.len;
+        const reference_count = editor.references.items.len;
+        try moveUnusedParameterEngine(&t, owner, old_params, new_params, body_scope);
+        try std.testing.expectEqual(old_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(symbol_count, editor.symbols.items.len);
+        try std.testing.expectEqual(reference_count, editor.references.items.len);
+        try std.testing.expect(!t.native_arguments_declaration_origins.contains(id));
     }
 }
