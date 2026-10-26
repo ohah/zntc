@@ -1505,13 +1505,18 @@ pub const SemanticAnalyzer = struct {
     /// predeclared 심볼에 대해 symbol_ids[node_idx]를 설정한다.
     /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
     /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
-    fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) void {
+    const PredeclaredAnchorRole = enum { declaration, variable_redeclaration };
+
+    fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32, role: PredeclaredAnchorRole) void {
         const name = self.ast.getText(name_span);
         const sym_idx = self.findSymbolIndexInScope(self.current_scope, name) orelse
             self.findSymbolIndexInScope(self.findVarScope(), name) orelse return;
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
+        // A var occurrence owns its own row. It cannot consume the pending
+        // function declaration's source anchor just because the SID is shared.
+        if (role == .variable_redeclaration and self.symbols.items[sym_idx].kind.isFunctionLike()) return;
         for (self.references.items) |*reference| {
             if (reference.flags.declare and @backingInt(reference.symbol_id) == sym_idx and
                 reference.declaration_node_index.isNone())
@@ -1593,6 +1598,15 @@ pub const SemanticAnalyzer = struct {
                 if (sid >= self.symbols.items.len) return;
                 const symbol = self.symbols.items[sid];
                 if (symbol.kind != .variable_var and !symbol.kind.isFunctionLike()) return;
+                if (symbol.kind.isFunctionLike()) {
+                    // Generated trees can intern equal spellings into one span.
+                    // The exact variable node, not that span, owns this row.
+                    for (self.references.items) |reference| {
+                        if (@backingInt(reference.symbol_id) == sid and reference.flags.declare and reference.declaration_node_index == idx) return;
+                    }
+                    self.recordDeclareRef(sid, symbol.scope_id, ni);
+                    return;
+                }
                 if (symbol.name.start != node.span.start) {
                     self.recordDeclareRef(sid, symbol.scope_id, ni);
                     return;
@@ -1631,7 +1645,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .assignment_target_identifier => {
-                self.setSymbolIdForPredeclared(node.span, ni);
+                self.setSymbolIdForPredeclared(node.span, ni, .variable_redeclaration);
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
@@ -3914,7 +3928,7 @@ pub const SemanticAnalyzer = struct {
                 try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx), .declaration);
             }
 
             // @__NO_SIDE_EFFECTS__ → symbol에 전파 (predeclared 여부와 무관하게 항상 수행)
@@ -4370,7 +4384,7 @@ pub const SemanticAnalyzer = struct {
                 try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx), .declaration);
             }
             const name_node = self.ast.getNode(name_idx);
             const name_raw = @backingInt(name_idx);

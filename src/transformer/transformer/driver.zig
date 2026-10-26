@@ -1479,6 +1479,7 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},value=2,code){var arguments;try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},undefined,String.fromCharCode(95,98))" },
         .{ .source = "function read({a,...rest},code){try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},String.fromCharCode(95,98))" },
         .{ .source = "function read({a,...rest},code){return JSON.stringify(eval(code))}", .call = "read({a:1,b:2},String.fromCharCode(114,101,115,116))" },
+        .{ .source = "function read({a,...rest},code){return JSON.stringify(eval(code))}", .call = "read({a:1,b:2},String.fromCharCode(114,101,115,116),9,10)" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1778,6 +1779,8 @@ test "dynamic body wrapper shared function cells retain source identities before
     try std.testing.expect(analyzer.scope_owner_map.get(@backingInt(params)) == null);
     var parameters = try ast_walk.bindingIdentifiers(a, &parser.ast, params, .{ .cover_grammar_assignment = true });
     const parameter_binding = (try parameters.next()).?;
+    const source_rest_binding = (try parameters.next()).?;
+    const source_rest_id = analyzer.symbol_ids.items[@backingInt(source_rest_binding)].?;
     const id = analyzer.symbol_ids.items[@backingInt(parameter_binding)].?;
     try std.testing.expect(analyzer.symbols.items[id].kind == .parameter);
     try std.testing.expectEqual(body_scope, @as(u32, @intCast(analyzer.symbols.items[id].scope_id.toIndex())));
@@ -1814,6 +1817,16 @@ test "dynamic body wrapper shared function cells retain source identities before
     for (live) |raw| {
         const node = t.ast.nodes.items[raw];
         if (t.outputOwnedScope(@fromBackingInt(raw))) |scope| {
+            if (scope.toIndex() == body_scope and node.tag == .function_declaration) {
+                const actual_params = t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params);
+                const actual_list = t.ast.getNode(actual_params).data.list;
+                const tail = t.ast.getNode(t.ast.readExtraNode(actual_list.start, actual_list.len - 1));
+                try std.testing.expect(tail.tag == .rest_element);
+                try std.testing.expectEqual(source_rest_id, t.getSymbolIdAt(tail.data.unary.operand).?);
+                try std.testing.expect(editor.symbols.items[source_rest_id].kind == .parameter);
+                try std.testing.expectEqual(body_scope, @as(u32, @intCast(editor.symbols.items[source_rest_id].scope_id.toIndex())));
+                try std.testing.expect(t.outputOwnedScope(actual_params) == null);
+            }
             if (scope.toIndex() == function_scope) {
                 try std.testing.expect(node.tag == .function_expression);
                 try std.testing.expect(t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone());
@@ -1852,4 +1865,56 @@ test "dynamic body wrapper shared function cells retain source identities before
     try std.testing.expectEqual(@as(usize, 1), values);
     try std.testing.expectEqual(@as(usize, 1), untouched);
     try std.testing.expectEqual(@as(usize, 1), writes);
+}
+
+test "dynamic body wrapper source var redeclaration keeps the function declaration anchor" {
+    try checkSourceVarFunctionAnchors(false);
+    try checkSourceVarFunctionAnchors(true);
+}
+
+fn checkSourceVarFunctionAnchors(interned_names: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function read({a,...rest},value=2){var a;function a(){return 9}eval('a');return [a(),value]}";
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    const root = try parser.parse();
+    if (interned_names) {
+        const shared = try parser.ast.addString("a");
+        for (parser.ast.nodes.items) |*node| {
+            if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "a")) continue;
+            node.span = shared;
+            node.data.string_ref = shared;
+        }
+    }
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const function = parser.ast.getNode(parser.ast.readExtraNode(parser.ast.getNode(root).data.list.start, 0));
+    const body = parser.ast.getNode(parser.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body)).data.list;
+    const variable = parser.ast.getNode(parser.ast.readExtraNode(body.start, 0));
+    const declarator = parser.ast.getNode(parser.ast.readExtraNode(parser.ast.readExtra(variable.data.extra, 1), 0));
+    const var_binding = parser.ast.readExtraNode(declarator.data.extra, 0);
+    const declaration = parser.ast.getNode(parser.ast.readExtraNode(body.start, 1));
+    const fn_binding = parser.ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name);
+    const id = analyzer.symbol_ids.items[@backingInt(fn_binding)].?;
+    try std.testing.expectEqual(id, analyzer.symbol_ids.items[@backingInt(var_binding)].?);
+    var variable_anchors: usize = 0;
+    var function_anchors: usize = 0;
+    for (analyzer.references.items) |row| {
+        if (@backingInt(row.symbol_id) != id or !row.flags.declare) continue;
+        if (row.declaration_node_index == var_binding) {
+            try std.testing.expectEqual(@as(u32, 0), row.scope_stmt_idx);
+            variable_anchors += 1;
+        }
+        if (row.declaration_node_index == fn_binding) {
+            try std.testing.expectEqual(@as(u32, 1), row.scope_stmt_idx);
+            function_anchors += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), variable_anchors);
+    try std.testing.expectEqual(@as(usize, 1), function_anchors);
 }
