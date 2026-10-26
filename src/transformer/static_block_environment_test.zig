@@ -99,6 +99,61 @@ test "static block environment lowered storage and reference scopes exist before
             consumed_self += 1;
         }
         try std.testing.expectEqual(@as(usize, 2), consumed_self);
+        var replacements: usize = 0;
+        var identity_origins = t.static_class_reference_origins.iterator();
+        while (identity_origins.next()) |entry| {
+            const node: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(entry.key_ptr.*);
+            const proof = entry.value_ptr.*;
+            try std.testing.expect(@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            try std.testing.expectEqual(initial.symbol_ids.items[@backingInt(proof.source)].?, proof.source_symbol_id);
+            try std.testing.expect((try editor.referenceForNode(proof.source)) == null);
+            try std.testing.expect(proof.source_symbol_id != @backingInt(proof.reference.symbol_id));
+            var snapshot_values: usize = 0;
+            var live_nodes = parents.keyIterator();
+            while (live_nodes.next()) |live_raw| {
+                const candidate = t.ast.nodes.items[live_raw.*];
+                if (candidate.tag != .variable_declarator) continue;
+                const binding = t.ast.readExtraNode(candidate.data.extra, 0);
+                if (t.getSymbolIdAt(binding) != @backingInt(proof.reference.symbol_id)) continue;
+                const value = t.ast.readExtraNode(candidate.data.extra, 2);
+                try std.testing.expectEqual(.identifier_reference, t.ast.getNode(value).tag);
+                try std.testing.expectEqual(proof.class_value_symbol_id, t.getSymbolIdAt(value).?);
+                try std.testing.expectEqual(proof.class_value_symbol_id, @backingInt((try editor.referenceForNode(value)).?.symbol_id));
+                snapshot_values += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), snapshot_values);
+            var row: usize = 0;
+            while (editor.references.items[row].node_index != node) : (row += 1) {}
+            const saved = editor.references.items[row];
+            // Both alternatives are real IDs/scopes from this graph. Numeric
+            // range checks alone cannot authorize an identity-origin escape.
+            editor.references.items[row].symbol_id = @fromBackingInt(ids.items[0]);
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            editor.references.items[row] = saved;
+            editor.references.items[row].scope_id = t.programScope();
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            editor.references.items[row] = saved;
+            editor.references.items[row].flags = .{ .write = true };
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            editor.references.items[row] = saved;
+            editor.references.items[row].stmt_idx = if (saved.stmt_idx == 0) 1 else 0;
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            editor.references.items[row] = saved;
+            editor.references.items[row].scope_stmt_idx = if (saved.scope_stmt_idx == 0) 1 else 0;
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            editor.references.items[row] = saved;
+            entry.value_ptr.source_symbol_id = ids.items[0];
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            entry.value_ptr.* = proof;
+            const source_raw = @backingInt(proof.source);
+            const previous = t.reference_origin_map.get(source_raw);
+            try t.reference_origin_map.put(a, source_raw, source_raw);
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, proof.source));
+            if (previous) |origin| try t.reference_origin_map.put(a, source_raw, origin) else _ = t.reference_origin_map.remove(source_raw);
+            try std.testing.expect(@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            replacements += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), replacements);
         for (parser.ast.nodes.items) |source_node| {
             if (source_node.tag != .static_block) continue;
             const source_body = source_node.data.unary.operand;

@@ -263,6 +263,13 @@ pub const Transformer = struct {
     /// 새 참조 노드 → 최초 출처 참조 노드. `SymbolId` 복사와 별개로
     /// read/write·문장 위치의 출처를 보존한다. 바인딩→참조 생성은 여기에 넣지 않는다.
     reference_origin_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Exact identity-changing class-self replacements, recorded by their creator.
+    static_class_reference_origins: std.AutoHashMapUnmanaged(u32, struct {
+        source: NodeIndex,
+        source_symbol_id: u32,
+        class_value_symbol_id: u32,
+        reference: @import("../semantic/symbol.zig").Reference,
+    }) = .empty,
     /// Provenance for generated refs that intentionally remain external.
     /// Coverage audits and bundler semantic resync both consume this marker set.
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,

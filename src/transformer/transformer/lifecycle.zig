@@ -136,6 +136,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.reference_origin_map.deinit(self.allocator);
+    self.static_class_reference_origins.deinit(self.allocator);
     self.lowered_anonymous_class_export_bindings.deinit(self.allocator);
     self.explicit_global_reference_nodes.deinit(self.allocator);
     self.runtime_helper_ref_index.deinit(self.allocator);

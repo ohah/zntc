@@ -131,6 +131,20 @@ pub fn makeClassSelfReference(self: anytype, source: NodeIndex) !?NodeIndex {
             const ref = try makeReferenceWithFlags(self, frame, flags);
             if (self.ast.getNode(source).tag == .assignment_target_identifier)
                 self.ast.nodes.items[@backingInt(ref)].tag = .assignment_target_identifier;
+            // This is a new immutable binding's use, not a copy of the source
+            // class-self use. Preserve both identities at the actual creator.
+            const reference = (self.semantic_editor.?.referenceForNode(ref) catch @panic("static class replacement has invalid Reference index")) orelse
+                @panic("static class replacement has no immediate Reference");
+            const raw = @backingInt(ref);
+            if (raw < self.parser_node_count or @backingInt(reference.symbol_id) == source_id)
+                @panic("static class replacement did not create a fresh identity");
+            try self.static_class_reference_origins.put(self.allocator, raw, .{
+                .source = source,
+                .source_symbol_id = source_id,
+                .class_value_symbol_id = frame.class_symbol_id orelse @panic("static class replacement lost its class-value SID"),
+                .reference = reference,
+            });
+            try self.reference_origin_map.put(self.allocator, raw, raw);
             return ref;
         }
     }
@@ -293,4 +307,23 @@ pub fn noteArrowDynamicEval(self: anytype, root: NodeIndex) !void {
         var children = @import("../parser/ast_walk.zig").children(self.ast, node);
         while (children.next()) |child| try stack.append(self.allocator, .{ .node = child, .ordinary = ordinary });
     }
+}
+
+/// Only the exact tuple published by the identity-changing producer may keep
+/// its own generated origin when the generic source visitor returns it.
+pub fn validOwnReferenceOrigin(self: anytype, node: NodeIndex) bool {
+    const raw = @backingInt(node);
+    if (raw < self.parser_node_count or self.reference_origin_map.get(raw) != raw) return false;
+    const expected = self.static_class_reference_origins.get(raw) orelse return false;
+    if (self.getSymbolIdAt(expected.source) != expected.source_symbol_id) return false;
+    if (self.getSymbolIdAt(node) != @backingInt(expected.reference.symbol_id)) return false;
+    if (expected.source_symbol_id == @backingInt(expected.reference.symbol_id)) return false;
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    const actual = (editor.referenceForNode(node) catch return false) orelse return false;
+    return actual.node_index == node and !actual.flags.declare and
+        actual.symbol_id == expected.reference.symbol_id and
+        actual.scope_id == expected.reference.scope_id and
+        @as(u8, @bitCast(actual.flags)) == @as(u8, @bitCast(expected.reference.flags)) and
+        actual.stmt_idx == expected.reference.stmt_idx and
+        actual.scope_stmt_idx == expected.reference.scope_stmt_idx;
 }

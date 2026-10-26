@@ -251,6 +251,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     // the source user's Reference must not overwrite that new identity.
     if (self.capture_ref_by_origin.contains(key)) return;
     if (self.reference_origin_map.get(key)) |existing| {
+        if (existing == key and @import("../static_class_capture.zig").validOwnReferenceOrigin(self, clone)) return;
         if (existing != origin) std.debug.panic("reference clone has conflicting origins", .{});
         return;
     }
