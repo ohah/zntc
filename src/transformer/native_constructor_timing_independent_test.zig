@@ -28,6 +28,7 @@ fn checkName(source: []const u8, case: usize) !void {
         const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
             .unsupported = unsupported,
             .use_define_for_class_fields = true,
+            .keep_names = true,
             .minify_identifiers = minify,
             .minify_syntax = minify,
             .minify_whitespace = minify,
