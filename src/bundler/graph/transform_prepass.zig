@@ -9426,6 +9426,26 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
         "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
         drop_label_and_console,
     ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: var hidden = 40; console.warn('gone'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: eval('var hidden = 40'); console.warn('gone'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: (() => 40)(); console.warn('gone'); return eval('42'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'gone'; DEV: { const hidden = 40; console.warn('gone'); } console.info('gone too'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'gone'; console.warn(() => 42); return eval('42'); }",
+        drop_label_and_console,
+    ));
 
     const primitive_defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "false" }};
     const define_and_console: TransformOptions = .{
