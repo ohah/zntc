@@ -3734,11 +3734,17 @@ test "#6193 erased nested const enum may lack source identity when its output na
         break;
     }
     const enum_binding_raw = enum_binding orelse return error.MissingNestedConstEnumBinding;
-    try std.testing.expect(transformer.symbol_ids.items[enum_binding_raw] == null);
-
+    const source_id = transformer.symbol_ids.items[enum_binding_raw] orelse return error.MissingInitialNestedEnumIdentity;
     const output_root = try transformer.visitNode(source_root);
     try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
     try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    // Initial analysis now supplies this identity. Preserve the erased-input
+    // proof's older missing-ID boundary without depending on that binder bug.
+    transformer.symbol_ids.items[enum_binding_raw] = null;
+    try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    transformer.symbol_ids.items[enum_binding_raw] = source_id;
 }
 
 test "#6193 extensionless ambient global namespace retains the graph only after exact erasure proof" {
@@ -5854,7 +5860,8 @@ test "TS auto type-only export: declaration merging preserves value binding" {
         \\export { E };
         \\
     ,
-        \\var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});
+        \\var E;
+        \\E = /* @__PURE__ */ (function(E) {"use strict";E[E["A"]=0]="A";return E;})(E || {});
         \\export { E };
         \\
     ,

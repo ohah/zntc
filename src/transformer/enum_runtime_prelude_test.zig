@@ -305,7 +305,7 @@ test "enum runtime prelude survives lazy-editor publication and independent sema
         resolved.is_strict_mode = parser.is_strict_mode;
         resolved.collect_unresolved_reference_nodes = true;
         try resolved.analyze();
-        const report = try coverage.checkPostMinify(a, t.ast, output, t.symbol_ids.items, resolved.symbol_ids.items, edited.symbols.items, resolved.symbols.items, edited.references, t.helper_ref_nodes.items, &t.helper_scope_map, &resolved.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.class_self_symbol_map, &resolved.class_self_symbol_map);
+        const report = try coverage.checkPostMinifyWithNativeOwners(a, t.ast, output, t.symbol_ids.items, resolved.symbol_ids.items, edited.symbols.items, resolved.symbols.items, edited.references, t.helper_ref_nodes.items, &t.helper_scope_map, &resolved.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.class_self_symbol_map, &resolved.class_self_symbol_map, .{ .scopes = edited.scopes, .scope_owner_map = &edited.scope_owner_map }, .{ .scopes = resolved.scopes.items, .scope_owner_map = &resolved.scope_owner_map });
         try std.testing.expectEqual(@as(usize, 0), report.missing_binding_id);
         try std.testing.expectEqual(@as(usize, 0), report.missing_reference_id);
         try std.testing.expectEqual(@as(usize, 0), report.wrong_reference_target);

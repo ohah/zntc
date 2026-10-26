@@ -45,6 +45,25 @@ fn checkLiveArgumentsBeforeFinish(t: *Transformer, source_symbols: []const @impo
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[cell.scope.toIndex()].kind);
         var bindings: usize = 0;
         var engine_reads: usize = 0;
+        var initializer_reads: usize = 0;
+        var forwarding_reads: usize = 0;
+        var expected_forwarding: usize = 0;
+        var source_owners = t.scope_owner_map.iterator();
+        while (source_owners.next()) |source_owner| {
+            const raw = source_owner.key_ptr.*;
+            if (source_owner.value_ptr.* != @backingInt(source_symbols[id].scope_id) or raw >= t.parser_node_count) continue;
+            const original = t.ast.nodes.items[raw];
+            const flags = switch (original.tag) {
+                .function, .function_declaration, .function_expression => t.ast.readExtra(original.data.extra, @import("../parser/ast.zig").FunctionExtra.flags),
+                .method_definition => @import("../parser/ast.zig").methodFlagsToFunctionFlags(t.ast.readExtra(original.data.extra, @import("../parser/ast.zig").MethodExtra.flags)),
+                else => continue,
+            };
+            const FunctionFlags = @import("../parser/ast.zig").FunctionFlags;
+            if (t.options.unsupported.async_generator and flags & (FunctionFlags.is_async | FunctionFlags.is_generator) == (FunctionFlags.is_async | FunctionFlags.is_generator)) {
+                try std.testing.expectEqual(@as(usize, 0), expected_forwarding);
+                expected_forwarding = 1;
+            }
+        }
         var cell_uses: usize = 0;
         live_nodes = parents.keyIterator();
         while (live_nodes.next()) |raw| {
@@ -67,12 +86,29 @@ fn checkLiveArgumentsBeforeFinish(t: *Transformer, source_symbols: []const @impo
                 try std.testing.expectEqual(cell.scope, actual);
                 try std.testing.expect(reference.flags.read and !reference.flags.write);
                 engine_reads += 1;
+                const parent = t.ast.getNode(@fromBackingInt(parents.get(raw.*) orelse return error.MissingEngineReadParent));
+                if (parent.tag == .variable_declarator and
+                    @backingInt(t.ast.readExtraNode(parent.data.extra, 2)) == raw.* and
+                    t.getSymbolIdAt(t.ast.readExtraNode(parent.data.extra, 0)) == id)
+                {
+                    initializer_reads += 1;
+                } else if (parent.tag == .call_expression) {
+                    const helper = t.runtime_helper_symbol_ids.get("__asyncGenerator") orelse return error.UnknownNativeEngineConsumer;
+                    const callee = t.ast.readExtraNode(parent.data.extra, 0);
+                    const args_start = t.ast.readExtra(parent.data.extra, 1);
+                    try std.testing.expectEqual(@as(u32, 3), t.ast.readExtra(parent.data.extra, 2));
+                    try std.testing.expectEqual(@as(?u32, @backingInt(helper)), t.getSymbolIdAt(callee));
+                    try std.testing.expectEqual(raw.*, @backingInt(t.ast.readExtraNode(args_start, 1)));
+                    forwarding_reads += 1;
+                } else return error.UnknownNativeEngineConsumer;
             } else cell_uses += 1;
             try snapshots.append(a, .{ .node = @fromBackingInt(raw.*), .id = node_id, .scope = actual, .flags = reference.flags });
         }
         if (bindings == 0) std.debug.print("missing live arguments cell: sourceSID={d} scope={d} declaration={d} engineSID={d} engineReads={d} cellUses={d}\n", .{ id, @backingInt(cell.scope), @backingInt(cell.declaration), @backingInt(cell.engine_id), engine_reads, cell_uses });
         try std.testing.expectEqual(@as(usize, if (cell.source_has_binding) 2 else 1), bindings);
-        try std.testing.expectEqual(@as(usize, 1), engine_reads);
+        try std.testing.expectEqual(@as(usize, 1), initializer_reads);
+        try std.testing.expectEqual(expected_forwarding, forwarding_reads);
+        try std.testing.expectEqual(1 + expected_forwarding, engine_reads);
         try std.testing.expect(cell_uses > 0);
     }
     return snapshots.toOwnedSlice(a);
