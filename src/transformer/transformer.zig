@@ -411,6 +411,7 @@ pub const Transformer = struct {
     native_constructor_timing_plans: std.AutoHashMapUnmanaged(u32, @import("native_constructor_timing.zig").Plan) = .empty,
     native_constructor_timing_fields: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     native_constructor_placement_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    native_arguments_declaration_origins: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
     native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -1055,8 +1056,10 @@ pub const Transformer = struct {
         if (owner_scope) |scope_id| self.current_scope = @fromBackingInt(@intCast(scope_id));
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
-        if (self.ast.getNode(idx).tag == .program)
+        if (self.ast.getNode(idx).tag == .program) {
             try @import("native_constructor_timing.zig").projectCoordinates(self, new_idx);
+            try @import("native_arguments.zig").publish(self, new_idx);
+        }
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
         // A later visit may copy a generated capture declaration while
         // building an outer async/generator state machine. Pass 2 must see
@@ -1173,6 +1176,7 @@ pub const Transformer = struct {
     pub const hasLexicalCapture = @import("transformer/semantic_edit.zig").hasLexicalCapture;
     pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
+    pub const makeNativeArgumentsRef = @import("transformer/semantic_edit.zig").makeNativeArgumentsRef;
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const makeSyntheticRefForSymbol = @import("transformer/semantic_edit.zig").makeSyntheticRefForSymbol;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;

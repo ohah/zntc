@@ -85,6 +85,12 @@ fn checkBirth(source: []const u8) !void {
 }
 
 fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
+    var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+    unsupported.arrow = true;
+    return checkBirthWithOptions(source, extension, unsupported);
+}
+
+fn checkBirthWithOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -93,11 +99,11 @@ fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
     parser.configureFromExtension(extension);
     const root = try parser.parse();
     var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
     try analyzer.analyze();
-    var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
-    unsupported.arrow = true;
     var t = try Transformer.init(a, &parser.ast, .{ .unsupported = unsupported, .use_define_for_class_fields = true });
     try t.initSymbolIds(analyzer.symbol_ids.items);
     t.symbols = analyzer.symbols.items;
@@ -346,4 +352,8 @@ test "independent native constructor escaped parameter property ordering" {
         "input.cts",
         123,
     );
+}
+
+test "independent default constructor native arguments before output walker" {
+    try checkBirthWithOptions("class P{}class D extends P{}new D(42)", ".mjs", @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5));
 }

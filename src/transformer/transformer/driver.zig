@@ -191,6 +191,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
         try self.completeGeneratedStateSymbols(root, self.programScope());
         try @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*)).projectFunctionStorageCoordinates(self, root);
         try @import("../native_constructor_timing.zig").projectCoordinates(self, root);
+        try @import("../native_arguments.zig").publish(self, root);
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 

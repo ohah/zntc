@@ -562,7 +562,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
-                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                const extends_ref = blk: {
+                    const previous = self.current_scope;
+                    self.current_scope = iife_scope;
+                    defer self.current_scope = previous;
+                    break :blk try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                };
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
                 self.runtime_helpers.extends = true;
@@ -1113,7 +1118,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
-                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                const extends_ref = blk: {
+                    const previous = self.current_scope;
+                    self.current_scope = iife_scope;
+                    defer self.current_scope = previous;
+                    break :blk try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                };
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;
             }

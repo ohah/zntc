@@ -58,6 +58,8 @@ const ALLOWLIST = {
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
   'src/transformer/native_constructor_function_cells.zig::prepare':
     '생산자가 확정한 constructor 함수 셀 SID와 try Scope로 Reference를 먼저 등록한 뒤 대입 target으로 retag',
+  'src/transformer/transformer/semantic_edit.zig::makeNativeArgumentsRef':
+    '실제 함수 스코프의 native arguments SID/참조 생성; semantic-less 경로만 raw native operand를 생성',
   'src/transformer/native_constructor_guard.zig::reference':
     '호출자가 넘긴 정확한 capture SID와 실제 use Scope에 Reference를 먼저 등록한 뒤 write target으로 retag',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
@@ -71,6 +73,7 @@ const ALLOWLIST = {
 // another direct identifier construction inside an allowed producer cannot
 // silently widen the exception.
 const PINNED_ALLOW_COUNTS = new Map([
+  ['src/transformer/transformer/semantic_edit.zig::makeNativeArgumentsRef', 1],
   ['src/transformer/es2015_generator.zig::appendCollectedFunctionAlias', 1],
   ['src/transformer/static_class_capture.zig::makeClassSelfReference', 1],
   ['src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite', 1],

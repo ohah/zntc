@@ -65,6 +65,11 @@ pub fn prepare(self: anytype, source_id: u32, name: []const u8, owner: NodeIndex
     });
     editor.scopes.items[scope.toIndex()].symbol_count += 1;
     try editor.scope_maps.items[scope.toIndex()].put(self.allocator, "arguments", @backingInt(engine_id));
+    editor.ensureDeclarationAtNode(engine_id, scope, .none) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => std.debug.panic("native arguments engine declaration lost its exact scope: {s}", .{@errorName(err)}),
+    };
+    try @import("native_arguments.zig").record(self, engine_id, scope);
     const cell = &editor.symbols.items[source_id];
     cell.kind = .variable_var;
     cell.decl_flags = symbols.SymbolKind.variable_var.declFlags();

@@ -588,7 +588,12 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, function_scope);
-            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            const args_ref = try self.makeNativeArgumentsRef(function_scope, function_scope, span);
+            if (self.semantic_edit_enabled) {
+                const id = self.getSymbolIdAt(args_ref) orelse @panic("default constructor arguments have no engine SID");
+                try @import("../native_constructor_guard.zig").recordReference(self, args_ref, @fromBackingInt(id), function_scope, .{ .read = true });
+                try @import("../native_constructor_timing.zig").registerPlacementOwner(self, function_scope);
+            }
             const new_target_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target_name_span);
             try self.addSyntheticRefInScope(new_target_ref, new_target_symbol, function_scope, .{ .read = true });
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);

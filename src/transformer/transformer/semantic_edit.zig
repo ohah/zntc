@@ -3059,8 +3059,52 @@ pub fn shouldCaptureArguments(self: *Transformer, source: NodeIndex) bool {
     return true;
 }
 
-/// The capture initializer reads the source `arguments` binding when it is an
-/// explicit user symbol. Implicit function arguments remain a host reference.
+/// A producer with a reserved ordinary function scope creates its native
+/// arguments slot before emitting the first use. This is not a global name
+/// and cannot replace an explicit source formal or lexical binding.
+pub fn makeNativeArgumentsRef(self: *Transformer, owner_scope: ScopeId, use_scope: ScopeId, span: Span) Transformer.Error!NodeIndex {
+    if (!self.semantic_edit_enabled) {
+        const name = try self.ast.addString("arguments");
+        return self.ast.addNode(.{ .tag = .identifier_reference, .span = span, .data = .{ .string_ref = name } });
+    }
+    const editor = try editorFor(self);
+    if (owner_scope.isNone() or owner_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[owner_scope.toIndex()].kind != .function)
+        @panic("native arguments producer has no actual function scope");
+    var selected: ?SymbolId = null;
+    for (editor.symbols.items, 0..) |symbol, raw| {
+        if (symbol.scope_id != owner_scope or symbol.synthetic_kind != .implicit_arguments) continue;
+        if (selected != null or symbol.kind != .parameter)
+            @panic("native arguments producer has ambiguous engine storage");
+        selected = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    if (selected == null) {
+        if (editor.scope_maps.items[owner_scope.toIndex()].contains("arguments"))
+            @panic("native arguments producer would replace a source binding");
+        const name = try self.ast.addString("arguments");
+        selected = @fromBackingInt(@as(u32, @intCast(editor.symbols.items.len)));
+        try editor.symbols.append(self.allocator, .{
+            .name = name,
+            .scope_id = owner_scope,
+            .origin_scope = owner_scope,
+            .kind = .parameter,
+            .decl_flags = SymbolKind.parameter.declFlags(),
+            .declaration_span = span,
+            .synthetic_kind = .implicit_arguments,
+            .synthetic_name = "arguments",
+        });
+        editor.scopes.items[owner_scope.toIndex()].symbol_count += 1;
+        try editor.scope_maps.items[owner_scope.toIndex()].put(self.allocator, "arguments", @backingInt(selected.?));
+    } else if (editor.scope_maps.items[owner_scope.toIndex()].get("arguments") != @as(?usize, @backingInt(selected.?))) {
+        @panic("native arguments engine lost its exact scope entry");
+    }
+    editor.ensureDeclarationAtNode(selected.?, owner_scope, .none) catch |err| return editError(err);
+    try @import("../native_arguments.zig").record(self, selected.?, owner_scope);
+    return self.makeSyntheticRefForSymbol(selected.?, use_scope, .{ .read = true });
+}
+
+/// Capture initializers consume the exact source edge carried by their frame.
+/// A frame without such an edge retains its explicit host-reference path.
 pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex {
     const helpers = @import("../es_helpers.zig");
     if (!self.semantic_edit_enabled or self.capture_frame == 0)

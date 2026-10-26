@@ -44,6 +44,11 @@ pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
         const output = self.ast.getNode(root);
         program_shifted = original.tag == .program and output.tag == .program and original.data.list.len != output.data.list.len;
     }
+    // Class factories introduce nested statement lists even when the program
+    // length stays constant. Reindex existing rows only; their IDs, use scopes
+    // and publication eligibility remain the original producers' authority.
+    const reindex_existing_positions = program_shifted or
+        (self.options.unsupported.class and self.native_constructor_placement_scopes.count() != 0);
     var generated = self.native_constructor_reference_origins.iterator();
     while (generated.next()) |entry| {
         const raw = entry.key_ptr.*;
@@ -67,7 +72,7 @@ pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
         }
         // A helper-import prefix can shift other existing rows too. Reindex
         // their coordinates without granting constructor publication rights.
-        if (!selected and !program_shifted) continue;
+        if (!selected and !reindex_existing_positions) continue;
         const node = if (row.node_index.isNone()) row.declaration_node_index else row.node_index;
         if (node.isNone() or @backingInt(node) >= coordinates.len) continue;
         const actual = coordinates[@backingInt(node)] orelse continue;

@@ -164,6 +164,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.native_constructor_timing_plans.deinit(self.allocator);
     self.native_constructor_timing_fields.deinit(self.allocator);
     self.native_constructor_placement_scopes.deinit(self.allocator);
+    self.native_arguments_declaration_origins.deinit(self.allocator);
     self.native_constructor_reference_origins.deinit(self.allocator);
     self.native_constructor_statement_handoffs.deinit(self.allocator);
     self.native_constructor_statement_nodes.deinit(self.allocator);
