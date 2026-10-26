@@ -3417,6 +3417,8 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
     var wrapper_binding_count: usize = 0;
     var wrapper_write_count: usize = 0;
+    var wrapper_owner_scope_writes: usize = 0;
+    var wrapper_metadata_scope_writes: usize = 0;
     var constructor_binding_count: usize = 0;
     var wrapper_reference_node_count: usize = 0;
     for (reachable) |reachable_node| {
@@ -3447,12 +3449,35 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
         if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
         try std.testing.expect(reference.flags.write);
         try std.testing.expect(!reference.flags.read);
+        if (reference.scope_id == edited.symbols.items[wrapper_id].scope_id) {
+            wrapper_owner_scope_writes += 1;
+        } else {
+            if (reference.scope_id.isNone() or reference.scope_id.toIndex() >= edited.scopes.len)
+                return error.Stage3ClassWriteHasInvalidScope;
+            const reference_scope = edited.scopes[reference.scope_id.toIndex()];
+            try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, reference_scope.kind);
+            try std.testing.expectEqual(edited.symbols.items[wrapper_id].scope_id, reference_scope.parent);
+            var owner_found = false;
+            var owner_it = edited.scope_owner_map.iterator();
+            while (owner_it.next()) |entry| {
+                if (entry.value_ptr.* != reference.scope_id.toIndex()) continue;
+                const owner_node: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+                const owner = transformer.ast.getNode(owner_node);
+                try std.testing.expectEqual(.function_expression, owner.tag);
+                owner_found = true;
+                break;
+            }
+            try std.testing.expect(owner_found);
+            wrapper_metadata_scope_writes += 1;
+        }
         wrapper_write_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), wrapper_binding_count);
     try std.testing.expectEqual(@as(usize, 1), constructor_binding_count);
     try std.testing.expectEqual(@as(usize, 2), wrapper_reference_node_count);
     try std.testing.expectEqual(@as(usize, 2), wrapper_write_count);
+    try std.testing.expectEqual(@as(usize, 1), wrapper_owner_scope_writes);
+    try std.testing.expectEqual(@as(usize, 1), wrapper_metadata_scope_writes);
     var report = try coverage.checkStrictWithExactExternalEvidence(
         allocator,
         transformer.ast,

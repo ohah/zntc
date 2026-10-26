@@ -48,6 +48,12 @@ const ALLOWLIST = {
     '기존 assignment target 노드를 읽기 reference로 재사용',
   'src/transformer/es_helpers.zig::buildCapturedFunctionAssignment':
     '합성 함수 대입 target에 producer가 선택한 SymbolId를 pending 등록',
+  'src/transformer/es2015_generator.zig::appendCollectedFunctionAlias':
+    'Annex B producer가 선택한 variable SymbolId와 operation ScopeId를 대입 Reference에 직접 등록',
+  'src/transformer/static_class_capture.zig::makeClassSelfReference':
+    'source class-self SymbolId를 output capture SymbolId에 매핑하고 write Reference를 target으로 재사용',
+  'src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite':
+    'producer가 확정한 class-self SymbolId와 output ScopeId를 copied write Reference에 직접 등록',
   'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
@@ -55,6 +61,16 @@ const ALLOWLIST = {
   'src/transformer/es_helpers.zig::jsxIdentifierNode':
     'makeSyntheticJsxTag·makeJsxAttributeName 의 공통 노드 생성',
 };
+
+// These existing transformer producers register each assignment target with an
+// exact SymbolId/ScopeId. Pin their current raw-constructor count so that adding
+// another direct identifier construction inside an allowed producer cannot
+// silently widen the exception.
+const PINNED_ALLOW_COUNTS = new Map([
+  ['src/transformer/es2015_generator.zig::appendCollectedFunctionAlias', 1],
+  ['src/transformer/static_class_capture.zig::makeClassSelfReference', 1],
+  ['src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite', 1],
+]);
 
 const PATTERNS = [
   // `.tag = X` 와 조건식 tag 모두 잡는다(`==` 비교는 제외).
@@ -124,6 +140,7 @@ function stripZigCommentsAndStrings(line, state) {
 
 const violations = [];
 const usedAllow = new Set();
+const usedAllowCounts = new Map();
 for (const file of walk(scanRoot, [])) {
   const rel = relative(root, file);
   const lines = readFileSync(file, 'utf8').split('\n');
@@ -140,6 +157,13 @@ for (const file of walk(scanRoot, [])) {
         if (/\bfn\s+makeBindingIdentifier\(/.test(code)) continue;
         const key = `${rel}::${enclosingFn(lines, i)}`;
         if (ALLOWLIST[key]) {
+          const count = (usedAllowCounts.get(key) ?? 0) + 1;
+          usedAllowCounts.set(key, count);
+          const expected = PINNED_ALLOW_COUNTS.get(key);
+          if (expected !== undefined && count > expected) {
+            violations.push(`${rel}:${i + 1} (${key}) — pinned 허용 개수 ${expected}곳 초과`);
+            continue;
+          }
           usedAllow.add(key);
           continue;
         }
@@ -156,6 +180,12 @@ for (const file of walk(scanRoot, [])) {
 }
 
 const stale = Object.keys(ALLOWLIST).filter((k) => !usedAllow.has(k));
+const wrongPinnedCounts = [...PINNED_ALLOW_COUNTS].filter(
+  ([key, expected]) => (usedAllowCounts.get(key) ?? 0) !== expected,
+);
+for (const [key, expected] of wrongPinnedCounts) {
+  violations.push(`${key} — pinned 허용 개수 불일치 (expected ${expected}, actual ${usedAllowCounts.get(key) ?? 0})`);
+}
 if (violations.length > 0) {
   console.error(
     `식별자 직접 생성 ${violations.length}곳 — 분류된 생성 함수를 쓰세요 (scripts/audit-identifier-constructors.mjs 머리말 참고):`,

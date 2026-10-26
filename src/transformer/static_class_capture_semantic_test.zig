@@ -73,24 +73,35 @@ fn expectStaticCaptureIdentity(
         try std.testing.expectEqual(@as(?usize, raw_id), edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name));
         var bindings: usize = 0;
         var exact_reads: usize = 0;
+        var exact_writes: usize = 0;
         for (reachable) |raw| {
             if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != @as(?u32, @intCast(raw_id))) continue;
             const node = transformer.ast.nodes.items[raw];
             if (node.tag == .binding_identifier) bindings += 1;
-            if (node.tag == .identifier_reference) {
+            if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
                 var recorded = false;
                 for (edited.references) |reference| {
                     if (@backingInt(reference.node_index) != raw) continue;
                     try std.testing.expectEqual(@as(u32, @intCast(raw_id)), @backingInt(reference.symbol_id));
-                    try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    if (node.tag == .assignment_target_identifier) {
+                        try std.testing.expect(reference.flags.write and !reference.flags.read);
+                    } else {
+                        try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    }
                     recorded = true;
                 }
                 try std.testing.expect(recorded);
-                exact_reads += 1;
+                if (node.tag == .assignment_target_identifier) {
+                    exact_writes += 1;
+                } else {
+                    exact_reads += 1;
+                }
             }
         }
         try std.testing.expectEqual(@as(usize, 1), bindings);
-        try std.testing.expect(exact_reads > 0);
+        try std.testing.expect(exact_reads + exact_writes > 0);
+        const expects_class_self_write = std.mem.indexOf(u8, source, "Box = 1") != null;
+        try std.testing.expectEqual(if (expects_class_self_write) @as(usize, 1) else 0, exact_writes);
     }
     try std.testing.expectEqual(expected_captures, capture_count);
     // Later bundler syntax passes must preserve the producer's readonly
@@ -157,6 +168,11 @@ test "#4819 static class capture reserves named expression owner before visiting
     const source = "const Outer = class Inner { static read = () => this === Inner; };";
     try expectStaticCaptureIdentity(source, false, 1);
     try expectStaticCaptureIdentity(source, true, 1);
+}
+
+test "#4819 static class self assignment is retargeted to the exact capture write" {
+    const source = "class Box { static write = () => (Box = 1); }";
+    try expectStaticCaptureIdentity(source, false, 1);
 }
 
 test "#4819 static class capture attaches exact identity before output reconciliation" {
