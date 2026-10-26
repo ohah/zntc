@@ -105,9 +105,11 @@ const live_sources = [_][]const u8{
     "function f(){var arguments='initial';const get=()=>arguments;arguments='changed';console.log(get(),arguments)}f('input')",
     "function f(){const get=()=>{var arguments;return arguments};console.log(get()===undefined)}f('input')",
     "function f(arguments){const get=()=>arguments;function own(){return arguments[0]}arguments='changed';console.log(get(),own('own'))}f('initial')",
+    "async function* collect(items){for await(const item of items){yield (()=>this.base+arguments.length+item)();}}(async()=>{const values=[];for await(const value of collect.call({base:10},[1,2]))values.push(value);console.log(values.join(','))})()",
+    "async function* collect(items){for await(const item of items){arguments=['changed'];yield (()=>arguments[0]+item)();}}(async()=>{const values=[];for await(const value of collect([1,2]))values.push(value);console.log(values.join(','))})()",
 };
 
-test "live arguments static writes share the original cell across fourteen inputs" {
+test "live arguments static writes share the original cell across sixteen inputs" {
     const Options = @import("transformer.zig").TransformOptions;
     for (live_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

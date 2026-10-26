@@ -3798,7 +3798,7 @@ pub fn fillThisArgumentsCaptures(self: anytype, buf: *[3]NodeIndex, span: Span) 
         try self.bindLexicalCapture(buf[count], .this_value);
         count += 1;
     }
-    if (self.needs_arguments_var) {
+    if (self.needs_arguments_var or @import("live_arguments.zig").ownerCell(self) != null) {
         buf[count] = try makeArgumentsCaptureDeclaration(self, span);
         count += 1;
     }

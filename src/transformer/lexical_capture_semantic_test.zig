@@ -7,6 +7,93 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 
+const LiveArgumentReference = struct {
+    node: @import("../parser/ast.zig").NodeIndex,
+    id: u32,
+    scope: ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
+};
+
+fn checkLiveArgumentsBeforeFinish(t: *Transformer, source_symbols: []const @import("../semantic/symbol.zig").Symbol) ![]LiveArgumentReference {
+    const a = t.allocator;
+    const root = t.ast.transformed_root orelse return error.MissingTransformedRoot;
+    const utils = @import("output_scope_test_utils.zig");
+    var parents = try utils.buildParentMap(a, t.ast, root);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    if (t.outputOwnedScope(root)) |scope| try owners.put(a, @backingInt(root), @backingInt(scope));
+    var live_nodes = parents.keyIterator();
+    while (live_nodes.next()) |raw| {
+        if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| try owners.put(a, raw.*, @backingInt(scope));
+    }
+    var snapshots: std.ArrayList(LiveArgumentReference) = .empty;
+    var cells = t.live_arguments_cells.iterator();
+    while (cells.next()) |entry| {
+        const id = entry.key_ptr.*;
+        const cell = entry.value_ptr;
+        const editor = &t.semantic_editor.?;
+        try std.testing.expect(id < source_symbols.len);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SyntheticKind.implicit_arguments, source_symbols[id].synthetic_kind.?);
+        try std.testing.expectEqual(source_symbols[id].scope_id, cell.scope);
+        try std.testing.expectEqual(cell.scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, editor.symbols.items[id].kind);
+        try std.testing.expect(@backingInt(cell.engine_id) >= source_symbols.len);
+        const engine = editor.symbols.items[@backingInt(cell.engine_id)];
+        try std.testing.expectEqual(cell.scope, engine.scope_id);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, engine.kind);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SyntheticKind.implicit_arguments, engine.synthetic_kind.?);
+        try std.testing.expectEqual(@as(?usize, @backingInt(cell.engine_id)), editor.scope_maps.items[cell.scope.toIndex()].get("arguments"));
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[cell.scope.toIndex()].kind);
+        var bindings: usize = 0;
+        var engine_reads: usize = 0;
+        var cell_uses: usize = 0;
+        live_nodes = parents.keyIterator();
+        while (live_nodes.next()) |raw| {
+            const node_id = t.getSymbolIdAt(@fromBackingInt(raw.*)) orelse continue;
+            if (node_id != id and node_id != @backingInt(cell.engine_id)) continue;
+            const node = t.ast.nodes.items[raw.*];
+            const actual = utils.expectedScope(t.ast, root, &parents, &owners, raw.*) orelse return error.MissingActualCaptureScope;
+            if (node.tag == .binding_identifier) {
+                try std.testing.expectEqual(id, node_id);
+                try std.testing.expectEqual(cell.scope, actual);
+                bindings += 1;
+                continue;
+            }
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+            const reference = (try editor.referenceForNode(@fromBackingInt(raw.*))) orelse return error.MissingCaptureReferenceAtCreation;
+            try std.testing.expectEqual(node_id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(actual, reference.scope_id);
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            if (node_id == @backingInt(cell.engine_id)) {
+                try std.testing.expectEqual(cell.scope, actual);
+                try std.testing.expect(reference.flags.read and !reference.flags.write);
+                engine_reads += 1;
+            } else cell_uses += 1;
+            try snapshots.append(a, .{ .node = @fromBackingInt(raw.*), .id = node_id, .scope = actual, .flags = reference.flags });
+        }
+        if (bindings == 0) std.debug.print("missing live arguments cell: sourceSID={d} scope={d} declaration={d} engineSID={d} engineReads={d} cellUses={d}\n", .{ id, @backingInt(cell.scope), @backingInt(cell.declaration), @backingInt(cell.engine_id), engine_reads, cell_uses });
+        try std.testing.expectEqual(@as(usize, if (cell.source_has_binding) 2 else 1), bindings);
+        try std.testing.expectEqual(@as(usize, 1), engine_reads);
+        try std.testing.expect(cell_uses > 0);
+    }
+    return snapshots.toOwnedSlice(a);
+}
+
+fn checkLiveArgumentsAfterFinish(edited: anytype, snapshots: []const LiveArgumentReference) !void {
+    for (snapshots) |snapshot| {
+        try std.testing.expectEqual(snapshot.id, edited.symbol_ids[@backingInt(snapshot.node)].?);
+        var found = false;
+        for (edited.references) |reference| {
+            if (reference.node_index != snapshot.node) continue;
+            try std.testing.expect(!found);
+            found = true;
+            try std.testing.expectEqual(snapshot.id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(snapshot.scope, reference.scope_id);
+            try std.testing.expectEqual(snapshot.flags, reference.flags);
+        }
+        try std.testing.expect(found);
+    }
+}
+
 fn checkCaptureSymbolsWithUnsupported(
     source: []const u8,
     frame_tag: @import("../parser/ast.zig").Node.Tag,
@@ -66,7 +153,9 @@ fn checkCaptureSymbolsWithUnsupported(
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    const live_snapshots = try checkLiveArgumentsBeforeFinish(&transformer, analyzer.symbols.items);
     const edited = (try transformer.finishSemanticEdit()).?;
+    try checkLiveArgumentsAfterFinish(edited, live_snapshots);
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -74,9 +163,10 @@ fn checkCaptureSymbolsWithUnsupported(
 
     var this_count: usize = 0;
     var arguments_count: usize = 0;
-    for (edited.symbols.items[old_symbols..], old_symbols..) |symbol, index| {
-        const is_this = std.mem.startsWith(u8, symbol.synthetic_name, "_this");
-        const is_arguments = std.mem.startsWith(u8, symbol.synthetic_name, "_arguments");
+    for (edited.symbols.items, 0..) |symbol, index| {
+        const is_this = index >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_this");
+        const is_live_arguments = transformer.live_arguments_cells.contains(@intCast(index));
+        const is_arguments = is_live_arguments or (index >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_arguments"));
         if (!is_this and !is_arguments) continue;
         if (is_this) this_count += 1 else arguments_count += 1;
         try std.testing.expectEqual(enclosing, @backingInt(symbol.scope_id));
@@ -96,7 +186,7 @@ fn checkCaptureSymbolsWithUnsupported(
             // Balanced reference counts can hide a `this`/`arguments` ID swap
             // if the checker follows spelling. Lock the name to this exact SID.
             try std.testing.expectEqualStrings(
-                symbol.nameText(transformer.ast.source),
+                if (is_live_arguments) transformer.block_rename_map.?.get(id).? else symbol.nameText(transformer.ast.source),
                 transformer.ast.getText(reference_node.data.string_ref),
             );
             var use_scope = ref.scope_id;
@@ -160,7 +250,9 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8, expected_name: []con
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    const live_snapshots = try checkLiveArgumentsBeforeFinish(&transformer, analyzer.symbols.items);
     const edited = (try transformer.finishSemanticEdit()).?;
+    try checkLiveArgumentsAfterFinish(edited, live_snapshots);
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -478,7 +570,9 @@ test "#4819 explicit arguments binding keeps one live identity through the lower
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    const live_snapshots = try checkLiveArgumentsBeforeFinish(&transformer, analyzer.symbols.items);
     const edited = (try transformer.finishSemanticEdit()).?;
+    try checkLiveArgumentsAfterFinish(edited, live_snapshots);
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (reachable) |raw| try live.put(allocator, raw, {});
@@ -554,14 +648,16 @@ test "#4819 nested source functions keep distinct capture symbol IDs and scopes"
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    const live_snapshots = try checkLiveArgumentsBeforeFinish(&transformer, analyzer.symbols.items);
     const edited = (try transformer.finishSemanticEdit()).?;
+    try checkLiveArgumentsAfterFinish(edited, live_snapshots);
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (reachable) |raw| try live.put(allocator, raw, {});
 
     var counts: [2][2]usize = .{ .{ 0, 0 }, .{ 0, 0 } };
-    for (edited.symbols.items[old_symbols..], old_symbols..) |symbol, id| {
-        const kind: usize = if (std.mem.startsWith(u8, symbol.synthetic_name, "_this")) 0 else if (std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) 1 else continue;
+    for (edited.symbols.items, 0..) |symbol, id| {
+        const kind: usize = if (id >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_this")) 0 else if (transformer.live_arguments_cells.contains(@intCast(id)) or (id >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_arguments"))) 1 else continue;
         const scope_index: usize = if (@backingInt(symbol.scope_id) == function_scopes[0]) 0 else if (@backingInt(symbol.scope_id) == function_scopes[1]) 1 else return error.TestUnexpectedResult;
         counts[scope_index][kind] += 1;
         var bindings: usize = 0;
@@ -629,7 +725,9 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    const live_snapshots = try checkLiveArgumentsBeforeFinish(&transformer, analyzer.symbols.items);
     const edited = (try transformer.finishSemanticEdit()).?;
+    try checkLiveArgumentsAfterFinish(edited, live_snapshots);
     try std.testing.expectEqual(@as(usize, 1), transformer.deferred_generator_loop_owners.count());
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
@@ -639,14 +737,19 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
     var this_count: usize = 0;
     var arguments_count: usize = 0;
     var common_scope: ?u32 = null;
-    for (edited.symbols.items[old_symbols..], old_symbols..) |symbol, id| {
-        const is_this = std.mem.startsWith(u8, symbol.synthetic_name, "_this");
-        const is_arguments = std.mem.startsWith(u8, symbol.synthetic_name, "_arguments");
+    for (edited.symbols.items, 0..) |symbol, id| {
+        const is_this = id >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_this");
+        const is_live_arguments = transformer.live_arguments_cells.contains(@intCast(id));
+        const is_arguments = is_live_arguments or (id >= old_symbols and std.mem.startsWith(u8, symbol.synthetic_name, "_arguments"));
         if (!is_this and !is_arguments) continue;
         if (is_this) this_count += 1 else arguments_count += 1;
         const owner_scope = @backingInt(symbol.scope_id);
-        if (common_scope) |existing| try std.testing.expectEqual(existing, owner_scope) else common_scope = owner_scope;
-        try std.testing.expectEqual(source_scope, @backingInt(edited.scopes[owner_scope].parent));
+        if (is_live_arguments) {
+            try std.testing.expectEqual(source_scope, owner_scope);
+        } else {
+            if (common_scope) |existing| try std.testing.expectEqual(existing, owner_scope) else common_scope = owner_scope;
+            try std.testing.expectEqual(source_scope, @backingInt(edited.scopes[owner_scope].parent));
+        }
 
         var binding_count: usize = 0;
         for (reachable) |raw| {
