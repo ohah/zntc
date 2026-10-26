@@ -24,14 +24,19 @@ pub const source =
     \\
 ;
 
+pub fn minified(comptime name: []const u8) []const u8 {
+    return "var " ++ name ++ "=(function(){var active;return function(operation,value){if(operation===0){var frame={assign:value,previous:active};active=frame;return frame}if(operation===1){active.assign(value);return value}var previous=value.previous;value.assign=null;value.previous=null;active=previous}})();";
+}
+
 test "native constructor frame runtime preserves receiver identity and detaches nested activations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const code =
+    const prefix =
         \\var oldPush=Array.prototype.push,oldPop=Array.prototype.pop,oldBind=Function.prototype.bind;
         \\Array.prototype.push=Array.prototype.pop=Function.prototype.bind=function(){throw Error('unexpected prototype operation')};
-    ++ source ++
+    ;
+    const suffix =
         \\var outerValue,innerValue;
         \\var first={},second={},third={};
         \\var outer=__nativeCtorThis(0,function(value){outerValue=value});
@@ -46,10 +51,13 @@ test "native constructor frame runtime preserves receiver identity and detaches 
         \\Array.prototype.push=oldPush;Array.prototype.pop=oldPop;Function.prototype.bind=oldBind;
         \\console.log(JSON.stringify([firstResult===first,outerValue===third,innerValue===second,nestedDetached,outerDetached,Reflect.ownKeys(first).length,Reflect.ownKeys(second).length]));
     ;
-    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", code }, .stdout_limit = .limited(4096), .stderr_limit = .limited(4096) });
-    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
-    try std.testing.expectEqualStrings("", actual.stderr);
-    try std.testing.expectEqualStrings("[true,true,true,true,true,0,0]\n", actual.stdout);
+    for ([_][]const u8{ source, minified("__nativeCtorThis") }) |template| {
+        const code = try std.fmt.allocPrint(a, "{s}\n{s}\n{s}", .{ prefix, template, suffix });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", code }, .stdout_limit = .limited(4096), .stderr_limit = .limited(4096) });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("", actual.stderr);
+        try std.testing.expectEqualStrings("[true,true,true,true,true,0,0]\n", actual.stdout);
+    }
 }
 
 // These explicitly assembled controls exercise the engine timing protocol,

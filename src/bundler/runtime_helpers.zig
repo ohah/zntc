@@ -19,6 +19,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     assert_this_initialized: ?[]const u8 = null,
     assert_this_uninitialized: ?[]const u8 = null,
     possible_constructor_return: ?[]const u8 = null,
+    native_ctor_this: ?[]const u8 = null,
     es_decorate: ?[]const u8 = null,
     run_initializers: ?[]const u8 = null,
     set_function_name: ?[]const u8 = null,
@@ -627,11 +628,11 @@ pub const DERIVED_CONSTRUCTOR_RUNTIME =
     \\  return __assertThisInitialized(self);
     \\};
     \\
-;
+++ @import("native_constructor_frame_runtime.zig").source;
 pub const DERIVED_CONSTRUCTOR_RUNTIME_MIN =
     "var " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "=function(self){if(self===void 0)throw new ReferenceError(\"this hasn't been initialised - super() hasn't been called\");return self};" ++
     "var " ++ NAMES.ASSERT_THIS_UNINITIALIZED_MIN ++ "=function(self){if(self!==void 0)throw new ReferenceError(\"Super constructor may only be called once\")};" ++
-    "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(call,self){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};";
+    "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(call,self){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};" ++ @import("native_constructor_frame_runtime.zig").minified(NAMES.NATIVE_CTOR_THIS_MIN);
 
 /// ES2015 TDZ read helper. Babel/OXC runtime의 tdz helper와 같은 역할이다.
 pub const TDZ_RUNTIME =
@@ -2245,10 +2246,12 @@ fn appendRuntimeHelpersInternal(
         const initialized_name = helperName("__assertThisInitialized", minify);
         const uninitialized_name = helperName("__assertThisUninitialized", minify);
         const constructor_return_name = helperName("__possibleConstructorReturn", minify);
+        const native_ctor_this_name = helperName("__nativeCtorThis", minify);
         const replacements = [_]RuntimeTemplateNameReplacement{
             .{ .default_name = initialized_name, .local_name = local_names.assert_this_initialized orelse initialized_name },
             .{ .default_name = uninitialized_name, .local_name = local_names.assert_this_uninitialized orelse uninitialized_name },
             .{ .default_name = constructor_return_name, .local_name = local_names.possible_constructor_return orelse constructor_return_name },
+            .{ .default_name = native_ctor_this_name, .local_name = local_names.native_ctor_this orelse native_ctor_this_name },
         };
         try appendRuntimeTemplateWithLocalNamesAndReferences(
             buf,

@@ -186,7 +186,7 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "derived-constructor",
-        .helpers = &.{ "__assertThisInitialized", "__assertThisUninitialized", "__possibleConstructorReturn" },
+        .helpers = &.{ "__assertThisInitialized", "__assertThisUninitialized", "__possibleConstructorReturn", "__nativeCtorThis" },
         .body = .{ .plain = rt.DERIVED_CONSTRUCTOR_RUNTIME, .min = rt.DERIVED_CONSTRUCTOR_RUNTIME_MIN },
     },
     .{

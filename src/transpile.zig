@@ -2324,6 +2324,7 @@ fn transpileWithCallbackInternal(
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisInitialized", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisUninitialized", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__possibleConstructorReturn", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__nativeCtorThis", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.legacy_decorator) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__decorateClass", options.minify_whitespace);
@@ -2690,6 +2691,7 @@ fn transpileWithCallbackInternal(
             local_names.assert_this_initialized = try helper_name_resolver.resolve("__assertThisInitialized", options.minify_whitespace);
             local_names.assert_this_uninitialized = try helper_name_resolver.resolve("__assertThisUninitialized", options.minify_whitespace);
             local_names.possible_constructor_return = try helper_name_resolver.resolve("__possibleConstructorReturn", options.minify_whitespace);
+            local_names.native_ctor_this = try helper_name_resolver.resolve("__nativeCtorThis", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);

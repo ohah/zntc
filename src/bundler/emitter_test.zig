@@ -1953,6 +1953,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
             .assert_this_initialized = "__assertThisInitialized2",
             .assert_this_uninitialized = "__assertThisUninitialized2",
             .possible_constructor_return = "__possibleConstructorReturn2",
+            .native_ctor_this = "__nativeCtorThis2",
         },
     );
     try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __assertThisInitialized2 = function(self)"));
@@ -1962,6 +1963,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisInitialized = function") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisUninitialized = function") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __possibleConstructorReturn = function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __nativeCtorThis2 = (function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __nativeCtorThis =") == null);
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -1975,6 +1978,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
             .assert_this_initialized = "$aT2",
             .assert_this_uninitialized = "$aU2",
             .possible_constructor_return = "$pR2",
+            .native_ctor_this = "$nC2",
         },
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aT2=function(self)"));
@@ -1984,6 +1988,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aT=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aU=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pR=function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $nC2=(function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $nC=") == null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits selected legacy-decorator helper names and internal references" {

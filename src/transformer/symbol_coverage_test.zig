@@ -4774,6 +4774,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
         "__assertThisInitialized",
         "__assertThisUninitialized",
         "__possibleConstructorReturn",
+        "__nativeCtorThis",
     };
     const callsite = try es_helpers.makeRuntimeHelperRef(&transformer, bases[0]);
     const callsite_id = transformer.runtime_helper_symbol_ids.get(bases[0]) orelse return error.MissingCallsiteRuntimeHelperSymbolId;
