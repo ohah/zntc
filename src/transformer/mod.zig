@@ -140,3 +140,7 @@ test {
 test {
     _ = @import("static_block_environment_test.zig");
 }
+
+test {
+    _ = @import("native_arguments_handoff_test.zig");
+}

@@ -452,8 +452,9 @@ pub fn ES2017(comptime Transformer: type) type {
             // Removed parameter environments still require a lowering handoff.
             const arguments_plan = @import("native_arguments.zig");
             const native_owner = self.outputOwnedScope(params_idx) orelse state_parent_scope;
+            const parameter_handoff = !native_params_retained and arguments_plan.canHandoffParameterEngine(self, params_idx, state_parent_scope);
             const args_ref = if ((native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner)) or
-                arguments_plan.hasRetainedParameterEngine(self, params_idx, state_parent_scope))
+                arguments_plan.hasRetainedParameterEngine(self, params_idx, state_parent_scope) or parameter_handoff)
                 try self.makeNativeArgumentsRef(native_owner, state_parent_scope, span)
             else
                 try es_helpers.makeGlobalRef(self, "arguments");
@@ -494,6 +495,10 @@ pub fn ES2017(comptime Transformer: type) type {
             };
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
             try self.remapCopiedScopeOwner(params_idx, outer_params_node);
+            if (parameter_handoff) arguments_plan.recordParameterHandoff(self, args_ref, outer_params_node, state_parent_scope) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => std.debug.panic("native parameter handoff creation failed: {s}", .{@errorName(err)}),
+            };
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),
@@ -1079,6 +1084,45 @@ test "async generator kept parameter engines preserve ten native contexts" {
     }
 }
 
+test "async generator erased parameter engines preserve ten native contexts" {
+    const sources = [_][]const u8{
+        "async function*f(value=7){yield value}(async()=>console.log((await f().next()).value))();",
+        "const f=async function*(value=7){yield value};(async()=>console.log((await f().next()).value))();",
+        "const f=async function*inner(value=7){yield typeof inner==='function'?value:0};(async()=>console.log((await f().next()).value))();",
+        "const obj={async*f(value=7){yield value}};(async()=>console.log((await obj.f().next()).value))();",
+        "class C{static async*f(value=7){yield value}}(async()=>console.log((await C.f().next()).value))();",
+        "function make(){return async function*f(value=7){yield value}}(async()=>console.log((await make()().next()).value))();",
+        "async function*f(value={count:7}){yield value.count}(async()=>console.log((await f().next()).value))();",
+        "async function*f({count}={count:7}){yield count}(async()=>console.log((await f().next()).value))();",
+        "async function*f(get=()=>7){yield get()}(async()=>console.log((await f().next()).value))();",
+        "async function*__asyncGenerator(value=7,other=value+1){yield other}(async()=>console.log((await __asyncGenerator().next()).value))();",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{.es5}) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                    .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("ERASED NATIVE ARGS case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es5, 1);
+        }
+    }
+}
+
 fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool, expected_forwards: usize) !void {
     const symbol_mod = @import("../semantic/symbol.zig");
     const utils = @import("output_scope_test_utils.zig");
@@ -1090,6 +1134,16 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
     try analyzer.analyze();
+    var source_engine_by_body: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (analyzer.scopes.items, 0..) |scope, body| {
+        if (scope.kind != .function or scope.parent.isNone()) continue;
+        const parent = scope.parent.toIndex();
+        if (parent >= analyzer.scope_maps.items.len or analyzer.scopes.items[parent].kind != .function) continue;
+        const engine = analyzer.scope_maps.items[parent].get("arguments") orelse continue;
+        const symbol = analyzer.symbols.items[engine];
+        if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments and symbol.scope_id == scope.parent)
+            try source_engine_by_body.put(a, @intCast(body), @intCast(engine));
+    }
     var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{ .unsupported = @import("compat.zig").fromESTarget(target), .emit_runtime_helper_imports = false });
     try t.initSymbolIds(analyzer.symbol_ids.items);
     t.symbols = analyzer.symbols.items;
@@ -1127,8 +1181,14 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
         try std.testing.expectEqual(@as(u32, id), @backingInt(creation.symbol_id));
         try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
         const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(argument)) orelse return error.MissingActualArgumentsScope;
-        try std.testing.expect(use_scope != symbol.scope_id);
-        try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+        if (target == .es5) {
+            if (expected_forwards == 1) try std.testing.expectEqual(@as(?u32, id), source_engine_by_body.get(@backingInt(use_scope)));
+            try std.testing.expectEqual(use_scope, symbol.scope_id);
+            try std.testing.expectEqual(@as(usize, 0), t.native_arguments_parameter_handoffs.count());
+        } else {
+            try std.testing.expect(use_scope != symbol.scope_id);
+            try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+        }
         var reads: usize = 0;
         var declarations: usize = 0;
         for (editor.references.items) |row| {
@@ -1214,7 +1274,7 @@ test "async generator kept parameter engines survive private initializer clones"
     const a = arena.allocator();
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
-    for ([_]@import("compat.zig").ESTarget{ .es2015, .es2017 }) |target| {
+    for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
         for ([_]bool{ false, true }) |minify| {
             const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
                 .unsupported = @import("compat.zig").fromESTarget(target),

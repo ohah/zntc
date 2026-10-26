@@ -13,6 +13,157 @@ pub const ReferenceOrigin = struct {
     scope_stmt: u32 = std.math.maxInt(u32),
 };
 
+pub const ParameterHandoff = struct {
+    params: ast.NodeIndex,
+    source_scope: ScopeId,
+    body_scope: ScopeId,
+};
+
+/// Only an unobserved source engine may be forwarded before its parameter
+/// environment is erased. The actual parameter replacement consumes the plan.
+pub fn canHandoffParameterEngine(self: anytype, params: ast.NodeIndex, body_scope: ScopeId) bool {
+    if (!self.semantic_edit_enabled or !self.options.unsupported.default_params or params.isNone() or @backingInt(params) >= self.ast.nodes.items.len or
+        self.ast.getNode(params).tag != .formal_parameters) return false;
+    // Split rest formals have a separate arguments producer. It must acquire
+    // this same engine before that environment can participate in a handoff.
+    const formals = self.ast.getNode(params).data.list;
+    for (0..formals.len) |offset| {
+        const formal = self.ast.getNode(self.ast.readExtraNode(formals.start, @intCast(offset)));
+        if (formal.tag == .rest_element or formal.tag == .spread_element) return false;
+    }
+    const source_scope = self.outputOwnedScope(params) orelse return false;
+    const editor = &self.semantic_editor.?;
+    if (source_scope == body_scope or source_scope.isNone() or body_scope.isNone() or
+        source_scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scopes.items.len or
+        source_scope.toIndex() >= editor.scope_maps.items.len or body_scope.toIndex() >= editor.scope_maps.items.len or
+        editor.scopes.items[source_scope.toIndex()].kind != .function or editor.scopes.items[body_scope.toIndex()].kind != .function or
+        editor.scopes.items[body_scope.toIndex()].parent != source_scope or
+        editor.scope_maps.items[body_scope.toIndex()].get("arguments") != null) return false;
+    const id = editor.scope_maps.items[source_scope.toIndex()].get("arguments") orelse return false;
+    if (id >= editor.symbols.items.len) return false;
+    const selected = editor.symbols.items[id];
+    if (selected.scope_id != source_scope or selected.kind != .parameter or selected.synthetic_kind != .implicit_arguments or
+        selected.reference_count != 0 or selected.write_count != 0 or self.native_arguments_declaration_origins.contains(@intCast(id))) return false;
+    for (editor.symbols.items, 0..) |symbol, other| {
+        if (other != id and symbol.synthetic_kind == .implicit_arguments and
+            (symbol.scope_id == source_scope or symbol.scope_id == body_scope)) return false;
+    }
+    var declarations: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) != id) continue;
+        if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or row.scope_id != source_scope or
+            !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .declare = true }))) return false;
+        declarations += 1;
+    }
+    return declarations == 1;
+}
+
+/// Called only after the producer publishes the actual outer formal edge.
+pub fn recordParameterHandoff(self: anytype, reference: ast.NodeIndex, params: ast.NodeIndex, body_scope: ScopeId) !void {
+    const origin = self.native_arguments_reference_origins.get(@backingInt(reference)) orelse return error.InvalidNode;
+    if (params.isNone() or @backingInt(params) >= self.ast.nodes.items.len or self.ast.getNode(params).tag != .formal_parameters) return error.InvalidNode;
+    if (origin.scope != body_scope or self.outputOwnedScope(params) != origin.owner_scope) return error.InvalidScope;
+    _ = try publication(self, @backingInt(reference));
+    const slot = try self.native_arguments_parameter_handoffs.getOrPut(self.allocator, @backingInt(origin.symbol_id));
+    if (slot.found_existing) return error.InvalidSymbol;
+    slot.value_ptr.* = .{ .params = params, .source_scope = origin.owner_scope, .body_scope = body_scope };
+}
+
+/// The ES5 class method creator copies these exact already visited formals.
+pub fn copyParameterHandoff(self: anytype, old: ast.NodeIndex, new: ast.NodeIndex, body_scope: ScopeId) void {
+    var plans = self.native_arguments_parameter_handoffs.iterator();
+    while (plans.next()) |entry| {
+        const plan = entry.value_ptr;
+        if (plan.params != old) continue;
+        if (plan.body_scope != body_scope or self.outputOwnedScope(old) != plan.source_scope or
+            self.outputOwnedScope(new) != plan.source_scope or self.ast.getNode(old).tag != .formal_parameters or
+            self.ast.getNode(new).tag != .formal_parameters or
+            !std.meta.eql(self.ast.getNode(old).data.list, self.ast.getNode(new).data.list))
+            @panic("copied parameter handoff lost its actual formal edge");
+        plan.params = new;
+    }
+}
+
+/// The driver has validated the actual new simple formals and body owner.
+/// Preserve every use identity and scope; only the native declaration moves.
+pub fn completeParameterHandoff(self: anytype, function_owner: ast.NodeIndex, params: ast.NodeIndex, new_params: ast.NodeIndex, body_scope: ScopeId) !bool {
+    var plans = self.native_arguments_parameter_handoffs.iterator();
+    var selected: ?u32 = null;
+    while (plans.next()) |entry| {
+        if (entry.value_ptr.params != params) continue;
+        if (selected != null) return error.InvalidSymbol;
+        selected = entry.key_ptr.*;
+    }
+    const id = selected orelse return false;
+    const plan = self.native_arguments_parameter_handoffs.get(id).?;
+    const editor = &self.semantic_editor.?;
+    if (function_owner.isNone() or @backingInt(function_owner) >= self.ast.nodes.items.len or
+        new_params.isNone() or @backingInt(new_params) >= self.ast.nodes.items.len or new_params == params) return error.InvalidNode;
+    const function = self.ast.getNode(function_owner);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return error.InvalidNode,
+    }
+    if (self.outputOwnedScope(function_owner) != body_scope or self.outputOwnedScope(new_params) != null) return error.InvalidScope;
+    if (self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.params) != new_params or
+        self.ast.getNode(new_params).tag != .formal_parameters) return error.InvalidNode;
+    const new_list = self.ast.getNode(new_params).data.list;
+    for (0..new_list.len) |offset| {
+        if (@import("native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(new_list.start, @intCast(offset))) == null)
+            return error.InvalidNode;
+    }
+    if (plan.body_scope != body_scope or self.outputOwnedScope(params) != plan.source_scope or
+        self.native_arguments_declaration_origins.get(id) != plan.source_scope) return error.InvalidScope;
+    if (body_scope.isNone() or plan.source_scope.isNone() or body_scope.toIndex() >= editor.scopes.items.len or
+        plan.source_scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scope_maps.items.len or
+        plan.source_scope.toIndex() >= editor.scope_maps.items.len or editor.scopes.items[body_scope.toIndex()].kind != .function or
+        editor.scopes.items[plan.source_scope.toIndex()].kind != .function or editor.scopes.items[body_scope.toIndex()].parent != plan.source_scope or
+        editor.scope_maps.items[body_scope.toIndex()].get("arguments") != null) return error.InvalidScope;
+    if (id >= editor.symbols.items.len) return error.InvalidSymbol;
+    const symbol = editor.symbols.items[id];
+    if (symbol.kind != .parameter or symbol.synthetic_kind != .implicit_arguments or symbol.write_count != 0) return error.InvalidSymbol;
+    if (symbol.scope_id != plan.source_scope or editor.scope_maps.items[plan.source_scope.toIndex()].get("arguments") != @as(?usize, id)) return error.InvalidScope;
+    for (editor.symbols.items) |other| {
+        if (other.synthetic_kind == .implicit_arguments and other.scope_id == body_scope) return error.InvalidScope;
+    }
+    var declarations: usize = 0;
+    var reads: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) != id) continue;
+        if (row.flags.declare) {
+            if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or row.scope_id != plan.source_scope or
+                !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .declare = true }))) return error.InvalidNode;
+            declarations += 1;
+        } else {
+            const origin = self.native_arguments_reference_origins.get(@backingInt(row.node_index)) orelse return error.InvalidNode;
+            if (@backingInt(origin.symbol_id) != id or self.getSymbolIdAt(row.node_index) != @as(?u32, id)) return error.InvalidSymbol;
+            if (origin.owner_scope != plan.source_scope or origin.scope != body_scope or row.scope_id != body_scope) return error.InvalidScope;
+            if (origin.stmt != row.stmt_idx or origin.scope_stmt != row.scope_stmt_idx or
+                !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true }))) return error.InvalidNode;
+            reads += 1;
+        }
+    }
+    if (declarations != 1 or reads == 0 or symbol.reference_count != reads) return error.InvalidNode;
+    var checked_origins: usize = 0;
+    var created = self.native_arguments_reference_origins.iterator();
+    while (created.next()) |entry| {
+        const origin = entry.value_ptr.*;
+        if (@backingInt(origin.symbol_id) != id) continue;
+        if (origin.owner_scope != plan.source_scope or origin.scope != body_scope) return error.InvalidScope;
+        _ = try publication(self, entry.key_ptr.*);
+        checked_origins += 1;
+    }
+    if (checked_origins != reads) return error.InvalidNode;
+    try self.moveSymbolToOutputScope(id, body_scope);
+    self.native_arguments_declaration_origins.getPtr(id).?.* = body_scope;
+    var origins = self.native_arguments_reference_origins.iterator();
+    while (origins.next()) |entry| {
+        if (@backingInt(entry.value_ptr.symbol_id) == id) entry.value_ptr.owner_scope = body_scope;
+    }
+    _ = self.native_arguments_parameter_handoffs.remove(id);
+    return true;
+}
+
 pub fn recordReference(self: anytype, node: ast.NodeIndex, id: SymbolId, owner_scope: ScopeId, use_scope: ScopeId) !void {
     if (@backingInt(node) < self.parser_node_count or self.getSymbolIdAt(node) != @as(?u32, @backingInt(id)) or
         self.native_arguments_declaration_origins.get(@backingInt(id)) != owner_scope)

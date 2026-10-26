@@ -340,6 +340,11 @@ fn moveUnusedParameterEngine(self: anytype, function_owner: NodeIndex, old_param
     for (0..params.len) |offset| {
         if (@import("../native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(params.start, @intCast(offset))) == null) return;
     }
+    const handed_off = @import("../native_arguments.zig").completeParameterHandoff(self, function_owner, old_params, new_params, body_scope) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => std.debug.panic("native parameter handoff replacement failed: {s}", .{@errorName(err)}),
+    };
+    if (handed_off) return;
     var selected: ?u32 = null;
     for (symbols, 0..) |symbol, sid| {
         if (symbol.synthetic_kind != .implicit_arguments) continue;

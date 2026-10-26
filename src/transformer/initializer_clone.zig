@@ -154,6 +154,18 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
             if (scope == origin or symbol.scope_id != scope or symbol.synthetic_kind != .implicit_arguments)
                 @panic("cloned arguments engine lost its exact owned scope");
             try self.native_arguments_declaration_origins.put(self.allocator, @backingInt(entry.value_ptr.*), scope);
+            if (comptime @hasField(@TypeOf(self.*), "native_arguments_parameter_handoffs")) {
+                if (self.native_arguments_parameter_handoffs.get(entry.key_ptr.*)) |plan| {
+                    const params = result.nodes.get(@backingInt(plan.params)) orelse @panic("cloned parameter engine lost its formal carrier");
+                    if (result.scope(plan.source_scope) == plan.source_scope or result.scope(plan.body_scope) == plan.body_scope)
+                        @panic("cloned parameter handoff lost its exact owned scopes");
+                    try self.native_arguments_parameter_handoffs.put(self.allocator, @backingInt(entry.value_ptr.*), .{
+                        .params = params,
+                        .source_scope = result.scope(plan.source_scope),
+                        .body_scope = result.scope(plan.body_scope),
+                    });
+                }
+            }
         }
     }
     var nodes = result.nodes.iterator();

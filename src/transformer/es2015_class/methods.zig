@@ -287,6 +287,11 @@ pub fn Methods(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            if (already_lowered) {
+                const lowered_params = self.readNodeIdx(me, MethodExtra.params);
+                try self.remapCopiedScopeOwner(lowered_params, new_params_node);
+                @import("../native_arguments.zig").copyParameterHandoff(self, lowered_params, new_params_node, self.current_scope);
+            }
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @backingInt(new_params_node),
