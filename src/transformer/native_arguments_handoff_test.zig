@@ -476,3 +476,36 @@ test "native parameter handoff generated factory reads preserve exact published 
     try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(reference));
     try std.testing.expectEqual(scope, t.semantic_editor.?.symbols.items[id].scope_id);
 }
+
+test "native argument assignment producer rejects invalid access atomically" {
+    const Flags = @import("../semantic/symbol.zig").ReferenceFlags;
+    for ([_]Flags{ .{}, .{ .read = true }, .{ .write = true, .declare = true }, .{ .write = true, .type_context = true }, .{ .write = true, .value_as_type = true }, .{ .write = true, ._reserved = 1 } }) |flags| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var f = try Fixture.init(arena.allocator(), input_source);
+        try f.prepare();
+        const before = try Snapshot.take(arena.allocator(), &f);
+        try std.testing.expectError(error.InvalidNode, native.recordAssignment(&f.t, f.reference, flags));
+        try before.expectUnchanged(&f);
+    }
+    for ([_]Flags{ .{ .write = true }, .{ .read = true, .write = true } }) |flags| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var f = try Fixture.init(arena.allocator(), input_source);
+        try f.prepare();
+        const e = &f.t.semantic_editor.?;
+        const row = (try e.referenceForNode(f.reference)).?;
+        const origin = f.t.native_arguments_reference_origins.get(@backingInt(f.reference)).?;
+        try native.recordAssignment(&f.t, f.reference, flags);
+        var expected_row = row;
+        expected_row.flags = flags;
+        var expected_origin = origin;
+        expected_origin.flags = flags;
+        try std.testing.expectEqualDeep(expected_row, (try e.referenceForNode(f.reference)).?);
+        try std.testing.expectEqualDeep(expected_origin, f.t.native_arguments_reference_origins.get(@backingInt(f.reference)).?);
+        try std.testing.expectEqual(@as(u32, 1), e.symbols.items[f.sid].reference_count);
+        try std.testing.expectEqual(@as(u32, 1), e.symbols.items[f.sid].write_count);
+        try std.testing.expectEqual(f.source, e.symbols.items[f.sid].scope_id);
+        try std.testing.expect((try native.publication(&f.t, @backingInt(f.reference))) != null);
+    }
+}

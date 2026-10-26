@@ -456,6 +456,9 @@ pub const Transformer = struct {
     native_arguments_declaration_origins: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     native_arguments_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_arguments.zig").ReferenceOrigin) = .empty,
     native_arguments_parameter_handoffs: std.AutoHashMapUnmanaged(u32, @import("native_arguments.zig").ParameterHandoff) = .empty,
+    /// The exact ordinary callback currently being built from a define value.
+    /// Nested define arrows inherit it; ordinary callbacks replace it.
+    define_native_arguments_owner: ?ScopeId = null,
     native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
     native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,

@@ -8374,3 +8374,191 @@ test "standalone keepNames candidate helper keeps its exact producer slot" {
         standaloneRuntimeHelperSymbolName(&transformer, "__name", false),
     );
 }
+
+test "define ordinary callbacks preserve own arguments under outer parameter shadow" {
+    const source = "function outer(arguments){return TOKEN(23)}console.log(outer([42]));";
+    const cases = [_]struct { replacement: []const u8, expected: []const u8 }{
+        .{ .replacement = "function(){return arguments[0];}", .expected = "23\n" },
+        .{ .replacement = "()=>arguments[0]", .expected = "42\n" },
+    };
+    for (cases) |case| {
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+                defer arena.deinit();
+                const a = arena.allocator();
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = case.replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout))
+                    std.debug.print("define arguments target={s} minify={} replacement={s} stdout={s} stderr={s} code={s}\n", .{ @tagName(target), minify, case.replacement, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(case.expected, actual.stdout);
+            }
+        }
+    }
+}
+
+test "define callback environments preserve ten native and lexical contexts" {
+    const source = "function outer(arguments){const captured=13;return[TOKEN(23),arguments[0]]}console.log(JSON.stringify(outer([42])));";
+    const replacements = [_][]const u8{
+        "function(){return arguments[0];}",
+        "()=>arguments[0]",
+        "function(){return (()=>arguments[0])();}",
+        "()=>(function(){return arguments[0];})(31)",
+        "function(){return (arguments=[9])[0];}",
+        "function(){return arguments+=1;}",
+        "function(){return {arguments}.arguments[0];}",
+        "function(){return arg\\u0075ments[0];}",
+        "function(){return captured+arguments[0];}",
+        "[function(){return arguments[0];},()=>arguments[0]][1]",
+    };
+    for (replacements, 0..) |replacement, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const expression = try std.fmt.allocPrint(a, "({s})", .{replacement});
+        const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
+        const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, oracle.stdout, actual.stdout))
+                    std.debug.print("define callback case={d} target={s} minify={} oracle={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, oracle.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+            }
+            try checkDefineCallbackBirth(a, source, replacement, target, if (index == 1) 0 else 1);
+        }
+    }
+}
+
+fn checkDefineCallbackBirth(a: std.mem.Allocator, source: []const u8, replacement: []const u8, target: TransformOptions.compat.ESTarget, expected_native_reads: usize) !void {
+    const ScopeId = @import("semantic/scope.zig").ScopeId;
+    const utils = @import("transformer/output_scope_test_utils.zig");
+    const symbol_mod = @import("semantic/symbol.zig");
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+    var t = try Transformer.init(a, &parser.ast, .{ .define = &.{.{ .key = "TOKEN", .value = replacement }}, .unsupported = TransformOptions.compat.fromESTarget(target), .emit_runtime_helper_imports = false });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const output = try t.transform();
+    try std.testing.expect(t.define_native_arguments_owner == null);
+    var parents = try utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var live = parents.keyIterator();
+    while (live.next()) |raw| if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| {
+        try owners.put(a, raw.*, @backingInt(scope));
+    };
+    const editor = &t.semantic_editor.?;
+    var origins = t.native_arguments_reference_origins.iterator();
+    var count: usize = 0;
+    while (origins.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const origin = entry.value_ptr.*;
+        try std.testing.expect(parents.contains(raw));
+        const id = @backingInt(origin.symbol_id);
+        try std.testing.expect(id >= source_symbol_count);
+        var ancestor = parents.get(raw).?;
+        while (t.ast.nodes.items[ancestor].tag != .function_expression) ancestor = parents.get(ancestor).?;
+        try std.testing.expect(ancestor >= t.parser_node_count);
+        try std.testing.expectEqual(@as(?ScopeId, origin.owner_scope), t.outputOwnedScope(@fromBackingInt(ancestor)));
+        const enclosing_scope = utils.expectedScope(t.ast, output, &parents, &owners, parents.get(ancestor).?).?;
+        try std.testing.expectEqual(enclosing_scope, editor.scopes.items[origin.owner_scope.toIndex()].parent);
+        const actual_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
+        try std.testing.expectEqual(actual_scope, origin.scope);
+        const row = (try editor.referenceForNode(@fromBackingInt(raw))).?;
+        const coordinate = utils.expectedStatementCoordinates(t.ast, &parents, raw).?;
+        try std.testing.expectEqual(coordinate.stmt_idx, row.stmt_idx);
+        try std.testing.expectEqual(coordinate.scope_stmt_idx, row.scope_stmt_idx);
+        const node = t.ast.nodes.items[raw];
+        const expected_flags: symbol_mod.ReferenceFlags = if (node.tag == .assignment_target_identifier) blk: {
+            const assignment = t.ast.nodes.items[parents.get(raw).?];
+            try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, assignment.tag);
+            break :blk .{ .read = assignment.data.binary.flags != @backingInt(@import("lexer/token.zig").Kind.eq), .write = true };
+        } else .{ .read = true };
+        try std.testing.expectEqualDeep(expected_flags, row.flags);
+        try std.testing.expectEqualDeep(expected_flags, origin.flags);
+        try std.testing.expectEqual(origin.symbol_id, row.symbol_id);
+        try std.testing.expectEqual(actual_scope, row.scope_id);
+        try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(@fromBackingInt(raw)));
+        try std.testing.expectEqual(symbol_mod.SymbolKind.parameter, editor.symbols.items[id].kind);
+        try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), editor.symbols.items[id].synthetic_kind);
+        try std.testing.expectEqual(origin.owner_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[origin.owner_scope.toIndex()].get("arguments"));
+        try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[id].reference_count);
+        try std.testing.expectEqual(@as(u32, @intFromBool(expected_flags.write)), editor.symbols.items[id].write_count);
+        try std.testing.expect(!t.explicit_global_reference_nodes.contains(raw));
+        const declaration_coordinate = utils.expectedStatementCoordinates(t.ast, &parents, ancestor).?;
+        var declarations: usize = 0;
+        for (editor.references.items) |declaration| {
+            if (declaration.symbol_id != origin.symbol_id or !declaration.flags.declare) continue;
+            try std.testing.expect(declaration.node_index.isNone() and declaration.declaration_node_index.isNone());
+            try std.testing.expectEqualDeep(@as(symbol_mod.ReferenceFlags, .{ .declare = true }), declaration.flags);
+            try std.testing.expectEqual(origin.owner_scope, declaration.scope_id);
+            try std.testing.expectEqual(declaration_coordinate.stmt_idx, declaration.stmt_idx);
+            try std.testing.expectEqual(declaration_coordinate.scope_stmt_idx, declaration.scope_stmt_idx);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        count += 1;
+    }
+    try std.testing.expectEqual(expected_native_reads, count);
+}
+
+test "define callback arguments preserve private initializer branch instances" {
+    const source = "class P{}class C extends P{#read=TOKEN;constructor(flag){if(flag)super();else super()}read(){return this.#read(23)}}console.log(new C(true).read(),new C(false).read());";
+    for ([_][]const u8{ "function(){return arguments[0];}", "function(){return arguments[0]=31;}" }) |replacement| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const expression = try std.fmt.allocPrint(a, "({s})", .{replacement});
+        const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
+        const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, oracle.stdout, actual.stdout))
+                    std.debug.print("private define target={s} minify={} oracle={s} actual={s} stderr={s} code={s}\n", .{ @tagName(target), minify, oracle.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+            }
+        }
+    }
+}

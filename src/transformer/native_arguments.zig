@@ -9,6 +9,7 @@ pub const ReferenceOrigin = struct {
     symbol_id: SymbolId,
     owner_scope: ScopeId,
     scope: ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags = .{ .read = true },
     stmt: u32 = std.math.maxInt(u32),
     scope_stmt: u32 = std.math.maxInt(u32),
 };
@@ -18,6 +19,10 @@ pub const ParameterHandoff = struct {
     source_scope: ScopeId,
     body_scope: ScopeId,
 };
+
+fn validValueAccess(flags: @import("../semantic/symbol.zig").ReferenceFlags) bool {
+    return (flags.read or flags.write) and std.meta.eql(flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = flags.read, .write = flags.write }));
+}
 
 /// Only an unobserved source engine may be forwarded before its parameter
 /// environment is erased. The actual parameter replacement consumes the plan.
@@ -175,6 +180,7 @@ pub fn recordReference(self: anytype, node: ast.NodeIndex, id: SymbolId, owner_s
 
 pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Error!?@import("transformer.zig").StatementPublication {
     const origin = self.native_arguments_reference_origins.get(raw) orelse return null;
+    if (!validValueAccess(origin.flags)) return error.InvalidNode;
     const editor = &self.semantic_editor.?;
     const id = @backingInt(origin.symbol_id);
     if (id >= editor.symbols.items.len or editor.symbols.items[id].kind != .parameter or
@@ -185,8 +191,17 @@ pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Er
     if (row.symbol_id != origin.symbol_id or self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, id)) return error.InvalidSymbol;
     if (row.scope_id != origin.scope) return error.InvalidScope;
     if (row.stmt_idx != origin.stmt or row.scope_stmt_idx != origin.scope_stmt or
-        !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true }))) return error.InvalidNode;
+        !std.meta.eql(row.flags, origin.flags)) return error.InvalidNode;
     return .{ .symbol_id = origin.symbol_id, .scope = origin.scope, .stmt = origin.stmt, .scope_stmt = origin.scope_stmt };
+}
+
+/// An actual assignment producer consumes its known read and publishes the
+/// new access flags. Identity, owner, use scope, and positions stay unchanged.
+pub fn recordAssignment(self: anytype, node: ast.NodeIndex, flags: @import("../semantic/symbol.zig").ReferenceFlags) @import("../semantic/editor.zig").Error!void {
+    if (!flags.write or !validValueAccess(flags)) return error.InvalidNode;
+    _ = (try publication(self, @backingInt(node))) orelse return error.InvalidNode;
+    try self.semantic_editor.?.updateReferenceFlags(node, flags);
+    self.native_arguments_reference_origins.getPtr(@backingInt(node)).?.flags = flags;
 }
 
 /// A native producer must not overwrite a source arguments binding. This is
@@ -284,10 +299,10 @@ pub fn publish(self: anytype, root: ast.NodeIndex) !void {
         const origin = entry.value_ptr;
         const row = (editor.referenceForNode(@fromBackingInt(raw)) catch @panic("native arguments reference is ambiguous")) orelse
             @panic("native arguments reference lost its creation row");
-        if (self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
+        if (!validValueAccess(origin.flags) or self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
             row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or
             self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(origin.symbol_id)) or
-            !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true })))
+            !std.meta.eql(row.flags, origin.flags))
             @panic("native arguments reference changed its creation tuple");
         origin.stmt = context.stmt_idx;
         origin.scope_stmt = context.scope_stmt_idx;
