@@ -24,6 +24,7 @@ const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const annex_b_function = @import("../semantic/annex_b_function.zig");
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
@@ -3338,6 +3339,27 @@ fn checkExactImpl(
             }
         }
     }
+    // Native sloppy syntax performs Annex B's V = L implicitly at each block
+    // declaration. The analyzer counts those virtual value/write edges
+    // without inventing identifier nodes or Reference rows. Include the same
+    // producer-owned edges when reconciling counters; lowered roles have real
+    // output references and markLowered already removed this virtual count.
+    for (symbols, 0..) |_, sid| {
+        const role = annex_b_function.forSymbol(symbols, @fromBackingInt(@intCast(@as(u32, @intCast(sid))))) catch {
+            report.identity_mismatch += 1;
+            continue;
+        } orelse continue;
+        if (role.state != .native) continue;
+        const assignments: usize = role.source_assignment_count;
+        value_counts[sid] += assignments;
+        const variable = @backingInt(role.variable);
+        if (variable >= symbols.len) {
+            report.identity_mismatch += 1;
+            continue;
+        }
+        value_counts[variable] += assignments;
+        write_counts[variable] += assignments;
+    }
     for (symbols, 0..) |symbol, sid| {
         if (!exactValidScope(scopes, symbol.scope_id)) {
             const id: u32 = @intCast(sid);
@@ -4016,8 +4038,12 @@ fn checkExactImpl(
         }
     }
     for (symbols, 0..) |symbol, sid| {
-        if (symbol.reference_count != value_counts[sid]) report.reference_count_mismatch += 1;
-        if (symbol.write_count != write_counts[sid]) report.write_count_mismatch += 1;
+        if (symbol.reference_count != value_counts[sid]) {
+            report.reference_count_mismatch += 1;
+        }
+        if (symbol.write_count != write_counts[sid]) {
+            report.write_count_mismatch += 1;
+        }
     }
     var helper_scopes = helper_scope_map.iterator();
     while (helper_scopes.next()) |entry| {
