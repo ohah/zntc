@@ -983,3 +983,59 @@ pub fn ES2015Params(comptime Transformer: type) type {
 test "ES2015 params module compiles" {
     _ = ES2015Params;
 }
+
+test "dynamic body wrapper native temp factory records use scopes immediately" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("transformer.zig").Transformer;
+    var scanner = try Scanner.init(a, "function read({a,...rest}={a:2}){}");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const list = parser.ast.getNode(root).data.list;
+    const function = parser.ast.readExtraNode(list.start, 0);
+    const function_node = parser.ast.getNode(function);
+    const params = parser.ast.readExtraNode(function_node.data.extra, ast_mod.FunctionExtra.params);
+    const parameter_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(params)).?);
+    const body_scope: ScopeId = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(function)).?);
+    try std.testing.expectEqual(parameter_scope, analyzer.scopes.items[body_scope.toIndex()].parent);
+    const param = parser.ast.getNode(parser.ast.readExtraNode(parser.ast.getNode(params).data.list.start, 0));
+    try std.testing.expectEqual(.assignment_pattern, param.tag);
+    var t = try Transformer.init(a, &parser.ast, .{});
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    t.current_scope = body_scope;
+    var prefix: std.ArrayList(NodeIndex) = .empty;
+    const binding = try ES2015Params(Transformer).buildDestructuringParam(&t, param.data.binary.left, &prefix, function_node.span, parameter_scope);
+    const id = t.getSymbolIdAt(binding).?;
+    const editor = &t.semantic_editor.?;
+    try std.testing.expectEqual(parameter_scope, editor.symbols.items[id].scope_id);
+    var declarations: usize = 0;
+    var reads: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) != id) continue;
+        if (row.flags.declare) {
+            try std.testing.expectEqual(parameter_scope, row.scope_id);
+            try std.testing.expectEqual(binding, row.declaration_node_index);
+            declarations += 1;
+        } else {
+            try std.testing.expect(row.flags.read and !row.flags.write and !row.node_index.isNone());
+            try std.testing.expectEqual(body_scope, row.scope_id);
+            reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
+    try std.testing.expect(reads > 0);
+}
