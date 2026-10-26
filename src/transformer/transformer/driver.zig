@@ -578,6 +578,62 @@ fn validDynamicParameterEngineOwner(self: anytype, function_owner: NodeIndex, bo
     return call.tag == .call_expression and self.ast.readExtraNode(call.data.extra, 0) == wrapper.arrow;
 }
 
+/// Copy the native parameter engine into its distinct source body-var cell.
+/// A private wrapper formal carries the value across the body's shadowing edge.
+fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, arrow: NodeIndex, inner_body: NodeIndex, span: Span) Error!?NodeIndex {
+    if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
+    const editor = if (self.semantic_editor) |*value| value else unreachable;
+    if (editor.scopes.items[function_scope.toIndex()].is_strict) return null;
+    var selected: ?usize = null;
+    var parameter_id: @import("../../semantic/symbol.zig").SymbolId = .none;
+    for (editor.symbols.items, 0..) |symbol, raw| {
+        if (symbol.scope_id != function_scope or symbol.kind != .variable_var) continue;
+        const role = (@import("../../semantic/parameter_body_var.zig").forSymbol(editor.symbols.items, @fromBackingInt(@as(u32, @intCast(raw)))) catch @panic("invalid implicit arguments FDI role")) orelse continue;
+        const parameter = editor.symbols.items[@backingInt(role.parameter)];
+        if (parameter.synthetic_kind != .implicit_arguments) continue;
+        if (role.state != .native or parameter.scope_id != editor.scopes.items[function_scope.toIndex()].parent or parameter.kind != .parameter or selected != null)
+            @panic("implicit arguments body copy lost its exact split environment");
+        selected = raw;
+        parameter_id = role.parameter;
+    }
+    const body_id = selected orelse return null;
+    const live = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, inner_body);
+    defer self.allocator.free(live);
+    var actual_bindings: usize = 0;
+    for (live) |raw| {
+        if (self.ast.nodes.items[raw].tag != .binding_identifier or self.generated_body_binding_moves.get(raw) != @as(?u32, @intCast(body_id))) continue;
+        if (self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @intCast(body_id))) @panic("implicit arguments body binding changed its identity");
+        actual_bindings += 1;
+    }
+    if (actual_bindings == 0) @panic("implicit arguments body copy has no actual wrapper binding");
+    editor.relocateSymbol(@fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope) catch @panic("implicit arguments body cell cannot move to its actual wrapper");
+    const input = try self.makeNativeArgumentsRef(editor.symbols.items[@backingInt(parameter_id)].scope_id, function_scope, span);
+    if (self.getSymbolIdAt(input) != @as(?u32, @intCast(@backingInt(parameter_id)))) @panic("implicit arguments copy selected another engine");
+    const temp_name = try es_helpers.makeTempVarSpan(self);
+    const binding = try es_helpers.makeSyntheticBinding(self, temp_name);
+    const temp_id = (try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope)) orelse unreachable;
+    es_helpers.markStandaloneLateSyntheticTemp(self, temp_id, wrapper_scope);
+    es_helpers.consumeTempVarSpan(self, temp_name);
+    const read = try es_helpers.makeIdentifierRefFromSpan(self, temp_name);
+    try self.addSyntheticRefInScope(read, temp_id, wrapper_scope, .{ .read = true });
+    try self.trackExactOutputRead(read, @intCast(@backingInt(temp_id)));
+    const body_symbol = editor.symbols.items[body_id];
+    const body_name = if (self.block_rename_map) |map| map.get(@intCast(body_id)) orelse (if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name)) else self.ast.getText(body_symbol.name);
+    const target = try self.ast.addNode(.{ .tag = .assignment_target_identifier, .span = span, .data = .{ .string_ref = try self.ast.addString(body_name) } });
+    try self.addSyntheticRefInScope(target, @fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope, .{ .write = true });
+    const statement = try es_helpers.makeAssignStmt(self, target, read, span, 0);
+    const old = self.ast.getNode(inner_body).data.list;
+    const entries = try self.allocator.alloc(NodeIndex, old.len + 1);
+    defer self.allocator.free(entries);
+    entries[0] = statement;
+    for (0..old.len) |i| entries[i + 1] = self.ast.readExtraNode(old.start, @intCast(i));
+    self.ast.nodes.items[@backingInt(inner_body)].data.list = try self.ast.addNodeList(entries);
+    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
+    self.ast.extra_data.items[self.ast.getNode(arrow).data.extra + ast_mod.ArrowExtra.params] = @backingInt(params);
+    @import("../../semantic/parameter_body_var.zig").markLowered(editor.symbols.items, @fromBackingInt(@as(u32, @intCast(body_id))), parameter_id) catch @panic("implicit arguments copy changed its source role");
+    return input;
+}
+
 fn wrapFunctionBodyForParameterInitializers(
     self: anytype,
     body_idx: NodeIndex,
@@ -639,7 +695,8 @@ fn wrapFunctionBodyForParameterInitializers(
         try self.moveGeneratedFunctionBodyBindings(function_scope, wrapper_scope, inner_body);
     }
 
-    const call = try es_helpers.makeCallExpr(self, arrow, &.{}, span);
+    const implicit_input = if (!is_async) try appendImplicitArgumentsBodyCopy(self, function_scope, wrapper_scope, arrow, inner_body, span) else null;
+    const call = if (implicit_input) |input| try es_helpers.makeCallExpr(self, arrow, &.{input}, span) else try es_helpers.makeCallExpr(self, arrow, &.{}, span);
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
@@ -710,6 +767,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 const parameter_env = @import("../parameter_environment.zig");
                 if (try parameter_env.parameterListHasDynamicLookup(self, params_list)) continue;
                 const source_body_idx = self.ast.functionBodyBlock(node) orelse continue;
+                const shared_native_environment = try parameter_env.sharedNativeParameterEnvironment(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, self.current_scope);
                 const body_has_dynamic_lookup = try parameter_env.functionBodyHasDynamicLookup(
                     self,
                     self.current_scope,
@@ -752,7 +810,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 try moveUnlinkedParameterBindings(self, unlinked_parameters.items, self.current_scope);
                 const parameter_initializer_len = lr.body_stmts.items.len;
                 const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
-                    if (body_has_dynamic_lookup)
+                    if (body_has_dynamic_lookup and !shared_native_environment)
                         try reserveDynamicBodyWrapperScope(self, self.current_scope, function_flags)
                     else
                         null
@@ -1349,6 +1407,10 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({[1+1]:a,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({2:1,b:2})" },
         .{ .source = "function read({a=1,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({b:2})" },
+        .{ .source = "function read({a,...rest},value=2){var arguments;eval('arguments');return [value,typeof arguments]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},get=()=>arguments){var arguments;eval('arguments=[\"body\"]');return [get()[0].a,arguments[0]]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2){var arguments=['source'];eval('arguments');return [value,arguments[0]]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2){function arguments(){return 'own'}eval('arguments');return [value,arguments()]}", .call = "read({a:1,b:2})" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1465,7 +1527,7 @@ test "dynamic body wrapper preserves real parameter expression environments" {
     const Parser = @import("../../parser/parser.zig").Parser;
     const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
     for ([_]struct { source: []const u8, expressions: bool, length: u32 }{
-        .{ .source = "function read({a,...rest},value){var local;eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = false, .length = 2 },
+        .{ .source = "function read({a,...rest},value){var a;eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = false, .length = 2 },
         .{ .source = "function read({[1+1]:a,...rest},value){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 2 },
         .{ .source = "function read({a=1,...rest},value){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 2 },
         .{ .source = "function read({a,...rest},value=2){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 1 },

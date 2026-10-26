@@ -127,6 +127,25 @@ pub fn parameterScopesByBody(self: anytype) std.mem.Allocator.Error!std.AutoHash
 /// initializers and the body have separate environments. Split only identities
 /// that are actually referenced from the parameter list, then keep the body
 /// `var` on the source identity and give the parameter side a fresh SID.
+/// Native expression-free object-rest parameters and body vars share one
+/// actual environment. Do not invent a split parameter identity or body wrapper.
+pub fn sharedNativeParameterEnvironment(self: anytype, owner: ast_mod.NodeIndex, params_node: ast_mod.NodeIndex, body_scope: ScopeId) std.mem.Allocator.Error!bool {
+    if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return false;
+    const node = self.ast.getNode(owner);
+    switch (node.tag) {
+        .function, .function_declaration, .function_expression => {},
+        else => return false,
+    }
+    if (self.ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags) & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) != 0) return false;
+    const scopes = scopesOf(self);
+    if (body_scope.isNone() or body_scope.toIndex() >= scopes.len or scopes[body_scope.toIndex()].kind != .function or scopes[body_scope.toIndex()].is_strict) return false;
+    const params = self.ast.getNode(params_node);
+    if (params.tag != .formal_parameters or self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params) != params_node or self.outputOwnedScope(owner) != body_scope) return false;
+    if (self.outputOwnedScope(params_node)) |scope| if (scope != body_scope) return false;
+    if (try ast_walk.parameterListHasExpressions(self.allocator, self.ast, params.data.list)) return false;
+    return @import("es2015_params.zig").ES2015Params(@TypeOf(self.*)).hasObjectRestParam(self, params.data.list);
+}
+
 pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table {
     var split_parameters: Table = .empty;
     errdefer split_parameters.deinit(self.allocator);
@@ -183,6 +202,9 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         const function_scope: ScopeId = @fromBackingInt(@intCast(scope_raw));
         const scope = scopes[scope_raw];
         if (scope.kind != .function) continue;
+
+        const actual_params = functionParamsNode(self, @intCast(function_raw)) orelse continue;
+        if (try sharedNativeParameterEnvironment(self, @fromBackingInt(@intCast(function_raw)), @fromBackingInt(actual_params), function_scope)) continue;
 
         const body_dynamic_lookup = scope.subtree_has_direct_eval or scope.subtree_has_with;
         const parameter_dynamic_lookup = try parameterListHasDynamicLookup(self, params);
