@@ -4832,6 +4832,75 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('plain JavaScript imports retain their graph when console and debugger drops are combined', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-js-import-debugger-console-'));
+    const input = join(dir, 'entry.js');
+    const dependency = join(dir, 'dep.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      ["import { value } from './dep.js';", 'debugger;', 'console.log(value);', ''].join('\n'),
+    );
+    writeFileSync(
+      dependency,
+      [
+        'globalThis.__zntcDropDebuggerImport = (globalThis.__zntcDropDebuggerImport || 0) + 1;',
+        'export const value = 42;',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--drop=console',
+          '--drop=debugger',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.js:'),
+      );
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.js:'),
+      );
+      expect(identity, proc.stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const outputCode = readFileSync(output, 'utf8');
+      expect(outputCode).not.toContain('debugger;');
+      expect(outputCode).not.toContain('console.log');
+      const runtime = spawnSync(
+        'node',
+        [
+          '-e',
+          `globalThis.__zntcDropDebuggerImport = 0; require(${JSON.stringify(output)}); process.stdout.write(String(globalThis.__zntcDropDebuggerImport) + '\\n');`,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('no-op decorator metadata retains the bundled TypeScript graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-empty-decorator-metadata-'));
     const input = join(dir, 'entry.ts');

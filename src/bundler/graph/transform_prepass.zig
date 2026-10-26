@@ -504,8 +504,10 @@ fn canRetainPlainJavaScriptImportsForConsoleDrop(
     {
         return false;
     }
-    return !options.unsupported.hasAny() and !options.drop_debugger and
-        options.drop_labels.len == 0 and options.define.len == 0 and
+    // Debugger statements have no binding or reference edges. The retained
+    // console-drop path reindexes surviving references after both statements
+    // are removed, so this option does not make plain JS imports unstable.
+    return !options.unsupported.hasAny() and options.drop_labels.len == 0 and options.define.len == 0 and
         !options.minify_syntax and !options.minify_whitespace and
         !options.experimental_decorators and !options.emit_decorator_metadata and
         !options.react_refresh and !options.styled_components and !options.emotion and
@@ -9022,11 +9024,37 @@ test "simple drop-console graph is retained by the full prepass gate" {
     ));
     var debugger_options = import_options;
     debugger_options.drop_debugger = true;
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        debugger_options,
+        true,
+    ));
     try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
         debugger_options,
+        false,
+    ));
+    var labeled_options = import_options;
+    labeled_options.drop_labels = &[_][]const u8{"DEV"};
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        labeled_options,
+        true,
+    ));
+    const defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "false" }};
+    var define_options = import_options;
+    define_options.define = &defines;
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        define_options,
         true,
     ));
     var whitespace_options = import_options;
