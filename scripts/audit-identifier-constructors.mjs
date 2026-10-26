@@ -56,6 +56,10 @@ const ALLOWLIST = {
     'producer가 확정한 class-self SymbolId와 output ScopeId를 copied write Reference에 직접 등록',
   'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
+  'src/transformer/native_constructor_function_cells.zig::prepare':
+    '생산자가 확정한 constructor 함수 셀 SID와 try Scope로 Reference를 먼저 등록한 뒤 대입 target으로 retag',
+  'src/transformer/native_constructor_guard.zig::reference':
+    '호출자가 넘긴 정확한 capture SID와 실제 use Scope에 Reference를 먼저 등록한 뒤 write target으로 retag',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
     '사용자 바인딩 생성 함수(심볼 전달)',
   'src/transformer/es_helpers.zig::jsxIdentifierNode':

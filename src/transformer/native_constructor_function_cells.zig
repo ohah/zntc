@@ -100,7 +100,7 @@ pub fn prepare(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, const
         if (!formal_ids.contains(entry.id)) {
             // Canonical text is separate from diagnostic/source coordinates.
             const text = try self.ast.addString(if (symbol.synthetic_name.len != 0) symbol.synthetic_name else self.ast.getText(symbol.name));
-            const binding = try helpers.makeBindingIdentifier(self, text);
+            const binding = try helpers.makeExactSyntheticBindingFromSpan(self, text);
             self.semantic_editor.?.attachVarRedeclaration(binding, @fromBackingInt(entry.id), constructor_scope) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => std.debug.panic("constructor function storage declaration failed: {s}", .{@errorName(err)}),
@@ -238,7 +238,7 @@ fn runControl(source: []const u8, storage_count: u32, entry_count: u32, remainin
     try std.testing.expectEqual(before_invalid_removal + 1, t.semantic_editor.?.references.items.len);
     try std.testing.expectEqual(duplicate.?, t.semantic_editor.?.references.items[t.semantic_editor.?.references.items.len - 1]);
     _ = t.semantic_editor.?.references.pop();
-    const unanchored = try helpers.makeBindingIdentifier(&t, try t.ast.addString("f"));
+    const unanchored = try helpers.makeExactSyntheticBinding(&t, "f");
     const unanchored_raw = @backingInt(unanchored);
     if (t.semantic_editor.?.symbol_ids.items.len <= unanchored_raw)
         try t.semantic_editor.?.symbol_ids.appendNTimes(allocator, null, unanchored_raw + 1 - t.semantic_editor.?.symbol_ids.items.len);
