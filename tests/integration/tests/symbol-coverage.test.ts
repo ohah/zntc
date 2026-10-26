@@ -166,6 +166,17 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     ],
   },
   {
+    file: '4819-generator-state-scopes.mjs',
+    target: TARGETS[0],
+    expectedStdout: '1,2|11|12|13|14\n',
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 16 },
+      { report: 'exact', field: 'generated_references', minimum: 68 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 28 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
     file: '4819-for-in-loop-capture.mjs',
     target: TARGETS[0],
     expectedStdout: 'first,second,inherited\n',
@@ -568,7 +579,24 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace-inline-type-import-specifier',
     source:
       "declare namespace Types { import { type Shape } from './shape'; export const value: Shape; } console.log(45);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '45\n',
+  },
+  {
+    name: 'ambient-namespace-inline-type-import-multiple-specifiers',
+    source: [
+      "declare namespace Types { import { type Shape, type Color } from './types';",
+      'export const value: Shape | Color; } console.log(49);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '49\n',
+  },
+  {
+    name: 'ambient-namespace-inline-type-import-escaped-name',
+    source:
+      "declare namespace Types { import { type Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; } console.log(50);",
+    graph: 'retained',
+    runtimeOutput: '50\n',
   },
   {
     name: 'ambient-namespace-value-import',
@@ -1020,6 +1048,12 @@ function requiredProducerObservationProblems(
 ): string[] {
   const problems: string[] = [];
   for (const requirement of requirements) {
+    if (!Number.isSafeInteger(requirement.minimum) || requirement.minimum <= 0) {
+      problems.push(
+        `${requirement.report}.${requirement.field} minimum=${requirement.minimum} is not a positive safe integer`,
+      );
+      continue;
+    }
     const report = reports[requirement.report];
     const matches =
       report.match(new RegExp(`(?:^| )${requirement.field}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
@@ -1806,6 +1840,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       ),
     ).toEqual([
       '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
+      '4819-generator-state-scopes.mjs:es5:exact.generated_bindings>=16,exact.generated_references>=68,exact.generated_scope_owners_checked>=28,strict.marked_synthetic>=1',
       '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
@@ -1818,6 +1853,11 @@ describe('symbol identity coverage gate (#4819)', () => {
       new Set(REQUIRED_PRODUCER_OBSERVATIONS.map((entry) => `${entry.file}:${entry.target.name}`))
         .size,
     ).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length);
+    expect(
+      REQUIRED_PRODUCER_OBSERVATIONS.flatMap((entry) => entry.observations).every(
+        ({ minimum }) => Number.isSafeInteger(minimum) && minimum > 0,
+      ),
+    ).toBe(true);
 
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-required-producer-observations-'));
     let runs = 0;
@@ -1882,6 +1922,21 @@ describe('symbol identity coverage gate (#4819)', () => {
               `${requirement.report}.${requirement.field}=0, required >=${requirement.minimum}`,
             );
 
+            const belowMinimum = Math.max(0, requirement.minimum - 1);
+            const belowMinimumReport = report.replace(
+              `${requirement.field}=${value}`,
+              `${requirement.field}=${belowMinimum}`,
+            );
+            expect(
+              requiredProducerObservationProblems(
+                { ...reports, [requirement.report]: belowMinimumReport },
+                [requirement],
+              ),
+              `${label}: ${requirement.field} below-minimum negative control`,
+            ).toContain(
+              `${requirement.report}.${requirement.field}=${belowMinimum}, required >=${requirement.minimum}`,
+            );
+
             const duplicateReport = report.replace(
               `${requirement.field}=${value}`,
               `${requirement.field}=${value} ${requirement.field}=${value}`,
@@ -1944,6 +1999,19 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(runs).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length * 2);
     } finally {
       rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('required producer observation minimums reject vacuous or unsafe thresholds', () => {
+    const reports = { exact: 'generated_scope_owners_checked=28', strict: '' };
+    for (const minimum of [0, -1, 9007199254740992, Number.NaN]) {
+      expect(
+        requiredProducerObservationProblems(reports, [
+          { report: 'exact', field: 'generated_scope_owners_checked', minimum },
+        ]),
+      ).toContain(
+        `exact.generated_scope_owners_checked minimum=${minimum} is not a positive safe integer`,
+      );
     }
   });
 
@@ -2685,11 +2753,11 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('erased lenient declaration-level type imports retain only with exact output erasure proof', () => {
+  test('erased lenient type-only imports retain only with exact output erasure proof', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(17);
+    expect(cases).toHaveLength(19);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {
@@ -2712,7 +2780,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           const actual = runNode([join(dir, 'out.js')]);
           expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
           expect(actual.stdout, `${probe.name}: runtime output changed`).toBe(
-            probe.name.includes('escaped-name') ? '43\n' : '42\n',
+            ('runtimeOutput' in probe ? probe.runtimeOutput : undefined) ??
+              (probe.name.includes('escaped-name') ? '43\n' : '42\n'),
           );
         }
       }
@@ -5235,6 +5304,211 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'ok',
       },
       {
+        name: 'direct eval retains graph across console-only removal',
+        source:
+          "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'direct eval still reads a surviving local after console removal',
+        source:
+          "function read() { const hidden = 40; console.log('gone'); return eval('hidden'); } process.stdout.write(String(read() + 2));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'all declaration-free console calls are checked before retaining direct eval graph',
+        source:
+          "console.log('gone'); console.warn('gone too'); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'eval side effect inside removed console argument stays on reanalysis',
+        source:
+          "console.log(eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'escaped eval inside removed console argument stays on reanalysis',
+        source:
+          "console.log(\\u0065val('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'removed function scope in console argument stays on reanalysis with direct eval',
+        source:
+          "console.log(() => 40); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'other class transform prevents direct eval console retention',
+        source:
+          "function read() { console.log('gone'); class Local {} return eval('40'); } process.stdout.write(String(read() + 2));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'a later console call containing eval forces reanalysis',
+        source:
+          "console.log('safe'); console.warn(eval('40')); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'direct eval reads a parameter after a simple define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false', '--minify-identifiers'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval keeps its parameter with a true define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=true'],
+        graph: 'retained',
+        stdout: '41',
+      },
+      {
+        name: 'direct eval keeps its parameter with a null define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=null'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval keeps its parameter with an undefined define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=undefined'],
+        graph: 'retained',
+        stdout: 'NaN',
+      },
+      {
+        name: 'direct eval reads a local const after a simple define and console drop',
+        source:
+          "function read() { const __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval reads a local var after a simple define and console drop',
+        source:
+          "function read() { var __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval reads a block binding after a simple define and console drop',
+        source:
+          "function read() { { let __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'nested direct eval reads a captured parameter after a simple define',
+        source:
+          "function read(__FLAG__) { function nested() { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } return nested(); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'multiple simple defines preserve both eval-visible bindings',
+        source:
+          "function read() { const __LEFT__ = 20, __RIGHT__ = 22; const saved = __LEFT__ + __RIGHT__; console.log('gone'); return eval('__LEFT__ + __RIGHT__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__LEFT__=false', '--define:__RIGHT__=false'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'string define leaves the source binding visible to direct eval',
+        source:
+          "function read() { const __FLAG__ = 40; const __TEXT__ = 'source'; const saved = __TEXT__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__TEXT__="defined"'],
+        graph: 'retained',
+        stdout: '40defined',
+      },
+      {
+        name: 'define used only in the removed console call keeps the eval binding',
+        source:
+          "function read(__FLAG__) { console.log(__FLAG__); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'class lowering still prevents define plus direct eval retention',
+        source:
+          "class Local {} function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'eval inside the removed console call still forces reanalysis with define',
+        source:
+          "function read(__FLAG__) { console.log(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'eval in a later console call still forces reanalysis with define',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('safe'); console.warn(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval in a later argument of the same dropped call forces reanalysis',
+        source:
+          "console.log('safe', eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'direct eval nested in a removed template argument forces reanalysis',
+        source:
+          "console.log(`value=${eval('globalThis.__removed_eval = 40')}`); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'direct eval nested in a removed computed property forces reanalysis',
+        source:
+          "console.log({ [eval('globalThis.__removed_eval = 40')]: 1 }); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'minify syntax with direct eval keeps the analyzer fallback',
+        source:
+          "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--minify-syntax'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'drop labels plus console with direct eval keeps the analyzer fallback',
+        source:
+          "DEV: { console.log('gone'); } function read() { return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'dropping the only top-level await retains the graph',
         source: "console.log(await Promise.resolve(42)); process.stdout.write('ok');",
         graph: 'retained',
@@ -5301,6 +5575,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             '--platform=node',
             `--format=${'format' in item ? item.format : 'cjs'}`,
             '--drop=console',
+            ...('args' in item ? item.args : []),
             '-o',
             output,
           ],

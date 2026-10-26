@@ -458,6 +458,10 @@ pub const TransformCache = struct {
     /// Generated references marked as explicit globals (sorted, ascending).
     /// Resync must keep them external even when a source scope declares the same name.
     explicit_global_ref_nodes: []const u32 = &.{},
+    /// Scope owner nodes whose name lookup was marked dynamic because opaque
+    /// define text cannot represent its lexical references in the AST.
+    /// Full semantic resync reapplies the dynamic-name flags by these owners.
+    opaque_define_scope_owner_nodes: []const u32 = &.{},
     /// Destructuring-produced local temp binding nodes (exact NodeIndex).
     destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Exact emitted binding nodes whose source SymbolId preserved a class

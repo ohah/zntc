@@ -276,6 +276,10 @@ pub const Transformer = struct {
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Graph prepass can retain this provenance across a later semantic resync.
     record_explicit_global_references: bool = false,
+    /// Bundler retention must not treat opaque define text as an exact graph
+    /// replacement; its lexical references are intentionally not represented
+    /// by AST nodes or SymbolIds.
+    has_opaque_define_replacement: bool = false,
     unresolved_reference_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 
     /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
@@ -1165,6 +1169,7 @@ pub const Transformer = struct {
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const cloneGeneratedClassSelfReference = @import("transformer/semantic_edit.zig").cloneGeneratedClassSelfReference;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
+    pub const markOpaqueDefineScopeChain = @import("transformer/semantic_edit.zig").markOpaqueDefineScopeChain;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const syntheticTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").syntheticTempOutputScopeIsDeferred;
     pub const tempOutputScopeIsDeferredIgnoringStateMachine = @import("transformer/semantic_edit.zig").tempOutputScopeIsDeferredIgnoringStateMachine;

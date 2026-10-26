@@ -779,11 +779,11 @@ fn canMangleWithTransformSemanticAfterEdit(
 }
 
 /// Lenient JavaScript mode rejects every import declaration by default. A
-/// declaration-level `import type` is special only when the transformer erased
-/// its whole source subtree and neither its exact import identities nor its
-/// decoded local names survive in the output graph. Any value/inline type
-/// import, surviving lexical edge, or incomplete identity proof keeps the
-/// post-transform analyzer fallback.
+/// declaration-level `import type` or an import whose named specifiers are all
+/// inline type-only is special only when the transformer erased its whole
+/// source subtree and neither its exact import identities nor its decoded
+/// local names survive in the output graph. Any value import, surviving lexical
+/// edge, or incomplete identity proof keeps the post-transform analyzer fallback.
 fn erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -833,7 +833,7 @@ fn erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
-        if (!import_decl.is_type_only or import_decl.phase != .none or import_decl.attrs_len != 0 or
+        if (import_decl.phase != .none or import_decl.attrs_len != 0 or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
@@ -864,9 +864,14 @@ fn erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(
             if (spec_node.span.start < node.span.start or spec_node.span.end > node.span.end or
                 spec_node.span.end <= spec_node.span.start) return false;
             const local_idx, const local_span = switch (spec_node.tag) {
-                .import_default_specifier, .import_namespace_specifier => .{ spec_idx, spec_node.span },
+                .import_default_specifier, .import_namespace_specifier => blk: {
+                    if (!import_decl.is_type_only) return false;
+                    break :blk .{ spec_idx, spec_node.span };
+                },
                 .import_specifier => blk: {
-                    if (spec_node.data.binary.flags != 0) return false;
+                    const flags = spec_node.data.binary.flags;
+                    if ((flags != 0 and flags != module_parser.SPEC_FLAG_TYPE_ONLY) or
+                        (!import_decl.is_type_only and flags != module_parser.SPEC_FLAG_TYPE_ONLY)) return false;
                     const local = spec_node.data.binary.right;
                     if (local.isNone() or @backingInt(local) >= source_count) return false;
                     break :blk .{ local, ast.getNode(local).span };
@@ -3475,6 +3480,105 @@ test "#6193 declaration-level type import reuse requires exact output erasure pr
         &hostile_parser,
         &hostile_transformer,
         hostile_output_root,
+    ));
+}
+
+test "#6193 inline type-only import specifiers require exact output erasure proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "declare namespace Types { import { type Shape } from './shape'; export const value: Shape; } " ++
+        "console.log(({ Shape: 42 }).Shape);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    var import_raw: ?usize = null;
+    var specifier_raw: ?usize = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag != .import_declaration) continue;
+        const import_decl = module_parser.readImportDeclExtras(transformer.ast, node.data.extra);
+        if (import_decl.specs_len != 1) return error.UnexpectedInlineTypeImportSpecifierCount;
+        const specifier: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(transformer.ast.extra_data.items[import_decl.specs_start]),
+        );
+        const spec_node = transformer.ast.getNode(specifier);
+        if (spec_node.tag != .import_specifier) return error.UnexpectedInlineTypeImportSpecifier;
+        import_raw = raw;
+        specifier_raw = @backingInt(specifier);
+        break;
+    }
+    const import_index = import_raw orelse return error.MissingInlineTypeImportDeclaration;
+    const specifier_index = specifier_raw orelse return error.MissingInlineTypeImportSpecifier;
+    try std.testing.expect(erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    const original_specifier = transformer.ast.nodes.items[specifier_index];
+    transformer.ast.nodes.items[specifier_index].data.binary.flags = 0;
+    try std.testing.expect(!erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    transformer.ast.nodes.items[specifier_index] = original_specifier;
+
+    transformer.ast.nodes.items[specifier_index].data.binary.flags = module_parser.SPEC_FLAG_TYPE_ONLY | 2;
+    try std.testing.expect(!erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[specifier_index] = original_specifier;
+
+    const output_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+    defer allocator.free(output_reachable);
+    var same_name_node: ?usize = null;
+    for (output_reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.span.end > node.span.start and std.mem.eql(u8, transformer.ast.getText(node.span), "Shape")) {
+            same_name_node = raw;
+            break;
+        }
+    }
+    const same_name_index = same_name_node orelse return error.MissingOutputShapeProperty;
+    const same_name_span = transformer.ast.nodes.items[same_name_index].span;
+    var output_literal: ?usize = null;
+    for (output_reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.tag == .numeric_literal and std.mem.eql(u8, transformer.ast.getText(node.span), "42")) {
+            output_literal = raw;
+            break;
+        }
+    }
+    const output_literal_index = output_literal orelse return error.MissingOutputNumericLiteral;
+    const original_output_literal = transformer.ast.nodes.items[output_literal_index];
+    transformer.ast.nodes.items[output_literal_index].tag = .identifier_reference;
+    transformer.ast.nodes.items[output_literal_index].span = same_name_span;
+    try std.testing.expect(!erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[output_literal_index] = original_output_literal;
+
+    try std.testing.expect(!erasedTypeOnlyImportDeclarationsHaveNoOutputSemanticFacts(
+        &transformer,
+        @fromBackingInt(@intCast(import_index)),
     ));
 }
 

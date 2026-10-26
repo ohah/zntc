@@ -147,6 +147,25 @@ pub fn programScope(self: *Transformer) ScopeId {
         std.debug.panic("missing program scope for generated declaration", .{})));
 }
 
+/// An opaque define replacement can contain lexical names that are absent
+/// from its SymbolId graph. Mark its lexical ancestors before mangling and
+/// lowering so their original spellings remain observable to the inserted
+/// source text.
+pub fn markOpaqueDefineScopeChain(self: *Transformer, start: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or start.isNone()) return;
+    const editor = try editorFor(self);
+    var scope = start;
+    var hops: usize = 0;
+    while (!scope.isNone()) : (hops += 1) {
+        if (hops >= editor.scopes.items.len or scope.toIndex() >= editor.scopes.items.len)
+            std.debug.panic("opaque define expression has an invalid lexical scope chain", .{});
+        const current = &editor.scopes.items[scope.toIndex()];
+        current.subtree_has_direct_eval = true;
+        current.subtree_has_with = true;
+        scope = current.parent;
+    }
+}
+
 pub fn nearestVarScope(self: *Transformer, scope: ScopeId) ScopeId {
     if (!self.semantic_edit_enabled or scope.isNone()) return .none;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
