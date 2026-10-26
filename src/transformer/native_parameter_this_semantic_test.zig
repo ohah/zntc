@@ -41,6 +41,60 @@ test "native parameter initialized this preserves runtime and inferred names acr
     }
 }
 
+test "captured-arrow helpers tolerate a top-level lexical shadow of globalThis" {
+    const declarations = [_][]const u8{
+        "const globalThis={key:'read'};",
+        "let globalThis={key:'read'};",
+        "const {globalThis}={globalThis:{key:'read'}};",
+        "let {globalThis}={globalThis:{key:'read'}};",
+        "const [globalThis]=[{key:'read'}];",
+        "let [globalThis]=[{key:'read'}];",
+        "const {value:globalThis}={value:{key:'read'}};",
+        "let {value:globalThis}={value:{key:'read'}};",
+        "class globalThis{};globalThis.key='read';",
+        "let globalThis;globalThis={key:'read'};",
+    };
+    const body = "function run(obj={[globalThis.key]:()=>this}){return obj[globalThis.key]()===this}console.log(run.call({}))";
+
+    for (declarations) |declaration| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = try std.fmt.allocPrint(allocator, "{s}{s}", .{ declaration, body });
+        const native = try std.process.run(allocator, std.testing.io, .{
+            .argv = &.{ "node", "-e", source },
+            .stdout_limit = .limited(16384),
+            .stderr_limit = .limited(16384),
+        });
+        try std.testing.expectEqual(@as(u8, 0), native.term.exited);
+        try std.testing.expectEqualStrings("true\n", native.stdout);
+
+        for ([_]bool{ false, true }) |minify| {
+            var unsupported = TransformOptions.compat.fromESTarget(.es2022);
+            unsupported.arrow = true;
+            const output = try @import("../transpile.zig").transpile(allocator, source, "input.cjs", .{
+                .unsupported = unsupported,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            // No preamble may evaluate a global-root identifier while the
+            // source's top-level lexical declaration is still in its TDZ.
+            try std.testing.expect(std.mem.indexOf(u8, output.code, "typeof globalThis") == null);
+            const actual = try std.process.run(allocator, std.testing.io, .{
+                .argv = &.{ "node", "-e", output.code },
+                .stdout_limit = .limited(16384),
+                .stderr_limit = .limited(16384),
+            });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) {
+                std.debug.print("source:{s}\ncode:{s}\nexpected:{s}actual:{s}stderr:{s}\n", .{ source, output.code, native.stdout, actual.stdout, actual.stderr });
+            }
+            try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
 test "captured computed-property arrows preserve names when object spread is unsupported" {
     const cases = [_][]const u8{
         "function Parent(arg={get:()=>this}){return arg.get.name}console.log(Parent.call({}))",
