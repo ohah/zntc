@@ -117,7 +117,7 @@ test "legacy default static capture actual creator handoff before reconciliation
     _ = (try t.finishSemanticEdit()).?;
 }
 
-const Case = struct { source: []const u8, native: []const u8, legacy: bool = true };
+const Case = struct { source: []const u8, native: []const u8, legacy: bool = true, define: bool = false };
 const cases = [_]Case{
     .{ .source = "function dec(v){return v}@dec export default class{static value=7;static{console.log(this.name,this.value)}}", .native = "export default class{static value=7;static{console.log(this.name,this.value)}}" },
     .{ .source = "function dec(v){return v}@dec export default class{static value=this;static{console.log(this.value===this,this.name)}}", .native = "export default class{static value=this;static{console.log(this.value===this,this.name)}}" },
@@ -130,6 +130,7 @@ const cases = [_]Case{
     .{ .source = "function dec(v){return v}@dec export default class{static value=7;static{console.log(this.name,this.value)}}", .native = "export default class{static value=7;static{console.log(this.name,this.value)}}", .legacy = false },
     .{ .source = "function dec(v){return v}@dec export default class{static value=(console.log(this.name),7)}", .native = "export default class{static value=(console.log(this.name),7)}" },
     .{ .source = "function dec(v){return v}@dec export default class{static name(){return 3}static value=7;static{console.log(this.name(),this.value)}}", .native = "export default class{static name(){return 3}static value=7;static{console.log(this.name(),this.value)}}" },
+    .{ .source = "export default class{static name=this.name;static{console.log(this.name)}}", .native = "export default class{static name=this.name;static{console.log(this.name)}}", .legacy = false, .define = true },
 };
 
 test "legacy default static capture native and lowered runtime controls" {
@@ -144,7 +145,7 @@ test "legacy default static capture native and lowered runtime controls" {
             const result = try @import("../transpile.zig").transpile(a, case.source, "input.mts", .{
                 .unsupported = @import("options.zig").TransformOptions.compat.fromESTarget(target),
                 .experimental_decorators = case.legacy,
-                .use_define_for_class_fields = false,
+                .use_define_for_class_fields = case.define,
                 .keep_names = true,
                 .minify_identifiers = minify,
                 .minify_syntax = minify,

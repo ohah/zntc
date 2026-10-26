@@ -262,7 +262,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             (if (span.end > span.start) span else try self.ast.addString("default"))
         else
             try self.ast.addString("default");
-        break :blk if (try parameter_environment.definesStaticName(self, source_idx)) null else name;
+        break :blk if (try parameter_environment.definesStaticNameBeforeFields(self, source_idx)) null else name;
     } else null;
     // The generated outer binding used for an anonymous default export is an
     // implementation detail. Restore the source-level name before any static

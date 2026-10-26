@@ -1095,6 +1095,16 @@ fn runtimeKeyTempProducerId(self: anytype, key_ref: ast_mod.NodeIndex) std.mem.A
 
 /// Whether a class has its own static `name` member.
 pub fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    return definesStaticNameAtPhase(self, class_idx, false);
+}
+
+/// Methods/accessors already own `name` before static field initializers run.
+/// A static field named `name` has not overwritten the inferred name yet.
+pub fn definesStaticNameBeforeFields(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    return definesStaticNameAtPhase(self, class_idx, true);
+}
+
+fn definesStaticNameAtPhase(self: anytype, class_idx: ast_mod.NodeIndex, before_fields: bool) std.mem.Allocator.Error!bool {
     var source = @backingInt(class_idx);
     var depth: usize = 0;
     while (self.scope_owner_origins.get(source)) |origin| {
@@ -1108,6 +1118,7 @@ pub fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Al
     const list = self.ast.getNode(body).data.list;
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
         const member = self.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (before_fields and member.tag != .method_definition) continue;
         const key: ast_mod.NodeIndex, const is_static: bool = switch (member.tag) {
             .method_definition => .{
                 self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key),
