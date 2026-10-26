@@ -4850,11 +4850,74 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'undefined\n',
       },
       {
-        name: 'direct eval remains on the analyzer path',
+        name: 'direct eval retains graph across declaration-free label removal',
         source:
           "function read() { return eval('40'); } DEV: console.log('gone'); console.log(read() + 2);",
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'direct eval reads a surviving parameter after a label-only edit',
+        source:
+          "function read(value) { DEV: console.log('gone'); return eval('value'); } console.log(read(42));",
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'direct eval permits nested matched labels with no declarations',
+        source:
+          "function read() { DEV: TEST: console.log('gone'); return eval('40'); } console.log(read() + 2);",
+        dropLabels: 'DEV,TEST',
+        graph: 'retained',
+        stdout: '42\n',
+      },
+      {
+        name: 'direct eval remains reanalyzed when a removed var is dynamically visible',
+        source:
+          "DEV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined\n',
+      },
+      {
+        name: 'direct eval remains reanalyzed when the removed label owns a block binding',
+        source:
+          "function read() { DEV: { const hidden = 40; } return eval('typeof hidden'); } console.log(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined\n',
+      },
+      {
+        name: 'direct eval remains reanalyzed when the removed label detaches a function scope',
+        source:
+          "function read() { DEV: (() => {})(); return eval('40'); } console.log(read() + 2);",
         graph: 'reanalyzed',
         stdout: '42\n',
+      },
+      {
+        name: 'every matched label is checked before direct eval graph retention',
+        source:
+          "function read() { DEV: console.log('gone'); DEV: var hidden = 40; return eval('typeof hidden'); } console.log(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined\n',
+      },
+      {
+        name: 'direct eval inside a removed label remains reanalyzed',
+        source: "DEV: console.log(eval('40')); console.log('ok');",
+        graph: 'reanalyzed',
+        stdout: 'ok\n',
+      },
+      {
+        name: 'escaped matched label with direct eval remains on reanalysis',
+        source:
+          "function read() { \\u0044EV: console.log('gone'); return eval('40'); } console.log(read() + 2);",
+        graph: 'reanalyzed',
+        stdout: '42\n',
+      },
+      {
+        name: 'escaped matched label with a removed binding stays on reanalysis',
+        source:
+          "\\u0044EV: var hidden = 40; function read() { return eval('typeof hidden'); } console.log(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined\n',
       },
       {
         name: 'top-level await metadata is refreshed from the retained graph',
@@ -4894,6 +4957,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         const inputExtension = 'extension' in item ? item.extension : 'ts';
         const input = join(dir, `${index}.${inputExtension}`);
         const format = item.format ?? 'cjs';
+        const dropLabels = 'dropLabels' in item ? item.dropLabels : 'DEV';
         const output = join(dir, `${index}.out.${format === 'esm' ? 'mjs' : 'cjs'}`);
         writeFileSync(input, item.source);
         const bundled = spawnSync(
@@ -4903,7 +4967,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             input,
             '--platform=node',
             `--format=${format}`,
-            '--drop-labels=DEV',
+            '--drop-labels=' + dropLabels,
             '-o',
             output,
           ],
