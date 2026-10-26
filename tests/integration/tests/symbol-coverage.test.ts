@@ -166,6 +166,17 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     ],
   },
   {
+    file: '4819-generator-state-scopes.mjs',
+    target: TARGETS[0],
+    expectedStdout: '1,2|11|12|13|14\n',
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 16 },
+      { report: 'exact', field: 'generated_references', minimum: 68 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 28 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
     file: '4819-for-in-loop-capture.mjs',
     target: TARGETS[0],
     expectedStdout: 'first,second,inherited\n',
@@ -1020,6 +1031,12 @@ function requiredProducerObservationProblems(
 ): string[] {
   const problems: string[] = [];
   for (const requirement of requirements) {
+    if (!Number.isSafeInteger(requirement.minimum) || requirement.minimum <= 0) {
+      problems.push(
+        `${requirement.report}.${requirement.field} minimum=${requirement.minimum} is not a positive safe integer`,
+      );
+      continue;
+    }
     const report = reports[requirement.report];
     const matches =
       report.match(new RegExp(`(?:^| )${requirement.field}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
@@ -1806,6 +1823,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       ),
     ).toEqual([
       '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
+      '4819-generator-state-scopes.mjs:es5:exact.generated_bindings>=16,exact.generated_references>=68,exact.generated_scope_owners_checked>=28,strict.marked_synthetic>=1',
       '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=4,strict.marked_synthetic>=1',
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
@@ -1818,6 +1836,11 @@ describe('symbol identity coverage gate (#4819)', () => {
       new Set(REQUIRED_PRODUCER_OBSERVATIONS.map((entry) => `${entry.file}:${entry.target.name}`))
         .size,
     ).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length);
+    expect(
+      REQUIRED_PRODUCER_OBSERVATIONS.flatMap((entry) => entry.observations).every(
+        ({ minimum }) => Number.isSafeInteger(minimum) && minimum > 0,
+      ),
+    ).toBe(true);
 
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-required-producer-observations-'));
     let runs = 0;
@@ -1882,6 +1905,21 @@ describe('symbol identity coverage gate (#4819)', () => {
               `${requirement.report}.${requirement.field}=0, required >=${requirement.minimum}`,
             );
 
+            const belowMinimum = Math.max(0, requirement.minimum - 1);
+            const belowMinimumReport = report.replace(
+              `${requirement.field}=${value}`,
+              `${requirement.field}=${belowMinimum}`,
+            );
+            expect(
+              requiredProducerObservationProblems(
+                { ...reports, [requirement.report]: belowMinimumReport },
+                [requirement],
+              ),
+              `${label}: ${requirement.field} below-minimum negative control`,
+            ).toContain(
+              `${requirement.report}.${requirement.field}=${belowMinimum}, required >=${requirement.minimum}`,
+            );
+
             const duplicateReport = report.replace(
               `${requirement.field}=${value}`,
               `${requirement.field}=${value} ${requirement.field}=${value}`,
@@ -1944,6 +1982,19 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(runs).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length * 2);
     } finally {
       rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('required producer observation minimums reject vacuous or unsafe thresholds', () => {
+    const reports = { exact: 'generated_scope_owners_checked=28', strict: '' };
+    for (const minimum of [0, -1, 9007199254740992, Number.NaN]) {
+      expect(
+        requiredProducerObservationProblems(reports, [
+          { report: 'exact', field: 'generated_scope_owners_checked', minimum },
+        ]),
+      ).toContain(
+        `exact.generated_scope_owners_checked minimum=${minimum} is not a positive safe integer`,
+      );
     }
   });
 
