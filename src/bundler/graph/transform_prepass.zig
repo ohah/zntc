@@ -490,7 +490,8 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
 /// transformed AST and keep the same semantic graph, provided this is the only
 /// graph-changing transform in the module. Configured label names and define
 /// keys matter only when the AST contains a matching use; unmatched options
-/// are no-ops. Other modes keep the stricter verbatim-module-syntax gate.
+/// are no-ops. Whitespace minification changes emission only. Other modes keep
+/// the stricter verbatim-module-syntax gate.
 fn canRetainPlainJavaScriptImportsForConsoleDrop(
     self: anytype,
     module: *const Module,
@@ -510,7 +511,7 @@ fn canRetainPlainJavaScriptImportsForConsoleDrop(
     // are removed, so this option does not make plain JS imports unstable.
     return !options.unsupported.hasAny() and !hasDroppedLabeledStatement(ast, options.drop_labels) and
         !define_mod.astUsesDefine(ast, options.define) and
-        !options.minify_syntax and !options.minify_whitespace and
+        !options.minify_syntax and
         !options.experimental_decorators and !options.emit_decorator_metadata and
         !options.react_refresh and !options.styled_components and !options.emotion and
         !options.jsx_transform and options.plugins.len == 0;
@@ -9122,7 +9123,7 @@ test "simple drop-console graph is retained by the full prepass gate" {
     }
     var whitespace_options = import_options;
     whitespace_options.minify_whitespace = true;
-    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
