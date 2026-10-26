@@ -97,6 +97,9 @@ const AstFacts = struct {
     /// Ambient string modules have no runtime semantic entries. Their entire
     /// source subtree must be erased before the lenient transform graph is used.
     has_lenient_ambient_string_module: bool = false,
+    /// `declare namespace global` is also erased and skipped by the analyzer;
+    /// admit it only after the edited AST proves the whole declaration absent.
+    has_lenient_ambient_global_namespace: bool = false,
     /// Runtime syntax whose semantic edits still need the post-transform analyzer.
     has_unhandled_runtime_syntax: bool = false,
     /// Qualified metadata names with spellings the transform graph cannot yet
@@ -239,9 +242,11 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                         ast.getNode(body_idx).tag == .ts_module_declaration);
                 const ambient_string_module = node.data.binary.flags == 1 and
                     name_is_valid and name_node.tag == .string_literal;
+                const ambient_global_namespace = node.data.binary.flags == 1 and has_global_name;
                 if (ambient_string_module) facts.has_lenient_ambient_string_module = true;
-                if (has_global_name or (node.data.binary.flags != 0 and
-                    !plain_ambient_namespace and !ambient_string_module))
+                if (ambient_global_namespace) facts.has_lenient_ambient_global_namespace = true;
+                if ((has_global_name and !ambient_global_namespace) or (node.data.binary.flags != 0 and
+                    !plain_ambient_namespace and !ambient_string_module and !ambient_global_namespace))
                 {
                     facts.has_lenient_unhandled_runtime_syntax = true;
                 }
@@ -684,7 +689,7 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
 /// this graph until their edits are complete.
 fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Parser) bool {
     const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
-    return canMangleWithTransformFacts(options, parser, facts, false, false);
+    return canMangleWithTransformFacts(options, parser, facts, false, false, false);
 }
 
 /// After transformation, admit a const enum only when its exact source
@@ -706,12 +711,16 @@ fn canMangleWithTransformSemanticAfterEdit(
     const may_admit_erased_ambient_string_module = facts.has_lenient_ambient_string_module and
         !facts.has_lenient_unhandled_runtime_syntax and
         erasedAmbientStringModuleHasNoOutputSemanticFacts(transformer, root);
+    const may_admit_erased_ambient_global_namespace = facts.has_lenient_ambient_global_namespace and
+        !facts.has_lenient_unhandled_runtime_syntax and
+        erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(transformer, root);
     return canMangleWithTransformFacts(
         options,
         parser,
         facts,
         may_admit_erased_const_enum,
         may_admit_erased_ambient_string_module,
+        may_admit_erased_ambient_global_namespace,
     );
 }
 
@@ -787,17 +796,23 @@ fn constEnumIdentitiesAreAbsentFromOutput(transformer: *const Transformer, root:
     return true;
 }
 
-/// An ambient string module is type-only and the analyzer deliberately skips
-/// its subtree. Reuse the transform graph only when the declaration and every
-/// source node beneath it are absent from the output tree, and no transform
-/// identity was attached to that subtree. This keeps malformed or partially
-/// lowered module shapes on the post-transform analyzer path.
-fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
+const AmbientNamespaceKind = enum {
+    string_module,
+    global_namespace,
+};
+
+/// Ambient namespaces are type-only and the analyzer deliberately skips their
+/// subtrees. Reuse the transform graph only when each declaration of the
+/// requested kind and every source node beneath it are absent from output, with
+/// no transform identity or semantic symbol attached to the subtree.
+fn erasedAmbientNamespaceHasNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
+    expected_kind: AmbientNamespaceKind,
 ) bool {
     const ast = transformer.ast;
-    if (root.isNone()) return false;
+    if (root.isNone() or transformer.parser_node_count == 0 or
+        transformer.parser_node_count > ast.nodes.items.len) return false;
     const output_reachable = ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, ast, root) catch return false;
     defer transformer.allocator.free(output_reachable);
 
@@ -807,13 +822,20 @@ fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
         output_nodes.put(transformer.allocator, raw, {}) catch return false;
     }
 
-    var found_ambient_string_module = false;
+    var found_namespace = false;
     for (ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .ts_module_declaration or node.data.binary.flags != 1) continue;
+        if (raw >= transformer.parser_node_count) return false;
         const name_idx = node.data.binary.left;
         if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return false;
-        if (ast.getNode(name_idx).tag != .string_literal) continue;
-        found_ambient_string_module = true;
+        const name_node = ast.getNode(name_idx);
+        const matches_kind = switch (expected_kind) {
+            .string_module => name_node.tag == .string_literal,
+            .global_namespace => name_node.tag == .binding_identifier and
+                std.mem.eql(u8, ast.getText(name_node.span), "global"),
+        };
+        if (!matches_kind) continue;
+        found_namespace = true;
 
         if (output_nodes.contains(@intCast(raw))) return false;
         const body_idx = node.data.binary.right;
@@ -830,7 +852,8 @@ fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
         ) catch return false;
         defer transformer.allocator.free(source_subtree);
         for (source_subtree) |source_raw| {
-            if (output_nodes.contains(source_raw) or source_raw >= transformer.symbol_ids.items.len) return false;
+            if (source_raw >= transformer.parser_node_count or output_nodes.contains(source_raw) or
+                source_raw >= transformer.symbol_ids.items.len) return false;
             if (transformer.symbol_ids.items[source_raw] != null) return false;
         }
 
@@ -843,7 +866,21 @@ fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
                 symbol.declaration_span.end <= node.span.end) return false;
         }
     }
-    return found_ambient_string_module;
+    return found_namespace;
+}
+
+fn erasedAmbientStringModuleHasNoOutputSemanticFacts(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    return erasedAmbientNamespaceHasNoOutputSemanticFacts(transformer, root, .string_module);
+}
+
+fn erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    return erasedAmbientNamespaceHasNoOutputSemanticFacts(transformer, root, .global_namespace);
 }
 
 fn canMangleWithTransformFacts(
@@ -852,6 +889,7 @@ fn canMangleWithTransformFacts(
     facts: AstFacts,
     exact_const_enum_graph: bool,
     exact_ambient_string_module_graph: bool,
+    exact_ambient_global_namespace_graph: bool,
 ) bool {
     if (!options.minify_identifiers) return false;
 
@@ -885,7 +923,8 @@ fn canMangleWithTransformFacts(
         (!facts.has_typescript_syntax or
             (!facts.has_lenient_unhandled_runtime_syntax and
                 (!facts.has_lenient_const_enum_runtime_syntax or exact_const_enum_graph) and
-                (!facts.has_lenient_ambient_string_module or exact_ambient_string_module_graph)));
+                (!facts.has_lenient_ambient_string_module or exact_ambient_string_module_graph) and
+                (!facts.has_lenient_ambient_global_namespace or exact_ambient_global_namespace_graph)));
     if (parser.source_mode != .js_strict) return false;
     return true;
 }
@@ -2832,6 +2871,134 @@ test "#4819 extensionless JavaScript gate classifies retained and reanalyzed Typ
     _ = try import_equals_parser.parse();
     try std.testing.expect(import_equals_parser.is_module);
     try std.testing.expect(!canMangleWithTransformSemantic(minify, &import_equals_parser));
+}
+
+test "#6193 extensionless ambient global namespace retains the graph only after exact erasure proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "declare namespace global { export const injected: number; } " ++
+        "console.log(global.injected);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    try std.testing.expect(!canMangleWithTransformSemantic(minify, &parser));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), analyzer.symbols.items.len);
+    try std.testing.expect(analyzer.unresolved_references.contains("global"));
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+    try std.testing.expect(erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    var namespace_raw: ?usize = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 1) continue;
+        const name_idx = node.data.binary.left;
+        if (name_idx.isNone() or @backingInt(name_idx) >= transformer.ast.nodes.items.len) continue;
+        const name_node = transformer.ast.getNode(name_idx);
+        if (name_node.tag == .binding_identifier and
+            std.mem.eql(u8, transformer.ast.getText(name_node.span), "global"))
+        {
+            namespace_raw = raw;
+            break;
+        }
+    }
+    const module_raw = namespace_raw orelse return error.MissingAmbientGlobalNamespace;
+    const module_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(module_raw));
+    const name_idx = transformer.ast.getNode(module_idx).data.binary.left;
+    const name_raw = @backingInt(name_idx);
+    const original_module = transformer.ast.nodes.items[module_raw];
+    const original_name = transformer.ast.nodes.items[name_raw];
+    const original_name_id = transformer.symbol_ids.items[name_raw];
+    const original_symbol_ids = try allocator.dupe(?u32, transformer.symbol_ids.items);
+    defer allocator.free(original_symbol_ids);
+
+    // Ten hostile controls: malformed/retained namespace shapes, lost exact
+    // graph metadata, and a declaration identity leaking into the output.
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, .none));
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, module_idx));
+
+    transformer.ast.nodes.items[module_raw].data.binary.flags = 0;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[module_raw] = original_module;
+
+    transformer.ast.nodes.items[name_raw].tag = .string_literal;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[name_raw] = original_name;
+
+    transformer.ast.nodes.items[module_raw].data.binary.right = @fromBackingInt(
+        @intCast(transformer.ast.nodes.items.len + 1),
+    );
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[module_raw] = original_module;
+
+    transformer.ast.nodes.items[module_raw].data.binary.right = name_idx;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[module_raw] = original_module;
+
+    transformer.symbol_ids.items[name_raw] = 0;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.symbol_ids.items[name_raw] = original_name_id;
+
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    var fake_symbols = [_]Symbol{.{
+        .name = original_module.span,
+        .scope_id = .none,
+        .kind = .variable_let,
+        .declaration_span = original_module.span,
+    }};
+    const original_symbols = transformer.symbols;
+    transformer.symbols = &fake_symbols;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.symbols = original_symbols;
+
+    transformer.symbol_ids.shrinkRetainingCapacity(0);
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.symbol_ids.clearRetainingCapacity();
+    try transformer.symbol_ids.appendSlice(allocator, original_symbol_ids);
+
+    const original_parser_node_count = transformer.parser_node_count;
+    transformer.parser_node_count = 0;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.parser_node_count = original_parser_node_count;
+
+    const body_idx = original_module.data.binary.right;
+    const body_raw = @backingInt(body_idx);
+    const original_body = transformer.ast.nodes.items[body_raw];
+    transformer.ast.nodes.items[body_raw].tag = .identifier_reference;
+    try std.testing.expect(!erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[body_raw] = original_body;
+
+    var result = try transpile(allocator, source, "input.unknown", minify);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "console.log(global.injected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "declare namespace") == null);
 }
 
 test "#4819 extensionless JavaScript enum retains its exact transform graph" {
