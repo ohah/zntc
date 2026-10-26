@@ -1143,6 +1143,46 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
     try std.testing.expectEqual(@as(usize, 1), retained_non_simple_cases);
 }
 
+test "dynamic body wrapper native runtime and source arguments controls" {
+    const Case = struct { source: []const u8, call: []const u8 };
+    for ([_]Case{
+        .{ .source = "let outside=3;function run({a,...rest},value=outside){let body=1;var outside=4;eval('outside');return [a,value,outside,rest.b,body]}", .call = "run({a:1,b:2})" },
+        .{ .source = "let outside=3;function sameName({a,...rest},value=outside){let body=1;var outside=4,a;eval('a');return [a,value,outside,rest.b,body]}", .call = "sameName({a:7,b:8})" },
+        .{ .source = "function sameNameClosure({a,...rest},read=()=>a){let body=1;var a;eval('a=11');return [a,read(),rest.b,body]}", .call = "sameNameClosure({a:12,b:13})" },
+        .{ .source = "function read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}", .call = "read({a:1,b:2})" },
+        .{ .source = "const read=function({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]};", .call = "read({a:1,b:2})" },
+        .{ .source = "const object={read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}};", .call = "object.read({a:1,b:2})" },
+        .{ .source = "class Read{read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}}", .call = "new Read().read({a:1,b:2})" },
+        .{ .source = "const read=function self({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]};", .call = "read({a:1,b:2})" },
+        .{ .source = "function read([{a,...rest}],value=2){let body=1;eval('a');return [a,value,rest,body]}", .call = "read([{a:1,b:2}])" },
+        .{ .source = "function read({a,...rest},value=2,tail=3){let body=1;eval('a');return [a,value,rest,tail,body]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2,arguments){eval('arguments');return [a,value,arguments,rest.b]}", .call = "read({a:1,b:2},undefined,'source')" },
+        .{ .source = "function read({a,...rest},value=2){var arguments=['source'];eval('arguments');return [a,value,arguments[0],rest.b]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2){eval('a');return [a,value,arguments.length,rest.b]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2){const get=()=>arguments;eval('a');return [a,value,get().length,rest.b]}", .call = "read({a:1,b:2})" },
+    }, 0..) |case, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = try std.fmt.allocPrint(a, "{s};console.log(JSON.stringify({s}));", .{ case.source, case.call });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("../compat.zig").ESTarget{ .es2015, .es2017 }) |target| for ([_]bool{ false, true }) |minify| {
+            errdefer std.debug.print("dynamic wrapper runtime source={d} target={s} min={any}\n", .{ index, @tagName(target), minify });
+            const result = try @import("../../transpile.zig").transpile(a, source, "input.cjs", .{
+                .unsupported = @import("../compat.zig").fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (!(actual.term == .exited and actual.term.exited == 0)) std.debug.print("{s}\n{s}\n", .{ result.code, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        };
+    }
+}
+
 test "lowered unused native arguments rejects malformed ownership without identity recovery" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
