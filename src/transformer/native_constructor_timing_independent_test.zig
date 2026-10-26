@@ -84,6 +84,10 @@ fn checkBirth(source: []const u8) !void {
     return checkTypedBirth(source, ".cjs");
 }
 
+fn checkBirthProfile(source: []const u8, unsupported: @TypeOf(@import("transformer.zig").TransformOptions.compat.fromESTarget(.es2015))) !void {
+    return checkBirthWithOptions(source, ".mjs", unsupported);
+}
+
 fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
     var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
     unsupported.arrow = true;
@@ -161,6 +165,15 @@ fn checkBirthWithOptions(source: []const u8, extension: []const u8, unsupported:
     const raw = selected orelse return error.NoConstructorHelperBirthTuple;
     const publication = t.native_constructor_statement_handoffs.get(raw).?;
     const edit = @import("transformer/semantic_edit.zig");
+    for (t.ast.nodes.items, 0..) |node, index| {
+        const id: ast.NodeIndex = @fromBackingInt(@as(u32, @intCast(index)));
+        if (node.tag == .block_statement and parents.contains(@intCast(index)) and t.outputOwnedScope(id) == null) {
+            const parent = t.ast.getNode(@fromBackingInt(parents.get(@intCast(index)).?));
+            if (parent.tag == .for_of_statement or parent.tag == .for_in_statement)
+                std.debug.print("UNOWNED LOOP BLOCK node={d} parent={s}\n", .{ index, @tagName(parent.tag) });
+        }
+    }
+    try edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
     t.native_constructor_statement_handoffs.getPtr(raw).?.symbol_id = @fromBackingInt(@backingInt(publication.symbol_id) ^ 1);
     try std.testing.expectError(error.InvalidSymbol, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
     t.native_constructor_statement_handoffs.getPtr(raw).?.* = publication;
@@ -356,4 +369,34 @@ test "independent native constructor escaped parameter property ordering" {
 
 test "independent default constructor native arguments before output walker" {
     try checkBirthWithOptions("class P{}class D extends P{}new D(42)", ".mjs", @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5));
+}
+
+test "independent private forof getter before output walker" {
+    try checkBirthProfile("class CLong {\n  #x = 0;\n  run() {\n    const seen = [];\n    for (this.#x of [1, 2]) seen.push(this.#x);\n    return seen.join() + ':' + this.#x;\n  }\n}\nconsole.log(new CLong().run());\n", @import("transformer.zig").TransformOptions.compat.fromESTarget(.es2015));
+}
+
+test "independent private forof getter ES2017 before output walker" {
+    try checkBirthProfile("class CLong {\n  #x = 0;\n  run() {\n    const seen = [];\n    for (this.#x of [1, 2]) seen.push(this.#x);\n    return seen.join() + ':' + this.#x;\n  }\n}\nconsole.log(new CLong().run());\n", @import("transformer.zig").TransformOptions.compat.fromESTarget(.es2017));
+}
+
+test "independent private forof getter six exact minify runtime controls" {
+    const source = "class CLong {\n  #x = 0;\n  run() {\n    const seen = [];\n    for (this.#x of [1, 2]) seen.push(this.#x);\n    return seen.join() + ':' + this.#x;\n  }\n}\nconsole.log(new CLong().run());\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]@import("compat.zig").ESTarget{ .es2015, .es2017 }) |target| {
+        for ([_]struct { syntax: bool, identifiers: bool }{ .{ .syntax = true, .identifiers = false }, .{ .syntax = false, .identifiers = true }, .{ .syntax = true, .identifiers = true } }) |mode| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.mjs", .{
+                .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                .minify_syntax = mode.syntax,
+                .minify_identifiers = mode.identifiers,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout)) std.debug.print("FOROF target={s} syntax={} identifiers={} actual={s} stderr={s} code={s}\n", .{ @tagName(target), mode.syntax, mode.identifiers, actual.stdout, actual.stderr, result.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
 }

@@ -471,6 +471,13 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     if (!has_private) return null;
 
     const span = node.span;
+    const source_scope = self.current_scope;
+    // Reserve the actual emitted body before any prefix references are born.
+    const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+    const body_scope = if (self.semantic_edit_enabled)
+        try self.addGeneratedScope(source_scope, new_body, .block)
+    else
+        source_scope;
     const temp_span = try es_helpers.makeTempVarSpan(self);
     // var _t;
     const binding = try es_helpers.makeSyntheticBinding(self, temp_span);
@@ -482,8 +489,8 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
 
     // (LHS = _t) assignment_expression — 이후 방문 시 lowerPrivateFieldSet / destructuring 경로 거침.
-    const tmp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-    try self.addSyntheticRefInScope(tmp_ref, temp_symbol, self.current_scope, .{ .read = true });
+    const owner_scope = if (temp_symbol) |id| self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id else source_scope;
+    const tmp_ref = try es_helpers.makeTempRefFromIdentity(self, .{ .span = temp_span, .symbol_id = temp_symbol, .owner_scope = owner_scope, .reference_scope = body_scope }, span, .{ .read = true });
     const prefix_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
@@ -501,7 +508,7 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
 
     // 원본 body 의 자식을 prefix_stmt 와 묶어 block_statement 생성 (body 내부는 일반 visit).
     const body_idx = node.data.ternary.c;
-    const new_body = try buildForBodyWithPrefix(self, body_idx, prefix_stmt, span);
+    try buildForBodyWithPrefix(self, body_idx, prefix_stmt, new_body, source_scope, body_scope);
 
     // for (var _t ... ) new_body 로 재조립한 뒤, 표준 visit로 하위 변환 적용.
     const rewritten = try self.ast.addNode(.{
@@ -512,30 +519,19 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     return try self.visitNode(rewritten);
 }
 
-/// for-loop body 앞에 prefix statement를 삽입해 새 block_statement 생성.
-/// body 가 이미 block_statement면 기존 자식 앞에 prefix를 끼우고, 아니면 [prefix, body] 두 개로 감쌈.
-fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: NodeIndex, span: Span) Error!NodeIndex {
-    if (body_idx.isNone()) {
-        const list = try self.ast.addNodeList(&.{prefix_stmt});
-        return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+/// The prefix executes outside the original body's lexical environment.
+/// Keep that original block as a child rather than flattening away its owner.
+fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: NodeIndex, result: NodeIndex, source_scope: @import("../../semantic/scope.zig").ScopeId, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!void {
+    if (self.semantic_edit_enabled) {
+        const strict = @import("../class_strict_context.zig");
+        try strict.moveSourceReferences(self, prefix_stmt, source_scope, source_scope, body_scope);
+        try self.reparentGeneratedBodyScopes(source_scope, body_scope, prefix_stmt);
+        if (!body_idx.isNone()) {
+            try strict.moveSourceReferences(self, body_idx, source_scope, source_scope, body_scope);
+            try self.reparentGeneratedBodyScopes(source_scope, body_scope, body_idx);
+        }
     }
-    const body_node = self.ast.getNode(body_idx);
-    if (body_node.tag != .block_statement) {
-        const list = try self.ast.addNodeList(&.{ prefix_stmt, body_idx });
-        return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
-    }
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    try self.scratch.append(self.allocator, prefix_stmt);
-    const start = body_node.data.list.start;
-    const len = body_node.data.list.len;
-    var i: u32 = 0;
-    while (i < len) : (i += 1) {
-        const child_raw = self.ast.extra_data.items[start + i];
-        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(child_raw)));
-    }
-    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+    self.ast.nodes.items[@backingInt(result)].data.list = try self.ast.addNodeList(if (body_idx.isNone()) &.{prefix_stmt} else &.{ prefix_stmt, body_idx });
 }
 
 pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
