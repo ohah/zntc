@@ -1459,3 +1459,51 @@ test "lowered unused native arguments rejects malformed ownership without identi
         try std.testing.expect(!t.native_arguments_declaration_origins.contains(id));
     }
 }
+
+test "dynamic body wrapper preserves real parameter expression environments" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    for ([_]struct { source: []const u8, expressions: bool, length: u32 }{
+        .{ .source = "function read({a,...rest},value){var local;eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = false, .length = 2 },
+        .{ .source = "function read({[1+1]:a,...rest},value){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 2 },
+        .{ .source = "function read({a=1,...rest},value){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 2 },
+        .{ .source = "function read({a,...rest},value=2){eval('a');return [read.length,arguments.length,typeof Object.getOwnPropertyDescriptor(arguments,'callee').get]}", .expressions = true, .length = 1 },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const result = try @import("../../transpile.zig").transpile(a, case.source, "input.cjs", .{ .unsupported = @import("../compat.zig").fromESTarget(.es2017) });
+        var scanner = try Scanner.init(a, result.code);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        var owners: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .function_declaration) continue;
+            const name = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+            if (name.isNone() or !std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(name).data.string_ref), "read")) continue;
+            owners += 1;
+            const params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params);
+            const list = parser.ast.getNode(params).data.list;
+            try std.testing.expectEqual(case.expressions, try ast_walk.parameterListHasExpressions(a, &parser.ast, list));
+            const body_scope = analyzer.scope_owner_map.get(@intCast(raw)).?;
+            const parameter_scope = analyzer.scope_owner_map.get(@backingInt(params));
+            if (case.expressions) {
+                try std.testing.expect(parameter_scope != null and parameter_scope.? != body_scope);
+                try std.testing.expectEqual(parameter_scope.?, @as(u32, @intCast(analyzer.scopes.items[body_scope].parent.toIndex())));
+            } else {
+                try std.testing.expect(parameter_scope == null or parameter_scope.? == body_scope);
+            }
+            const runtime_source = try std.fmt.allocPrint(a, "{s};console.log(JSON.stringify([read.length,read.length==={d},[[],[{{a:1}}],[{{a:1}},3],[{{a:1}},3,4]].map(args=>{{try{{return read(...args)}}catch(e){{return e.name}}}})]));", .{ case.source, case.length });
+            const runtime_actual = try std.fmt.allocPrint(a, "{s};console.log(JSON.stringify([read.length,read.length==={d},[[],[{{a:1}}],[{{a:1}},3],[{{a:1}},3,4]].map(args=>{{try{{return read(...args)}}catch(e){{return e.name}}}})]));", .{ result.code, case.length });
+            const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", runtime_source } });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", runtime_actual } });
+            try std.testing.expect(native.term == .exited and native.term.exited == 0);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+        try std.testing.expectEqual(@as(usize, 1), owners);
+    }
+}
