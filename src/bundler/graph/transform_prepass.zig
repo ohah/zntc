@@ -7417,9 +7417,10 @@ fn canKeepPrepassSemanticGraph(
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
-    // Dynamic lookup is safe with the parser graph only when this module has
-    // no graph-changing work. If any transform edits bindings or scopes, keep
-    // the existing full semantic rescan as the recovery boundary.
+    // Dynamic lookup is safe with the parser graph only when graph-changing
+    // work cannot alter the set of names it can observe. Label removal and
+    // simple console removal each prove that property independently below;
+    // their combination must pass both proofs.
     // Removing a debugger statement changes no binding or reference edges, so
     // it does not make an otherwise unchanged graph unsafe for direct eval.
     const has_any_transform = found_transform or has_dropped_labeled_statement;
@@ -7438,8 +7439,24 @@ fn canKeepPrepassSemanticGraph(
             ast,
             semantic,
         );
+    const direct_eval_label_and_console_drops_are_safe = has_direct_eval and
+        has_dropped_labeled_statement and retained_simple_console_drops and
+        !found_other_transform and !retained_define_references and
+        !options.minify_syntax and
+        droppedLabelBodiesPreserveDynamicEnvironment(
+            self.allocator,
+            ast,
+            semantic,
+            options.drop_labels,
+        ) and
+        droppedConsoleCallsPreserveDynamicEnvironment(
+            self.allocator,
+            ast,
+            semantic,
+        );
     const safe_graph = if (has_direct_eval)
-        (!has_any_transform or direct_eval_label_drop_is_safe or direct_eval_console_drop_is_safe) and unchanged_graph_is_safe
+        (!has_any_transform or direct_eval_label_drop_is_safe or direct_eval_console_drop_is_safe or
+            direct_eval_label_and_console_drops_are_safe) and unchanged_graph_is_safe
     else
         has_any_transform or unchanged_graph_is_safe;
     allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
@@ -9375,6 +9392,38 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
     };
     try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
         "DEV: { console.log('gone'); } function read() { return eval('42'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: { const hidden = 40; console.log('gone'); } console.warn('gone too'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'label gone'; console.warn(eval('40')); return eval('42'); }",
+        drop_label_and_console,
+    ));
+    var label_console_with_minify = drop_label_and_console;
+    label_console_with_minify.minify_syntax = true;
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
+        label_console_with_minify,
+    ));
+    const label_console_define_entries = [_]define_mod.DefineEntry{.{
+        .key = "__FLAG__",
+        .value = "false",
+    }};
+    var label_console_with_define = drop_label_and_console;
+    label_console_with_define.define = &label_console_define_entries;
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(__FLAG__) { const saved = __FLAG__; DEV: throw 'label gone'; console.warn('console gone'); return eval('__FLAG__') + saved; }",
+        label_console_with_define,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
         drop_label_and_console,
     ));
 
