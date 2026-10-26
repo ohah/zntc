@@ -77,6 +77,21 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         if (is_root_namespace) self.namespace_root_symbol_id = saved_root_symbol;
     }
     const new_name = try self.visitNode(node.data.binary.left);
+    // A namespace is emitted as an ordinary IIFE, so its captures belong to
+    // that invocation, even when the declaration is nested in another arrow.
+    const capture_frame = es_helpers.pushCaptureFrame(self);
+    const saved_arrow_depth = self.arrow_this_depth;
+    const saved_needs_this = self.needs_this_var;
+    const saved_needs_arguments = self.needs_arguments_var;
+    self.arrow_this_depth = 0;
+    self.needs_this_var = false;
+    self.needs_arguments_var = false;
+    defer {
+        self.arrow_this_depth = saved_arrow_depth;
+        self.needs_this_var = saved_needs_this;
+        self.needs_arguments_var = saved_needs_arguments;
+        es_helpers.popCaptureFrame(self, capture_frame);
+    }
     const saved_namespace_scope = self.namespace_iife_scope;
     const saved_temp_counter = self.temp_var_counter;
     const saved_binding_len = self.namespace_temp_bindings.items.len;
@@ -106,6 +121,33 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     };
 
     var new_body = try self.visitNode(node.data.binary.right);
+    if (!new_body.isNone()) {
+        var captures: [3]NodeIndex = undefined;
+        const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
+        const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        const strict_iife = !self.current_scope.isNone() and self.current_scope.toIndex() < source_scopes.len and source_scopes[self.current_scope.toIndex()].is_strict;
+        if (capture_count != 0 or strict_iife) {
+            const previous_body = self.ast.getNode(new_body);
+            if (previous_body.tag != .block_statement and previous_body.tag != .ts_module_block)
+                @panic("namespace captures require the actual IIFE body");
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            if (strict_iife) {
+                // The generated ordinary IIFE must preserve its source strict
+                // environment: unmapped arguments, poisoned callee and this.
+                const text = try self.ast.addString("\"use strict\"");
+                const directive = try self.ast.addNode(.{ .tag = .directive, .span = text, .data = .{ .none = 0 } });
+                try statements.append(self.allocator, directive);
+            }
+            try statements.appendSlice(self.allocator, captures[0..capture_count]);
+            for (0..previous_body.data.list.len) |index| {
+                try statements.append(self.allocator, self.ast.readExtraNode(previous_body.data.list.start, @intCast(index)));
+            }
+            const captured_body = try self.ast.addNode(.{ .tag = previous_body.tag, .span = previous_body.span, .data = .{ .list = try self.ast.addNodeList(statements.items) } });
+            try self.remapCopiedScopeOwner(new_body, captured_body);
+            new_body = captured_body;
+        }
+    }
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
             if (self.getSymbolIdAt(entry.binding) != null) continue;

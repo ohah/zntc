@@ -124,6 +124,7 @@ test {
 
 test {
     _ = @import("for_of_cleanup_scope_semantic_test.zig");
+    _ = @import("namespace_live_arguments_test.zig");
 }
 
 test {
