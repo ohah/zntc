@@ -488,8 +488,10 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
 /// Plain JavaScript imports are not elided by type-only import handling. A
 /// console-drop edit can therefore refresh their module records from the
 /// transformed AST and keep the same semantic graph, provided this is the only
-/// graph-changing transform in the module. Other modes keep the stricter
-/// verbatim-module-syntax gate.
+/// graph-changing transform in the module. Configured label names and define
+/// keys matter only when the AST contains a matching use; unmatched options
+/// are no-ops. Whitespace minification changes emission only. Other modes keep
+/// the stricter verbatim-module-syntax gate.
 fn canRetainPlainJavaScriptImportsForConsoleDrop(
     self: anytype,
     module: *const Module,
@@ -504,9 +506,12 @@ fn canRetainPlainJavaScriptImportsForConsoleDrop(
     {
         return false;
     }
-    return !options.unsupported.hasAny() and !options.drop_debugger and
-        options.drop_labels.len == 0 and options.define.len == 0 and
-        !options.minify_syntax and !options.minify_whitespace and
+    // Debugger statements have no binding or reference edges. The retained
+    // console-drop path reindexes surviving references after both statements
+    // are removed, so this option does not make plain JS imports unstable.
+    return !options.unsupported.hasAny() and !hasDroppedLabeledStatement(ast, options.drop_labels) and
+        !define_mod.astUsesDefine(ast, options.define) and
+        !options.minify_syntax and
         !options.experimental_decorators and !options.emit_decorator_metadata and
         !options.react_refresh and !options.styled_components and !options.emotion and
         !options.jsx_transform and options.plugins.len == 0;
@@ -7417,9 +7422,10 @@ fn canKeepPrepassSemanticGraph(
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
-    // Dynamic lookup is safe with the parser graph only when this module has
-    // no graph-changing work. If any transform edits bindings or scopes, keep
-    // the existing full semantic rescan as the recovery boundary.
+    // Dynamic lookup is safe with the parser graph only when graph-changing
+    // work cannot alter the set of names it can observe. Label removal and
+    // simple console removal each prove that property independently below;
+    // their combination must pass both proofs.
     // Removing a debugger statement changes no binding or reference edges, so
     // it does not make an otherwise unchanged graph unsafe for direct eval.
     const has_any_transform = found_transform or has_dropped_labeled_statement;
@@ -7438,8 +7444,24 @@ fn canKeepPrepassSemanticGraph(
             ast,
             semantic,
         );
+    const direct_eval_label_and_console_drops_are_safe = has_direct_eval and
+        has_dropped_labeled_statement and retained_simple_console_drops and
+        !found_other_transform and !retained_define_references and
+        !options.minify_syntax and
+        droppedLabelBodiesPreserveDynamicEnvironment(
+            self.allocator,
+            ast,
+            semantic,
+            options.drop_labels,
+        ) and
+        droppedConsoleCallsPreserveDynamicEnvironment(
+            self.allocator,
+            ast,
+            semantic,
+        );
     const safe_graph = if (has_direct_eval)
-        (!has_any_transform or direct_eval_label_drop_is_safe or direct_eval_console_drop_is_safe) and unchanged_graph_is_safe
+        (!has_any_transform or direct_eval_label_drop_is_safe or direct_eval_console_drop_is_safe or
+            direct_eval_label_and_console_drops_are_safe) and unchanged_graph_is_safe
     else
         has_any_transform or unchanged_graph_is_safe;
     allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
@@ -9112,16 +9134,103 @@ test "simple drop-console graph is retained by the full prepass gate" {
     ));
     var debugger_options = import_options;
     debugger_options.drop_debugger = true;
-    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
         debugger_options,
         true,
     ));
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        debugger_options,
+        false,
+    ));
+    var labeled_options = import_options;
+    labeled_options.drop_labels = &[_][]const u8{"DEV"};
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        labeled_options,
+        true,
+    ));
+    const matching_label_source = "import { value } from './values.js'; DEV: { value; }";
+    var matching_label_scanner = try Scanner.init(allocator, matching_label_source);
+    defer matching_label_scanner.deinit();
+    var matching_label_parser = @import("../../parser/parser.zig").Parser.init(allocator, &matching_label_scanner);
+    matching_label_parser.configureFromExtension(".js");
+    defer matching_label_parser.deinit();
+    _ = try matching_label_parser.parse();
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &matching_label_parser.ast,
+        labeled_options,
+        true,
+    ));
+    const defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "false" }};
+    var define_options = import_options;
+    define_options.define = &defines;
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        import_ast,
+        define_options,
+        true,
+    ));
+    const defined_source = "import { value } from './values.js'; console.log(__FLAG__);";
+    var defined_scanner = try Scanner.init(allocator, defined_source);
+    defer defined_scanner.deinit();
+    var defined_parser = @import("../../parser/parser.zig").Parser.init(allocator, &defined_scanner);
+    defined_parser.configureFromExtension(".js");
+    defer defined_parser.deinit();
+    _ = try defined_parser.parse();
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &defined_parser.ast,
+        define_options,
+        true,
+    ));
+    const matched_define_inputs = [_]struct { source: []const u8, key: []const u8 }{
+        .{ .source = "import { value } from './values.js'; console.log(__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(globalThis.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(window.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(self.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(process.env.NODE_ENV);", .key = "process.env.NODE_ENV" },
+        .{ .source = "import { value } from './values.js'; console.log(process?.env?.NODE_ENV);", .key = "process.env.NODE_ENV" },
+        .{
+            .source = "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read());",
+            .key = "__FLAG__",
+        },
+        .{ .source = "import { value } from './values.js'; const flag = __FLAG__; console.log(value);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log({ [__FLAG__]: value });", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(value, __FLAG__);", .key = "__FLAG__" },
+    };
+    for (matched_define_inputs) |item| {
+        var matched_scanner = try Scanner.init(allocator, item.source);
+        defer matched_scanner.deinit();
+        var matched_parser = @import("../../parser/parser.zig").Parser.init(allocator, &matched_scanner);
+        matched_parser.configureFromExtension(".js");
+        defer matched_parser.deinit();
+        _ = try matched_parser.parse();
+        const matched_defines = [_]define_mod.DefineEntry{.{ .key = item.key, .value = "false" }};
+        var matched_options = import_options;
+        matched_options.define = &matched_defines;
+        try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+            &test_context,
+            &module,
+            &matched_parser.ast,
+            matched_options,
+            true,
+        ));
+    }
     var whitespace_options = import_options;
     whitespace_options.minify_whitespace = true;
-    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
@@ -9482,6 +9591,58 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
     };
     try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
         "DEV: { console.log('gone'); } function read() { return eval('42'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: { const hidden = 40; console.log('gone'); } console.warn('gone too'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'label gone'; console.warn(eval('40')); return eval('42'); }",
+        drop_label_and_console,
+    ));
+    var label_console_with_minify = drop_label_and_console;
+    label_console_with_minify.minify_syntax = true;
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
+        label_console_with_minify,
+    ));
+    const label_console_define_entries = [_]define_mod.DefineEntry{.{
+        .key = "__FLAG__",
+        .value = "false",
+    }};
+    var label_console_with_define = drop_label_and_console;
+    label_console_with_define.define = &label_console_define_entries;
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(__FLAG__) { const saved = __FLAG__; DEV: throw 'label gone'; console.warn('console gone'); return eval('__FLAG__') + saved; }",
+        label_console_with_define,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: var hidden = 40; console.warn('gone'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: eval('var hidden = 40'); console.warn('gone'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: (() => 40)(); console.warn('gone'); return eval('42'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'gone'; DEV: { const hidden = 40; console.warn('gone'); } console.info('gone too'); return eval('typeof hidden'); }",
+        drop_label_and_console,
+    ));
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read() { DEV: throw 'gone'; console.warn(() => 42); return eval('42'); }",
         drop_label_and_console,
     ));
 

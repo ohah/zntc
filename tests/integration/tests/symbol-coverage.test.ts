@@ -4890,6 +4890,75 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('plain JavaScript imports retain their graph when console and debugger drops are combined', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-js-import-debugger-console-'));
+    const input = join(dir, 'entry.js');
+    const dependency = join(dir, 'dep.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      ["import { value } from './dep.js';", 'debugger;', 'console.log(value);', ''].join('\n'),
+    );
+    writeFileSync(
+      dependency,
+      [
+        'globalThis.__zntcDropDebuggerImport = (globalThis.__zntcDropDebuggerImport || 0) + 1;',
+        'export const value = 42;',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--drop=console',
+          '--drop=debugger',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.js:'),
+      );
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.js:'),
+      );
+      expect(identity, proc.stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const outputCode = readFileSync(output, 'utf8');
+      expect(outputCode).not.toContain('debugger;');
+      expect(outputCode).not.toContain('console.log');
+      const runtime = spawnSync(
+        'node',
+        [
+          '-e',
+          `globalThis.__zntcDropDebuggerImport = 0; require(${JSON.stringify(output)}); process.stdout.write(String(globalThis.__zntcDropDebuggerImport) + '\\n');`,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('no-op decorator metadata retains the bundled TypeScript graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-empty-decorator-metadata-'));
     const input = join(dir, 'entry.ts');
@@ -5452,6 +5521,222 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'unmatched drop-label option keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'unused define option keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__UNUSED_FLAG__=false'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'whitespace minification keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'used define option keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used globalThis define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(globalThis.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used window define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(window.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used self define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(self.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used process env define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(process.env.NODE_ENV); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used optional member define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(process?.env?.NODE_ENV); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in nested function keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read()); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a surviving declaration keeps the import fallback',
+        source:
+          "import { value } from './values.js'; const flag = __FLAG__; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a computed console property keeps the import fallback',
+        source:
+          "import { value } from './values.js'; console.log({ [__FLAG__]: value }); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a later console argument keeps the import fallback',
+        source:
+          "import { value } from './values.js'; console.log(value, __FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; DEV: { value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label removes a block lexical scope with an import',
+        source:
+          "import { value } from './values.js'; DEV: { const hidden = value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label removes a var declaration with an import',
+        source:
+          "import { value } from './values.js'; DEV: var hidden = value; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label inside a function keeps the import fallback',
+        source:
+          "import { value } from './values.js'; function read() { DEV: { const hidden = value; } return value; } console.log(read()); process.stdout.write(String(read()));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label inside an arrow keeps the import fallback',
+        source:
+          "import { value } from './values.js'; const read = () => { DEV: { const hidden = value; } return value; }; console.log(read()); process.stdout.write(String(read()));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a loop keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: while (false) { break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a for loop keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: for (;;) { break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a switch keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: switch (value) { default: break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched nested drop-label keeps the import fallback',
+        source:
+          "import { value } from './values.js'; OUTER: DEV: { void value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'all matched drop-labels are checked with imports',
+        source:
+          "import { value } from './values.js'; DEV: { void value; } DEV: { void value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched empty drop-label keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: {} console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'aliased named import keeps its local declaration anchor',
         source:
           "import { original as localValue } from './values.js'; console.log(localValue); process.stdout.write(String(localValue));",
@@ -5590,6 +5875,94 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
         graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'direct eval keeps exact graph after independent label and console drops',
+        source:
+          "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'combined label and console drops retain fallback when eval can see a removed binding',
+        source:
+          "function read() { DEV: { const hidden = 40; console.log('gone'); } console.warn('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined label and console drops retain fallback when a removed call contains eval',
+        source:
+          "function read() { DEV: throw 'label gone'; console.warn(eval('globalThis.__removed_eval = 40')); return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined label and console drops retain fallback with syntax minification',
+        source:
+          "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV', '--minify-syntax'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'combined label and console drops retain fallback with a define transform',
+        source:
+          "function read(value) { const saved = __FLAG__; DEV: throw 'label gone'; console.warn('console gone'); return eval('value') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--drop-labels=DEV', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'combined label and console drops retain fallback beside class lowering',
+        source:
+          "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'combined drops retain fallback when a removed label declares var',
+        source:
+          "function read() { DEV: var hidden = 40; console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed label contains eval',
+        source:
+          "function read() { DEV: eval('var hidden = 40'); console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed label owns an arrow scope',
+        source:
+          "function read() { DEV: (() => 40)(); console.warn('gone'); return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'combined drops inspect every matched label for eval-visible bindings',
+        source:
+          "function read() { DEV: throw 'gone'; DEV: { const hidden = 40; console.warn('gone'); } console.info('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed console call owns an arrow scope',
+        source:
+          "function read() { DEV: throw 'gone'; console.warn(() => 42); return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
         stdout: '42',
       },
       {
