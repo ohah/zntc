@@ -14,8 +14,38 @@ const cases = [_]Case{
     .{ .name = "nested-restored-outer", .source = "namespace Outer{export const first=()=>arguments;export namespace Inner{export const get=()=>arguments}export const second=()=>arguments}console.log(Outer.first()===Outer.second(),Outer.Inner.get()!==Outer.first(),Outer.Inner.get()[0]===Outer.Inner)", .native = "\"use strict\";\nvar Outer;\n(function (Outer) {\n    Outer.first = () => arguments;\n    let Inner;\n    (function (Inner) {\n        Inner.get = () => arguments;\n    })(Inner = Outer.Inner || (Outer.Inner = {}));\n    Outer.second = () => arguments;\n})(Outer || (Outer = {}));\nconsole.log(Outer.first() === Outer.second(), Outer.Inner.get() !== Outer.first(), Outer.Inner.get()[0] === Outer.Inner);\n", .expected = "true true true\n" },
     .{ .name = "this-owner", .source = "namespace N{export const get=()=>this}console.log(N.get()===undefined)", .native = "\"use strict\";\nvar N;\n(function (N) {\n    N.get = () => this;\n})(N || (N = {}));\nconsole.log(N.get() === undefined);\n", .expected = "true\n" },
     .{ .name = "empty-erasure", .source = "namespace Empty{}console.log(typeof Empty)", .native = "\"use strict\";console.log(typeof Empty)", .expected = "undefined\n" },
+    .{ .name = "dotted-owner", .source = "namespace Outer.Inner{export const get=()=>arguments[0]}console.log(Outer.Inner.get()===Outer.Inner)", .native = "\"use strict\";var Outer;(function(Outer){let Inner;(function(Inner){Inner.get=()=>arguments[0]})(Inner=Outer.Inner||(Outer.Inner={}))})(Outer||(Outer={}));console.log(Outer.Inner.get()===Outer.Inner)", .expected = "true\n" },
 };
+
+test "namespace live arguments codegen keeps all three IIFE callers ordinary in unknown sloppy context" {
+    const sources = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "namespace N{export const get=()=>arguments[0];export const owner=()=>this}console.log(N.get()===N,N.owner()===globalThis)", .expected = "true true\n" },
+        .{ .source = "namespace Outer.Inner{export const get=()=>arguments[0];export const owner=()=>this}console.log(Outer.Inner.get()===Outer.Inner,Outer.Inner.owner()===globalThis)", .expected = "true true\n" },
+        .{ .source = "enum E{A=Number(arguments[0]===E),B=Number(this===globalThis)}console.log(E.A,E.B)", .expected = "1 1\n" },
+    };
+    for (sources) |case| for ([_]bool{ false, true }) |lower_arrow| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, case.source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        // Exercise Codegen's absent-source-strictness contract directly.
+        parser.source_mode = .ts;
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var codegen = @import("../codegen/codegen.zig").Codegen.initWithOptions(a, &parser.ast, .{ .lower_arrow = lower_arrow, .minify_whitespace = minify });
+        const output = try codegen.generate(root);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout)) std.debug.print("unknown-context source:{s}\ncode:{s}\nstdout:{s}stderr:{s}\n", .{ case.source, output, actual.stdout, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, actual.stdout);
+    };
+}
 fn runCase(index: usize, rn: bool, minify: bool) !void {
+    try runCaseWithArrowSupport(index, rn, minify, false);
+}
+
+fn runCaseWithArrowSupport(index: usize, rn: bool, minify: bool, native_arrow: bool) !void {
     const case = cases[index];
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -24,8 +54,8 @@ fn runCase(index: usize, rn: bool, minify: bool) !void {
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expectEqualStrings(case.expected, native.stdout);
     var unsupported = if (rn) Options.compat.fromReactNativeVersion(0, 80) else Options.compat.fromESTarget(.es2022);
-    unsupported.arrow = true;
-    std.debug.print("NAMESPACE PROFILE {s} rn={} minify={}\nsource:{s}\n", .{ case.name, rn, minify, case.source });
+    unsupported.arrow = !native_arrow;
+    std.debug.print("NAMESPACE PROFILE {s} rn={} minify={} native_arrow={}\nsource:{s}\n", .{ case.name, rn, minify, native_arrow, case.source });
     const result = try @import("../transpile.zig").transpile(a, case.source, "input.ts", .{ .unsupported = unsupported, .minify_identifiers = minify, .minify_syntax = minify, .minify_whitespace = minify });
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
     if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout))
@@ -291,4 +321,212 @@ test "namespace live arguments empty erasure rn080 plain" {
 }
 test "namespace live arguments empty erasure rn080 minify" {
     try runCase(10, true, true);
+}
+
+test "namespace live arguments native-arrow own-read es2022 plain" {
+    try runCaseWithArrowSupport(0, false, false, true);
+}
+
+test "namespace live arguments native-arrow own-read es2022 minify" {
+    try runCaseWithArrowSupport(0, false, true, true);
+}
+
+test "namespace live arguments native-arrow own-read rn080 plain" {
+    try runCaseWithArrowSupport(0, true, false, true);
+}
+
+test "namespace live arguments native-arrow own-read rn080 minify" {
+    try runCaseWithArrowSupport(0, true, true, true);
+}
+
+test "namespace live arguments native-arrow merged-invocation-lifetime es2022 plain" {
+    try runCaseWithArrowSupport(1, false, false, true);
+}
+
+test "namespace live arguments native-arrow merged-invocation-lifetime es2022 minify" {
+    try runCaseWithArrowSupport(1, false, true, true);
+}
+
+test "namespace live arguments native-arrow merged-invocation-lifetime rn080 plain" {
+    try runCaseWithArrowSupport(1, true, false, true);
+}
+
+test "namespace live arguments native-arrow merged-invocation-lifetime rn080 minify" {
+    try runCaseWithArrowSupport(1, true, true, true);
+}
+
+test "namespace live arguments native-arrow nested-owner es2022 plain" {
+    try runCaseWithArrowSupport(2, false, false, true);
+}
+
+test "namespace live arguments native-arrow nested-owner es2022 minify" {
+    try runCaseWithArrowSupport(2, false, true, true);
+}
+
+test "namespace live arguments native-arrow nested-owner rn080 plain" {
+    try runCaseWithArrowSupport(2, true, false, true);
+}
+
+test "namespace live arguments native-arrow nested-owner rn080 minify" {
+    try runCaseWithArrowSupport(2, true, true, true);
+}
+
+test "namespace live arguments native-arrow ordinary-owner-frontier es2022 plain" {
+    try runCaseWithArrowSupport(3, false, false, true);
+}
+
+test "namespace live arguments native-arrow ordinary-owner-frontier es2022 minify" {
+    try runCaseWithArrowSupport(3, false, true, true);
+}
+
+test "namespace live arguments native-arrow ordinary-owner-frontier rn080 plain" {
+    try runCaseWithArrowSupport(3, true, false, true);
+}
+
+test "namespace live arguments native-arrow ordinary-owner-frontier rn080 minify" {
+    try runCaseWithArrowSupport(3, true, true, true);
+}
+
+test "namespace live arguments native-arrow object-mutation es2022 plain" {
+    try runCaseWithArrowSupport(4, false, false, true);
+}
+
+test "namespace live arguments native-arrow object-mutation es2022 minify" {
+    try runCaseWithArrowSupport(4, false, true, true);
+}
+
+test "namespace live arguments native-arrow object-mutation rn080 plain" {
+    try runCaseWithArrowSupport(4, true, false, true);
+}
+
+test "namespace live arguments native-arrow object-mutation rn080 minify" {
+    try runCaseWithArrowSupport(4, true, true, true);
+}
+
+test "namespace live arguments native-arrow strict-callee es2022 plain" {
+    try runCaseWithArrowSupport(5, false, false, true);
+}
+
+test "namespace live arguments native-arrow strict-callee es2022 minify" {
+    try runCaseWithArrowSupport(5, false, true, true);
+}
+
+test "namespace live arguments native-arrow strict-callee rn080 plain" {
+    try runCaseWithArrowSupport(5, true, false, true);
+}
+
+test "namespace live arguments native-arrow strict-callee rn080 minify" {
+    try runCaseWithArrowSupport(5, true, true, true);
+}
+
+test "namespace live arguments native-arrow property-negative es2022 plain" {
+    try runCaseWithArrowSupport(6, false, false, true);
+}
+
+test "namespace live arguments native-arrow property-negative es2022 minify" {
+    try runCaseWithArrowSupport(6, false, true, true);
+}
+
+test "namespace live arguments native-arrow property-negative rn080 plain" {
+    try runCaseWithArrowSupport(6, true, false, true);
+}
+
+test "namespace live arguments native-arrow property-negative rn080 minify" {
+    try runCaseWithArrowSupport(6, true, true, true);
+}
+
+test "namespace live arguments native-arrow source-alias-collision es2022 plain" {
+    try runCaseWithArrowSupport(7, false, false, true);
+}
+
+test "namespace live arguments native-arrow source-alias-collision es2022 minify" {
+    try runCaseWithArrowSupport(7, false, true, true);
+}
+
+test "namespace live arguments native-arrow source-alias-collision rn080 plain" {
+    try runCaseWithArrowSupport(7, true, false, true);
+}
+
+test "namespace live arguments native-arrow source-alias-collision rn080 minify" {
+    try runCaseWithArrowSupport(7, true, true, true);
+}
+
+test "namespace live arguments native-arrow nested-restored-outer es2022 plain" {
+    try runCaseWithArrowSupport(8, false, false, true);
+}
+
+test "namespace live arguments native-arrow nested-restored-outer es2022 minify" {
+    try runCaseWithArrowSupport(8, false, true, true);
+}
+
+test "namespace live arguments native-arrow nested-restored-outer rn080 plain" {
+    try runCaseWithArrowSupport(8, true, false, true);
+}
+
+test "namespace live arguments native-arrow nested-restored-outer rn080 minify" {
+    try runCaseWithArrowSupport(8, true, true, true);
+}
+
+test "namespace live arguments native-arrow this-owner es2022 plain" {
+    try runCaseWithArrowSupport(9, false, false, true);
+}
+
+test "namespace live arguments native-arrow this-owner es2022 minify" {
+    try runCaseWithArrowSupport(9, false, true, true);
+}
+
+test "namespace live arguments native-arrow this-owner rn080 plain" {
+    try runCaseWithArrowSupport(9, true, false, true);
+}
+
+test "namespace live arguments native-arrow this-owner rn080 minify" {
+    try runCaseWithArrowSupport(9, true, true, true);
+}
+
+test "namespace live arguments native-arrow empty-erasure es2022 plain" {
+    try runCaseWithArrowSupport(10, false, false, true);
+}
+
+test "namespace live arguments native-arrow empty-erasure es2022 minify" {
+    try runCaseWithArrowSupport(10, false, true, true);
+}
+
+test "namespace live arguments native-arrow empty-erasure rn080 plain" {
+    try runCaseWithArrowSupport(10, true, false, true);
+}
+
+test "namespace live arguments native-arrow empty-erasure rn080 minify" {
+    try runCaseWithArrowSupport(10, true, true, true);
+}
+
+test "namespace live arguments dotted-owner False False native-arrow=False" {
+    try runCaseWithArrowSupport(11, false, false, false);
+}
+
+test "namespace live arguments dotted-owner False False native-arrow=True" {
+    try runCaseWithArrowSupport(11, false, false, true);
+}
+
+test "namespace live arguments dotted-owner False True native-arrow=False" {
+    try runCaseWithArrowSupport(11, false, true, false);
+}
+
+test "namespace live arguments dotted-owner False True native-arrow=True" {
+    try runCaseWithArrowSupport(11, false, true, true);
+}
+
+test "namespace live arguments dotted-owner True False native-arrow=False" {
+    try runCaseWithArrowSupport(11, true, false, false);
+}
+
+test "namespace live arguments dotted-owner True False native-arrow=True" {
+    try runCaseWithArrowSupport(11, true, false, true);
+}
+
+test "namespace live arguments dotted-owner True True native-arrow=False" {
+    try runCaseWithArrowSupport(11, true, true, false);
+}
+
+test "namespace live arguments dotted-owner True True native-arrow=True" {
+    try runCaseWithArrowSupport(11, true, true, true);
 }

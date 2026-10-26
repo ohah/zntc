@@ -1075,19 +1075,12 @@ fn emitInt(self: anytype, value: i64) !void {
     try self.buf.appendSlice(self.allocator, result);
 }
 
-/// `((N) => {`, or `(function(N) {` when the target lacks arrow functions
-/// (#4797). Both close with `})(…)`. The IIFE body never reads `this` or
-/// `arguments`, so the two forms behave alike.
+/// TypeScript's enum/namespace IIFEs own native this and arguments even when
+/// arrows are supported. Keep that execution boundary on every target.
 fn writeIifeHead(self: anytype, param_name: []const u8) !void {
-    if (self.options.lower_arrow) {
-        try self.write("(function(");
-        try self.write(param_name);
-        try self.write(") {");
-    } else {
-        try self.write("((");
-        try self.write(param_name);
-        try self.write(") => {");
-    }
+    try self.write("(function(");
+    try self.write(param_name);
+    try self.write(") {");
 }
 
 test "#4819 generated IIFE parameter names require an exact final-name result" {

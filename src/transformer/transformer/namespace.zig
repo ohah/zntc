@@ -146,6 +146,20 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         return .none;
     }
 
+    if (body_node.tag == .ts_module_declaration) {
+        // A dotted namespace's implicit outer body is a real IIFE body too.
+        // Materialize its implicit exported inner declaration so a strict
+        // directive has an actual statement-list owner without losing A.B.
+        const exported = try self.addExtraNode(.export_named_declaration, body_node.span, &.{
+            @backingInt(new_body), 0, 0, @backingInt(NodeIndex.none),
+        });
+        new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{exported}) } });
+        if (self.semantic_edit_enabled) {
+            try self.transformed_scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+            if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+        }
+    }
+
     if (!new_body.isNone()) {
         var captures: [3]NodeIndex = undefined;
         const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
