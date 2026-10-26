@@ -448,7 +448,14 @@ pub fn ES2017(comptime Transformer: type) type {
             self.runtime_helpers.await_helper = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncGenerator");
             const this_arg = try es_helpers.makeThisExpr(self, span);
-            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            // Simple output formals share the wrapper's native environment.
+            // Split parameter environments require their own lowering handoff.
+            const arguments_plan = @import("native_arguments.zig");
+            const native_owner = self.outputOwnedScope(params_idx) orelse state_parent_scope;
+            const args_ref = if (native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner))
+                try self.makeNativeArgumentsRef(native_owner, state_parent_scope, span)
+            else
+                try es_helpers.makeGlobalRef(self, "arguments");
             const helper_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ this_arg, args_ref, lowered_inner }, span);
 
             // outer wrapper: function name(<params>) { return __asyncGenerator(...); }
@@ -992,4 +999,42 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
     };
+}
+
+test "async generator native wrapper arguments preserve ten simple function contexts" {
+    const sources = [_][]const u8{
+        "async function* f(){yield 7}(async()=>console.log((await f().next()).value))();",
+        "async function* f(value){yield value}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){yield arguments[0]}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){yield(()=>arguments[0])()}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){const get=()=>arguments;yield get()[0];arguments=[9];yield get()[0]}(async()=>{const it=f(7);console.log((await it.next()).value,(await it.next()).value)})();",
+        "async function* f(value){yield(function(argument){return(()=>arguments[0])()})(value)}(async()=>console.log((await f(7).next()).value))();",
+        "class C{static async*f(value){yield value}}(async()=>console.log((await C.f(7).next()).value))();",
+        "class P{static value(){return 5}}class C extends P{static async*f(){yield await Promise.resolve(super.value()+2)}}(async()=>console.log((await C.f().next()).value))();",
+        "class P{static value(){return 5}}class C extends P{static offset=2;static async*#f(){yield await Promise.resolve(super.value()+this.offset)}static f(){return this.#f()}}(async()=>console.log((await C.f().next()).value))();",
+        "function outer(value){return async function* inner(argument){yield value+argument}}(async()=>console.log((await outer(5)(2).next()).value))();",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                    .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("ASYNC NATIVE ARGS case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+        }
+    }
 }

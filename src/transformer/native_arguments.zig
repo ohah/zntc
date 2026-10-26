@@ -5,6 +5,20 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Context = @import("../semantic/statement_coordinates.zig").Context;
 
+/// A native producer must not overwrite a source arguments binding. This is
+/// a collision check only; the reference creator selects IDs by typed role.
+pub fn hasAvailableEngineSlot(self: anytype, scope: ScopeId) bool {
+    if (!self.semantic_edit_enabled) return true;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (scope.isNone() or scope.toIndex() >= scopes.len or scope.toIndex() >= maps.len or
+        scopes[scope.toIndex()].kind != .function) return false;
+    const existing = maps[scope.toIndex()].get("arguments") orelse return true;
+    return existing < symbols.len and symbols[existing].scope_id == scope and
+        symbols[existing].kind == .parameter and symbols[existing].synthetic_kind == .implicit_arguments;
+}
+
 pub fn record(self: anytype, id: SymbolId, scope: ScopeId) !void {
     const slot = try self.native_arguments_declaration_origins.getOrPut(self.allocator, @backingInt(id));
     if (slot.found_existing and slot.value_ptr.* != scope)
