@@ -347,3 +347,249 @@ test "owned rest arguments graphless wrapper keeps the legacy parameter API boun
         try std.testing.expect(t.semantic_editor == null);
     }
 }
+
+const UnlinkedFixture = struct {
+    t: *Transformer,
+    root: NodeIndex,
+    owner: Owner,
+};
+
+fn unlinkedFixture(a: std.mem.Allocator, source: []const u8) !UnlinkedFixture {
+    const scanner = try a.create(Scanner);
+    scanner.* = try Scanner.init(a, source);
+    const parser = try a.create(Parser);
+    parser.* = Parser.init(a, scanner);
+    parser.configureFromExtension(".unknown");
+    const source_root = try parser.parse();
+    const analyzer = try a.create(Analyzer);
+    analyzer.* = Analyzer.init(a, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const t = try a.create(Transformer);
+    t.* = try transformer(a, parser, analyzer, .{ .unsupported = Options.compat.fromESTarget(.es5) });
+    try t.buildBlockRenameMap();
+    const root = try t.visitNode(source_root);
+    try t.registerGeneratedFunctionScopes(root, t.programScope());
+    const reachable = try walk.collectReachableNodeIndicesFrom(a, t.ast, root);
+    for (reachable) |raw| {
+        const node = t.ast.nodes.items[raw];
+        if (node.tag != .function_declaration) continue;
+        const index: NodeIndex = @fromBackingInt(raw);
+        const owner: Owner = .{ .ast_owner = t.ast, .function_node = index, .params_node = t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params), .body_scope = t.outputOwnedScope(index).? };
+        t.current_scope = owner.body_scope;
+        return .{ .t = t, .root = root, .owner = owner };
+    }
+    return error.MissingUnlinkedFunctionOwner;
+}
+
+const unlinked_source = "async function* f(value,opts={}){yield value+(opts.k||0)}";
+
+test "unlinked arguments default reads keep the existing engine before output walker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, unlinked_source);
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var source_scope: ScopeId = .none;
+    var body_scope: ScopeId = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        body_scope = @fromBackingInt(analyzer.scope_owner_map.get(@intCast(raw)).?);
+        source_scope = @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params))).?);
+    }
+    var engine: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (symbol.synthetic_kind != .implicit_arguments or symbol.scope_id != source_scope) continue;
+        try std.testing.expect(engine == null);
+        engine = @intCast(id);
+    }
+    const id = engine orelse return error.MissingSourceNativeEngine;
+    var t = try transformer(a, &parser, &analyzer, .{ .unsupported = Options.compat.fromESTarget(.es5) });
+    t.record_explicit_global_references = true;
+    const output = try t.transform();
+    _ = root;
+    // Actual transform Pass 2 and program publication ran; finish/output
+    // validation has not. No new engine or identity healing is permitted.
+    const editor = &t.semantic_editor.?;
+    try std.testing.expectEqual(body_scope, editor.symbols.items[id].scope_id);
+    try std.testing.expectEqual(@as(?ScopeId, body_scope), t.native_arguments_declaration_origins.get(id));
+    try std.testing.expect(!t.native_arguments_parameter_handoffs.contains(id));
+    var engines: usize = 0;
+    for (editor.symbols.items) |symbol| {
+        if (symbol.synthetic_kind == .implicit_arguments and (symbol.scope_id == source_scope or symbol.scope_id == body_scope)) engines += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), engines);
+    const coordinates = try @import("../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+    var declarations: usize = 0;
+    var reads: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) != id) continue;
+        try std.testing.expectEqual(body_scope, row.scope_id);
+        if (row.flags.declare) {
+            declarations += 1;
+            continue;
+        }
+        try std.testing.expectEqualDeep(@as(symbol_mod.ReferenceFlags, .{ .read = true }), row.flags);
+        try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(row.node_index));
+        const origin = t.native_arguments_reference_origins.get(@backingInt(row.node_index)).?;
+        try std.testing.expectEqual(body_scope, origin.owner_scope);
+        try std.testing.expectEqual(body_scope, origin.scope);
+        const actual = coordinates[@backingInt(row.node_index)].?;
+        try std.testing.expectEqual(actual.stmt_idx, row.stmt_idx);
+        try std.testing.expectEqual(actual.scope_stmt_idx, row.scope_stmt_idx);
+        _ = (try @import("native_arguments.zig").publication(&t, @backingInt(row.node_index))).?;
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
+    try std.testing.expectEqual(@as(usize, 3), reads);
+    const report = try @import("symbol_coverage.zig").checkExact(a, t.ast, output, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &t.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+    try std.testing.expectEqual(@as(usize, 0), report.shadowed_external_reference);
+    try std.testing.expectEqual(@as(usize, 0), report.missing_reference);
+    try std.testing.expectEqual(@as(usize, 0), report.identity_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
+    std.debug.print("UNLINKED ARGUMENTS BIRTH engine={d} reads=3 declaration=1 before-finish=1 shadowed=0\n", .{id});
+}
+
+test "unlinked arguments reject foreign handoffs engines and AST owners without mutation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try unlinkedFixture(a, unlinked_source ++ "async function* other(value,opts={}){yield value}");
+    const list = f.t.ast.getNode(f.owner.params_node).data.list;
+    const id = (try Params.unlinkedArgumentsOwner(f.t, list, f.owner)).?;
+    const raw = @backingInt(id);
+    const plan = f.t.native_arguments_parameter_handoffs.get(raw).?;
+    var foreign_id: ?u32 = null;
+    var plans = f.t.native_arguments_parameter_handoffs.iterator();
+    while (plans.next()) |entry| if (entry.key_ptr.* != raw) {
+        foreign_id = entry.key_ptr.*;
+    };
+    const other_id = foreign_id orelse return error.MissingForeignNativeEngine;
+    const other_plan = f.t.native_arguments_parameter_handoffs.get(other_id).?;
+    const symbols_before = try a.dupe(symbol_mod.Symbol, f.t.semantic_editor.?.symbols.items);
+    const references_before = try a.dupe(symbol_mod.Reference, f.t.semantic_editor.?.references.items);
+    var corrupted = plan;
+    corrupted.body_scope = other_plan.body_scope;
+    f.t.native_arguments_parameter_handoffs.getPtr(raw).?.* = corrupted;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
+    f.t.native_arguments_parameter_handoffs.getPtr(raw).?.* = plan;
+    corrupted.source_scope = other_plan.source_scope;
+    f.t.native_arguments_parameter_handoffs.getPtr(raw).?.* = corrupted;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
+    f.t.native_arguments_parameter_handoffs.getPtr(raw).?.* = plan;
+    _ = f.t.native_arguments_parameter_handoffs.remove(raw);
+    f.t.native_arguments_parameter_handoffs.getPtr(other_id).?.* = plan;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
+    f.t.native_arguments_parameter_handoffs.getPtr(other_id).?.* = other_plan;
+    try f.t.native_arguments_parameter_handoffs.put(a, raw, plan);
+    const same_numbers = try unlinkedFixture(a, unlinked_source ++ "async function* other(value,opts={}){yield value}");
+    try std.testing.expectEqual(f.owner.body_scope, same_numbers.owner.body_scope);
+    try std.testing.expectEqual(f.owner.params_node, same_numbers.owner.params_node);
+    var wrong_ast = f.owner;
+    wrong_ast.ast_owner = same_numbers.t.ast;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, wrong_ast));
+    var foreign_function: NodeIndex = .none;
+    const live = try walk.collectReachableNodeIndicesFrom(a, f.t.ast, f.root);
+    for (live) |node| {
+        const index: NodeIndex = @fromBackingInt(node);
+        if (f.t.ast.getNode(index).tag == .function_declaration and f.t.outputOwnedScope(index) == other_plan.body_scope) foreign_function = index;
+    }
+    try std.testing.expect(!foreign_function.isNone());
+    var wrong_function = f.owner;
+    wrong_function.function_node = foreign_function;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, wrong_function));
+    var wrong_params = f.owner;
+    wrong_params.params_node = other_plan.params;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, wrong_params));
+    var wrong_body = f.owner;
+    wrong_body.body_scope = other_plan.body_scope;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, wrong_body));
+    const foreign_list = f.t.ast.getNode(other_plan.params).data.list;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, foreign_list, f.owner));
+    f.t.semantic_editor.?.symbols.items[raw].kind = .variable_var;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
+    f.t.semantic_editor.?.symbols.items[raw] = symbols_before[raw];
+    var origin_node: ?u32 = null;
+    var origins = f.t.native_arguments_reference_origins.iterator();
+    while (origins.next()) |entry| if (entry.value_ptr.symbol_id == id) {
+        origin_node = entry.key_ptr.*;
+    };
+    const original_origin = f.t.native_arguments_reference_origins.get(origin_node.?).?;
+    f.t.native_arguments_reference_origins.getPtr(origin_node.?).?.flags.write = true;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
+    f.t.native_arguments_reference_origins.getPtr(origin_node.?).?.* = original_origin;
+    try std.testing.expectEqualDeep(symbols_before, f.t.semantic_editor.?.symbols.items);
+    try std.testing.expectEqualDeep(references_before, f.t.semantic_editor.?.references.items);
+    try std.testing.expectEqual(id, (try Params.unlinkedArgumentsOwner(f.t, list, f.owner)).?);
+    for ([_][]const u8{
+        "async function* f(value=1){yield arguments[0]}",
+        "async function* f(arguments,value=1){yield value}",
+        "async function* f(value=1){let arguments=42;yield arguments}",
+    }, 0..) |source, boundary_index| {
+        errdefer std.debug.print("UNLINKED boundary={d} source={s}\n", .{ boundary_index, source });
+        const boundary = try unlinkedFixture(a, source);
+        const before_symbols = try a.dupe(symbol_mod.Symbol, boundary.t.semantic_editor.?.symbols.items);
+        const before_refs = try a.dupe(symbol_mod.Reference, boundary.t.semantic_editor.?.references.items);
+        const selected = try Params.unlinkedArgumentsOwner(boundary.t, boundary.t.ast.getNode(boundary.owner.params_node).data.list, boundary.owner);
+        if (boundary_index == 2) {
+            // The source lexical binding moved into the generator body. The
+            // ordinary outer wrapper still owns a distinct parameter engine.
+            const selected_id = selected orelse return error.MissingValidWrapperEngine;
+            const engine_symbol = boundary.t.semantic_editor.?.symbols.items[@backingInt(selected_id)];
+            try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), engine_symbol.synthetic_kind);
+            var lexical: usize = 0;
+            for (boundary.t.ast.nodes.items, 0..) |node, raw_node| {
+                if (node.tag != .binding_identifier or !std.mem.eql(u8, boundary.t.ast.getText(node.data.string_ref), "arguments")) continue;
+                const source_id = boundary.t.getSymbolIdAt(@fromBackingInt(@as(u32, @intCast(raw_node)))) orelse continue;
+                const source_symbol = boundary.t.semantic_editor.?.symbols.items[source_id];
+                if (source_symbol.kind != .variable_let) continue;
+                try std.testing.expect(source_id != @backingInt(selected_id));
+                try std.testing.expect(source_symbol.scope_id != engine_symbol.scope_id);
+                lexical += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), lexical);
+        } else try std.testing.expect(selected == null);
+        try std.testing.expectEqualDeep(before_symbols, boundary.t.semantic_editor.?.symbols.items);
+        try std.testing.expectEqualDeep(before_refs, boundary.t.semantic_editor.?.references.items);
+    }
+    std.debug.print("UNLINKED ARGUMENTS HOSTILE hostile=10 source-boundaries=3 restored=1\n", .{});
+}
+
+test "unlinked arguments default runtime matches native in sloppy and strict environments" {
+    const sources = [_][]const u8{
+        "async function* f(value,opts={}){yield value+(opts.k||0)};(async()=>console.log((await f(1,{k:2}).next()).value,(await f(5).next()).value))();",
+        "async function* f(value=7){yield value};(async()=>console.log((await f().next()).value,(await f(undefined).next()).value))();",
+        "async function* f(value,opts={k:2}){yield value+opts.k};(async()=>console.log((await f(40,undefined).next()).value))();",
+        "let count=0;async function* f(value=(++count)){yield value};const first=f();const second=f(9);(async()=>console.log(count,(await first.next()).value,(await second.next()).value))();",
+        "const outside=40;async function* f(value=outside+2){yield value};(async()=>console.log((await f().next()).value))();",
+        "async function* f(value=1,other=value+1){yield value+other};(async()=>console.log((await f().next()).value,(await f(20,22).next()).value))();",
+        "'use strict';async function* f(value=42){yield value};(async()=>console.log((await f().next()).value))();",
+        "const object={value:42,async *f(value=this.value){yield value}};(async()=>console.log((await object.f().next()).value))();",
+        "const f=async function* named(value=42){yield value};(async()=>console.log((await f().next()).value))();",
+        "async function* f(value=1){let arguments=42;yield value+arguments};(async()=>console.log((await f().next()).value))();",
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (sources, 0..) |source, case| {
+        errdefer std.debug.print("UNLINKED RUNTIME case={d}\n", .{case});
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const output = try @import("../transpile.zig").transpile(a, source, "input.unknown", .{ .unsupported = Options.compat.fromESTarget(.es5), .minify_identifiers = minify });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("UNLINKED RUNTIME minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ minify, native.stdout, actual.stdout, actual.stderr, output.code });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+    std.debug.print("UNLINKED ARGUMENTS RUNTIME sources=10 modes=2 native=20\n", .{});
+}

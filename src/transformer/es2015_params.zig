@@ -255,7 +255,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, false, null, null);
+            return lowerParamsImpl(self, params, span, false, null, null, null);
         }
 
         pub fn lowerParamsPass2(
@@ -263,7 +263,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, true, null, null);
+            return lowerParamsImpl(self, params, span, true, null, null, null);
         }
 
         /// Structural mistakes are not an invitation to create a global.
@@ -335,7 +335,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const native_owner = restArgumentsOwner(self, params, owner) catch
                 @panic("rest parameter producer has invalid actual function ownership");
             const native_formal_scope = try plannedNativeFormalScope(self, params, owner);
-            return lowerParamsImpl(self, params, span, true, native_owner, native_formal_scope);
+            return lowerParamsImpl(self, params, span, true, native_owner, native_formal_scope, owner);
         }
 
         /// Plan the environment of the actual emitted native formals before
@@ -383,6 +383,56 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return scope;
         }
 
+        /// A lowered wrapper already recorded this exact source-parameter
+        /// engine handoff. Default reads consume its SID before the driver
+        /// replaces the formals; they do not create or rediscover an engine.
+        pub fn unlinkedArgumentsOwner(self: *Transformer, params: NodeList, owner: RestArgumentsOwner) error{InvalidRestArgumentsOwner}!?@import("../semantic/symbol.zig").SymbolId {
+            _ = try restArgumentsOwner(self, params, owner);
+            if (!self.semantic_edit_enabled) return null;
+            const function = self.ast.getNode(owner.function_node);
+            if (function.tag == .arrow_function_expression) return null;
+            const raw_flags = self.ast.readExtra(function.data.extra, ast_mod.FunctionExtra.flags);
+            const flags = if (function.tag == .method_definition) ast_mod.methodFlagsToFunctionFlags(raw_flags) else raw_flags;
+            if (flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) != 0) return null;
+            var selected: ?u32 = null;
+            var plans = self.native_arguments_parameter_handoffs.iterator();
+            while (plans.next()) |entry| {
+                const plan = entry.value_ptr.*;
+                if (plan.params != owner.params_node) continue;
+                if (selected != null or plan.body_scope != owner.body_scope or
+                    self.outputOwnedScope(owner.params_node) != plan.source_scope)
+                    return error.InvalidRestArgumentsOwner;
+                const editor = &self.semantic_editor.?;
+                const id = entry.key_ptr.*;
+                if (id >= editor.symbols.items.len or plan.source_scope.isNone() or
+                    plan.source_scope.toIndex() >= editor.scopes.items.len or
+                    plan.source_scope.toIndex() >= editor.scope_maps.items.len or
+                    editor.scopes.items[owner.body_scope.toIndex()].parent != plan.source_scope or
+                    self.native_arguments_declaration_origins.get(id) != plan.source_scope)
+                    return error.InvalidRestArgumentsOwner;
+                const symbol = editor.symbols.items[id];
+                if (symbol.scope_id != plan.source_scope or symbol.synthetic_kind != .implicit_arguments or
+                    symbol.kind != .parameter or symbol.write_count != 0 or
+                    editor.scope_maps.items[plan.source_scope.toIndex()].get("arguments") != @as(?usize, id) or
+                    editor.scope_maps.items[owner.body_scope.toIndex()].get("arguments") != null)
+                    return error.InvalidRestArgumentsOwner;
+                var existing_read = false;
+                var origins = self.native_arguments_reference_origins.iterator();
+                while (origins.next()) |origin| {
+                    if (@backingInt(origin.value_ptr.symbol_id) != id) continue;
+                    if (origin.value_ptr.owner_scope != plan.source_scope or origin.value_ptr.scope != owner.body_scope)
+                        return error.InvalidRestArgumentsOwner;
+                    if ((@import("native_arguments.zig").publication(self, origin.key_ptr.*) catch return error.InvalidRestArgumentsOwner) == null or
+                        !std.meta.eql(origin.value_ptr.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true })))
+                        return error.InvalidRestArgumentsOwner;
+                    existing_read = true;
+                }
+                if (!existing_read) return error.InvalidRestArgumentsOwner;
+                selected = id;
+            }
+            return if (selected) |id| @fromBackingInt(id) else null;
+        }
+
         fn lowerParamsImpl(
             self: *Transformer,
             params: ast_mod.NodeList,
@@ -390,11 +440,16 @@ pub fn ES2015Params(comptime Transformer: type) type {
             comptime pass2: bool,
             rest_owner: ?RestArgumentsOwner,
             native_formal_scope: ?ScopeId,
+            function_owner: ?RestArgumentsOwner,
         ) Transformer.Error!LowerResult {
             const param_scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(param_scratch_top);
 
             var body_stmts: std.ArrayList(NodeIndex) = .empty;
+            const unlinked_engine = if (self.unlinked_parameter_bindings != null and function_owner != null)
+                unlinkedArgumentsOwner(self, params, function_owner.?) catch @panic("unlinked parameter lost its native arguments handoff")
+            else
+                null;
 
             var param_index: usize = 0; // arguments index tracking
             var param_tdz_names: std.ArrayList(Span) = .empty;
@@ -480,23 +535,29 @@ pub fn ES2015Params(comptime Transformer: type) type {
                             try self.scratch.append(self.allocator, temp_binding);
                         }
                         const read = struct {
-                            fn call(t: *Transformer, from_arguments: bool, temp: es_helpers.TempIdentityCapture, index: usize, at: Span) Transformer.Error!NodeIndex {
+                            fn call(t: *Transformer, from_arguments: bool, temp: es_helpers.TempIdentityCapture, index: usize, at: Span, engine: ?@import("../semantic/symbol.zig").SymbolId) Transformer.Error!NodeIndex {
                                 if (!from_arguments) return es_helpers.makeTempRefFromIdentity(t, temp, at, .{ .read = true });
-                                return es_helpers.makeComputedMember(t, try es_helpers.makeGlobalRef(t, "arguments"), try es_helpers.makeNumericLiteral(t, @intCast(index)), at);
+                                const arguments = if (engine) |id| blk: {
+                                    const reference = try t.makeSyntheticRefForSymbol(id, t.current_scope, .{ .read = true });
+                                    const owner_scope = t.semantic_editor.?.symbols.items[@backingInt(id)].scope_id;
+                                    try @import("native_arguments.zig").recordReference(t, reference, id, owner_scope, t.current_scope);
+                                    break :blk reference;
+                                } else try es_helpers.makeGlobalRef(t, "arguments");
+                                return es_helpers.makeComputedMember(t, arguments, try es_helpers.makeNumericLiteral(t, @intCast(index)), at);
                             }
                         }.call;
                         const value = if (default_value.isNone())
-                            try read(self, unlinked_after_default, temp_identity, param_index, span)
+                            try read(self, unlinked_after_default, temp_identity, param_index, span, unlinked_engine)
                         else blk: {
                             const is_undefined = try self.ast.addNode(.{
                                 .tag = .binary_expression,
                                 .span = span,
-                                .data = .{ .binary = .{ .left = try read(self, true, temp_identity, param_index, span), .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } },
+                                .data = .{ .binary = .{ .left = try read(self, true, temp_identity, param_index, span, unlinked_engine), .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } },
                             });
                             break :blk try self.ast.addNode(.{
                                 .tag = .conditional_expression,
                                 .span = span,
-                                .data = .{ .ternary = .{ .a = is_undefined, .b = default_value, .c = try read(self, true, temp_identity, param_index, span) } },
+                                .data = .{ .ternary = .{ .a = is_undefined, .b = default_value, .c = try read(self, true, temp_identity, param_index, span, unlinked_engine) } },
                             });
                         };
                         try body_stmts.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, span)}, .@"var", span));
