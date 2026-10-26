@@ -817,7 +817,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace-import-equals-nonambient',
     source:
       "namespace Types { import Shape = require('./shape'); export const value = 71; } console.log(71);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '71\n',
   },
   {
     name: 'ambient-namespace-import-equals-global',
@@ -2982,6 +2983,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     try {
       for (const probe of cases) {
         const input = join(dir, `${probe.name}.unknown`);
+        if (probe.name === 'ambient-namespace-import-equals-nonambient') {
+          writeFileSync(join(dir, 'shape.js'), 'module.exports = {};');
+        }
         writeFileSync(input, probe.source);
         const result = runCoverage(input, TARGETS[0], dir, true);
         expect(result.exitCode, `${probe.name}: ${result.stderr}`).toBe(0);
@@ -20495,6 +20499,55 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('lenient runtime import-equals retains exact transform identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-import-equals-graph-'));
+    const input = join(dir, 'entry.unknown');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      input,
+      [
+        "namespace N { import Assert = require('node:assert/strict');",
+        '  export function run() { Assert.equal(40 + 2, 42); return 42; }',
+        '}',
+        'console.log(N.run());',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [input, '--target=esnext', '--minify-identifiers', '-o', output],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const graphMode = proc.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-transpile-mode '));
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const identity = proc.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(identity, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), identity).toBe(
+          0,
+        );
+      }
+      expect(identity, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
