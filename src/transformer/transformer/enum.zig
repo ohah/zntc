@@ -76,10 +76,7 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     // Claim the actual body container before any member initializer can
     // publish a generated reference into this ordinary IIFE environment.
     const prelude = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
-    if (self.semantic_edit_enabled) {
-        try self.transformed_scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
-        if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
-    }
+    try @import("semantic_edit.zig").bindEnumPreludeOwner(self, prelude, self.current_scope);
     const new_members = try visitEnumMembers(self, node);
     var statements: std.ArrayList(NodeIndex) = .empty;
     defer statements.deinit(self.allocator);

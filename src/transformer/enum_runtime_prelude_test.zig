@@ -257,3 +257,58 @@ test "enum runtime prelude exact alias rejects wrong owner duplicate boundary an
     const bad_kind = try checkEnumBodyOwners(a, &tree, root, &scopes, &owners);
     try std.testing.expect(bad_kind.invalid_ast_layout > 0);
 }
+
+test "enum runtime prelude survives lazy-editor publication and independent semantic reanalysis" {
+    const coverage = @import("symbol_coverage.zig");
+    const sources = [_][]const u8{
+        "enum E{A=Number(arguments[0]===E)}console.log(E.A)",
+        "enum E{A=Number((()=>arguments[0]===E)())}console.log(E.A)",
+        "enum E{A=Number((()=>this)()===undefined)}console.log(E.A)",
+    };
+    for (sources) |source| for ([_]bool{ false, true }) |es5| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var initial = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        initial.is_strict_mode = parser.is_strict_mode;
+        initial.is_ts = true;
+        initial.collect_unresolved_reference_nodes = true;
+        try initial.analyze();
+        var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{ .unsupported = Options.compat.fromESTarget(if (es5) .es5 else .esnext) });
+        try t.initSymbolIds(initial.symbol_ids.items);
+        t.symbols = initial.symbols.items;
+        t.references = initial.references.items;
+        t.scopes = initial.scopes.items;
+        t.scope_maps = initial.scope_maps.items;
+        t.scope_owner_map = initial.scope_owner_map;
+        t.node_scope_provenance = initial.node_scope_provenance;
+        t.class_self_symbol_map = initial.class_self_symbol_map;
+        t.unresolved_references = &initial.unresolved_references;
+        t.semantic_edit_enabled = true;
+        const output = try t.transform();
+        const edited = (try t.finishSemanticEdit()) orelse return error.EnumBodyPublicationWasDropped;
+        const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, t.ast, output);
+        var checked: usize = 0;
+        for (live) |raw| {
+            const node = t.ast.nodes.items[raw];
+            if (node.tag != .ts_enum_declaration) continue;
+            const prefix = t.ast.readExtraNode(node.data.extra, ast.EnumExtra.runtime_prelude);
+            try std.testing.expectEqual(edited.scope_owner_map.get(raw).?, edited.scope_owner_map.get(@backingInt(prefix)).?);
+            checked += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), checked);
+        var resolved = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, t.ast);
+        resolved.is_strict_mode = parser.is_strict_mode;
+        resolved.collect_unresolved_reference_nodes = true;
+        try resolved.analyze();
+        const report = try coverage.checkPostMinify(a, t.ast, output, t.symbol_ids.items, resolved.symbol_ids.items, edited.symbols.items, resolved.symbols.items, edited.references, t.helper_ref_nodes.items, &t.helper_scope_map, &resolved.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.class_self_symbol_map, &resolved.class_self_symbol_map);
+        try std.testing.expectEqual(@as(usize, 0), report.missing_binding_id);
+        try std.testing.expectEqual(@as(usize, 0), report.missing_reference_id);
+        try std.testing.expectEqual(@as(usize, 0), report.wrong_reference_target);
+        try std.testing.expect(report.isClean());
+    };
+}

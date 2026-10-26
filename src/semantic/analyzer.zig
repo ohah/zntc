@@ -3265,7 +3265,22 @@ pub const SemanticAnalyzer = struct {
             context.owned_member_names.deinit(self.allocator);
         }
 
-        for (extras[members_start .. members_start + members_len]) |raw_idx| {
+        // Lowered enums expose the actual ordinary-IIFE prelude as a
+        // canonical child. Reanalysis must visit its bindings and reads in
+        // this same function environment before evaluating member actions.
+        const saved_stmt = self.current_stmt_idx;
+        defer self.current_stmt_idx = saved_stmt;
+        const prelude = self.ast.readExtraNode(e, ast_mod.EnumExtra.runtime_prelude);
+        var prefix_len: u32 = 0;
+        if (!prelude.isNone()) {
+            const body = self.ast.getNode(prelude);
+            std.debug.assert(body.tag == .block_statement);
+            try self.scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
+            prefix_len = body.data.list.len;
+            try self.visitFunctionBodyInner(prelude);
+        }
+        for (extras[members_start .. members_start + members_len], 0..) |raw_idx, member_index| {
+            if (self.enable_stmt_info) self.current_stmt_idx = prefix_len + @as(u32, @intCast(member_index));
             const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);

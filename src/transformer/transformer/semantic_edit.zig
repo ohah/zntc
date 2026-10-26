@@ -2473,6 +2473,19 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);
 }
 
+/// A TS enum's canonical prelude is its existing ordinary IIFE body, not a
+/// new block environment. Publish that known alias even before any identifier
+/// edit has caused lazy editor creation.
+pub fn bindEnumPreludeOwner(self: *Transformer, body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (body.isNone() or self.ast.getNode(body).tag != .block_statement or scope.isNone() or
+        scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("enum prelude has no actual ordinary IIFE owner");
+    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+}
+
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
 pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
