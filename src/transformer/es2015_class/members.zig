@@ -191,6 +191,12 @@ pub fn Members(comptime Transformer: type) type {
                                 try self.relocateOutputSymbolAs(sid, output_scope, binding);
                             }
                         }
+                        if (self.semantic_edit_enabled and self.ast.getNode(raw).tag == .block_statement) {
+                            const body_scope = self.outputOwnedScope(raw) orelse @panic("retained static body has no source owner");
+                            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                            const old_parent = scopes[body_scope.toIndex()].parent;
+                            try self.reparentGeneratedBodyScopes(old_parent, output_scope, raw);
+                        }
                         const visited = blk: {
                             const saved_scope = self.current_scope;
                             self.current_scope = output_scope;
@@ -513,6 +519,31 @@ pub fn Members(comptime Transformer: type) type {
                             // private mapping 이 set 되어 있어야 하고, accessor backing 이 main loop 가
                             // 더 진행되며 cm.private_fields 에 추가된다. 둘이 끝난 뒤 visitDeferredStaticBlocks
                             // 가 .raw_stmt 를 visit 해 .stmt 로 대체.
+                            // Enum outer declarations have real lexical AST
+                            // storage. Keep their containing block as an actual
+                            // output owner instead of erasing its environment.
+                            var enum_stack: std.ArrayList(NodeIndex) = .empty;
+                            defer enum_stack.deinit(self.allocator);
+                            try enum_stack.append(self.allocator, sb_body_idx);
+                            var contains_enum = false;
+                            while (enum_stack.pop()) |candidate| {
+                                if (candidate.isNone()) continue;
+                                const child = self.ast.getNode(candidate);
+                                if (child.tag == .ts_enum_declaration) {
+                                    contains_enum = true;
+                                    break;
+                                }
+                                switch (child.tag) {
+                                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                                    else => {},
+                                }
+                                var children = @import("../../parser/ast_walk.zig").children(self.ast, child);
+                                while (children.next()) |descendant| try enum_stack.append(self.allocator, descendant);
+                            }
+                            if (contains_enum) {
+                                try cm.static_elements.append(self.allocator, .{ .raw_stmt = sb_body_idx });
+                                continue;
+                            }
                             const sb_stmts_start = sb_body.data.list.start;
                             const sb_stmts_len = sb_body.data.list.len;
                             var i_loop: u32 = 0;

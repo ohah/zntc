@@ -129,7 +129,10 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
     // esm_var_assign_only: var 선언은 이미 __esm 밖 top-level에 hoisted.
     // factory 안에서는 할당만 출력.
-    if (!self.options.esm_var_assign_only or self.namespace_body_depth > 0) try self.write("var ");
+    // A canonical assignment target is paired with an actual outer AST
+    // declaration emitted by the transformer; source/graphless bindings keep
+    // the legacy declaration form until that producer runs.
+    if (name_node.tag != .assignment_target_identifier and (!self.options.esm_var_assign_only or self.namespace_body_depth > 0)) try self.write("var ");
     try self.emitNode(name_idx);
     try self.write(" = /* @__PURE__ */ ");
     try writeIifeHead(self, param_name);
@@ -493,11 +496,11 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         // A nested namespace is block-scoped whether it is private or exported.
         // In an `__esm` factory the emitter declares a top-level one outside
         // the factory (#5663): a `var` here would hide it from `__export`.
-        if (namespacePlacementIsNested(placement)) {
+        if (name_node.tag != .assignment_target_identifier and namespacePlacementIsNested(placement)) {
             try self.write("let ");
             try self.write(local_name);
             try self.writeByte(';');
-        } else if (!self.options.esm_var_assign_only or self.namespace_body_depth > 1) {
+        } else if (name_node.tag != .assignment_target_identifier and (!self.options.esm_var_assign_only or self.namespace_body_depth > 1)) {
             try self.write("var ");
             try self.write(local_name);
             try self.writeByte(';');
@@ -522,7 +525,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
 
     // Nested namespaces use lexical bindings; top-level namespaces use var.
     // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
-    if (!self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
+    if (name_node.tag != .assignment_target_identifier and !self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
         if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
             try self.write(local_name);

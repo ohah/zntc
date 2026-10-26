@@ -30,6 +30,36 @@ pub fn visitFlowEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
     });
 }
 
+pub fn prepareTsIifeOuterStorage(self: *Transformer, source_name: NodeIndex, span: Span) Error!NodeIndex {
+    if (!self.semantic_edit_enabled) return self.visitNode(source_name);
+    const source_id = self.getSymbolIdAt(source_name) orelse @panic("TS IIFE outer binding has no initial source SID");
+    var binding: NodeIndex = .none;
+    if (self.enum_outer_storage_bindings.get(source_id)) |existing| {
+        binding = existing;
+        if (source_name != existing) try @import("semantic_edit.zig").discardMergedEnumDeclaration(self, source_name, @fromBackingInt(source_id));
+    } else {
+        const canonical = self.enum_outer_source_ids.get(source_id) orelse source_name;
+        binding = try self.visitNode(canonical);
+        const symbol = if (self.semantic_editor) |*editor| editor.symbols.items[source_id] else self.symbols[source_id];
+        const kind: ast_mod.VariableDeclarationKind = if (symbol.kind == .variable_let and !self.options.unsupported.block_scoping) .let else .@"var";
+        const declaration = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, .none, span)}, kind, span);
+        var storage_scope = symbol.scope_id;
+        if (kind == .@"var") {
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            storage_scope = scopes[self.current_scope.toIndex()].parent;
+            while (!scopes[storage_scope.toIndex()].kind.isVarScope()) storage_scope = scopes[storage_scope.toIndex()].parent;
+        }
+        try @import("semantic_edit.zig").bindEnumOuterStorage(self, canonical, binding, @fromBackingInt(source_id), storage_scope);
+        if (source_name != canonical and source_name != binding)
+            try @import("semantic_edit.zig").discardMergedEnumDeclaration(self, source_name, @fromBackingInt(source_id));
+        try self.pending_nodes.append(self.allocator, declaration);
+        try self.enum_outer_storage_bindings.put(self.allocator, source_id, binding);
+    }
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const evaluation_scope = scopes[self.current_scope.toIndex()].parent;
+    return @import("semantic_edit.zig").makeEnumOuterWrite(self, binding, @fromBackingInt(source_id), evaluation_scope, self.ast.getNode(source_name).span);
+}
+
 /// ts_enum_declaration: extra = [name, members_start, members_len, flags, runtime_prelude]
 /// flags bit0=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → literal 인라인),
 /// bit1=ambient declare 문맥 (일반 enum은 런타임 선언 없음).
@@ -51,7 +81,7 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         if (!constEnumIsExported(self, node)) return .none;
     }
 
-    const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+    const new_name = try prepareTsIifeOuterStorage(self, self.readNodeIdx(e, ast_mod.EnumExtra.name), node.span);
     const arrow_environment = es_helpers.pushArrowEnv(self);
     defer es_helpers.popArrowEnv(self, arrow_environment);
     const saved_extracted_body = self.in_extracted_fn_body;

@@ -203,6 +203,8 @@ pub const SemanticAnalyzer = struct {
     /// Bare references to preceding members inside an enum initializer resolve
     /// to virtual property symbols owned by the generated enum IIFE scope.
     enum_member_contexts: std.ArrayList(EnumMemberContext) = .empty,
+    enum_outer_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    namespace_outer_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -463,6 +465,8 @@ pub const SemanticAnalyzer = struct {
             context.owned_member_names.deinit(self.allocator);
         }
         self.enum_member_contexts.deinit(self.allocator);
+        self.enum_outer_bindings.deinit(self.allocator);
+        self.namespace_outer_bindings.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -3184,18 +3188,35 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// ts_enum_declaration의 이름만 등록.
-    /// extra = [name, members_start, members_len, flags]
+    /// Initial enum declarations share a binding only with another enum in
+    /// this exact source environment. Nested enums have lexical storage; a
+    /// normal source let remains a conflicting declaration.
     fn predeclareEnumDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        const extra_start = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (extra_start + 3 >= extras.len) return;
-        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
-
-        if (!name_idx.isNone()) {
-            const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
+        const name_idx = self.ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+        if (name_idx.isNone() or self.ast.getNode(name_idx).tag != .binding_identifier) return;
+        if (self.symbolIndexOfNode(name_idx) != null) return;
+        const name = self.ast.getNode(name_idx);
+        const raw = try self.ast.getTextStable(self.allocator, name.span);
+        defer if ((name.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0) self.allocator.free(raw);
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw);
+        defer if (decoded.ptr != raw.ptr) self.allocator.free(decoded);
+        if (self.findSymbolIndexInScope(self.current_scope, decoded)) |existing| {
+            if (self.enum_outer_bindings.contains(@intCast(existing)) or self.namespace_outer_bindings.contains(@intCast(existing))) {
+                if (self.scopes.items[self.current_scope.toIndex()].kind != .global and self.scopes.items[self.current_scope.toIndex()].kind != .module) {
+                    self.symbols.items[existing].kind = .variable_let;
+                    self.symbols.items[existing].decl_flags.function_scoped = false;
+                    self.symbols.items[existing].decl_flags.block_scoped = true;
+                }
+                try self.enum_outer_bindings.put(self.allocator, @intCast(existing), {});
+                self.symbol_ids.items[@backingInt(name_idx)] = @intCast(existing);
+                self.recordDeclareRef(@intCast(existing), self.current_scope, @backingInt(name_idx));
+                return;
+            }
         }
+        const scope = self.scopes.items[self.current_scope.toIndex()];
+        const kind: SymbolKind = if (scope.kind == .global or scope.kind == .module) .variable_var else .variable_let;
+        try self.declareSymbolWithNode(name.span, kind, node.span, @backingInt(name_idx));
+        if (self.symbolIndexOfNode(name_idx)) |id| try self.enum_outer_bindings.put(self.allocator, @intCast(id), {});
     }
 
     /// flow_enum_declaration is a lexical runtime binding emitted as a const.
@@ -3242,6 +3263,12 @@ pub const SemanticAnalyzer = struct {
         const members_start = extras[e + 1];
         const members_len = extras[e + 2];
         if (members_start + members_len > extras.len) return;
+
+        // A transformed enum's outer declaration is now an actual preceding
+        // AST statement. Its canonical name edge is the corresponding write,
+        // evaluated in the enclosing environment before entering the IIFE.
+        if (!name_idx.isNone() and self.ast.getNode(name_idx).tag == .assignment_target_identifier)
+            _ = self.tryResolveNodeAsRef(name_idx, .{ .read = true, .write = true });
 
         const saved_scope = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved_scope);
@@ -3577,6 +3604,9 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
+        if (!name_idx.isNone() and self.ast.getNode(name_idx).tag == .assignment_target_identifier)
+            _ = self.tryResolveNodeAsRef(name_idx, .{ .read = true, .write = true });
+
         const parent_scope = self.current_scope;
         const saved = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved);
@@ -3630,6 +3660,7 @@ pub const SemanticAnalyzer = struct {
             self.symbol_ids.items[@backingInt(name_idx)] = @intCast(sym_idx);
         } else {
             try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
+            if (self.symbolIndexOfNode(name_idx)) |id| try self.namespace_outer_bindings.put(self.allocator, @intCast(id), {});
         }
     }
 
@@ -3731,6 +3762,9 @@ pub const SemanticAnalyzer = struct {
                     self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @backingInt(name_idx)) catch {
                         self.alloc_failed = true;
                     };
+                },
+                .ts_enum_declaration => self.predeclareEnumDecl(stmt) catch {
+                    self.alloc_failed = true;
                 },
                 .flow_enum_declaration => self.predeclareFlowEnumDecl(stmt) catch {
                     self.alloc_failed = true;

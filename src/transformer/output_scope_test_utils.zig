@@ -44,6 +44,10 @@ fn containsExtraListNode(ast: *const Ast, start: u32, len: u32, child: u32) bool
 fn skipsOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
     const parent = ast.nodes.items[parent_raw];
     switch (parent.tag) {
+        .ts_enum_declaration => {
+            const extra = parent.data.extra;
+            return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
+        },
         .switch_statement => {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;

@@ -32,7 +32,9 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // v19: HMR runtime roles persist with their owning semantic graph.
 // Initial ordinary-function arguments bindings are now exact source symbols.
 // Older source graphs can resolve through the wrong enclosing binding.
-pub const FORMAT_VERSION: u32 = 23;
+// v24: nested TS enum outer bindings have lexical source identities.
+// Reusing a v23 source graph can omit those bindings or restore var lifetimes.
+pub const FORMAT_VERSION: u32 = 24;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로

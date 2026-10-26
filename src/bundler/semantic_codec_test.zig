@@ -962,3 +962,43 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         try testing.expectError(error.Truncated, codec.deserialize(corrupt, allocator));
     }
 }
+
+test "enum outer binding codec24 retains lexical source identity and rejects codec23" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "function f(){enum E{A=7};return E}");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(a, &parser.ast);
+    ana.is_ts = true;
+    ana.enable_exact_declaration_anchors = true;
+    try ana.analyze();
+    const sem = ModuleSemanticData{
+        .symbols = ana.symbols,
+        .scopes = ana.scopes.items,
+        .scope_maps = ana.scope_maps.items,
+        .scope_owner_map = ana.scope_owner_map,
+        .exported_names = ana.exported_names,
+        .symbol_ids = ana.symbol_ids.items,
+        .unresolved_references = ana.unresolved_references,
+        .references = ana.references.items,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    const restored = try codec.deserialize(bytes.items, a);
+    var enums: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").EnumExtra.name);
+        const id = ana.symbol_ids.items[@backingInt(name)].?;
+        try testing.expectEqual(.variable_let, restored.symbols.items[id].kind);
+        try testing.expectEqual(ana.symbols.items[id].scope_id, restored.symbols.items[id].scope_id);
+        try testing.expectEqual(@as(?u32, id), restored.symbol_ids[@backingInt(name)]);
+        enums += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), enums);
+    std.mem.writeInt(u32, bytes.items[4..8], 23, .little);
+    try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
+}

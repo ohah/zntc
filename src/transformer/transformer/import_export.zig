@@ -158,6 +158,30 @@ pub fn visitExportAllDeclaration(self: *Transformer, node: Node) Error!NodeIndex
 pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
     const new_decl = try self.visitNode(x.decl);
+    if (self.semantic_edit_enabled and !new_decl.isNone() and self.ast.getNode(new_decl).tag == .ts_enum_declaration) {
+        const enum_name = self.ast.readExtraNode(self.ast.getNode(new_decl).data.extra, ast_mod.EnumExtra.name);
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        const module_level = !self.current_scope.isNone() and
+            (scopes[self.current_scope.toIndex()].kind == .global or scopes[self.current_scope.toIndex()].kind == .module);
+        if (module_level and self.ast.getNode(enum_name).tag == .assignment_target_identifier) {
+            const id = self.getSymbolIdAt(enum_name) orelse @panic("exported enum assignment lost its exact identity");
+            if (!self.enum_outer_exported_ids.contains(id)) {
+                const storage = self.enum_outer_storage_bindings.get(id) orelse @panic("exported enum has no actual declaration");
+                const local = try es_helpers.makeExactSyntheticRefFromSpan(self, self.ast.getNode(storage).data.string_ref);
+                try self.addSyntheticRefInScope(local, @fromBackingInt(id), self.current_scope, .{ .read = true });
+                const original_name = self.ast.readExtraNode(self.ast.getNode(x.decl).data.extra, ast_mod.EnumExtra.name);
+                const exported = try es_helpers.makePropertyNameFromSpan(self, self.ast.getNode(original_name).data.string_ref);
+                const specifier = try self.ast.addNode(.{ .tag = .export_specifier, .span = node.span, .data = .{ .binary = .{ .left = local, .right = exported, .flags = 0 } } });
+                const list = try self.ast.addNodeList(&.{specifier});
+                const declaration = try self.addExtraNode(.export_named_declaration, node.span, &.{ @backingInt(NodeIndex.none), list.start, list.len, @backingInt(NodeIndex.none), 0, 0 });
+                try self.trailing_nodes.append(self.allocator, declaration);
+                try self.enum_outer_exported_ids.put(self.allocator, id, {});
+            }
+            // The actual storage declaration is pending before this write;
+            // the canonical export read follows initialization (also in CJS).
+            return new_decl;
+        }
+    }
     const new_specs = try self.visitExtraList(.{ .start = x.specs_start, .len = x.specs_len });
     const new_source = try self.visitNode(x.source);
     // export interface/type alias 등 타입 선언만 있으면 빈 export {} 제거

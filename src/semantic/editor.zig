@@ -224,7 +224,7 @@ pub const SemanticEditor = struct {
     /// keeps the SymbolId while rekeying the scope map for transforms that
     /// lower distinct same-text bindings into one storage scope with unique
     /// output names.
-    pub fn relocateSymbolAs(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!void {
+    fn relocateToOutputBindingName(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!usize {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
         if (!self.validScope(target)) return error.InvalidScope;
         if (output_binding.isNone() or @backingInt(output_binding) >= self.ast.nodes.items.len) return error.InvalidNode;
@@ -240,6 +240,16 @@ pub const SemanticEditor = struct {
         const output_name = self.ast.getText(output_name_span);
         const stable_output_name = try self.ast.getTextStable(self.allocator, output_name_span);
         try self.relocateSymbolWithName(id, target, output_name, stable_output_name);
+        return slot;
+    }
+
+    pub fn relocateSymbolAsPreservingAnchors(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!void {
+        const slot = try self.relocateToOutputBindingName(id, target, output_binding);
+        self.symbol_ids.items[slot] = @backingInt(id);
+    }
+
+    pub fn relocateSymbolAs(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!void {
+        const slot = try self.relocateToOutputBindingName(id, target, output_binding);
         var has_declaration = false;
         for (self.references.items) |*reference| {
             if (reference.symbol_id != id or !reference.flags.declare) continue;
@@ -1327,6 +1337,49 @@ pub const SemanticEditor = struct {
     /// Other declarations and reads/writes of this same SymbolId remain live.
     /// Declaration rows use node_index=.none, so removeReference cannot select
     /// them by their binding anchor.
+    /// Move only the exact source declaration anchor selected by its producer.
+    /// A copied first binding must not absorb the other declarations of a
+    /// merged enum. Validate every matching row before any mutation.
+    pub fn reanchorDeclarationFromNode(self: *SemanticEditor, owner: *const Ast, source: NodeIndex, output: NodeIndex, expected: SymbolId) Error!usize {
+        if (owner != self.ast) return error.InvalidNode;
+        if (!self.validSymbol(expected)) return error.InvalidSymbol;
+        if (source.isNone() or output.isNone() or @backingInt(source) >= self.ast.nodes.items.len or
+            @backingInt(output) >= self.ast.nodes.items.len or self.ast.getNode(source).tag != .binding_identifier or
+            self.ast.getNode(output).tag != .binding_identifier) return error.InvalidNode;
+        const input_raw = @backingInt(source);
+        const output_raw = @backingInt(output);
+        if (input_raw >= self.symbol_ids.items.len or output_raw >= self.symbol_ids.items.len or
+            self.symbol_ids.items[input_raw] != @backingInt(expected) or self.symbol_ids.items[output_raw] != @backingInt(expected)) return error.InvalidSymbol;
+        var matches: usize = 0;
+        for (self.references.items) |reference| {
+            if (!reference.flags.declare or reference.declaration_node_index != source) continue;
+            if (reference.symbol_id != expected) return error.InvalidSymbol;
+            matches += 1;
+        }
+        if (matches == 0) return error.ReferenceNotFound;
+        // Distinct statement records may legitimately share one canonical
+        // source-var anchor. Preserve them all, but reject an exact duplicate
+        // tuple (including a collision with the proposed output anchor).
+        for (self.references.items, 0..) |reference, index| {
+            if (!reference.flags.declare or reference.declaration_node_index != source) continue;
+            var moved = reference;
+            moved.declaration_node_index = output;
+            for (self.references.items[0..index]) |earlier| {
+                var other = earlier;
+                if (other.flags.declare and other.declaration_node_index == source) other.declaration_node_index = output;
+                if (std.meta.eql(moved, other)) return error.DuplicateBinding;
+            }
+            for (self.references.items[index + 1 ..]) |later| {
+                if (later.flags.declare and later.declaration_node_index == output and std.meta.eql(moved, later)) return error.DuplicateBinding;
+            }
+        }
+        for (self.references.items) |*reference| {
+            if (reference.flags.declare and reference.declaration_node_index == source)
+                reference.declaration_node_index = output;
+        }
+        return matches;
+    }
+
     pub fn removeDeclarationAtNode(self: *SemanticEditor, binding: NodeIndex, expected: SymbolId) Error!usize {
         if (!self.validSymbol(expected)) return error.InvalidSymbol;
         if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
@@ -2692,4 +2745,66 @@ test "invalid identities and type-only references cannot corrupt liveness" {
     try editor.removeReference(write_ref);
     try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(id)].write_count);
     try std.testing.expectError(error.ReferenceNotFound, editor.removeReference(write_ref));
+}
+
+test "enum outer binding exact reanchor preserves source var tuples and rejects corrupt selections transactionally" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tree = Ast.init(a, "");
+    var editor = try SemanticEditor.init(a, &tree, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    const root = try editor.addScope(.none, .none, .module, true);
+    const source_scope = try editor.addScope(root, .none, .block, true);
+    const target_scope = try editor.addScope(root, .none, .function, true);
+    const name = try tree.addString("E");
+    const source = try tree.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const output_name = try tree.addString("E$1");
+    const output = try tree.addNode(.{ .tag = .binding_identifier, .span = output_name, .data = .{ .string_ref = output_name } });
+    const missing = try tree.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const id = try editor.declare(source, name, Span.EMPTY, source_scope, .variable_let, 1, 2);
+    editor.symbol_ids.items[try editor.ensureNodeSlot(output)] = @backingInt(id);
+    editor.symbol_ids.items[try editor.ensureNodeSlot(missing)] = @backingInt(id);
+    // Two source var statements can legitimately retain the same canonical
+    // declaration anchor while their statement coordinates remain distinct.
+    var second = editor.references.items[0];
+    second.stmt_idx = 4;
+    second.scope_stmt_idx = 5;
+    try editor.references.append(a, second);
+    const read = try tree.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    try editor.addReference(read, id, source_scope, .{ .read = true }, 7, 8);
+    const before = try a.dupe(Reference, editor.references.items);
+    var foreign = Ast.init(a, "");
+    const foreign_name = try foreign.addString("E");
+    const foreign_source = try foreign.addNode(.{ .tag = .binding_identifier, .span = foreign_name, .data = .{ .string_ref = foreign_name } });
+    try std.testing.expectEqual(source, foreign_source);
+    try std.testing.expectError(error.InvalidNode, editor.reanchorDeclarationFromNode(&foreign, foreign_source, output, id));
+    for (before, editor.references.items) |expected, actual| try std.testing.expect(std.meta.eql(expected, actual));
+    try std.testing.expectError(error.ReferenceNotFound, editor.reanchorDeclarationFromNode(&tree, missing, output, id));
+    try std.testing.expectError(error.InvalidSymbol, editor.reanchorDeclarationFromNode(&tree, source, output, @fromBackingInt(99)));
+    try editor.references.append(a, editor.references.items[0]);
+    const duplicate = try a.dupe(Reference, editor.references.items);
+    try std.testing.expectError(error.DuplicateBinding, editor.reanchorDeclarationFromNode(&tree, source, output, id));
+    for (duplicate, editor.references.items) |expected, actual| try std.testing.expect(std.meta.eql(expected, actual));
+    _ = editor.references.pop();
+    editor.references.items[0].symbol_id = @fromBackingInt(99);
+    const wrong = try a.dupe(Reference, editor.references.items);
+    try std.testing.expectError(error.InvalidSymbol, editor.reanchorDeclarationFromNode(&tree, source, output, id));
+    for (wrong, editor.references.items) |expected, actual| try std.testing.expect(std.meta.eql(expected, actual));
+    editor.references.items[0] = before[0];
+    try std.testing.expectEqual(@as(usize, 2), try editor.reanchorDeclarationFromNode(&tree, source, output, id));
+    for (before, editor.references.items) |original, actual| {
+        var expected = original;
+        if (expected.flags.declare) expected.declaration_node_index = output;
+        try std.testing.expect(std.meta.eql(expected, actual));
+    }
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
+    try editor.reparentScope(source_scope, target_scope);
+    try editor.relocateSymbolAsPreservingAnchors(id, target_scope, output);
+    for (editor.references.items) |reference| {
+        if (reference.flags.declare) {
+            try std.testing.expectEqual(output, reference.declaration_node_index);
+            try std.testing.expectEqual(target_scope, reference.scope_id);
+        }
+    }
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
 }

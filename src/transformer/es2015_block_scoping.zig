@@ -320,6 +320,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         if (ctx.self.ast.hasExtra(node.data.extra, 3) and ctx.self.ast.variableDeclarationKind(node).isLexical()) ctx.pushDeclarators(node);
                         return .descend;
                     },
+                    .ts_enum_declaration => {
+                        // A runtime enum has source lexical storage even before
+                        // its actual outer declaration is spliced into the list.
+                        if ((ctx.self.readU32(node.data.extra, ast_mod.EnumExtra.flags) & 2) == 0) {
+                            const name = ctx.self.readNodeIdx(node.data.extra, ast_mod.EnumExtra.name);
+                            if (!name.isNone() and ctx.self.ast.getNode(name).tag == .binding_identifier) ctx.push(name);
+                        }
+                        return .descend;
+                    },
                     .class_declaration => {
                         const name = ctx.self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
                         if (!name.isNone()) {

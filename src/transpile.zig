@@ -2240,7 +2240,7 @@ fn transpileWithCallbackInternal(
     const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
     var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
-        transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
+        transformer.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items) catch return error.TransformError;
         transformer.symbols = analyzer.symbols.items;
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;

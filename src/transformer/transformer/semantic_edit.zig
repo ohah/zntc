@@ -2473,6 +2473,50 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);
 }
 
+pub fn bindEnumOuterStorage(self: *Transformer, source: NodeIndex, binding: NodeIndex, id: SymbolId, scope: ScopeId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var source_rows: usize = 0;
+    var output_rows: usize = 0;
+    var other_rows: usize = 0;
+    for (editor.references.items) |reference| {
+        if (!reference.flags.declare or reference.symbol_id != id) continue;
+        if (reference.declaration_node_index == source) source_rows += 1 else if (reference.declaration_node_index == binding) output_rows += 1 else other_rows += 1;
+    }
+    if (source_rows != 0) {
+        _ = editor.reanchorDeclarationFromNode(self.ast, source, binding, id) catch |err| return editError(err);
+    } else if (output_rows == 0 and other_rows != 0) @panic("enum storage lost its exact first declaration anchor");
+    editor.relocateSymbolAsPreservingAnchors(id, scope, binding) catch |err| return editError(err);
+    editor.ensureDeclarationAtNode(id, scope, binding) catch |err| return editError(err);
+}
+
+/// The explicit outer declaration owns its existing source binding. A merged
+/// declaration instead discards only its own now-unreachable declaration row.
+pub fn discardMergedEnumDeclaration(self: *Transformer, source: NodeIndex, id: SymbolId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var anchored = false;
+    for (editor.references.items) |reference| if (reference.flags.declare and reference.declaration_node_index == source) {
+        if (reference.symbol_id != id) @panic("merged enum declaration changed source identity");
+        anchored = true;
+    };
+    if (anchored) _ = editor.removeDeclarationAtNode(source, id) catch |err| return editError(err);
+    // Keep the parser-node identity available to enum constant/member
+    // evaluation; this unreachable binding has no live declaration row.
+
+}
+
+pub fn makeEnumOuterWrite(self: *Transformer, binding: NodeIndex, id: SymbolId, scope: ScopeId, source_span: Span) Transformer.Error!NodeIndex {
+    const editor = try editorFor(self);
+    if (@backingInt(id) >= editor.symbols.items.len or !scopeWithin(editor.scopes.items, scope, editor.symbols.items[@backingInt(id)].scope_id))
+        @panic("enum write cannot see its exact storage owner");
+    if (self.ast.getNode(binding).tag != .binding_identifier or self.getSymbolIdAt(binding) != @backingInt(id))
+        @panic("enum outer write has no exact storage binding");
+    const target = try es_helpers.makeExactSyntheticRefFromSpan(self, self.ast.getNode(binding).data.string_ref);
+    self.ast.nodes.items[@backingInt(target)].tag = .assignment_target_identifier;
+    self.ast.nodes.items[@backingInt(target)].span = source_span;
+    try addSyntheticRefInScope(self, target, id, scope, .{ .read = true, .write = true });
+    return target;
+}
+
 /// A TS enum's canonical prelude is its existing ordinary IIFE body, not a
 /// new block environment. Publish that known alias even before any identifier
 /// edit has caused lazy editor creation.

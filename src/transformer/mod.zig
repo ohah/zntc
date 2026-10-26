@@ -126,6 +126,7 @@ test {
     _ = @import("for_of_cleanup_scope_semantic_test.zig");
     _ = @import("namespace_live_arguments_test.zig");
     _ = @import("enum_runtime_prelude_test.zig");
+    _ = @import("enum_outer_binding_semantic_test.zig");
 }
 
 test {

@@ -1074,13 +1074,13 @@ pub fn collectDeclarationNodes(
             .ts_enum_declaration, .flow_enum_declaration => {
                 if (ast.hasExtra(node.data.extra, 0)) {
                     const name: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
-                    if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
+                    if (!name.isNone() and ast.getNode(name).tag == .binding_identifier) try bindings.put(allocator, @backingInt(name), {});
                 }
             },
             .ts_module_declaration => {
                 const name = node.data.binary.left;
                 if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
-                    ast.getNode(name).tag != .string_literal)
+                    ast.getNode(name).tag == .binding_identifier)
                     try bindings.put(allocator, @backingInt(name), {});
             },
             .ts_import_equals_declaration => {

@@ -76,7 +76,8 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         _ = self.namespace_path.pop();
         if (is_root_namespace) self.namespace_root_symbol_id = saved_root_symbol;
     }
-    const new_name = try self.visitNode(node.data.binary.left);
+    const shared_enum_storage = self.semantic_edit_enabled and if (self.getSymbolIdAt(node.data.binary.left)) |id| self.enum_outer_source_ids.contains(id) else false;
+    var new_name = if (shared_enum_storage) node.data.binary.left else try self.visitNode(node.data.binary.left);
     // A namespace is emitted as an ordinary IIFE, so its captures belong to
     // that invocation, even when the declaration is nested in another arrow.
     const capture_frame = es_helpers.pushCaptureFrame(self);
@@ -187,6 +188,7 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
             new_body = captured_body;
         }
     }
+    if (shared_enum_storage) new_name = try @import("enum.zig").prepareTsIifeOuterStorage(self, node.data.binary.left, node.span);
     return self.ast.addNode(.{
         .tag = .ts_module_declaration,
         .span = node.span,

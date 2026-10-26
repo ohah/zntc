@@ -54,6 +54,8 @@ const ALLOWLIST = {
     'source class-self SymbolId를 output capture SymbolId에 매핑하고 write Reference를 target으로 재사용',
   'src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite':
     'producer가 확정한 class-self SymbolId와 output ScopeId를 copied write Reference에 직접 등록',
+  'src/transformer/transformer/semantic_edit.zig::makeEnumOuterWrite':
+    '실제 enum storage binding Node/SID/Scope를 검증하고 동일 SID write row를 즉시 생성',
   'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
   'src/transformer/native_constructor_function_cells.zig::prepare':
