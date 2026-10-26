@@ -139,6 +139,13 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
             self.temp_var_counter = saved_temp_counter;
         }
     }
+    if (new_body.isNone()) return .none;
+
+    const body_node = self.ast.getNode(new_body);
+    if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
+        return .none;
+    }
+
     if (!new_body.isNone()) {
         var captures: [3]NodeIndex = undefined;
         const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
@@ -166,13 +173,6 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
             new_body = captured_body;
         }
     }
-    if (new_body.isNone()) return .none;
-
-    const body_node = self.ast.getNode(new_body);
-    if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
-        return .none;
-    }
-
     return self.ast.addNode(.{
         .tag = .ts_module_declaration,
         .span = node.span,

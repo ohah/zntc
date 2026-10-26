@@ -13,6 +13,7 @@ const cases = [_]Case{
     .{ .name = "source-alias-collision", .source = "namespace N{export const _arguments=7;export const arguments$1=9;export const get=()=>arguments[0]}console.log(N.get()===N,N._arguments,N.arguments$1)", .native = "\"use strict\";\nvar N;\n(function (N) {\n    N._arguments = 7;\n    N.arguments$1 = 9;\n    N.get = () => arguments[0];\n})(N || (N = {}));\nconsole.log(N.get() === N, N._arguments, N.arguments$1);\n", .expected = "true 7 9\n" },
     .{ .name = "nested-restored-outer", .source = "namespace Outer{export const first=()=>arguments;export namespace Inner{export const get=()=>arguments}export const second=()=>arguments}console.log(Outer.first()===Outer.second(),Outer.Inner.get()!==Outer.first(),Outer.Inner.get()[0]===Outer.Inner)", .native = "\"use strict\";\nvar Outer;\n(function (Outer) {\n    Outer.first = () => arguments;\n    let Inner;\n    (function (Inner) {\n        Inner.get = () => arguments;\n    })(Inner = Outer.Inner || (Outer.Inner = {}));\n    Outer.second = () => arguments;\n})(Outer || (Outer = {}));\nconsole.log(Outer.first() === Outer.second(), Outer.Inner.get() !== Outer.first(), Outer.Inner.get()[0] === Outer.Inner);\n", .expected = "true true true\n" },
     .{ .name = "this-owner", .source = "namespace N{export const get=()=>this}console.log(N.get()===undefined)", .native = "\"use strict\";\nvar N;\n(function (N) {\n    N.get = () => this;\n})(N || (N = {}));\nconsole.log(N.get() === undefined);\n", .expected = "true\n" },
+    .{ .name = "empty-erasure", .source = "namespace Empty{}console.log(typeof Empty)", .native = "\"use strict\";console.log(typeof Empty)", .expected = "undefined\n" },
 };
 fn runCase(index: usize, rn: bool, minify: bool) !void {
     const case = cases[index];
@@ -38,6 +39,7 @@ test "namespace live arguments identities exist before the output walker" {
     const ScopeId = @import("../semantic/scope.zig").ScopeId;
     const utils = @import("output_scope_test_utils.zig");
     for (cases) |case| {
+        if (std.mem.eql(u8, case.name, "empty-erasure")) continue; // no runtime IIFE or capture graph
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -269,4 +271,17 @@ test "namespace live arguments this-owner rn080 plain" {
 }
 test "namespace live arguments this-owner rn080 minify" {
     try runCase(9, true, true);
+}
+
+test "namespace live arguments empty erasure native-default plain" {
+    try runCase(10, false, false);
+}
+test "namespace live arguments empty erasure native-default minify" {
+    try runCase(10, false, true);
+}
+test "namespace live arguments empty erasure rn080 plain" {
+    try runCase(10, true, false);
+}
+test "namespace live arguments empty erasure rn080 minify" {
+    try runCase(10, true, true);
 }
