@@ -14,6 +14,9 @@ fn checkMode(source: []const u8, native_lexical: bool) !void {
     return checkModeWithDriver(source, native_lexical, false);
 }
 fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bool) !void {
+    return checkModeWithImports(source, native_lexical, full_driver, false);
+}
+fn checkModeWithImports(source: []const u8, native_lexical: bool, full_driver: bool, emit_imports: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -34,7 +37,7 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
     }
     const require_program_coordinate_handoffs = full_driver and std.mem.indexOf(u8, source, "RLong=(nLong,log)") != null;
     var transform_options = @import("transformer.zig").TransformOptions{ .unsupported = unsupported };
-    if (require_program_coordinate_handoffs) transform_options.emit_runtime_helper_imports = true;
+    transform_options.emit_runtime_helper_imports = require_program_coordinate_handoffs or emit_imports;
     const Original = struct { sid: u32, read: bool, write: bool, stmt: u32, scope_stmt: u32 };
     var original: std.AutoHashMapUnmanaged(u32, Original) = .empty;
     for (analyzer.references.items) |ref| if (!ref.node_index.isNone() and !ref.flags.declare) {
@@ -63,6 +66,10 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
     t.semantic_edit_enabled = true;
     if (!full_driver) try t.buildBlockRenameMap();
     const output = if (full_driver) try t.transform() else try t.visitNode(source_root);
+    if (emit_imports) {
+        try std.testing.expect(t.generator_function_coordinate_program_changed);
+        try std.testing.expect(!t.generator_function_storage_scopes.contains(@backingInt(t.programScope())));
+    }
     const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, t.ast, output);
     var actual: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (refs) |ref| try actual.put(a, @backingInt(ref), {});
@@ -173,6 +180,9 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
                             try std.testing.expectEqual(before.scope_stmt, ref.scope_stmt_idx);
                         }
                     }
+                    if (emit_imports and original.contains(raw)) {
+                        try std.testing.expect(t.generator_function_coordinate_handoffs.contains(raw));
+                    }
                     if (full_driver and t.generator_function_coordinate_handoffs.contains(raw)) {
                         published_coordinate_checks += 1;
                         try std.testing.expectEqual(work.stmt, ref.stmt_idx);
@@ -209,7 +219,16 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
         var publications = t.generator_function_coordinate_handoffs.iterator();
         var selected: ?u32 = null;
         while (publications.next()) |entry| {
-            if (entry.value_ptr.scope != t.programScope() and t.tracked_runtime_helper_ref_index.contains(entry.key_ptr.*)) {
+            var owner = entry.value_ptr.scope;
+            var producer_owned = false;
+            while (!owner.isNone()) {
+                if (t.generator_function_storage_scopes.contains(@backingInt(owner))) {
+                    producer_owned = true;
+                    break;
+                }
+                owner = t.semantic_editor.?.scopes.items[owner.toIndex()].parent;
+            }
+            if (producer_owned and entry.value_ptr.scope != t.programScope() and t.tracked_runtime_helper_ref_index.contains(entry.key_ptr.*)) {
                 selected = entry.key_ptr.*;
                 break;
             }
@@ -234,6 +253,10 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
         _ = t.generator_function_coordinate_handoffs.remove(raw);
         try std.testing.expectError(error.InvalidNode, @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
         try t.generator_function_coordinate_handoffs.put(a, raw, publication);
+
+        t.generator_function_coordinate_handoffs.getPtr(raw).?.stmt = publication.stmt ^ 1;
+        try std.testing.expectError(error.InvalidNode, @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+        t.generator_function_coordinate_handoffs.getPtr(raw).?.* = publication;
 
         t.generator_function_coordinate_handoffs.getPtr(raw).?.scope_stmt += 1;
         try std.testing.expectError(error.InvalidNode, @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
@@ -512,4 +535,48 @@ test "generator Annex B assignment publishes exact storage spellings before lega
         "function* run(){const outer=()=>read;for(let i=0;i<2;i++){yield typeof outer();function read(){return i}yield outer()();}}",
     };
     for (sources) |source| try checkAliasStoragePublication(source);
+}
+
+test "generator root coordinate shift does not certify unrelated async method publication" {
+    const source =
+        \\const RLong = (nLong, log) => ({
+        \\  [Symbol.dispose]() {
+        \\    log.push('d' + nLong);
+        \\  },
+        \\});
+        \\const AR = (nLong2, log) => ({
+        \\  async [Symbol.asyncDispose]() {
+        \\    log.push('ad' + nLong2);
+        \\  },
+        \\});
+        \\const log = [];
+        \\(async () => {
+        \\  async function* src() {
+        \\    yield RLong(1, log);
+        \\    yield RLong(2, log);
+        \\  }
+        \\  for await (using xLong of src()) {
+        \\    await 0;
+        \\    log.push('b');
+        \\  }
+        \\  console.log(log.join());
+        \\})();
+    ;
+    const unrelated = [_][]const u8{
+        "",
+        "const spare=(__name,_state)=>({async method(){return __name+_state}});",
+        "const spare=(input=()=>1)=>({async method(){return input()}});",
+        "const spare=(...items)=>({async method(){return items.length}});",
+        "const spare=({amount:alias})=>({async method(){return alias}});",
+        "const spare=(argument)=>class Box{async method(){return argument}};",
+        "function spare(argument){return{async method(){return argument}}}",
+        "const spare=(argument)=>({async ['method'](){return argument}});",
+        "const spare=(arg\\u0075ment)=>({async method(){return argument}});",
+        "const spare=(__proto__)=>({async method(){return __proto__}});",
+    };
+    for (unrelated) |prefix| {
+        const variant = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ prefix, source });
+        defer std.testing.allocator.free(variant);
+        try checkModeWithImports(variant, false, true, true);
+    }
 }
