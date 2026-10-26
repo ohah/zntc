@@ -5583,6 +5583,46 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'combined drops retain fallback when a removed label declares var',
+        source:
+          "function read() { DEV: var hidden = 40; console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed label contains eval',
+        source:
+          "function read() { DEV: eval('var hidden = 40'); console.warn('gone'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed label owns an arrow scope',
+        source:
+          "function read() { DEV: (() => 40)(); console.warn('gone'); return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'combined drops inspect every matched label for eval-visible bindings',
+        source:
+          "function read() { DEV: throw 'gone'; DEV: { const hidden = 40; console.warn('gone'); } console.info('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined drops retain fallback when a removed console call owns an arrow scope',
+        source:
+          "function read() { DEV: throw 'gone'; console.warn(() => 42); return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'direct eval still reads a surviving local after console removal',
         source:
           "function read() { const hidden = 40; console.log('gone'); return eval('hidden'); } process.stdout.write(String(read() + 2));",
