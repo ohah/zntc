@@ -600,8 +600,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // elements run, not after its generated binding (#5519).
             if (name_idx.isNone()) {
                 if (@import("parameter_environment.zig").takeAnonymousClassName(self, source_idx)) |inferred| {
-                    const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
-                    try self.scratch.append(self.allocator, try @import("parameter_environment.zig").classNameStatement(self, class_ref, inferred, iife_scope, span));
+                    if (!try @import("parameter_environment.zig").definesStaticName(self, source_idx)) {
+                        const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
+                        try self.scratch.append(self.allocator, try @import("parameter_environment.zig").classNameStatement(self, class_ref, inferred, iife_scope, span));
+                    }
                 }
             }
             // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE

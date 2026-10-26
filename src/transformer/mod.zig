@@ -148,3 +148,7 @@ test {
 test {
     _ = @import("generated_static_block_test.zig");
 }
+
+test {
+    _ = @import("legacy_default_static_capture_test.zig");
+}

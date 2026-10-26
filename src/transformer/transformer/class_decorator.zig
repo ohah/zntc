@@ -659,9 +659,35 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 defer self.current_class_name_node = saved_static_reference_class_name;
                 defer self.current_class_self_symbol_id = saved_static_reference_class_symbol;
                 if (!anonymous_default_export_binding.isNone()) {
+                    _ = @import("../static_class_capture.zig").handoffAnonymousExportValue(
+                        self,
+                        source_idx,
+                        saved_static_reference_class_name,
+                        anonymous_default_export_binding,
+                        generated_export_scope,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => @panic("anonymous default class lost its exact static capture value handoff"),
+                    };
                     self.current_class_name_node = anonymous_default_export_binding;
                     self.current_class_self_symbol_id = self.getSymbolIdAt(anonymous_default_export_binding) orelse
                         std.debug.panic("anonymous default decorator wrapper has no exact class reference SymbolId", .{});
+                    if (self.options.unsupported.class_static_block) {
+                        if (legacy_default_class_inferred_name) |name| {
+                            const value = try self.makeUserRefNamedAtScope(
+                                self.ast.getText(self.ast.getNode(anonymous_default_export_binding).data.string_ref),
+                                anonymous_default_export_binding,
+                                generated_export_scope,
+                            );
+                            try post.append(self.allocator, try @import("../parameter_environment.zig").classNameStatement(
+                                self,
+                                value,
+                                name,
+                                generated_export_scope,
+                                node.span,
+                            ));
+                        }
+                    }
                 }
                 try appendStaticStatements(
                     self,

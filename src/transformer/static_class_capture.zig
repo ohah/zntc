@@ -152,6 +152,77 @@ pub fn makeClassSelfReference(self: anytype, source: NodeIndex) !?NodeIndex {
     return null;
 }
 
+/// The anonymous legacy-decorator creator reserves a distinct outer export
+/// slot after static blocks have already selected their immutable snapshot.
+/// Transfer that pending capture to this exact class-value carrier, preserving
+/// the snapshot symbol and every read that already points to it.
+pub fn handoffAnonymousExportValue(self: anytype, source_class: NodeIndex, pending_binding: NodeIndex, actual_binding: NodeIndex, output_scope: ScopeId) !bool {
+    const pending_key = @backingInt(pending_binding);
+    const source = self.ast.getNode(source_class);
+    if ((source.tag != .class_declaration and source.tag != .class_expression) or
+        !self.ast.readExtraNode(source.data.extra, ast_mod.ClassExtra.name).isNone() or
+        self.lowered_anonymous_class_export_bindings.get(@backingInt(source_class)) != @backingInt(actual_binding) or
+        actual_binding == pending_binding or self.ast.getNode(actual_binding).tag != .binding_identifier)
+        return error.InvalidClassValueCaptureHandoff;
+    if (self.semantic_edit_enabled and !pending_binding.isNone()) {
+        if (self.class_self_symbol_map.get(@backingInt(source_class))) |known_self| {
+            if (self.getSymbolIdAt(pending_binding) != known_self) return error.InvalidClassValueCaptureHandoff;
+        }
+    }
+    var capture = self.static_class_captures.get(pending_key) orelse return false;
+    if (capture.frame.class_binding != pending_binding or capture.frame.output_scope != output_scope)
+        return error.InvalidClassValueCaptureHandoff;
+    const actual_key = @backingInt(actual_binding);
+    if (self.static_class_captures.contains(actual_key) or self.completed_static_class_captures.contains(actual_key))
+        return error.InvalidClassValueCaptureHandoff;
+    const actual_id = self.getSymbolIdAt(actual_binding);
+    if (self.semantic_edit_enabled) {
+        const editor = &self.semantic_editor.?;
+        const source_self = self.class_self_symbol_map.get(@backingInt(source_class)) orelse return error.InvalidClassValueCaptureHandoff;
+        const class_scope = self.outputOwnedScope(source_class) orelse return error.InvalidClassValueCaptureHandoff;
+        if (source_self >= editor.symbols.items.len or capture.frame.class_self_symbol_id != source_self or
+            self.getSymbolIdAt(pending_binding) != capture.frame.class_symbol_id or
+            actual_id == null or actual_id.? >= editor.symbols.items.len or
+            editor.symbols.items[actual_id.?].scope_id != output_scope or
+            editor.symbols.items[actual_id.?].kind != .variable_let or
+            @backingInt(actual_binding) >= editor.symbol_ids.items.len or
+            editor.symbol_ids.items[@backingInt(actual_binding)] != actual_id or
+            editor.symbols.items[source_self].scope_id != class_scope or
+            capture.symbol_id == null or capture.symbol_id.? >= editor.symbols.items.len or
+            self.getSymbolIdAt(capture.binding) != capture.symbol_id or
+            editor.symbols.items[capture.symbol_id.?].scope_id != output_scope)
+            return error.InvalidClassValueCaptureHandoff;
+        var proofs = self.static_class_reference_origins.iterator();
+        while (proofs.next()) |entry| {
+            const proof = entry.value_ptr.*;
+            if (proof.class_binding != pending_binding) continue;
+            if (proof.source_symbol_id != source_self or proof.class_value_symbol_id != capture.frame.class_symbol_id or
+                @backingInt(proof.reference.symbol_id) != capture.symbol_id or
+                !validOwnReferenceOrigin(self, @fromBackingInt(entry.key_ptr.*))) return error.InvalidClassValueCaptureHandoff;
+        }
+    }
+    if (actual_id == null) {
+        var existing_proofs = self.static_class_reference_origins.valueIterator();
+        while (existing_proofs.next()) |proof|
+            if (proof.class_binding == pending_binding) return error.InvalidClassValueCaptureHandoff;
+    }
+    // Validate every link before mutating either registry. Capacity is reserved
+    // before removal so allocation failure cannot orphan the pending snapshot.
+    try self.static_class_captures.ensureUnusedCapacity(self.allocator, 1);
+    capture.frame.class_binding = actual_binding;
+    capture.frame.class_name = self.ast.getNode(actual_binding).data.string_ref;
+    capture.frame.class_symbol_id = actual_id;
+    _ = self.static_class_captures.remove(pending_key);
+    self.static_class_captures.putAssumeCapacity(actual_key, capture);
+    var proofs = self.static_class_reference_origins.valueIterator();
+    while (proofs.next()) |proof| {
+        if (proof.class_binding != pending_binding) continue;
+        proof.class_binding = actual_binding;
+        proof.class_value_symbol_id = actual_id.?;
+    }
+    return true;
+}
+
 /// Emit exactly once, after the class value exists and before static effects.
 pub fn takeDeclaration(self: anytype, class_binding: NodeIndex, span: Span) !?NodeIndex {
     if (class_binding.isNone()) return null;
