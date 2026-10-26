@@ -2566,7 +2566,7 @@ fn transpileWithCallbackInternal(
         post_minify_analyzer.is_module = parser.is_module;
         post_minify_analyzer.collect_unresolved_reference_nodes = true;
         post_minify_analyzer.analyze() catch return error.SemanticError;
-        const post_minify_report = try post_minify_coverage.checkPostMinify(
+        const post_minify_report = try post_minify_coverage.checkPostMinifyWithNativeOwners(
             arena_alloc,
             transformer.ast,
             root,
@@ -2581,6 +2581,8 @@ fn transpileWithCallbackInternal(
             &transformer.explicit_global_reference_nodes,
             &transformer.class_self_symbol_map,
             &post_minify_analyzer.class_self_symbol_map,
+            .{ .scopes = source_analyzer.scopes.items, .scope_owner_map = &source_analyzer.scope_owner_map },
+            .{ .scopes = post_minify_analyzer.scopes.items, .scope_owner_map = &post_minify_analyzer.scope_owner_map },
         );
         post_minify_coverage.printPostMinify(file_path, post_minify_report);
     }

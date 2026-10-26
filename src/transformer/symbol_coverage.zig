@@ -4235,6 +4235,131 @@ pub const PostMinifyReport = struct {
     }
 };
 
+/// Scope and owner evidence belongs to one semantic graph over this exact AST.
+pub const PostMinifyNativeOwners = struct {
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+};
+
+const PostMinifyNativeOwnerPair = struct {
+    actual: PostMinifyNativeOwners,
+    resolved: PostMinifyNativeOwners,
+};
+
+/// Select only the native binding supplied by this graph's current AST frame.
+/// The map key is the actual function, parameter-environment or IIFE node;
+/// numeric ScopeIds and SymbolIds are never compared between graphs.
+fn collectPostMinifyNativeBindings(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable: []const u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    graph: PostMinifyNativeOwners,
+) !std.AutoHashMapUnmanaged(u32, u32) {
+    var result: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    errdefer result.deinit(allocator);
+    var engines: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer engines.deinit(allocator);
+    var invalid_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer invalid_scopes.deinit(allocator);
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        const scope = @backingInt(symbol.scope_id);
+        if (scope >= graph.scopes.len) continue;
+        if ((symbol.kind != .parameter and symbol.kind != .variable_var) or graph.scopes[scope].kind != .function or
+            sid > std.math.maxInt(u32))
+        {
+            try invalid_scopes.put(allocator, scope, {});
+            continue;
+        }
+        const engine = try engines.getOrPut(allocator, scope);
+        if (engine.found_existing) try invalid_scopes.put(allocator, scope, {});
+        engine.value_ptr.* = @intCast(sid);
+    }
+    var parameter_frames: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parameter_frames.deinit(allocator);
+    var ambiguous_parameters: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ambiguous_parameters.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .binding_identifier and raw < symbol_ids.len) {
+            if (symbol_ids[raw]) |sid| {
+                if (sid < symbols.len and symbols[sid].kind == .parameter and
+                    symbols[sid].synthetic_kind == .implicit_arguments)
+                    try invalid_scopes.put(allocator, @backingInt(symbols[sid].scope_id), {});
+            }
+        }
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .method_definition => {},
+            else => continue,
+        }
+        if (!ast.hasExtra(node.data.extra, 1)) continue;
+        const params = ast.readExtraNode(node.data.extra, 1);
+        if (params.isNone()) continue;
+        const entry = try parameter_frames.getOrPut(allocator, @backingInt(params));
+        if (entry.found_existing and entry.value_ptr.* != raw)
+            try ambiguous_parameters.put(allocator, @backingInt(params), {});
+        entry.value_ptr.* = raw;
+    }
+    const Frame = struct { node: u32, carrier: u32 };
+    var scope_frames: std.AutoHashMapUnmanaged(u32, Frame) = .empty;
+    defer scope_frames.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw];
+        const body_scope = graph.scope_owner_map.get(raw) orelse continue;
+        if (body_scope >= graph.scopes.len or graph.scopes[body_scope].kind != .function) continue;
+        var scope = body_scope;
+        var carrier = raw;
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .method_definition => {
+                if (!ast.hasExtra(node.data.extra, 1)) continue;
+                const params = ast.readExtraNode(node.data.extra, 1);
+                if (!params.isNone()) {
+                    if (@backingInt(params) >= ast.nodes.items.len or ast.getNode(params).tag != .formal_parameters or
+                        ambiguous_parameters.contains(@backingInt(params))) continue;
+                    if (graph.scope_owner_map.get(@backingInt(params))) |parameter_scope| {
+                        if (parameter_scope >= graph.scopes.len or parameter_scope == body_scope or
+                            graph.scopes[parameter_scope].kind != .function or
+                            @backingInt(graph.scopes[body_scope].parent) != parameter_scope) continue;
+                        scope = parameter_scope;
+                        carrier = @backingInt(params);
+                    }
+                }
+            },
+            .ts_enum_declaration, .ts_module_declaration => {
+                if (node.tag == .ts_module_declaration and node.data.binary.flags != 0) continue;
+                if (node.tag == .ts_enum_declaration and
+                    (!ast.hasExtra(node.data.extra, 3) or ast.readExtra(node.data.extra, 3) & 2 != 0)) continue;
+                const role: SyntheticKind = if (node.tag == .ts_enum_declaration) .enum_iife_parameter else .namespace_iife_parameter;
+                var parameters: usize = 0;
+                var invalid = false;
+                for (symbols) |symbol| {
+                    if (symbol.synthetic_kind != role or @backingInt(symbol.scope_id) != scope) continue;
+                    parameters += 1;
+                    if (symbol.kind != .parameter) invalid = true;
+                }
+                if (invalid or parameters != 1) continue;
+            },
+            else => continue,
+        }
+        const frame = try scope_frames.getOrPut(allocator, scope);
+        if (frame.found_existing and frame.value_ptr.node != raw)
+            try invalid_scopes.put(allocator, scope, {});
+        frame.value_ptr.* = .{ .node = raw, .carrier = carrier };
+    }
+    var frames = scope_frames.iterator();
+    while (frames.next()) |entry| {
+        const scope = entry.key_ptr.*;
+        if (invalid_scopes.contains(scope)) continue;
+        const engine = engines.get(scope) orelse continue;
+        try result.put(allocator, entry.value_ptr.carrier, engine);
+    }
+    return result;
+}
+
 pub fn checkPostMinify(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -4250,6 +4375,79 @@ pub fn checkPostMinify(
     explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
     resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+) !PostMinifyReport {
+    return checkPostMinifyImpl(
+        allocator,
+        ast,
+        root,
+        actual_symbol_ids,
+        resolved_symbol_ids,
+        actual_symbols,
+        resolved_symbols,
+        pre_minify_references,
+        helper_ref_nodes,
+        helper_scope_map,
+        unresolved_reference_nodes,
+        explicit_global_reference_nodes,
+        actual_class_self_symbols,
+        resolved_class_self_symbols,
+        null,
+    );
+}
+
+pub fn checkPostMinifyWithNativeOwners(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    actual_symbol_ids: []const ?u32,
+    resolved_symbol_ids: []const ?u32,
+    actual_symbols: []const Symbol,
+    resolved_symbols: []const Symbol,
+    pre_minify_references: []const Reference,
+    helper_ref_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    actual_native_owners: PostMinifyNativeOwners,
+    resolved_native_owners: PostMinifyNativeOwners,
+) !PostMinifyReport {
+    return checkPostMinifyImpl(
+        allocator,
+        ast,
+        root,
+        actual_symbol_ids,
+        resolved_symbol_ids,
+        actual_symbols,
+        resolved_symbols,
+        pre_minify_references,
+        helper_ref_nodes,
+        helper_scope_map,
+        unresolved_reference_nodes,
+        explicit_global_reference_nodes,
+        actual_class_self_symbols,
+        resolved_class_self_symbols,
+        .{ .actual = actual_native_owners, .resolved = resolved_native_owners },
+    );
+}
+
+fn checkPostMinifyImpl(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    actual_symbol_ids: []const ?u32,
+    resolved_symbol_ids: []const ?u32,
+    actual_symbols: []const Symbol,
+    resolved_symbols: []const Symbol,
+    pre_minify_references: []const Reference,
+    helper_ref_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    native_owners: ?PostMinifyNativeOwnerPair,
 ) !PostMinifyReport {
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
     defer allocator.free(reachable);
@@ -4353,6 +4551,24 @@ pub fn checkPostMinify(
         try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved.?, {});
     }
 
+    if (native_owners) |owners| {
+        var actual_native = try collectPostMinifyNativeBindings(allocator, ast, reachable, actual_symbol_ids, actual_symbols, owners.actual);
+        defer actual_native.deinit(allocator);
+        var resolved_native = try collectPostMinifyNativeBindings(allocator, ast, reachable, resolved_symbol_ids, resolved_symbols, owners.resolved);
+        defer resolved_native.deinit(allocator);
+        var native = actual_native.iterator();
+        while (native.next()) |entry| {
+            const resolved = resolved_native.get(entry.key_ptr.*) orelse continue;
+            const actual = entry.value_ptr.*;
+            // A source var may share native arguments storage. Its real AST
+            // declaration pair already owns the binding and takes precedence.
+            if (bound_actual_ids.contains(actual)) continue;
+            report.bindings_checked += 1;
+            try bound_actual_ids.put(allocator, actual, {});
+            try binding_pairs.put(allocator, (@as(u64, actual) << 32) | resolved, {});
+        }
+    }
+
     // Namespace and enum emitters synthesize an IIFE parameter in codegen;
     // its semantic SymbolId has no binding node in the transformed AST.
     for (actual_symbols, 0..) |actual_symbol, actual_raw| {
@@ -4379,6 +4595,7 @@ pub fn checkPostMinify(
     // at the removed declaration span.
     for (actual_symbols, 0..) |actual_symbol, actual_raw| {
         if (actual_raw > std.math.maxInt(u32) or bound_actual_ids.contains(@intCast(actual_raw))) continue;
+        if (actual_symbol.synthetic_kind == .implicit_arguments) continue;
         const actual_name = if (actual_symbol.synthetic_name.len > 0)
             actual_symbol.synthetic_name
         else
@@ -4498,6 +4715,243 @@ pub fn checkPostMinify(
         }
     }
     return report;
+}
+
+const NativePostMutation = enum {
+    none,
+    foreign_reference,
+    same_number_foreign_reference,
+    missing_actual_owner,
+    missing_resolved_owner,
+    different_parameter_carrier,
+    wrong_scope,
+    wrong_scope_kind,
+    wrong_kind,
+    wrong_role,
+    explicit_formal_engine,
+    duplicate_actual_engine,
+    duplicate_resolved_engine,
+    wrong_iife_parameter_kind,
+    duplicate_iife_parameter,
+    wrong_iife_parameter_role,
+};
+
+fn checkNativePostPair(source: []const u8, typescript: bool, mutation: NativePostMutation) !void {
+    return checkNativePostPairMode(source, typescript, false, mutation);
+}
+
+fn checkNativePostPairMode(source: []const u8, typescript: bool, sloppy: bool, mutation: NativePostMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(if (typescript) ".ts" else if (sloppy) ".cjs" else ".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var actual = Analyzer.init(a, &parser.ast);
+    actual.is_module = !sloppy;
+    actual.is_ts = typescript;
+    actual.enable_stmt_info = true;
+    actual.collect_unresolved_reference_nodes = true;
+    try actual.analyze();
+    var resolved = Analyzer.init(a, &parser.ast);
+    resolved.is_module = !sloppy;
+    resolved.is_ts = typescript;
+    resolved.collect_unresolved_reference_nodes = true;
+    try resolved.analyze();
+    try std.testing.expectEqual(@as(usize, 0), actual.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), resolved.errors.items.len);
+    var actual_symbols: std.ArrayList(Symbol) = .empty;
+    try actual_symbols.appendSlice(a, actual.symbols.items);
+    const actual_ids = try a.dupe(?u32, actual.symbol_ids.items);
+    const actual_scopes = try a.dupe(Scope, actual.scopes.items);
+    var actual_owners = try actual.scope_owner_map.clone(a);
+    var resolved_owners = try resolved.scope_owner_map.clone(a);
+    // Give the independently analyzed graph a different SID numbering. Only
+    // the columns consumed by this oracle are projected; owner ScopeIds stay
+    // local to that graph, and no numeric equality is identity evidence.
+    var resolved_symbols: std.ArrayList(Symbol) = .empty;
+    for (0..resolved.symbols.items.len) |i|
+        try resolved_symbols.append(a, resolved.symbols.items[resolved.symbols.items.len - 1 - i]);
+    const resolved_ids = try a.dupe(?u32, resolved.symbol_ids.items);
+    for (resolved_ids) |*id| if (id.*) |old| {
+        id.* = @intCast(resolved.symbols.items.len - 1 - old);
+    };
+    var resolved_classes = try resolved.class_self_symbol_map.clone(a);
+    var class_ids = resolved_classes.valueIterator();
+    while (class_ids.next()) |id| id.* = @intCast(resolved.symbols.items.len - 1 - id.*);
+
+    var selected: ?u32 = null;
+    var foreign: ?u32 = null;
+    for (actual_symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        if (selected == null) selected = @intCast(sid) else if (foreign == null) foreign = @intCast(sid);
+    }
+    const engine = selected orelse return error.MissingNativeEngine;
+    const scope = @backingInt(actual_symbols.items[engine].scope_id);
+    var engine_read: ?u32 = null;
+    for (actual_ids, 0..) |id, raw| {
+        if (id == engine and parser.ast.nodes.items[raw].tag == .identifier_reference) {
+            engine_read = @intCast(raw);
+            break;
+        }
+    }
+    const read = engine_read orelse return error.MissingNativeEngineRead;
+    var carrier: ?u32 = null;
+    var owner_iter = actual_owners.iterator();
+    while (owner_iter.next()) |entry| {
+        if (entry.value_ptr.* == scope) carrier = entry.key_ptr.*;
+    }
+    const owner = carrier orelse return error.MissingNativeEngineOwner;
+    switch (mutation) {
+        .none => {},
+        .foreign_reference => actual_ids[read] = foreign orelse return error.MissingForeignEngine,
+        .same_number_foreign_reference => {
+            const decoy = foreign orelse return error.MissingForeignEngine;
+            const expected = resolved_ids[read].?;
+            std.mem.swap(Symbol, &resolved_symbols.items[expected], &resolved_symbols.items[decoy]);
+            for (resolved_ids) |*id| {
+                if (id.* == expected) id.* = decoy else if (id.* == decoy) id.* = expected;
+            }
+            var classes = resolved_classes.valueIterator();
+            while (classes.next()) |id| {
+                if (id.* == expected) id.* = decoy else if (id.* == decoy) id.* = expected;
+            }
+            actual_ids[read] = decoy;
+            try std.testing.expectEqual(actual_ids[read], resolved_ids[read]);
+        },
+        .missing_actual_owner => _ = actual_owners.remove(owner),
+        .missing_resolved_owner => _ = resolved_owners.remove(owner),
+        .different_parameter_carrier => {
+            try std.testing.expectEqual(Node.Tag.formal_parameters, parser.ast.nodes.items[owner].tag);
+            var body_scope: ?u32 = null;
+            for (actual_scopes, 0..) |candidate, sid| {
+                if (@backingInt(candidate.parent) == scope and candidate.kind == .function) {
+                    body_scope = @intCast(sid);
+                    break;
+                }
+            }
+            _ = actual_owners.remove(owner);
+            actual_symbols.items[engine].scope_id = @fromBackingInt(body_scope orelse return error.MissingNativeBodyScope);
+        },
+        .wrong_scope => actual_symbols.items[engine].scope_id = @fromBackingInt(@as(u32, 0)),
+        .wrong_scope_kind => actual_scopes[scope].kind = .block,
+        .wrong_kind => actual_symbols.items[engine].kind = .variable_let,
+        .wrong_role => actual_symbols.items[engine].synthetic_kind = null,
+        .explicit_formal_engine => {
+            var formal: ?u32 = null;
+            for (actual_ids, 0..) |id, raw| {
+                const sid = id orelse continue;
+                if (parser.ast.nodes.items[raw].tag == .binding_identifier and
+                    actual_symbols.items[sid].kind == .parameter and
+                    @backingInt(actual_symbols.items[sid].scope_id) == scope and sid != engine)
+                {
+                    formal = sid;
+                    break;
+                }
+            }
+            const forged = formal orelse return error.MissingExplicitFormal;
+            actual_symbols.items[engine].synthetic_kind = null;
+            actual_symbols.items[forged].synthetic_kind = .implicit_arguments;
+            actual_ids[read] = forged;
+        },
+        .duplicate_actual_engine => try actual_symbols.append(a, actual_symbols.items[engine]),
+        .duplicate_resolved_engine => try resolved_symbols.append(a, resolved_symbols.items[resolved_ids[read].?]),
+        .wrong_iife_parameter_kind, .duplicate_iife_parameter, .wrong_iife_parameter_role => {
+            var parameter: ?usize = null;
+            for (actual_symbols.items, 0..) |symbol, sid| {
+                if (@backingInt(symbol.scope_id) == scope and
+                    (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter)) parameter = sid;
+            }
+            const sid = parameter orelse return error.MissingIifeParameter;
+            switch (mutation) {
+                .wrong_iife_parameter_kind => actual_symbols.items[sid].kind = .variable_var,
+                .duplicate_iife_parameter => try actual_symbols.append(a, actual_symbols.items[sid]),
+                .wrong_iife_parameter_role => actual_symbols.items[sid].synthetic_kind = .bundler_runtime_helper,
+                else => unreachable,
+            }
+        },
+    }
+    const report = try checkPostMinifyWithNativeOwners(
+        a,
+        &parser.ast,
+        root,
+        actual_ids,
+        resolved_ids,
+        actual_symbols.items,
+        resolved_symbols.items,
+        actual.references.items,
+        &.{},
+        &actual.helper_scope_map,
+        &resolved.unresolved_reference_nodes,
+        &std.AutoHashMapUnmanaged(u32, void).empty,
+        &actual.class_self_symbol_map,
+        &resolved_classes,
+        .{ .scopes = actual_scopes, .scope_owner_map = &actual_owners },
+        .{ .scopes = resolved.scopes.items, .scope_owner_map = &resolved_owners },
+    );
+    if (mutation == .none) {
+        try std.testing.expect(report.isClean());
+        const conservative = try checkPostMinify(
+            a,
+            &parser.ast,
+            root,
+            actual_ids,
+            resolved_ids,
+            actual_symbols.items,
+            resolved_symbols.items,
+            actual.references.items,
+            &.{},
+            &actual.helper_scope_map,
+            &resolved.unresolved_reference_nodes,
+            &std.AutoHashMapUnmanaged(u32, void).empty,
+            &actual.class_self_symbol_map,
+            &resolved_classes,
+        );
+        if (actual_symbols.items[engine].kind == .variable_var) {
+            try std.testing.expect(conservative.isClean());
+            try std.testing.expectEqual(conservative.bindings_checked, report.bindings_checked);
+        } else try std.testing.expect(conservative.dangling_reference_id > 0);
+    } else {
+        try std.testing.expect(!report.isClean());
+        if (mutation == .foreign_reference or mutation == .same_number_foreign_reference or mutation == .explicit_formal_engine)
+            try std.testing.expect(report.wrong_reference_target > 0);
+    }
+}
+
+test "post-minify native arguments pairs ten current AST owner forms with independently numbered SIDs" {
+    const sources = [_]struct { source: []const u8, ts: bool = false }{
+        .{ .source = "function read(value){return arguments[0]}" },
+        .{ .source = "function read(value=1){return arguments[0]}" },
+        .{ .source = "function read(...values){return arguments.length+values.length}" },
+        .{ .source = "function read({value}){return arguments[0]+value}" },
+        .{ .source = "const object={read(value=1){return arguments[0]}}" },
+        .{ .source = "class Read{read(value=1){return arguments[0]}}" },
+        .{ .source = "function read(value){return(()=>arguments[0])()}" },
+        .{ .source = "async function* read(value=1){yield arguments[0]}" },
+        .{ .source = "namespace N{export const value=arguments.length}", .ts = true },
+        .{ .source = "enum E{A=arguments.length}", .ts = true },
+    };
+    for (sources) |source| try checkNativePostPair(source.source, source.ts, .none);
+}
+
+test "post-minify native arguments rejects foreign owners numeric decoys and forged engine roles" {
+    for (std.meta.tags(NativePostMutation)) |mutation| {
+        if (mutation == .none) continue;
+        const iife = mutation == .wrong_iife_parameter_kind or mutation == .duplicate_iife_parameter or mutation == .wrong_iife_parameter_role;
+        try checkNativePostPair(if (iife)
+            "namespace N{export const value=arguments.length}"
+        else
+            "function left(value=1){return arguments[0]}function right(value=2){return arguments[0]}", iife, mutation);
+    }
+}
+
+test "post-minify native arguments source var keeps its existing AST binding authority" {
+    // A source var called arguments is valid in this sloppy CJS function;
+    // strict ESM rejects that source binding before this oracle can run.
+    try checkNativePostPairMode("function read(value){var arguments;return arguments[0]}", false, true, .none);
 }
 
 pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
