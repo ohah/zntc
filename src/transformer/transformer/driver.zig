@@ -1756,3 +1756,99 @@ test "dynamic body wrapper implicit arguments copy is born in actual scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), actual_wrappers);
 }
+
+test "dynamic body wrapper shared function cells retain source identities before final walk" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function read({a,...rest}){function a(){return a}function other(){return 8}let body=1;eval('a');return [a,other]}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var source_owner: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const binding = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+        if (std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(binding).data.string_ref), "read")) source_owner = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    const original = parser.ast.getNode(source_owner);
+    const body_scope = analyzer.scope_owner_map.get(@backingInt(source_owner)).?;
+    const params = parser.ast.readExtraNode(original.data.extra, ast_mod.FunctionExtra.params);
+    try std.testing.expect(analyzer.scope_owner_map.get(@backingInt(params)) == null);
+    var parameters = try ast_walk.bindingIdentifiers(a, &parser.ast, params, .{ .cover_grammar_assignment = true });
+    const parameter_binding = (try parameters.next()).?;
+    const id = analyzer.symbol_ids.items[@backingInt(parameter_binding)].?;
+    try std.testing.expect(analyzer.symbols.items[id].kind == .parameter);
+    try std.testing.expectEqual(body_scope, @as(u32, @intCast(analyzer.symbols.items[id].scope_id.toIndex())));
+    const original_body = parser.ast.readExtraNode(original.data.extra, ast_mod.FunctionExtra.body);
+    const original_list = parser.ast.getNode(original_body).data.list;
+    const declaration = parser.ast.readExtraNode(original_list.start, 0);
+    const function_binding = parser.ast.readExtraNode(parser.ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
+    try std.testing.expectEqual(id, analyzer.symbol_ids.items[@backingInt(function_binding)].?);
+    const function_scope = analyzer.scope_owner_map.get(@backingInt(declaration)).?;
+    const other = parser.ast.readExtraNode(original_list.start, 1);
+    const other_scope = analyzer.scope_owner_map.get(@backingInt(other)).?;
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es2017), .emit_runtime_helper_imports = false });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
+    try t.buildBlockRenameMap();
+    const output = try t.visitNode(root);
+    try t.registerGeneratedFunctionScopes(output, t.programScope());
+    try lowerAllFunctionParams(&t, output);
+    const editor = &t.semantic_editor.?;
+    try std.testing.expect(editor.symbols.items[id].kind == .parameter);
+    try std.testing.expectEqual(body_scope, @as(u32, @intCast(editor.symbols.items[id].scope_id.toIndex())));
+    try std.testing.expectEqual(id, t.getSymbolIdAt(parameter_binding).?);
+    const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+    var values: usize = 0;
+    var untouched: usize = 0;
+    var writes: usize = 0;
+    for (live) |raw| {
+        const node = t.ast.nodes.items[raw];
+        if (t.outputOwnedScope(@fromBackingInt(raw))) |scope| {
+            if (scope.toIndex() == function_scope) {
+                try std.testing.expect(node.tag == .function_expression);
+                try std.testing.expect(t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone());
+                try std.testing.expectEqual(body_scope, @as(u32, @intCast(editor.scopes.items[function_scope].parent.toIndex())));
+                values += 1;
+            }
+            if (scope.toIndex() == other_scope) {
+                try std.testing.expect(node.tag == .function_declaration);
+                untouched += 1;
+            }
+        }
+        if (node.tag == .assignment_expression) {
+            const target = node.data.binary.left;
+            if (t.getSymbolIdAt(target) != @as(?u32, id)) continue;
+            var rows: usize = 0;
+            for (editor.references.items) |row| {
+                if (row.node_index != target) continue;
+                try std.testing.expect(row.flags.write and !row.flags.read);
+                try std.testing.expectEqual(id, @as(u32, @intCast(@backingInt(row.symbol_id))));
+                try std.testing.expectEqual(body_scope, @as(u32, @intCast(row.scope_id.toIndex())));
+                rows += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), rows);
+            writes += 1;
+        }
+    }
+    for (editor.references.items) |row| try std.testing.expect(!row.flags.declare or row.declaration_node_index != function_binding);
+    try std.testing.expectEqual(@as(usize, 1), values);
+    try std.testing.expectEqual(@as(usize, 1), untouched);
+    try std.testing.expectEqual(@as(usize, 1), writes);
+}
