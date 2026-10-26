@@ -1101,6 +1101,7 @@ pub const Transformer = struct {
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const cloneGeneratedClassSelfReference = @import("transformer/semantic_edit.zig").cloneGeneratedClassSelfReference;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
+    pub const markOpaqueDefineScopeChain = @import("transformer/semantic_edit.zig").markOpaqueDefineScopeChain;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const syntheticTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").syntheticTempOutputScopeIsDeferred;
     pub const tempOutputScopeIsDeferredIgnoringStateMachine = @import("transformer/semantic_edit.zig").tempOutputScopeIsDeferredIgnoringStateMachine;
