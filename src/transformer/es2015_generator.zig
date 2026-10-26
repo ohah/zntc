@@ -3502,8 +3502,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // Relocation already chose each known identity's physical storage
             // spelling. Publish it on the new AST edges as well: legacy graph
             // reanalysis must see V=L, not two original same-text names.
-            const variable_name = if (variable.synthetic_name.len > 0) try self.ast.addString(variable.synthetic_name) else variable.name;
-            const local_name = if (local.synthetic_name.len > 0) try self.ast.addString(local.synthetic_name) else local.name;
+            // Both edges are synthetic: their diagnostic span is the whole
+            // declaration, so even unchanged names need string-table backing.
+            const variable_name = try self.ast.addString(if (variable.synthetic_name.len > 0) variable.synthetic_name else self.ast.getText(variable.name));
+            const local_name = try self.ast.addString(if (local.synthetic_name.len > 0) local.synthetic_name else self.ast.getText(local.name));
             const target = try self.ast.addNode(.{ .tag = .assignment_target_identifier, .span = span, .data = .{ .string_ref = variable_name } });
             const value = try es_helpers.makeIdentifierRefFromSpan(self, local_name);
             try self.addSyntheticRefInScope(target, role.variable, scope, .{ .write = true });
