@@ -246,3 +246,50 @@ test "independent native constructor parameter property timing" {
         122,
     );
 }
+
+const private_super_sources = [_][]const u8{
+    "let saved,log=[];class P{}class D extends P{#x=(log.push(\"field\"),42);read(){return this.#x}constructor(){saved=()=>this;return{ok:42}}}let d=new D,e;try{saved()}catch(x){e=x.name}console.log(JSON.stringify([d.ok,e,log]));",
+    "let saved,log=[];const box={set value(v){log.push([\"setter\",v.read(),saved()===v])}};class P{}class D extends P{#x=(log.push(\"field\"),42);read(){return this.#x}constructor(){saved=()=>this;box.value=super();log.push(\"body\")}}new D;console.log(JSON.stringify(log));",
+    "let saved,log=[];class P{}class D extends P{#x=(log.push(\"field\"),42);read(){return this.#x}constructor(){saved=()=>this;(super(),log.push(this.read()))}}new D;console.log(JSON.stringify(log));",
+    "let saved;class P{}class D extends P{#x=42;read(){return this.#x}constructor(){saved=()=>this;return super()}}let d=new D;console.log(JSON.stringify([d.read(),saved()===d]));",
+    "let saved;class P{}class D extends P{#x=42;read(){return this.#x}constructor(flag){saved=()=>this;if(flag)super();else super()}}let a=new D(true),b=new D(false);console.log(JSON.stringify([a.read(),b.read(),saved()===b]));",
+    "let saved,log=[];class P{constructor(fail){if(fail)throw Error(\"base\")}}class D extends P{#x=(log.push(\"field\"),42);read(){return this.#x}constructor(fail){saved=()=>this;try{super(fail)}catch(e){log.push(e.message);return{}}}}let a=new D(false);new D(true);console.log(JSON.stringify([a.read(),log]));",
+    "let saved;class P{constructor(value){this.value=value}}class D extends P{#x=42;read(){return this.#x}constructor(flag){saved=()=>this;let result=flag?super(1):super(2);this.same=result===this}}let a=new D(true),b=new D(false);console.log(JSON.stringify([a.read(),a.value,a.same,b.read(),b.value,b.same]));",
+    "let saved;const shared={};class P{constructor(){return shared}}class D extends P{#x=42;constructor(){saved=()=>this;return super()}static read(v){return v.#x}}let d=new D;console.log(JSON.stringify([d===shared,D.read(d),saved()===d]));",
+    "let saved,log=[];class P{constructor(value){log.push([\"base\",value])}}class D extends P{#x=(log.push(\"field\"),42);constructor(value){saved=()=>this;super((log.push(\"argument\"),value));log.push(\"body\")}}new D(7);console.log(JSON.stringify(log));",
+    "let saved,log=[];class P{}class D extends P{#x=(log.push(\"field\"),42);read(){return this.#x}constructor(){saved=()=>this;try{super();super()}catch(e){log.push(e.name)}log.push([this.read(),saved()===this])}}new D;console.log(JSON.stringify(log));",
+};
+test "independent moved private super control 0" {
+    try checkName(private_super_sources[0], 200);
+}
+test "independent moved private super control 1" {
+    try checkName(private_super_sources[1], 201);
+}
+test "independent moved private super control 2" {
+    try checkName(private_super_sources[2], 202);
+}
+test "independent moved private super control 3" {
+    try checkName(private_super_sources[3], 203);
+}
+test "independent moved private super control 4" {
+    try checkName(private_super_sources[4], 204);
+}
+test "independent moved private super control 5" {
+    try checkName(private_super_sources[5], 205);
+}
+test "independent moved private super control 6" {
+    try checkName(private_super_sources[6], 206);
+}
+test "independent moved private super control 7" {
+    try checkName(private_super_sources[7], 207);
+}
+test "independent moved private super control 8" {
+    try checkName(private_super_sources[8], 208);
+}
+test "independent moved private super control 9" {
+    try checkName(private_super_sources[9], 209);
+}
+
+test "independent moved private single super before output walker exact site tuples" {
+    for ([_]usize{ 0, 1, 2, 3, 5, 7, 8 }) |index| try checkBirth(private_super_sources[index]);
+}

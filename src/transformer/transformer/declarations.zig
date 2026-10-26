@@ -460,7 +460,13 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
             .span = name_node.span,
             .data = .{ .none = 0 },
         });
-        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(name_idx), 0 });
+        const key = try es_helpers.makePropertyName(self, self.ast.getText(name_node.data.string_ref));
+        const value = if (self.semantic_edit_enabled) blk: {
+            const id = self.getSymbolIdAt(name_idx) orelse @panic("parameter property lost its source binding SID");
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            break :blk try es_helpers.makeTempRefFromIdentity(self, .{ .span = name_node.data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = symbols[id].scope_id, .reference_scope = self.current_scope }, name_node.span, .{ .read = true });
+        } else try es_helpers.makeIdentifierRefFromSpan(self, name_node.data.string_ref);
+        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(key), 0 });
         const member = try self.ast.addNode(.{
             .tag = .static_member_expression,
             .span = name_node.span,
@@ -469,7 +475,7 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = name_node.span,
-            .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
+            .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
         });
         const stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
@@ -529,7 +535,145 @@ pub fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeInde
 /// block_statement / program / function_body 앞에 문들을 삽입한다.
 /// body의 첫 super() 호출 이후 위치에 stmts 삽입 — derived class constructor 전용 (#1495).
 /// super_call이 없으면 body 앞에 prepend (fallback). body가 block이 아니면 block으로 감싼 뒤 처리.
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+
+fn isNativeSuperCall(self: *const Transformer, index: NodeIndex) bool {
+    if (index.isNone()) return false;
+    const node = self.ast.getNode(index);
+    return node.tag == .call_expression and
+        self.ast.getNode(self.ast.readExtraNode(node.data.extra, 0)).tag == .super_expression;
+}
+
+fn hasDeferredNativeSuper(self: *Transformer, root: NodeIndex) Error!bool {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const node = self.ast.getNode(index);
+        if (node.tag == .class_declaration or node.tag == .class_expression or node.tag == .method_definition) continue;
+        if (isNativeSuperCall(self, index)) return true;
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    return false;
+}
+
+/// Move this already-created initializer fragment at its actual execution
+/// site. Existing IDs and flags remain authoritative across the handoff.
+fn placeNativeInitializer(self: *Transformer, statement: NodeIndex, from: ScopeId, to: ScopeId) Error!void {
+    if (!self.semantic_edit_enabled or from == to) return;
+    const editor = &self.semantic_editor.?;
+    const Saved = struct { node: NodeIndex, origin: @import("../native_constructor_guard.zig").ReferenceOrigin };
+    var origins: std.ArrayList(Saved) = .empty;
+    defer origins.deinit(self.allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, statement);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const raw = @backingInt(index);
+        if (self.native_constructor_reference_origins.get(raw)) |origin| {
+            const row = (editor.referenceForNode(index) catch @panic("initializer reference index is invalid")) orelse @panic("initializer origin lost its reference");
+            if (row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or !std.meta.eql(row.flags, origin.flags))
+                @panic("initializer placement changed its creation identity");
+            try origins.append(self.allocator, .{ .node = index, .origin = origin });
+        }
+        if (self.exact_output_ref_scope_ids.getPtr(raw)) |scope| {
+            if (scope.* == @backingInt(from)) scope.* = @backingInt(to);
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(index));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    try @import("../class_strict_context.zig").moveSourceReferences(self, statement, from, from, to);
+    try self.reparentGeneratedBodyScopes(from, to, statement);
+    for (origins.items) |saved| {
+        const expected = if (saved.origin.scope == from) to else saved.origin.scope;
+        const row = (editor.referenceForNode(saved.node) catch @panic("initializer moved reference index is invalid")) orelse @panic("initializer placement dropped its reference");
+        if (row.symbol_id != saved.origin.symbol_id or row.scope_id != expected or !std.meta.eql(row.flags, saved.origin.flags))
+            @panic("initializer placement lost its exact identity");
+        try @import("../native_constructor_guard.zig").recordReference(self, saved.node, saved.origin.symbol_id, expected, saved.origin.flags);
+    }
+}
+
+/// A single physical site owns the initializer AST. Multiple sites require
+/// explicit semantic cloning and deliberately stay on the existing path.
+fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, derived: bool) Error!?NodeIndex {
+    if (!derived) return try self.prependStatementsToBody(body, statements);
+    if (statements.len == 0) return body;
+    for (statements) |statement| if (self.ast.getNode(statement).tag != .expression_statement) return null;
+    const Site = struct { node: NodeIndex, scope: ScopeId, alias: NodeIndex };
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var suppressed: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer suppressed.deinit(self.allocator);
+    var sites: std.ArrayList(Site) = .empty;
+    defer sites.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = body, .scope = self.current_scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const node = self.ast.getNode(work.node);
+        switch (node.tag) {
+            .class_declaration, .class_expression, .method_definition, .static_block => continue,
+            .function, .function_expression, .function_declaration, .arrow_function_expression => {
+                if (try hasDeferredNativeSuper(self, work.node)) return null;
+                continue;
+            },
+            else => {},
+        }
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (self.generated_super_call_assignments.contains(@backingInt(work.node)) and
+            node.tag == .assignment_expression and isNativeSuperCall(self, node.data.binary.right))
+        {
+            try suppressed.put(self.allocator, @backingInt(node.data.binary.right), {});
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .alias = node.data.binary.left });
+        } else if (isNativeSuperCall(self, work.node) and !suppressed.contains(@backingInt(work.node))) {
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .alias = .none });
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| {
+            const incoming = if (@import("semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(work.node), @backingInt(child))) work.scope else scope;
+            try stack.append(self.allocator, .{ .node = child, .scope = incoming });
+        }
+    }
+    if (sites.items.len == 0) return body;
+    if (sites.items.len != 1) return null;
+    const site = sites.items[0];
+    const original = self.ast.getNode(site.node);
+    const operation = try self.ast.addNode(original);
+    if (!site.alias.isNone()) {
+        _ = self.generated_super_call_assignments.remove(@backingInt(site.node));
+        try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), {});
+    }
+    var expressions: std.ArrayList(NodeIndex) = .empty;
+    defer expressions.deinit(self.allocator);
+    try expressions.append(self.allocator, operation);
+    for (statements) |statement| {
+        try placeNativeInitializer(self, statement, self.current_scope, site.scope);
+        try expressions.append(self.allocator, self.ast.getNode(statement).data.unary.operand);
+    }
+    const result = if (site.alias.isNone()) try self.ast.addNode(.{ .tag = .this_expression, .span = original.span, .data = .{ .none = 0 } }) else blk: {
+        const id = self.getSymbolIdAt(site.alias) orelse @panic("native super producer alias lost its exact SID");
+        const editor = &self.semantic_editor.?;
+        const row = (editor.referenceForNode(site.alias) catch @panic("native super alias reference index is invalid")) orelse @panic("native super alias has no write reference");
+        if (@backingInt(row.symbol_id) != id or !row.flags.write or row.scope_id != site.scope or editor.symbols.items[id].scope_id != self.current_scope)
+            @panic("native super alias changed its actual constructor role");
+        const read = try es_helpers.makeTempRefFromIdentity(self, .{ .span = self.ast.getNode(site.alias).data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = self.current_scope, .reference_scope = site.scope }, original.span, .{ .read = true });
+        try @import("../native_constructor_guard.zig").recordReference(self, read, @fromBackingInt(id), site.scope, .{ .read = true });
+        break :blk read;
+    };
+    try expressions.append(self.allocator, result);
+    self.ast.nodes.items[@backingInt(site.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try self.ast.addNodeList(expressions.items) } };
+    return body;
+}
+
 pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+    // This API is only used for derived constructors. Base constructors keep
+    // their explicit prepend path at the caller.
+    if (!self.options.unsupported.class) {
+        if (try insertNativeSuperInitializers(self, body_idx, stmts, true)) |output| return output;
+    }
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .function_body) {
         return self.prependStatementsToBody(body_idx, stmts);

@@ -67,7 +67,9 @@ pub fn initializeAfterSuper(self: anytype, callee: NodeIndex, call: NodeIndex, s
     const declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[start]);
     const binding = self.ast.getNode(self.ast.readExtraNode(self.ast.getNode(declarator).data.extra, 0));
     const target = try helpers.makeTempRefFromIdentity(self, .{ .span = binding.data.string_ref, .symbol_id = @fromBackingInt(symbol), .owner_scope = plan.scope, .reference_scope = self.current_scope }, span, .{ .write = true });
-    return helpers.makeAssignExpr(self, target, call, span, @backingInt(@import("../lexer/token.zig").Kind.eq));
+    const initialized = try helpers.makeAssignExpr(self, target, call, span, @backingInt(@import("../lexer/token.zig").Kind.eq));
+    try self.generated_super_call_assignments.put(self.allocator, @backingInt(initialized), {});
+    return initialized;
 }
 
 test "native derived this cell preserves twelve constructor lifetime contexts" {

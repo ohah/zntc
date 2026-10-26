@@ -324,7 +324,14 @@ pub fn ES2022(comptime Transformer: type) type {
         }
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
-        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool) Transformer.Error!NodeIndex {
+        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool, constructor_scope: ScopeId) Transformer.Error!NodeIndex {
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.outputOwnedScope(method_node_idx) != constructor_scope)
+                    @panic("private initializer lost its actual constructor owner");
+                self.current_scope = constructor_scope;
+            }
+            defer self.current_scope = saved_scope;
             const node = self.ast.getNode(method_node_idx);
             const extras = self.ast.extra_data.items;
             const me = node.data.extra;
@@ -808,7 +815,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (!self.options.unsupported.class)
                     try @import("native_constructor_timing.zig").registerPlacementOwner(self, constructor_scope);
                 if (ctor_pos) |pos| {
-                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
+                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super, constructor_scope);
                 } else {
                     const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span, source_class_scope, constructor_scope);
                     try body_nodes.insert(self.allocator, 0, ctor);
