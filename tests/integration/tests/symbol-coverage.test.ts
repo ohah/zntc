@@ -5467,7 +5467,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'retained',
         stdout: '42',
       },
@@ -5476,7 +5476,16 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__UNUSED_FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__UNUSED_FLAG__=false'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'whitespace minification keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--minify-whitespace'],
         graph: 'retained',
         stdout: '42',
       },
@@ -5485,7 +5494,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5494,7 +5503,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(globalThis.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5503,7 +5512,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(window.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5512,7 +5521,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(self.__FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5521,7 +5530,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(process.env.NODE_ENV); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:process.env.NODE_ENV=false'],
+        args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5530,7 +5539,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(process?.env?.NODE_ENV); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:process.env.NODE_ENV=false'],
+        args: ['--minify-whitespace', '--define:process.env.NODE_ENV=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5539,7 +5548,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read()); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5548,7 +5557,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; const flag = __FLAG__; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5557,7 +5566,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log({ [__FLAG__]: value }); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5566,7 +5575,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; console.log(value, __FLAG__); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--define:__FLAG__=false'],
+        args: ['--minify-whitespace', '--define:__FLAG__=false'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5575,7 +5584,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: { value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5584,7 +5593,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: { const hidden = value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5593,7 +5602,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: var hidden = value; console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5602,7 +5611,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; function read() { DEV: { const hidden = value; } return value; } console.log(read()); process.stdout.write(String(read()));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5611,7 +5620,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; const read = () => { DEV: { const hidden = value; } return value; }; console.log(read()); process.stdout.write(String(read()));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5620,7 +5629,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: while (false) { break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5629,7 +5638,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: for (;;) { break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5638,7 +5647,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: switch (value) { default: break DEV; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5647,7 +5656,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; OUTER: DEV: { void value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
@@ -5656,7 +5665,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source:
           "import { value } from './values.js'; DEV: { void value; } DEV: { void value; } console.log(value); process.stdout.write(String(value));",
         files: { 'values.js': 'export const value = 42;' },
-        args: ['--drop-labels=DEV'],
+        args: ['--minify-whitespace', '--drop-labels=DEV'],
         graph: 'reanalyzed',
         stdout: '42',
       },
