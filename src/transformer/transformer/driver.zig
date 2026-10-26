@@ -1066,6 +1066,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}",
         "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}",
         "function read([head]=[1],{a,...rest},get=()=>head){let body=1;var head;eval('head=9');return [head,get(),a,rest,body]}",
+        "const object={read({a,...rest},value=2){let body=1;const sibling=()=>body;eval('a');return [a,value,rest,sibling()]}};",
     }) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1267,7 +1268,6 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
                 const candidate: NodeIndex = @fromBackingInt(candidate_raw);
                 if (candidate == arrow or t.ast.getNode(candidate).tag != .arrow_function_expression) continue;
                 const sibling_scope = t.outputOwnedScope(candidate) orelse continue;
-                if (editor.scopes.items[sibling_scope.toIndex()].parent != body_scope) continue;
                 try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, sibling_scope, .{ .body = actual_body, .arrow = candidate }));
                 sibling_controls += 1;
             }
@@ -1306,8 +1306,8 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         try std.testing.expectEqual(@as(usize, 1), declarations);
     }
     try std.testing.expect(sibling_controls > 0);
-    try std.testing.expectEqual(@as(usize, 10), simple_cases);
-    try std.testing.expectEqual(@as(usize, 11), retained_non_simple_cases);
+    try std.testing.expectEqual(@as(usize, 3), simple_cases);
+    try std.testing.expectEqual(@as(usize, 19), retained_non_simple_cases);
     try std.testing.expectEqual(@as(usize, 2), no_split_environment_cases);
 }
 
@@ -1341,6 +1341,14 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
         .{ .source = "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
         .{ .source = "function read([head]=[1],{a,...rest},get=()=>head){let body=1;var head;eval('head=9');return [head,get(),a,rest,body]}", .call = "read(undefined,{a:2,b:3})" },
+        .{ .source = "function read({a,...rest},value=2){eval('arguments[1]=9');return [value,read.length]}", .call = "read({a:1,b:2},undefined)" },
+        .{ .source = "function read({a,...rest},value=2){eval('a');arguments[1]=9;return value}", .call = "read({a:1,b:2},undefined)" },
+        .{ .source = "function read({a,...rest},value=2){eval('a');return [value,arguments[1]]}", .call = "read({a:1,b:2},undefined)" },
+        .{ .source = "function read({a,...rest},value=2){eval('a');try{return arguments.callee===read}catch(e){return e.name}}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=(arguments[1]=4,2)){eval('a');return [value,arguments[1]]}", .call = "read({a:1,b:2},undefined)" },
+        .{ .source = "function read({a,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({[1+1]:a,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({2:1,b:2})" },
+        .{ .source = "function read({a=1,...rest}){eval('a');try{return [read.length,arguments.callee]}catch(e){return [read.length,e.name]}}", .call = "read({b:2})" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();

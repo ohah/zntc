@@ -40,6 +40,11 @@ pub const RestArgumentsOwner = struct {
     body_scope: @import("../semantic/scope.zig").ScopeId,
 };
 
+const NativeArgumentsShape = struct {
+    has_expressions: bool,
+    first_default: u32,
+};
+
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
         /// The emitted formal parameter and body declarations have different
@@ -255,7 +260,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, false, null, null, null);
+            return lowerParamsImpl(self, params, span, false, null, null, null, null);
         }
 
         pub fn lowerParamsPass2(
@@ -263,7 +268,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, true, null, null, null);
+            return lowerParamsImpl(self, params, span, true, null, null, null, null);
         }
 
         /// Structural mistakes are not an invitation to create a global.
@@ -334,14 +339,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
         pub fn lowerParamsPass2ForFunction(self: *Transformer, params: NodeList, span: Span, owner: RestArgumentsOwner) Transformer.Error!LowerResult {
             const native_owner = restArgumentsOwner(self, params, owner) catch
                 @panic("rest parameter producer has invalid actual function ownership");
-            const native_formal_scope = try plannedNativeFormalScope(self, params, owner);
-            return lowerParamsImpl(self, params, span, true, native_owner, native_formal_scope, owner);
+            const shape = try planNativeArgumentsShape(self, params, owner);
+            const native_formal_scope = try plannedNativeFormalScope(self, params, owner, shape);
+            return lowerParamsImpl(self, params, span, true, native_owner, native_formal_scope, shape, owner);
         }
 
-        /// Plan the environment of the actual emitted native formals before
-        /// any destructuring temporary is declared.
-        fn plannedNativeFormalScope(self: *Transformer, params: NodeList, owner: RestArgumentsOwner) Transformer.Error!?ScopeId {
-            if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
+        fn retainsNativeNonSimpleSyntax(self: *Transformer, params: NodeList) Transformer.Error!bool {
             var seen_object_rest = false;
             var retains_native_environment = false;
             for (0..params.len) |offset| {
@@ -360,7 +363,52 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (param.tag == .formal_parameter and !self.ast.readExtraNode(param.data.extra, ast_mod.FormalParameterExtra.default).isNone()) retains_native_environment = true;
                 if (param.tag == .assignment_pattern and try bindingPatternHasObjectRest(self, param.data.binary.left)) retains_native_environment = true;
             }
-            if (!retains_native_environment) return null;
+            return retains_native_environment;
+        }
+
+        fn planNativeArgumentsShape(self: *Transformer, params: NodeList, owner: RestArgumentsOwner) Transformer.Error!?NativeArgumentsShape {
+            if (!self.semantic_edit_enabled or self.options.unsupported.default_params or
+                !(try hasObjectRestParam(self, params)) or try retainsNativeNonSimpleSyntax(self, params)) return null;
+            const node = self.ast.getNode(owner.function_node);
+            switch (node.tag) {
+                .function, .function_declaration, .function_expression => {},
+                else => return null,
+            }
+            if (self.ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags) & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) != 0) return null;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (owner.body_scope.isNone() or owner.body_scope.toIndex() >= scopes.len or scopes[owner.body_scope.toIndex()].kind != .function)
+                @panic("native argument shape has no ordinary body scope");
+            if (scopes[owner.body_scope.toIndex()].is_strict) return null;
+            const expressions = try ast_walk.parameterListHasExpressions(self.allocator, self.ast, params);
+            const old_scope = self.outputOwnedScope(owner.params_node);
+            if (expressions) {
+                const parameter_scope = old_scope orelse @panic("native argument shape lost its split parameter environment");
+                if (parameter_scope.isNone() or parameter_scope == owner.body_scope or parameter_scope.toIndex() >= scopes.len or
+                    scopes[parameter_scope.toIndex()].kind != .function or scopes[owner.body_scope.toIndex()].parent != parameter_scope)
+                    @panic("native argument shape has an invalid parameter/body scope pair");
+            } else if (old_scope) |scope| {
+                if (scope != owner.body_scope) @panic("expression-free native parameters unexpectedly have a split environment");
+            }
+            var cutoff = params.len;
+            for (0..params.len) |offset| {
+                const param = self.ast.getNode(self.ast.readExtraNode(params.start, @intCast(offset)));
+                const has_default = if (param.tag == .assignment_pattern) true else if (param.tag == .formal_parameter)
+                    !self.ast.readExtraNode(param.data.extra, ast_mod.FormalParameterExtra.default).isNone()
+                else
+                    false;
+                if (has_default) {
+                    cutoff = @intCast(offset);
+                    break;
+                }
+            }
+            return .{ .has_expressions = expressions, .first_default = cutoff };
+        }
+
+        /// Plan the environment of the actual emitted native formals before
+        /// any destructuring temporary is declared.
+        fn plannedNativeFormalScope(self: *Transformer, params: NodeList, owner: RestArgumentsOwner, shape: ?NativeArgumentsShape) Transformer.Error!?ScopeId {
+            if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
+            if (!(try retainsNativeNonSimpleSyntax(self, params)) and !(if (shape) |plan| plan.has_expressions else false)) return null;
             if (owner.ast_owner != self.ast or owner.function_node.isNone() or owner.params_node.isNone() or
                 self.outputOwnedScope(owner.function_node) != owner.body_scope)
                 @panic("native formal planner has no exact ordinary function owner");
@@ -440,6 +488,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             comptime pass2: bool,
             rest_owner: ?RestArgumentsOwner,
             native_formal_scope: ?ScopeId,
+            argument_shape: ?NativeArgumentsShape,
             function_owner: ?RestArgumentsOwner,
         ) Transformer.Error!LowerResult {
             const param_scratch_top = self.scratch.items.len;
@@ -692,8 +741,49 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 param_index += 1;
             }
 
+            if (argument_shape) |shape| {
+                if (self.scratch.items.len - param_scratch_top != params.len)
+                    @panic("native argument shape changed its one-to-one input slots");
+                for (self.scratch.items[param_scratch_top..]) |formal| {
+                    if (@import("native_constructor_timing.zig").simpleFormalBinding(self, formal) == null)
+                        @panic("native argument shape expected simple lowered slots");
+                }
+                if (shape.has_expressions and shape.first_default < params.len) {
+                    const slot = param_scratch_top + shape.first_default;
+                    const old = self.ast.getNode(self.scratch.items[slot]);
+                    const empty = try es_helpers.makeVoidZero(self, span);
+                    if (old.tag == .formal_parameter) {
+                        const e = old.data.extra;
+                        const extra = try self.ast.addExtras(&.{
+                            @backingInt(self.ast.readExtraNode(e, ast_mod.FormalParameterExtra.pattern)),
+                            @backingInt(self.ast.readExtraNode(e, ast_mod.FormalParameterExtra.type_ann)),
+                            @backingInt(empty),
+                            self.ast.readExtra(e, ast_mod.FormalParameterExtra.flags),
+                            self.ast.readExtra(e, ast_mod.FormalParameterExtra.deco_start),
+                            self.ast.readExtra(e, ast_mod.FormalParameterExtra.deco_len),
+                        });
+                        self.scratch.items[slot] = try self.ast.addExtraNode(.formal_parameter, old.span, extra);
+                    } else {
+                        self.scratch.items[slot] = try self.ast.addNode(.{ .tag = .assignment_pattern, .span = old.span, .data = .{ .binary = .{ .left = self.scratch.items[slot], .right = empty, .flags = 0 } } });
+                    }
+                } else {
+                    const name = try es_helpers.makeTempVarSpan(self);
+                    const binding = try es_helpers.makeSyntheticBinding(self, name);
+                    _ = try registerDestructuringTempIdentityInScope(self, binding, name, span, .parameter, native_formal_scope orelse self.current_scope);
+                    es_helpers.consumeTempVarSpan(self, name);
+                    const formal = if (shape.has_expressions)
+                        try self.ast.addNode(.{ .tag = .assignment_pattern, .span = span, .data = .{ .binary = .{ .left = binding, .right = try es_helpers.makeVoidZero(self, span), .flags = 0 } } })
+                    else
+                        try self.ast.addNode(.{ .tag = .rest_element, .span = span, .data = .{ .unary = .{ .operand = binding, .flags = 0 } } });
+                    try self.scratch.append(self.allocator, formal);
+                }
+            }
             const new_params = try self.ast.addNodeList(self.scratch.items[param_scratch_top..]);
 
+            if (argument_shape) |shape| {
+                if (try ast_walk.parameterListHasExpressions(self.allocator, self.ast, new_params) != shape.has_expressions)
+                    @panic("native argument shape changed its actual parameter expressions");
+            }
             return .{
                 .new_params = new_params,
                 .body_stmts = body_stmts,
