@@ -218,7 +218,13 @@ fn checkCaptureSymbolsWithUnsupported(
             if (@backingInt(ref.symbol_id) != index or ref.node_index.isNone()) continue;
             try std.testing.expect(live.contains(@backingInt(ref.node_index)));
             const reference_node = transformer.ast.getNode(ref.node_index);
-            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
+            if (reference_node.tag == .assignment_target_identifier) {
+                try std.testing.expect(is_this and !is_arguments);
+                try std.testing.expectEqualDeep(@as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .write = true }), ref.flags);
+            } else {
+                try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
+                try std.testing.expect(ref.flags.read and !ref.flags.write);
+            }
             // Balanced reference counts can hide a `this`/`arguments` ID swap
             // if the checker follows spelling. Lock the name to this exact SID.
             try std.testing.expectEqualStrings(
@@ -235,7 +241,6 @@ fn checkCaptureSymbolsWithUnsupported(
                 use_scope = edited.scopes[use_scope.toIndex()].parent;
             }
             try std.testing.expect(resolves_capture);
-            try std.testing.expect(ref.flags.read);
             ref_count += 1;
         }
         try std.testing.expect(ref_count > 0);
@@ -492,12 +497,12 @@ test "#4819 downleveled class accessors keep exact this and arguments capture sy
 
 test "#4819 class field arrows share their exact constructor capture binding" {
     const cases = .{
-        .{ "class C{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2) },
-        .{ "class C{field=()=>this.x;constructor(x=2){this.x=x}} new C().field();", @as(u32, 1) },
-        .{ "class C{field=()=>this.x;x=2} new C().field();", @as(u32, 1) },
-        .{ "class B{} class C extends B{field=()=>this.x;constructor(){super();this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 8) },
-        .{ "class B{} class C extends B{field=()=>this.x;x=2} new C().field();", @as(u32, 4) },
-        .{ "const C=class{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}}; new C().field();", @as(u32, 2) },
+        .{ "class C{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 2), @as(u32, 0) },
+        .{ "class C{field=()=>this.x;constructor(x=2){this.x=x}} new C().field();", @as(u32, 1), @as(u32, 0) },
+        .{ "class C{field=()=>this.x;x=2} new C().field();", @as(u32, 1), @as(u32, 0) },
+        .{ "class B{} class C extends B{field=()=>this.x;constructor(){super();this.x=2;this.body=()=>this.x}} new C().field();", @as(u32, 8), @as(u32, 1) },
+        .{ "class B{} class C extends B{field=()=>this.x;x=2} new C().field();", @as(u32, 4), @as(u32, 0) },
+        .{ "const C=class{field=()=>this.x;constructor(){this.x=2;this.body=()=>this.x}}; new C().field();", @as(u32, 2), @as(u32, 0) },
     };
     inline for (cases) |case| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -543,6 +548,7 @@ test "#4819 class field arrows share their exact constructor capture binding" {
             }
             try std.testing.expectEqual(@as(usize, 1), bindings);
             var reads: u32 = 0;
+            var writes: u32 = 0;
             for (edited.references) |ref| {
                 if (@backingInt(ref.symbol_id) != id or ref.node_index.isNone() or !live.contains(@backingInt(ref.node_index))) continue;
                 var scope = ref.scope_id;
@@ -555,10 +561,20 @@ test "#4819 class field arrows share their exact constructor capture binding" {
                     scope = edited.scopes[scope.toIndex()].parent;
                 }
                 try std.testing.expect(visible);
-                reads += 1;
+                if (ref.flags.write) {
+                    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.assignment_target_identifier, transformer.ast.getNode(ref.node_index).tag);
+                    try std.testing.expect(!ref.flags.read);
+                    writes += 1;
+                } else {
+                    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, transformer.ast.getNode(ref.node_index).tag);
+                    try std.testing.expect(ref.flags.read);
+                    reads += 1;
+                }
             }
             try std.testing.expectEqual(case[1], reads);
-            try std.testing.expectEqual(case[1], symbol.reference_count);
+            try std.testing.expectEqual(case[2], writes);
+            try std.testing.expectEqual(case[1] + case[2], symbol.reference_count);
+            try std.testing.expectEqual(case[2], symbol.write_count);
         }
         try std.testing.expectEqual(@as(usize, 1), captures);
     }

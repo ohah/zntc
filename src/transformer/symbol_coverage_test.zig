@@ -7156,7 +7156,7 @@ test "#4819 private field helper references retain their producer SymbolIds" {
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
-        _ = try transformer.transform();
+        const output = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
 
         if (target == .es2015) {
@@ -7169,17 +7169,52 @@ test "#4819 private field helper references retain their producer SymbolIds" {
                 }
             }
             try std.testing.expect(capture_id != null);
+            const utils = @import("output_scope_test_utils.zig");
+            var parents = try utils.buildParentMap(allocator, transformer.ast, output);
             var initialized_from_exact_class = false;
             for (transformer.ast.nodes.items) |node| {
                 if (node.tag != .variable_declarator) continue;
                 const binding = transformer.ast.readExtraNode(node.data.extra, 0);
-                if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != capture_id) continue;
+                if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != capture_id or !parents.contains(@backingInt(binding))) continue;
+                const declaration = transformer.ast.nodes.items[parents.get(parents.get(@backingInt(binding)).?).?];
+                try std.testing.expectEqual(.variable_declaration, declaration.tag);
+                try std.testing.expectEqual(.@"const", transformer.ast.variableDeclarationKind(declaration));
                 const value = transformer.ast.readExtraNode(node.data.extra, 2);
                 try std.testing.expect(!value.isNone());
                 try std.testing.expectEqual(@as(?u32, outer_class_id), edited.symbol_ids[@backingInt(value)]);
                 initialized_from_exact_class = true;
             }
             try std.testing.expect(initialized_from_exact_class);
+            var static_wrapper_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+            var wrapper_owners: usize = 0;
+            var scope_owners = edited.scope_owner_map.iterator();
+            while (scope_owners.next()) |entry| {
+                const owner = transformer.ast.nodes.items[entry.key_ptr.*];
+                if (owner.tag != .function_expression or !parents.contains(entry.key_ptr.*)) continue;
+                const member_raw = parents.get(entry.key_ptr.*).?;
+                const member = transformer.ast.nodes.items[member_raw];
+                if (member.tag != .static_member_expression) continue;
+                const key = transformer.ast.readExtraNode(member.data.extra, 1);
+                if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(key).data.string_ref), "call")) continue;
+                const call = transformer.ast.nodes.items[parents.get(member_raw).?];
+                try std.testing.expectEqual(.call_expression, call.tag);
+                const args = transformer.ast.extra_data.items[transformer.ast.readExtra(call.data.extra, 1)..][0..transformer.ast.readExtra(call.data.extra, 2)];
+                try std.testing.expectEqual(@as(usize, 1), args.len);
+                try std.testing.expectEqual(capture_id, edited.symbol_ids[args[0]]);
+                const scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(entry.value_ptr.*);
+                try std.testing.expectEqual(.function, edited.scopes[scope.toIndex()].kind);
+                try std.testing.expectEqual(edited.symbols.items[capture_id.?].scope_id, edited.scopes[scope.toIndex()].parent);
+                try std.testing.expectEqual(@as(u32, 0), transformer.ast.readExtra(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.flags));
+                const params = transformer.ast.getNode(transformer.ast.readExtraNode(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.params));
+                try std.testing.expectEqual(@as(u32, 0), params.data.list.len);
+                const body = transformer.ast.getNode(transformer.ast.readExtraNode(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.body));
+                const directive = transformer.ast.nodes.items[transformer.ast.extra_data.items[body.data.list.start]];
+                try std.testing.expectEqual(.directive, directive.tag);
+                try std.testing.expectEqualStrings("\"use strict\"", transformer.ast.getText(directive.span));
+                static_wrapper_scope = scope;
+                wrapper_owners += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), wrapper_owners);
             var static_block_capture_refs: usize = 0;
             var exact_class_value_reads: usize = 0;
             for (edited.references) |reference| {
@@ -7187,9 +7222,11 @@ test "#4819 private field helper references retain their producer SymbolIds" {
                 const node = transformer.ast.getNode(reference.node_index);
                 if (node.tag != .identifier_reference) continue;
                 if (@backingInt(reference.symbol_id) == capture_id.? and
-                    edited.scopes[reference.scope_id.toIndex()].kind == .block)
+                    reference.scope_id == static_wrapper_scope.?)
                 {
-                    try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    const actual_scope = utils.expectedScope(transformer.ast, output, &parents, &edited.scope_owner_map, @backingInt(reference.node_index)) orelse return error.MissingStaticWrapperReferenceOwner;
+                    try std.testing.expectEqual(actual_scope, reference.scope_id);
+                    try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
                     static_block_capture_refs += 1;
                 }
                 if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields") and

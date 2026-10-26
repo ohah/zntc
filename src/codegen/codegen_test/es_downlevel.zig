@@ -205,7 +205,7 @@ test "ES2019: optional catch no transform on es2019" {
 test "ES2022: static block to IIFE" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { console.log(\"init\"); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}(()=>{\"use strict\";console.log(\"init\");})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(function(){\"use strict\";console.log(\"init\");}).call(_classThis0);", r.output);
 }
 
 // #4468: static block 은 이제 **AST 로** 출력된다 (예전엔 writeNodeSpan 으로 소스
@@ -226,13 +226,13 @@ test "ES2022: static block no transform on esnext" {
 test "ES2022: multiple static blocks" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { a(); } method() {} static { b(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){}}(()=>{\"use strict\";a();})();(()=>{\"use strict\";b();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){}}const _classThis0=Foo;(function(){\"use strict\";a();}).call(_classThis0);(function(){\"use strict\";b();}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block with methods preserved" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method() { return 1; } static { init(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{\"use strict\";init();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}const _classThis0=Foo;(function(){\"use strict\";init();}).call(_classThis0);", r.output);
 }
 
 // --- ES2017: async/await → generator ---
@@ -1575,7 +1575,7 @@ test "ES2018: no spread - no transform" {
 
 test "ES2022: static block this → class name" {
     // class Foo { static { this.x = 1; } }
-    // → class Foo {} (() => { Foo.x = 1; })();
+    // → 실제 strict function Scope + 불변 class snapshot receiver의 .call.
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
     defer r.deinit();
     try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(function(){\"use strict\";_classThis0.x=1;}).call(_classThis0);", r.output);
@@ -1585,14 +1585,14 @@ test "ES2022: static block this in nested function not replaced" {
     // 일반 함수 안의 this는 치환하면 안 됨 (자체 this 바인딩)
     var r = try e2eTarget(std.testing.allocator, "class Bar { static { function f() { return this; } } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Bar{}(()=>{\"use strict\";function f(){return this;}})();", r.output);
+    try std.testing.expectEqualStrings("class Bar{}const _classThis0=Bar;(function(){\"use strict\";function f(){return this;}}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block this in arrow replaced" {
     // arrow function은 this 상속 → 치환 대상
     var r = try e2eTarget(std.testing.allocator, "class Baz { static { const f = () => this.x; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(()=>{\"use strict\";const f=()=>_classThis0.x;})();", r.output);
+    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(function(){\"use strict\";const f=()=>_classThis0.x;}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block anonymous class - this uses generated class self" {

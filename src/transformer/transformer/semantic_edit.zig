@@ -1344,8 +1344,12 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
             const constructor_publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
             const arguments_publication = try @import("../native_arguments.zig").publication(self, @backingInt(reference.node));
-            if (constructor_publication != null and arguments_publication != null and !std.meta.eql(constructor_publication.?, arguments_publication.?))
-                return error.InvalidNode;
+            if (constructor_publication != null and arguments_publication != null) {
+                if (constructor_publication.?.symbol_id != arguments_publication.?.symbol_id) return error.InvalidSymbol;
+                if (constructor_publication.?.scope != arguments_publication.?.scope) return error.InvalidScope;
+                if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
+                    return error.InvalidNode;
+            }
             const publication = constructor_publication orelse arguments_publication;
             if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
                 std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
@@ -1425,8 +1429,12 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
         const constructor_publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
         const arguments_publication = try @import("../native_arguments.zig").publication(self, @backingInt(reference.node));
-        if (constructor_publication != null and arguments_publication != null and !std.meta.eql(constructor_publication.?, arguments_publication.?))
-            return error.InvalidNode;
+        if (constructor_publication != null and arguments_publication != null) {
+            if (constructor_publication.?.symbol_id != arguments_publication.?.symbol_id) return error.InvalidSymbol;
+            if (constructor_publication.?.scope != arguments_publication.?.scope) return error.InvalidScope;
+            if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
+                return error.InvalidNode;
+        }
         const publication = constructor_publication orelse arguments_publication;
         if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
             std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
