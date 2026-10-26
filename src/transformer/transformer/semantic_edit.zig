@@ -2639,10 +2639,12 @@ pub fn reserveGeneratedFunctionScope(self: *Transformer, parent: ScopeId) Transf
 
 /// A named function expression's immutable name environment has no AST
 /// owner of its own. Reserve it before constructor/helper references exist.
+/// Like the analyzer's name block, it inherits enclosing strictness. The
+/// function's own strict body is a separate function scope and directive.
 pub fn reserveGeneratedNameScope(self: *Transformer, parent: ScopeId) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);
-    return editor.addScope(parent, .none, .block, true) catch |err| return editError(err);
+    return editor.addScope(parent, .none, .block, false) catch |err| return editError(err);
 }
 
 pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: NodeIndex) Transformer.Error!void {

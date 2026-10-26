@@ -3682,3 +3682,118 @@ test "#4819 generated class super parameter owns colliding alias references" {
     try std.testing.expect(aliased_references > 0);
     try std.testing.expect(parameter_reads[0] > 0 and parameter_reads[1] > 0);
 }
+
+fn expectGeneratedNameEnvironment(source: []const u8, expected_names: usize, expected_strict: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    const source_root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    const source_scope_count = analyzer.scopes.items.len;
+    var expected_parent: ScopeId = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .class_expression) continue;
+        const class_scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult;
+        expected_parent = analyzer.scopes.items[class_scope].parent;
+    }
+    try std.testing.expect(!expected_parent.isNone());
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    const root = try t.visitNode(source_root);
+    // No output walker or finish: these are creator-time graph facts.
+    const editor = &t.semantic_editor.?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, root);
+    var found: usize = 0;
+    for (reachable) |raw| {
+        const node = t.ast.nodes.items[raw];
+        if (node.tag != .function_expression) continue;
+        const name = t.ast.readExtraNode(node.data.extra, 0);
+        if (name.isNone()) continue;
+        const id = t.getSymbolIdAt(name) orelse continue;
+        const name_scope = editor.symbols.items[id].scope_id;
+        if (name_scope.toIndex() < source_scope_count or editor.scopes.items[name_scope.toIndex()].kind != .block) continue;
+        const outer = editor.scopes.items[name_scope.toIndex()].parent;
+        try std.testing.expectEqual(expected_parent, outer);
+        try std.testing.expectEqual(expected_strict, editor.scopes.items[outer.toIndex()].is_strict);
+        try std.testing.expectEqual(editor.scopes.items[outer.toIndex()].is_strict, editor.scopes.items[name_scope.toIndex()].is_strict);
+        const function_scope = t.outputOwnedScope(@fromBackingInt(raw)) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(name_scope, editor.scopes.items[function_scope.toIndex()].parent);
+        try std.testing.expect(editor.scopes.items[function_scope.toIndex()].is_strict);
+        const body = t.ast.getNode(t.ast.readExtraNode(node.data.extra, 2));
+        try std.testing.expect(body.data.list.len > 0);
+        const first = t.ast.getNode(@fromBackingInt(@intCast(t.ast.extra_data.items[body.data.list.start])));
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.directive, first.tag);
+        try std.testing.expect(std.mem.indexOf(u8, t.ast.getText(first.span), "use strict") != null);
+        var reads: usize = 0;
+        for (editor.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) != id or !reference.flags.read) continue;
+            try std.testing.expectEqual(function_scope, reference.scope_id);
+            try std.testing.expectEqual(id, t.getSymbolIdAt(reference.node_index).?);
+            reads += 1;
+        }
+        try std.testing.expect(reads > 0);
+        found += 1;
+    }
+    try std.testing.expectEqual(expected_names, found);
+    const report = try coverage.checkExact(a, t.ast, root, t.parser_node_count, editor.symbol_ids.items, editor.symbols.items, editor.scopes.items, editor.scope_maps.items, &editor.scope_owner_map, editor.references.items, t.helper_ref_nodes.items, &t.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map);
+    try std.testing.expectEqual(@as(usize, 0), report.scope_strictness_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.identity_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), report.duplicate_reference);
+}
+
+test "generated name environment inherits actual parent before output walker" {
+    try expectGeneratedNameEnvironment("(()=>class{})();", 1, false);
+    try expectGeneratedNameEnvironment("'use strict';(()=>class{})();", 1, true);
+    try expectGeneratedNameEnvironment("function outer(){return class{}}outer();", 1, false);
+    try expectGeneratedNameEnvironment("function outer(){'use strict';return class{}}outer();", 1, true);
+    try expectGeneratedNameEnvironment("consume(class{});", 1, false);
+    try expectGeneratedNameEnvironment("(()=>class Named{})();", 0, false);
+    try expectGeneratedNameEnvironment("'use strict';(()=>class Named{})();", 0, true);
+    try expectGeneratedNameEnvironment("function caseD(){(()=>({x:1}))();(()=>function(){})();(()=>class{})();}caseD();", 1, false);
+    std.debug.print("GENERATED NAME ENV BIRTH controls=8 creator-only=1\n", .{});
+}
+
+test "generated name environment preserves native strict reflection and sloppy outer runtime" {
+    const prelude = "function observe(fn){try{return ['return',fn()]}catch(e){return ['throw',e.name]}};";
+    const sources = [_][]const u8{
+        prelude ++ "var C=(()=>class{})();console.log(JSON.stringify(observe(()=>C.caller)));",
+        prelude ++ "var C=(()=>class{})();console.log(JSON.stringify(observe(()=>C.arguments)));",
+        prelude ++ "var C=(()=>class{})();console.log(JSON.stringify(observe(()=>C())));",
+        prelude ++ "var C=(()=>class{})();console.log(JSON.stringify(observe(()=>C.call(undefined))));",
+        "var C=(()=>class{})();var x=new C();console.log(JSON.stringify([x instanceof C,Object.getPrototypeOf(x)===C.prototype]));",
+        "var C=(()=>class{constructor(){this.seen=(function(){return this===undefined})()}})();console.log(JSON.stringify(new C().seen));",
+        prelude ++ "var C=(()=>class{constructor(){this.seen=observe(()=>arguments.callee)}})();console.log(JSON.stringify(new C().seen));",
+        prelude ++ "var C=(()=>class Named{})();console.log(JSON.stringify(observe(()=>C.prototype.constructor.caller)));",
+        "function outside(){return this===globalThis};var C=(()=>class{})();console.log(JSON.stringify([outside(),new C() instanceof C]));",
+        "'use strict';function outside(){return this===undefined};var C=(()=>class{})();console.log(JSON.stringify([outside(),new C() instanceof C]));",
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (sources) |source| {
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.unknown", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5), .minify_identifiers = minify });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+    std.debug.print("GENERATED NAME ENV RUNTIME sources=10 modes=2 native=20\n", .{});
+}
