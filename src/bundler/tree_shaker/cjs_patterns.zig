@@ -59,6 +59,29 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
     needs_semantic_reanalysis: *bool,
 ) !bool {
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null);
+}
+
+/// The module owns the actual AST and semantic tables. Only this typed path
+/// may retain a fallback function declaration after removing its export read.
+pub fn foldNodeBufferCapabilityIfsForModule(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *Ast,
+    removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+    needs_semantic_reanalysis: *bool,
+) !bool {
+    if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module);
+}
+
+fn foldNodeBufferCapabilityIfsWithContext(
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+    needs_semantic_reanalysis: *bool,
+    module: ?*const Module,
+) !bool {
     removed_nodes.clearRetainingCapacity();
     needs_semantic_reanalysis.* = false;
 
@@ -127,6 +150,16 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
             if (!isDeadFallbackSetupStatement(ast, stmt, &dead_fallback_names, &buffer_ctor_names)) continue;
             try setup_statements.append(allocator, stmt_idx);
             try appendSubtreeNodes(allocator, ast, stmt_idx, &seen, removed_nodes);
+        }
+    }
+
+    if (needs_semantic_reanalysis.*) {
+        if (module) |owner| {
+            // No declaration is removed. Exact alternate reads determine the
+            // surviving function identity; the retained graph updater removes
+            // those reads and rebuilds statement liveness from its new counts.
+            if (!try fallbackFunctionGraphIsStable(allocator, owner, ast, branches.items, setup_statements.items, &dead_fallback_names)) return false;
+            needs_semantic_reanalysis.* = false;
         }
     }
 
@@ -288,6 +321,176 @@ test "retained Node Buffer fold falls back for matching top-level fallback funct
         ));
         try std.testing.expectEqual(expected, needs_semantic_reanalysis);
     }
+}
+
+fn memberRootNode(ast: *const Ast, start: NodeIndex) ?NodeIndex {
+    var current = start;
+    var fuel = ast.nodes.items.len;
+    while (fuel > 0) : (fuel -= 1) {
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return null;
+        const node = ast.getNode(current);
+        if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) return current;
+        if (node.tag != .static_member_expression) return null;
+        current = (staticMemberParts(ast, current) orelse return null).object;
+    }
+    return null;
+}
+
+fn exactBufferWrapperRoot(module: *const Module, ast: *const Ast, lhs: NodeIndex) bool {
+    const sem = &(module.semantic orelse return false);
+    const root = memberRootNode(ast, lhs) orelse return false;
+    const raw = @backingInt(root);
+    if (raw >= sem.symbol_ids.len) return false;
+    const id = sem.symbol_ids[raw] orelse return false;
+    if (id >= sem.symbols.items.len) return false;
+    const symbol = sem.symbols.items[id];
+    if (symbol.kind != .parameter) return false;
+    if (module.cjs_wrapper_exports_parameter_symbol) |expected| {
+        if (@backingInt(expected) == id and symbol.synthetic_kind == .cjs_wrapper_exports_parameter) return true;
+    }
+    if (module.cjs_wrapper_module_parameter_symbol) |expected| {
+        if (@backingInt(expected) == id and symbol.synthetic_kind == .cjs_wrapper_module_parameter) return true;
+    }
+    return false;
+}
+
+fn collectExactFallbackReadIds(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *const Ast,
+    statement: NodeIndex,
+    expected_scope: u32,
+    ids: *std.AutoHashMapUnmanaged(u32, void),
+) !bool {
+    if (statement.isNone() or @backingInt(statement) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(statement);
+    if (node.tag == .block_statement) {
+        const list = node.data.list;
+        if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return false;
+        const sem = &module.semantic.?;
+        const block_scope = sem.scope_owner_map.get(@backingInt(statement)) orelse return false;
+        if (block_scope >= sem.scopes.len or sem.scopes[block_scope].kind != .block or
+            sem.scopes[block_scope].parent != @as(@import("../../semantic/scope.zig").ScopeId, @fromBackingInt(expected_scope))) return false;
+        for (ast.extra_data.items[list.start..][0..list.len]) |raw| {
+            if (!try collectExactFallbackReadIds(allocator, module, ast, @fromBackingInt(raw), block_scope, ids)) return false;
+        }
+        return true;
+    }
+    if (node.tag != .expression_statement) return false;
+    const expression = node.data.unary.operand;
+    if (expression.isNone() or @backingInt(expression) >= ast.nodes.items.len) return false;
+    const assignment = ast.getNode(expression);
+    if (assignment.tag != .assignment_expression or !isCjsNamedExportLhs(ast, assignment.data.binary.left) or
+        !exactBufferWrapperRoot(module, ast, assignment.data.binary.left)) return false;
+    const value = assignment.data.binary.right;
+    if (value.isNone() or @backingInt(value) >= ast.nodes.items.len or ast.getNode(value).tag != .identifier_reference) return false;
+    const sem = &module.semantic.?;
+    if (@backingInt(value) >= sem.symbol_ids.len) return false;
+    const id = sem.symbol_ids[@backingInt(value)] orelse return false;
+    if (id >= sem.symbols.items.len) return false;
+    var reads: usize = 0;
+    for (sem.references) |row| {
+        if (row.node_index != value) continue;
+        if (@backingInt(row.symbol_id) != id or !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true })) or
+            row.scope_id.isNone() or row.scope_id.toIndex() >= sem.scopes.len or row.scope_id.toIndex() != expected_scope) return false;
+        var scope = row.scope_id;
+        var visible = false;
+        var fuel = sem.scopes.len;
+        while (!scope.isNone() and scope.toIndex() < sem.scopes.len and fuel > 0) : (fuel -= 1) {
+            if (scope == sem.symbols.items[id].scope_id) {
+                visible = true;
+                break;
+            }
+            scope = sem.scopes[scope.toIndex()].parent;
+        }
+        if (!visible) return false;
+        reads += 1;
+    }
+    if (reads != 1) return false;
+    try ids.put(allocator, id, {});
+    return true;
+}
+
+/// The exceptional old path is needed only for a function referenced by the
+/// erased fallback export. Prove that actual edge before changing the AST.
+/// Its declaration, body, local scopes and all other uses remain untouched.
+fn fallbackFunctionGraphIsStable(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *const Ast,
+    branches: []const BufferCapabilityFoldBranch,
+    setup_statements: []const NodeIndex,
+    dead_names: *const std.StringHashMapUnmanaged(void),
+) !bool {
+    const sem = &(module.semantic orelse return false);
+    if (module.wrap_kind != .cjs or sem.scopes.len == 0) return false;
+    for (sem.scopes) |scope| if (scope.subtree_has_direct_eval) return false;
+    // A with environment may redirect a source read without a static SID.
+    for (ast.nodes.items) |node| if (node.tag == .with_statement) return false;
+    var selected: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer selected.deinit(allocator);
+    const program_scope = sem.scope_owner_map.get(@intCast(ast.nodes.items.len - 1)) orelse return false;
+    if (program_scope >= sem.scopes.len or (sem.scopes[program_scope].kind != .global and sem.scopes[program_scope].kind != .module)) return false;
+    for (branches) |branch| {
+        if (branch.alternate.isNone()) continue;
+        if (!try collectExactFallbackReadIds(allocator, module, ast, branch.alternate, program_scope, &selected)) return false;
+    }
+    if (selected.count() == 0) return false;
+    var declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer declarations.deinit(allocator);
+    const root = programNode(ast) orelse return false;
+    const list = root.data.list;
+    if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return false;
+    for (ast.extra_data.items[list.start..][0..list.len]) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .function_declaration) continue;
+        const binding = ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
+        if (binding.isNone() or @backingInt(binding) >= sem.symbol_ids.len or ast.getNode(binding).tag != .binding_identifier) return false;
+        const id = sem.symbol_ids[@backingInt(binding)] orelse return false;
+        // Legacy spelling detection can request a conservative boundary, but
+        // only the actual alternate read SID may authorize this declaration.
+        if (!selected.contains(id)) {
+            if (dead_names.contains(ast.getText(ast.getNode(binding).span))) return false;
+            continue;
+        }
+        if (id >= sem.symbols.items.len or declarations.contains(id)) return false;
+        const symbol = sem.symbols.items[id];
+        if (symbol.kind != .function_decl or symbol.synthetic_kind != null or symbol.isExported() or
+            symbol.decl_flags.is_annex_b_function or symbol.scope_id.toIndex() != program_scope or symbol.write_count != 0) return false;
+        const function_scope = sem.scope_owner_map.get(raw) orelse return false;
+        if (function_scope >= sem.scopes.len or sem.scopes[function_scope].kind != .function or
+            sem.scopes[function_scope].parent != symbol.scope_id) return false;
+        var anchored: usize = 0;
+        var reads: usize = 0;
+        for (sem.references) |row| {
+            if (@backingInt(row.symbol_id) != id) continue;
+            if (row.flags.declare) {
+                if (!std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .declare = true })) or
+                    row.scope_id != symbol.scope_id or (row.node_index != binding and row.declaration_node_index != binding and row.declaration_node_index != @as(NodeIndex, @fromBackingInt(raw)))) return false;
+                anchored += 1;
+            } else {
+                if (!std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true })) or row.node_index.isNone() or @backingInt(row.node_index) >= sem.symbol_ids.len or
+                    sem.symbol_ids[@backingInt(row.node_index)] != id) return false;
+                reads += 1;
+            }
+        }
+        if (anchored != 1 or reads != symbol.reference_count) return false;
+        try declarations.put(allocator, id, {});
+    }
+    if (declarations.count() != selected.count()) return false;
+    for (setup_statements) |statement| {
+        const node = ast.getNode(statement);
+        if (node.tag != .expression_statement) return false;
+        const expression = ast.getNode(node.data.unary.operand);
+        // Copy-call setup is an explicit boundary until its argument and
+        // callee side effects have an equally exact contract.
+        if (expression.tag != .assignment_expression) return false;
+        const root_node = memberRootNode(ast, expression.data.binary.left) orelse return false;
+        if (@backingInt(root_node) >= sem.symbol_ids.len) return false;
+        const id = sem.symbol_ids[@backingInt(root_node)] orelse return false;
+        if (!declarations.contains(id)) return false;
+    }
+    return true;
 }
 
 const BufferCapabilityFoldBranch = struct {

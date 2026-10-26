@@ -2418,12 +2418,13 @@ pub const TreeShaker = struct {
         for (0..mod_count) |i| {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (m.wrap_kind != .cjs) continue;
-            const ast = &(m.ast orelse continue);
+            const ast = if (m.ast) |*actual_ast| actual_ast else continue;
             var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer removed_nodes.deinit(self.allocator);
             var needs_semantic_reanalysis = false;
-            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
+            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModule(
                 self.allocator,
+                m,
                 ast,
                 &removed_nodes,
                 &needs_semantic_reanalysis,
@@ -2572,4 +2573,8 @@ test "markAstMutated invalidates cached import-record statement indexes" {
 
     try std.testing.expect(shaker.ast_mutated_after_link);
     try std.testing.expect(per_module[0] == null);
+}
+
+test {
+    _ = @import("tree_shaker/buffer_fallback_semantic_test.zig");
 }
