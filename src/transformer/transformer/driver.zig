@@ -1850,7 +1850,15 @@ test "dynamic body wrapper shared function cells retain source identities before
             writes += 1;
         }
     }
-    for (editor.references.items) |row| try std.testing.expect(!row.flags.declare or row.declaration_node_index != function_binding);
+    var live_anchors: usize = 0;
+    for (editor.references.items) |row| {
+        try std.testing.expect(!row.flags.declare or row.declaration_node_index != function_binding);
+        if (@backingInt(row.symbol_id) != id or !row.flags.declare or row.declaration_node_index.isNone()) continue;
+        for (live) |raw| if (@backingInt(row.declaration_node_index) == raw) {
+            live_anchors += 1;
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 1), live_anchors);
     try std.testing.expectEqual(@as(usize, 1), values);
     try std.testing.expectEqual(@as(usize, 1), untouched);
     try std.testing.expectEqual(@as(usize, 1), writes);

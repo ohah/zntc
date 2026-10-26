@@ -114,7 +114,13 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     while (try bindings.next()) |leaf| {
                         const id = self.getSymbolIdAt(leaf) orelse continue;
                         if (self.semantic_editor.?.symbols.items[id].kind != .parameter) continue;
-                        try self.relocateOutputSymbolAs(@intCast(id), self.current_scope, leaf);
+                        // Only this pattern binding moves. A same-SID body
+                        // function still owns its distinct declaration anchor
+                        // until its FDI value is emitted or explicitly retired.
+                        self.semantic_editor.?.relocateSymbolAsPreservingAnchors(@fromBackingInt(@as(u32, @intCast(id))), self.current_scope, leaf) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => std.debug.panic("parameter pattern lost its exact storage/anchor handoff: {s}", .{@errorName(err)}),
+                        };
                     }
                 }
             }
