@@ -79,7 +79,15 @@ plain/minified output. The last frozen run failed ten of those twenty-two compar
 native fields, replacement super objects, fields that throw, reentrant
 construction, and a failed construction followed by a successful one. The
 before/after-super, inferred function/class-name, and native-parameter
-super-call reentrancy controls pass. No native-field timing producer has been implemented here. Handwritten
+super-call reentrancy controls pass. A first production timing bridge now passes
+all twenty-two comparisons. It prepares the source body scope and function cells
+before visiting, publishes native this at the first retained field, and probes
+source try bodies before catch/finally entry. The first implementation is gated
+to simple parameters and excludes decorators, lowered private members, accessors,
+deferred super and computed anonymous values without an existing key cell.
+Final coordinate publication, independent creation-site checks, the additional
+name controls, broader runtime/API/cache validation and implementation mutants
+remain due. Handwritten
 parameter-environment prototypes match two native reentry/private-brand examples;
 they do not establish complete FDI, naming, scope, eval or target support.
 
@@ -99,5 +107,6 @@ preserves formal anchors and source-var rows, including multiple rows sharing
 one anchor. The composed scope, function-cell and runtime prerequisites pass a
 25-test focused selection on the main62a base. The 73-input field matrix also
 passes all 146 native comparisons on that base. These prerequisites still have
-no production constructor-bridge caller. The final constructor-body assembly
-must also publish its changed statement coordinates before validation.
+a production constructor-bridge caller in the current WIP snapshot. The final
+constructor-body assembly must still publish its changed statement coordinates
+before validation.

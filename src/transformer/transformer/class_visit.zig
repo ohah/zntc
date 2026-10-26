@@ -47,6 +47,7 @@ fn trackPrivateHelperPrelude(
 
 pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     if (try @import("../retained_class_keys.zig").maybeWrap(self, source_idx, node)) |wrapped| return wrapped;
+    try @import("../native_constructor_timing.zig").prepareClass(self, node);
     // `export default class {}` is an anonymous declaration: lowering that
     // needs a class name treats it as a class expression (IIFE wrapper).
     const as_expression = node.tag == .class_expression or

@@ -812,7 +812,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .tagged_template_expression => self.visitTaggedTemplate(node),
         .method_definition => self.visitMethodDefinition(idx, node),
-        .property_definition => self.visitPropertyDefinition(node),
+        .property_definition => self.visitPropertyDefinition(idx, node),
         .object_property => self.visitObjectProperty(node),
         .formal_parameter => self.visitFormalParameter(node),
         .import_declaration => self.visitImportDeclaration(node),

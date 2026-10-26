@@ -161,6 +161,8 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generated_super_call_assignments.deinit(self.allocator);
     self.class_key_super_contexts.deinit(self.allocator);
     self.capture_binding_ids.deinit(self.allocator);
+    self.native_constructor_timing_plans.deinit(self.allocator);
+    self.native_constructor_timing_fields.deinit(self.allocator);
     self.live_arguments_cells.deinit(self.allocator);
     self.bound_temp_symbols.deinit(self.allocator);
     self.stage3_metadata_binding_ids.deinit(self.allocator);

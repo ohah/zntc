@@ -5,6 +5,10 @@ const helpers = @import("es_helpers.zig");
 const NodeIndex = ast.NodeIndex;
 
 pub fn needsCell(self: anytype, owner: NodeIndex, method: ast.Node) !bool {
+    return needsCellInScope(self, owner, method, self.capture_scope, false);
+}
+
+pub fn needsCellInScope(self: anytype, owner: NodeIndex, method: ast.Node, constructor_scope: @import("../semantic/scope.zig").ScopeId, allow_native_fields: bool) !bool {
     if (!self.semantic_edit_enabled or self.options.unsupported.class or !self.options.unsupported.arrow) return false;
     const class_idx = helpers.classConstructorOwner(self, owner, method) orelse return false;
     const class = self.ast.getNode(class_idx);
@@ -13,7 +17,7 @@ pub fn needsCell(self: anytype, owner: NodeIndex, method: ast.Node) !bool {
     // An eval in any lexical descendant may observe a new constructor cell,
     // including an ordinary function that does not share lexical this.
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    if (self.capture_scope.isNone() or self.capture_scope.toIndex() >= scopes.len or scopes[self.capture_scope.toIndex()].subtree_has_direct_eval) return false;
+    if (constructor_scope.isNone() or constructor_scope.toIndex() >= scopes.len or scopes[constructor_scope.toIndex()].subtree_has_direct_eval) return false;
     const body = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body));
     for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
         const member = self.ast.nodes.items[raw];
@@ -22,7 +26,7 @@ pub fn needsCell(self: anytype, owner: NodeIndex, method: ast.Node) !bool {
         if (flags & (ast.PropertyFlags.is_static | ast.PropertyFlags.is_abstract | ast.PropertyFlags.is_declare) != 0) continue;
         // Native fields run inside super(), before its result can initialize
         // this cell. Their separate environment/timing producer is mandatory.
-        if (!@import("native_parameter_cells.zig").instanceMemberMoves(self, member, self.options.unsupported.privateLoweringPlan().fields, !self.options.use_define_for_class_fields)) return false;
+        if (!allow_native_fields and !@import("native_parameter_cells.zig").instanceMemberMoves(self, member, self.options.unsupported.privateLoweringPlan().fields, !self.options.use_define_for_class_fields)) return false;
     }
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
