@@ -9,6 +9,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const token_mod = @import("../lexer/token.zig");
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Scope = @import("../semantic/scope.zig").Scope;
@@ -112,7 +113,7 @@ test "define replacement removes the exact source reference from semantic graph"
     try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[symbol_id].reference_count);
 }
 
-test "define primitive replacement removes the local edge and marks its explicit global node" {
+test "define undefined replacement emits void zero and removes the local edge" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -168,20 +169,25 @@ test "define primitive replacement removes the local edge and marks its explicit
         try std.testing.expect(reference.node_index != replaced_reference);
     }
 
-    var generated_global_node: ?u32 = null;
-    var explicit_it = transformer.explicit_global_reference_nodes.keyIterator();
-    while (explicit_it.next()) |raw| {
-        if (raw.* >= transformer.ast.nodes.items.len) continue;
-        const node = transformer.ast.nodes.items[raw.*];
-        if (node.tag == .identifier_reference and
-            std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "undefined"))
+    var generated_void_zero: ?u32 = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .unary_expression or node.data.extra > transformer.ast.extra_data.items.len or
+            transformer.ast.extra_data.items.len - node.data.extra < 2) continue;
+        const extras = transformer.ast.extra_data.items;
+        if (extras[node.data.extra + 1] != @backingInt(token_mod.Kind.kw_void)) continue;
+        const operand_raw = extras[node.data.extra];
+        if (operand_raw >= transformer.ast.nodes.items.len) continue;
+        const operand = transformer.ast.nodes.items[operand_raw];
+        if (operand.tag == .numeric_literal and
+            std.mem.eql(u8, transformer.ast.getText(operand.span), "0"))
         {
-            generated_global_node = raw.*;
+            generated_void_zero = @intCast(raw);
             break;
         }
     }
-    const global_raw = generated_global_node orelse return error.MissingExplicitGlobalDefineNode;
-    try std.testing.expect(transformer.symbol_ids.items[global_raw] == null);
+    const void_zero_raw = generated_void_zero orelse return error.MissingDefineVoidZeroNode;
+    try std.testing.expect(transformer.symbol_ids.items[void_zero_raw] == null);
+    try std.testing.expectEqual(@as(usize, 0), transformer.explicit_global_reference_nodes.count());
 
     const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
     for (edited.references) |reference| {

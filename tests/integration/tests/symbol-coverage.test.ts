@@ -5291,6 +5291,118 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'direct eval reads a parameter after a simple define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false', '--minify-identifiers'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval keeps its parameter with a true define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=true'],
+        graph: 'retained',
+        stdout: '41',
+      },
+      {
+        name: 'direct eval keeps its parameter with a null define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=null'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval keeps its parameter with an undefined define and console drop',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=undefined'],
+        graph: 'retained',
+        stdout: 'NaN',
+      },
+      {
+        name: 'direct eval reads a local const after a simple define and console drop',
+        source:
+          "function read() { const __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval reads a local var after a simple define and console drop',
+        source:
+          "function read() { var __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'direct eval reads a block binding after a simple define and console drop',
+        source:
+          "function read() { { let __FLAG__ = 40; const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } } process.stdout.write(String(read()));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'nested direct eval reads a captured parameter after a simple define',
+        source:
+          "function read(__FLAG__) { function nested() { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__') + saved; } return nested(); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'multiple simple defines preserve both eval-visible bindings',
+        source:
+          "function read() { const __LEFT__ = 20, __RIGHT__ = 22; const saved = __LEFT__ + __RIGHT__; console.log('gone'); return eval('__LEFT__ + __RIGHT__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__LEFT__=false', '--define:__RIGHT__=false'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'string define leaves the source binding visible to direct eval',
+        source:
+          "function read() { const __FLAG__ = 40; const __TEXT__ = 'source'; const saved = __TEXT__; console.log('gone'); return eval('__FLAG__') + saved; } process.stdout.write(String(read()));",
+        args: ['--define:__TEXT__="defined"'],
+        graph: 'retained',
+        stdout: '40defined',
+      },
+      {
+        name: 'define used only in the removed console call keeps the eval binding',
+        source:
+          "function read(__FLAG__) { console.log(__FLAG__); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'retained',
+        stdout: '40',
+      },
+      {
+        name: 'class lowering still prevents define plus direct eval retention',
+        source:
+          "class Local {} function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'eval inside the removed console call still forces reanalysis with define',
+        source:
+          "function read(__FLAG__) { console.log(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'eval in a later console call still forces reanalysis with define',
+        source:
+          "function read(__FLAG__) { const saved = __FLAG__; console.log('safe'); console.warn(eval('__FLAG__')); return eval('__FLAG__'); } process.stdout.write(String(read(40)));",
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
         name: 'direct eval in a later argument of the same dropped call forces reanalysis',
         source:
           "console.log('safe', eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",

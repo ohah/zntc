@@ -73,10 +73,8 @@ pub fn isStringLiteralDefineValue(value: []const u8) bool {
     return value.len >= 2 and (value[0] == '"' or value[0] == '\'');
 }
 
-/// `tryDefineReplace` emits non-string values as explicit-global identifier
-/// references. These exact primitive spellings have no source SymbolId edge;
-/// the retained graph path preserves their explicit-global sidecar so names
-/// such as `undefined` cannot bind to a same-spelled source local.
+/// These exact primitive spellings are emitted as literals (or `void 0`), so
+/// their replacements carry no source SymbolId reference edge.
 pub fn isGraphSafePrimitiveDefineValue(value: []const u8) bool {
     return std.mem.eql(u8, value, "true") or
         std.mem.eql(u8, value, "false") or
@@ -102,15 +100,18 @@ pub fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
 ///     global root이므로 벗기고 define key와 비교.
 pub fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
     const value = matchedDefineValue(self.ast, node, self.options.define) orelse return null;
+    if (std.mem.eql(u8, value, "true")) return es_helpers.makeBoolLiteral(self, true);
+    if (std.mem.eql(u8, value, "false")) return es_helpers.makeBoolLiteral(self, false);
+    if (std.mem.eql(u8, value, "null")) return es_helpers.makeNullLiteral(self);
+    if (std.mem.eql(u8, value, "undefined")) return es_helpers.makeVoidZero(self, node.span);
     // intern map 이 같은 entry.value 의 두 번째 호출부터 hit → 캐시 효과 흡수.
     const value_span = self.ast.addString(value) catch return Error.OutOfMemory;
-    // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
-    // "production" → string_literal, false/true/숫자 → identifier_reference.
+    // 문자열 define은 source binding과 분리된 literal node로 만든다.
     if (isStringLiteralDefineValue(value)) return self.ast.addNode(.{
         .tag = .string_literal,
         .span = value_span,
         .data = .{ .string_ref = value_span },
     });
-    // 식별자 값(`true`·`undefined`·전역 이름)은 사용자 변수가 아니라 전역이다.
+    // Other identifier-valued expressions remain explicit globals.
     return es_helpers.makeGlobalRefFromSpan(self, value_span);
 }

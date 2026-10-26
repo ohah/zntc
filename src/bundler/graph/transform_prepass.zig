@@ -7218,10 +7218,13 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
+    // A retained simple define replaces only exact bound local reads; it
+    // leaves declarations and their names available to direct eval. Other
+    // graph-changing transforms remain in this unsafe-transform accumulator.
+    var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or
         safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
-    var found_transform = found_other_transform or retained_simple_console_drops;
+    var found_transform = found_other_transform or retained_simple_define or retained_simple_console_drops;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
         if (scope.subtree_has_direct_eval) {
@@ -7987,22 +7990,14 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
 }
 
 fn shouldRecordPrepassExplicitGlobals(
-    can_keep_semantic_graph: bool,
-    ast: *const ast_mod.Ast,
-    options: TransformOptions,
     flow_match_has_generated_globals: bool,
     has_lowered_object_spread: bool,
     has_lowered_exponentiation: bool,
     safe_builtin_worklet: bool,
     lowered_simple_static_class_field_global: bool,
 ) bool {
-    // Identifier-valued defines such as `undefined` are explicit globals.
-    // The retained graph must carry their sidecar so later linking cannot
-    // resolve them to a same-spelled source binding.
     return flow_match_has_generated_globals or has_lowered_object_spread or has_lowered_exponentiation or
-        safe_builtin_worklet or
-        (can_keep_semantic_graph and define_mod.astUsesDefine(ast, options.define)) or
-        lowered_simple_static_class_field_global;
+        safe_builtin_worklet or lowered_simple_static_class_field_global;
 }
 
 fn hasAstTransformHooks(plugins: anytype) bool {
@@ -8269,7 +8264,7 @@ test "syntax minify graph gate rejects eighteen hostile identity and statement c
     }
 }
 
-test "primitive defines retain only an exact local reference graph" {
+test "primitive defines retain exact local reference graphs without global sidecars" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -8332,16 +8327,7 @@ test "primitive defines retain only an exact local reference graph" {
         null,
     );
     try std.testing.expect(primitive_graph_retained);
-    try std.testing.expect(shouldRecordPrepassExplicitGlobals(
-        primitive_graph_retained,
-        &parser.ast,
-        primitive_options,
-        false,
-        false,
-        false,
-        false,
-        false,
-    ));
+    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
     const unsupported_graph_retained = canKeepPrepassSemanticGraph(
         &test_context,
         &module,
@@ -8352,40 +8338,17 @@ test "primitive defines retain only an exact local reference graph" {
         null,
     );
     try std.testing.expect(!unsupported_graph_retained);
-    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(
-        unsupported_graph_retained,
-        &parser.ast,
-        .{ .strip_types = true, .define = &unsupported_defines },
-        false,
-        false,
-        false,
-        false,
-        false,
-    ));
+    try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
 }
 
-test "prepass records generated globals on fallback and gates define globals on retention" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "const flag = 1; console.log(flag);");
-    defer scanner.deinit();
-    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
-    parser.configureFromExtension(".js");
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    const defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "false" }};
-    const options_with_define: TransformOptions = .{ .define = &defines };
+test "prepass records generated globals and never needs define sidecars for exact literals" {
     const Case = struct {
         name: []const u8,
-        can_keep: bool = false,
         flow: bool = false,
         object_spread: bool = false,
         exponentiation: bool = false,
         worklet: bool = false,
         static_class: bool = false,
-        options: TransformOptions = .{},
         expected: bool,
     };
     const cases = [_]Case{
@@ -8396,17 +8359,12 @@ test "prepass records generated globals on fallback and gates define globals on 
         .{ .name = "built-in worklet global survives reanalysis", .worklet = true, .expected = true },
         .{ .name = "downlevel class global survives reanalysis", .static_class = true, .expected = true },
         .{ .name = "multiple lowerer globals survive reanalysis", .object_spread = true, .exponentiation = true, .expected = true },
-        .{ .name = "retained define records its explicit global", .can_keep = true, .options = options_with_define, .expected = true },
-        .{ .name = "reanalyzed define leaves global discovery to analyzer", .options = options_with_define, .expected = false },
-        .{ .name = "retained graph without generated globals adds no sidecar", .can_keep = true, .expected = false },
+        .{ .name = "boolean, null, and undefined defines are emitted as exact literals", .expected = false },
     };
     for (cases) |case| {
         try std.testing.expectEqual(
             case.expected,
             shouldRecordPrepassExplicitGlobals(
-                case.can_keep,
-                &parser.ast,
-                case.options,
                 case.flow,
                 case.object_spread,
                 case.exponentiation,
@@ -9376,6 +9334,40 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
         "DEV: { console.log('gone'); } function read() { return eval('42'); }",
         drop_label_and_console,
     ));
+
+    const primitive_defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "false" }};
+    const define_and_console: TransformOptions = .{
+        .strip_types = true,
+        .drop_console = true,
+        .define = &primitive_defines,
+    };
+    try std.testing.expect(try canRetainSimpleDefineForTest(
+        "function read(__FLAG__) { const saved = __FLAG__; return eval('__FLAG__'); }",
+        "__FLAG__",
+        "false",
+        .none,
+    ));
+    try std.testing.expect(try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__'); }",
+        define_and_console,
+    ));
+
+    try std.testing.expect(!try canRetainSimpleDefineForTest(
+        "function read(__FLAG__) { const saved = __FLAG__; return eval('__FLAG__'); }",
+        "__FLAG__",
+        "42",
+        .none,
+    ));
+    const unsafe_defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "globalThis.readFlag()" }};
+    const unsafe_define_and_console: TransformOptions = .{
+        .strip_types = true,
+        .drop_console = true,
+        .define = &unsafe_defines,
+    };
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(__FLAG__) { const saved = __FLAG__; console.log('gone'); return eval('__FLAG__'); }",
+        unsafe_define_and_console,
+    ));
 }
 
 test "TLA refresh is limited to retained edits that can remove module await" {
@@ -10011,9 +10003,6 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.record_explicit_global_references = shouldRecordPrepassExplicitGlobals(
-        can_keep_semantic_graph,
-        ast_ptr,
-        opts,
         flow_match_generated_globals.has_match,
         has_lowered_object_spread,
         has_lowered_exponentiation,
