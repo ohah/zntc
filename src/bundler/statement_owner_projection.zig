@@ -17,6 +17,16 @@ pub fn project(
 ) !?[]SemanticReference {
     const contexts = collect(allocator, ast, root) catch return null;
     const updated = try allocator.dupe(SemanticReference, semantic.references);
+    var implicit_contexts = (try @import("implicit_arguments_statement_owner.zig").collect(
+        allocator,
+        ast,
+        contexts,
+        semantic.symbols.items,
+        semantic.scopes,
+        &semantic.scope_owner_map,
+        semantic.references,
+    )) orelse return null;
+    defer implicit_contexts.deinit(allocator);
     var anchorless_contexts: std.AutoHashMapUnmanaged(u32, ?Context) = .empty;
     defer anchorless_contexts.deinit(allocator);
     for (updated) |reference| {
@@ -62,6 +72,12 @@ pub fn project(
             // The class-self table retains the initial source role; the actual
             // current class node owns that same exact ScopeId after AST copies.
             slot.* = class_scope_contexts.get(@backingInt(symbol.scope_id)) orelse return null;
+        }
+        var implicit = implicit_contexts.iterator();
+        while (implicit.next()) |entry| {
+            const slot = anchorless_contexts.getPtr(entry.key_ptr.*) orelse return null;
+            if (slot.*) |previous| if (!std.meta.eql(previous, entry.value_ptr.*)) return null;
+            slot.* = entry.value_ptr.*;
         }
     }
     for (updated) |*reference| {

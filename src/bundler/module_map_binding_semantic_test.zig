@@ -4,6 +4,181 @@ const Graph = @import("graph.zig").ModuleGraph;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
+const EngineOwnerMutation = enum {
+    none,
+    wrong_kind,
+    unknown_role,
+    wrong_reference_scope,
+    wrong_scope_kind,
+    missing_owner,
+    arrow_owner,
+    duplicate_owner,
+    missing_function_owner,
+    wrong_parameter_parent,
+    wrong_flags,
+    dangling_sid,
+    duplicate_engine_sid,
+    duplicate_declaration,
+};
+
+fn checkImplicitArgumentsProjection(source: []const u8, mutation: EngineOwnerMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const originals = try a.dupe(@import("../semantic/symbol.zig").Reference, analyzer.references.items);
+    var semantic = @import("module.zig").ModuleSemanticData{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .references = analyzer.references.items,
+        .exported_names = analyzer.exported_names,
+        .unresolved_references = analyzer.unresolved_references,
+    };
+    const ast = &parser.ast;
+    // A real new statement shifts every top-level owner without changing any
+    // source SID, ScopeId, leaf anchor or nested statement list.
+    const original_list = ast.getNode(root).data.list;
+    const old_statements = try a.dupe(u32, ast.extra_data.items[original_list.start..][0..original_list.len]);
+    var statements: std.ArrayList(NodeIndex) = .empty;
+    try statements.append(a, try ast.addNode(.{ .tag = .empty_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .none = 0 } }));
+    for (old_statements) |raw| try statements.append(a, @fromBackingInt(raw));
+    ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(statements.items);
+    var selected_reference: ?usize = null;
+    for (semantic.references, 0..) |reference, index| {
+        if (!reference.flags.declare or !reference.declaration_node_index.isNone()) continue;
+        if (semantic.symbols.items[@backingInt(reference.symbol_id)].synthetic_kind == .implicit_arguments) {
+            selected_reference = index;
+            break;
+        }
+    }
+    const ri = selected_reference orelse return error.MissingEngineDeclaration;
+    const selected = semantic.references[ri];
+    const sid = @backingInt(selected.symbol_id);
+    const scope = @backingInt(selected.scope_id);
+    var owner: ?u32 = null;
+    var owner_iterator = semantic.scope_owner_map.iterator();
+    while (owner_iterator.next()) |entry| if (entry.value_ptr.* == scope) {
+        try std.testing.expect(owner == null);
+        owner = entry.key_ptr.*;
+    };
+    const owner_raw = owner orelse return error.MissingEngineScopeOwner;
+    var function: ?u32 = null;
+    if (ast.nodes.items[owner_raw].tag == .formal_parameters) {
+        for (ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .function_declaration) continue;
+            if (ast.readExtraNode(node.data.extra, 1) == @as(NodeIndex, @fromBackingInt(owner_raw))) function = @intCast(raw);
+        }
+    }
+    switch (mutation) {
+        .none => {},
+        .wrong_kind => semantic.symbols.items[sid].kind = .variable_let,
+        .unknown_role => semantic.symbols.items[sid].synthetic_kind = null,
+        .wrong_reference_scope => analyzer.references.items[ri].scope_id = @fromBackingInt(@as(u32, 0)),
+        .wrong_scope_kind => analyzer.scopes.items[scope].kind = .block,
+        .missing_owner => _ = semantic.scope_owner_map.remove(owner_raw),
+        .arrow_owner => ast.nodes.items[function orelse owner_raw].tag = .arrow_function_expression,
+        .duplicate_owner => {
+            // Distinct children keep statement containment unambiguous. Only
+            // the forged second owner of the same engine ScopeId is invalid.
+            const params = try ast.addFormalParameters(try ast.addNodeList(&.{}), .{ .start = 0, .end = 0 });
+            const body = try ast.addNode(.{ .tag = .block_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .list = try ast.addNodeList(&.{}) } });
+            const none = @backingInt(NodeIndex.none);
+            const copy = try ast.addNode(.{ .tag = .function_expression, .span = .{ .start = 0, .end = 0 }, .data = .{ .extra = try ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none }) } });
+            if (function != null) {
+                const body_scope: u32 = @intCast(analyzer.scopes.items.len);
+                try analyzer.scopes.append(a, .{ .parent = selected.scope_id, .kind = .function, .is_strict = true });
+                semantic.scopes = analyzer.scopes.items;
+                try semantic.scope_owner_map.put(a, @backingInt(copy), body_scope);
+                try semantic.scope_owner_map.put(a, @backingInt(params), scope);
+            } else try semantic.scope_owner_map.put(a, @backingInt(copy), scope);
+            const statement = try ast.addNode(.{ .tag = .expression_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .unary = .{ .operand = copy, .flags = 0 } } });
+            try statements.append(a, statement);
+            ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(statements.items);
+        },
+        .missing_function_owner => _ = semantic.scope_owner_map.remove(function orelse return error.MissingParameterFunction),
+        .wrong_parameter_parent => {
+            const body_scope = semantic.scope_owner_map.get(function orelse return error.MissingParameterFunction).?;
+            analyzer.scopes.items[body_scope].parent = @fromBackingInt(@as(u32, 0));
+        },
+        .wrong_flags => analyzer.references.items[ri].flags.read = true,
+        .dangling_sid => analyzer.references.items[ri].symbol_id = @fromBackingInt(@as(u32, @intCast(semantic.symbols.items.len))),
+        .duplicate_engine_sid => try semantic.symbols.append(a, semantic.symbols.items[sid]),
+        .duplicate_declaration => {
+            const duplicated = try a.alloc(@import("../semantic/symbol.zig").Reference, semantic.references.len + 1);
+            @memcpy(duplicated[0..semantic.references.len], semantic.references);
+            duplicated[semantic.references.len] = selected;
+            semantic.references = duplicated;
+        },
+    }
+    const projected = try @import("statement_owner_projection.zig").project(a, ast, root, &semantic);
+    if (mutation != .none) {
+        try std.testing.expect(projected == null);
+        return;
+    }
+    const updated = projected orelse return error.EngineProjectionRejected;
+    try std.testing.expectEqual(originals.len, updated.len);
+    const contexts = try @import("../semantic/statement_coordinates.zig").collect(a, ast, root);
+    var checked: usize = 0;
+    for (originals, updated) |before, after| {
+        try std.testing.expectEqual(before.symbol_id, after.symbol_id);
+        try std.testing.expectEqual(before.scope_id, after.scope_id);
+        try std.testing.expectEqual(before.node_index, after.node_index);
+        try std.testing.expectEqual(before.declaration_node_index, after.declaration_node_index);
+        try std.testing.expectEqual(before.flags, after.flags);
+        if (!before.flags.declare or !before.declaration_node_index.isNone() or
+            semantic.symbols.items[@backingInt(before.symbol_id)].synthetic_kind != .implicit_arguments) continue;
+        var actual = semantic.scope_owner_map.iterator();
+        var owners: usize = 0;
+        while (actual.next()) |entry| {
+            if (entry.value_ptr.* != @backingInt(before.scope_id)) continue;
+            const expected = contexts[entry.key_ptr.*] orelse continue;
+            try std.testing.expectEqual(expected.stmt_idx, after.stmt_idx);
+            try std.testing.expectEqual(expected.scope_stmt_idx, after.scope_stmt_idx);
+            owners += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), owners);
+        checked += 1;
+    }
+    try std.testing.expect(checked > 0);
+}
+
+test "implicit arguments coordinates follow ten actual ordinary function owners" {
+    const sources = [_][]const u8{
+        "function read(value){return arguments[0]}",
+        "function read(value=1){return arguments[0]}",
+        "async function read(value=1){return arguments[0]}",
+        "function* read(value=1){yield arguments[0]}",
+        "async function* read(value=1){yield arguments[0]}",
+        "class Read{read(value=1){return arguments[0]}}",
+        "const object={read(value=1){return arguments[0]}};",
+        "function outer(){function read(value=1){return arguments[0]}return read()}",
+        "function read(value){return(()=>arguments[0])()}",
+        "const read=function(value=1){return arguments[0]};",
+    };
+    for (sources) |source| try checkImplicitArgumentsProjection(source, .none);
+}
+
+test "implicit arguments coordinates reject forged roles scopes owners and duplicates" {
+    for (std.meta.tags(EngineOwnerMutation)) |mutation| {
+        if (mutation == .none) continue;
+        try checkImplicitArgumentsProjection("function read(value=1){return arguments[0]}", mutation);
+    }
+}
+
 fn expectMapOwner(is_typescript: bool) !void {
     const bodies = [_][]const u8{
         "console.log(map);",                                           "console.log(map,filter);",  "function read(map){return map} console.log(map,read(1));",
@@ -63,6 +238,24 @@ fn expectMapOwner(is_typescript: bool) !void {
             if (!node.isNone()) {
                 try std.testing.expectEqual(top_statements.get(@backingInt(node)).?, reference.stmt_idx);
             } else {
+                const symbol = current.symbols.items[@backingInt(reference.symbol_id)];
+                if (symbol.synthetic_kind == .implicit_arguments) {
+                    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, symbol.kind);
+                    try std.testing.expectEqual(symbol.scope_id, reference.scope_id);
+                    var engine_owners = current.scope_owner_map.iterator();
+                    var found_engine_owner: usize = 0;
+                    while (engine_owners.next()) |engine_owner| {
+                        if (engine_owner.value_ptr.* != @backingInt(reference.scope_id)) continue;
+                        const statement = top_statements.get(engine_owner.key_ptr.*) orelse continue;
+                        const tag = ast.nodes.items[engine_owner.key_ptr.*].tag;
+                        try std.testing.expect(tag == .formal_parameters or tag == .function_declaration or
+                            tag == .function_expression or tag == .function or tag == .method_definition);
+                        try std.testing.expectEqual(statement, reference.stmt_idx);
+                        found_engine_owner += 1;
+                    }
+                    try std.testing.expectEqual(@as(usize, 1), found_engine_owner);
+                    continue;
+                }
                 var class_roles = current.class_self_symbol_map.valueIterator();
                 var checked_class_role = false;
                 while (class_roles.next()) |sid| {

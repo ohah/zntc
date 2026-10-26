@@ -7547,6 +7547,22 @@ fn canRetainMinifiedSemanticGraph(
         &import_declaration_nodes,
     ) catch return rejectMinifiedGraphGate(failure, .allocation);
     if (!import_declarations_valid) return rejectMinifiedGraphGate(failure, .invalid_declaration);
+    var implicit_contexts = (@import("../implicit_arguments_statement_owner.zig").collect(
+        allocator,
+        ast,
+        statement_contexts,
+        symbols,
+        scopes,
+        scope_owner_map,
+        references,
+    ) catch return rejectMinifiedGraphGate(failure, .allocation)) orelse
+        return rejectMinifiedGraphGate(failure, .invalid_declaration);
+    defer implicit_contexts.deinit(allocator);
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments and
+            !implicit_contexts.contains(@intCast(sid)))
+            return rejectMinifiedGraphGate(failure, .invalid_declaration);
+    }
 
     for (references) |reference| {
         const symbol_id = @backingInt(reference.symbol_id);
@@ -7556,8 +7572,13 @@ fn canRetainMinifiedSemanticGraph(
 
         if (reference.flags.declare) {
             if (!reference.node_index.isNone()) return rejectMinifiedGraphGate(failure, .invalid_declaration);
-            if (reference.declaration_node_index.isNone())
-                return rejectMinifiedGraphGate(failure, .invalid_declaration);
+            if (reference.declaration_node_index.isNone()) {
+                const context = implicit_contexts.get(symbol_id) orelse
+                    return rejectMinifiedGraphGate(failure, .invalid_declaration);
+                if (reference.stmt_idx != context.stmt_idx or reference.scope_stmt_idx != context.scope_stmt_idx)
+                    return rejectMinifiedGraphGate(failure, .invalid_statement_context);
+                continue;
+            }
             const raw = @backingInt(reference.declaration_node_index);
             if (!live.contains(raw)) return rejectMinifiedGraphGate(failure, .detached_declaration);
             if (raw >= ast.nodes.items.len or raw >= symbol_ids.len or
@@ -8084,6 +8105,91 @@ test "syntax minification retains only an exact semantic graph" {
     for (cases) |case| {
         const retained = try syntaxMinifyGraphRetainableForTest(case.source);
         try std.testing.expectEqual(case.retain, retained);
+    }
+}
+
+test "implicit arguments minified graph requires an exact engine declaration" {
+    const sources = [_][]const u8{
+        "function read(){return arguments[0]}",
+        "function read(value=1){return value}",
+        "function read(value=arguments[0]){return value}",
+        "function read(){return ()=>arguments[0]}",
+        "function read(){let value=1;return arguments[0]+value}",
+        "function read(){arguments[0]=42;return arguments[0]}",
+        "function read(...values){return arguments.length+values.length}",
+        "function read({value}){return arguments[0]+value}",
+        "const object={read(){return arguments[0]}};",
+        "const read=function(value=1){return arguments[0]+value};",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".mjs");
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.is_strict_mode = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        const semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .references = analyzer.references.items,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+        };
+        const projected = (try statement_owner_projection.project(a, &parser.ast, root, &semantic)) orelse return error.MissingEngineProjection;
+        var declaration: ?usize = null;
+        for (projected, 0..) |row, i| {
+            if (row.flags.declare and row.declaration_node_index.isNone() and
+                analyzer.symbols.items[@backingInt(row.symbol_id)].synthetic_kind == .implicit_arguments)
+                declaration = i;
+        }
+        const index = declaration orelse return error.MissingEngineDeclaration;
+        const saved = projected[index];
+        for (0..5) |mutation| {
+            projected[index] = saved;
+            switch (mutation) {
+                0 => {},
+                1 => projected[index].flags.declare = false,
+                2 => projected[index].scope_id = @fromBackingInt(0),
+                3 => projected[index].stmt_idx += 1,
+                4 => projected[index].scope_stmt_idx += 1,
+                else => unreachable,
+            }
+            var failure: MinifiedGraphGateFailure = undefined;
+            const retained = canRetainMinifiedSemanticGraph(
+                a,
+                &parser.ast,
+                root,
+                analyzer.symbols.items,
+                analyzer.scopes.items,
+                projected,
+                analyzer.symbol_ids.items,
+                &analyzer.unresolved_references,
+                &analyzer.scope_owner_map,
+                &failure,
+            );
+            if (retained != (mutation == 0)) std.debug.print("engine gate source={s} mutation={d} reason={s}\n", .{ source, mutation, @tagName(failure) });
+            try std.testing.expectEqual(mutation == 0, retained);
+        }
+        projected[index] = saved;
+        try std.testing.expect(canRetainMinifiedSemanticGraph(
+            a,
+            &parser.ast,
+            root,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            projected,
+            analyzer.symbol_ids.items,
+            &analyzer.unresolved_references,
+            &analyzer.scope_owner_map,
+            null,
+        ));
     }
 }
 
