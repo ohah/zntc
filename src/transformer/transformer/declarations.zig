@@ -602,7 +602,8 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
     if (!derived) return try self.prependStatementsToBody(body, statements);
     if (statements.len == 0) return body;
     for (statements) |statement| if (self.ast.getNode(statement).tag != .expression_statement) return null;
-    const Site = struct { node: NodeIndex, scope: ScopeId, alias: NodeIndex };
+    const constructor_scope = self.current_scope;
+    const Site = struct { node: NodeIndex, scope: ScopeId, constructor_scope: ScopeId, alias: NodeIndex };
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(self.allocator);
@@ -616,9 +617,18 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
         const node = self.ast.getNode(work.node);
         switch (node.tag) {
             .class_declaration, .class_expression, .method_definition, .static_block => continue,
-            .function, .function_expression, .function_declaration, .arrow_function_expression => {
+            .function, .function_expression, .function_declaration => {
                 if (try hasDeferredNativeSuper(self, work.node)) return null;
                 continue;
+            },
+            .arrow_function_expression => {
+                // A retained arrow keeps the source constructor's lexical
+                // super environment. Its own ScopeId is the actual use scope;
+                // ordinary functions and nested classes remain barriers.
+                if (self.options.unsupported.arrow) {
+                    if (try hasDeferredNativeSuper(self, work.node)) return null;
+                    continue;
+                }
             },
             else => {},
         }
@@ -627,9 +637,9 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
             node.tag == .assignment_expression and isNativeSuperCall(self, node.data.binary.right))
         {
             try suppressed.put(self.allocator, @backingInt(node.data.binary.right), {});
-            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .alias = node.data.binary.left });
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = constructor_scope, .alias = node.data.binary.left });
         } else if (isNativeSuperCall(self, work.node) and !suppressed.contains(@backingInt(work.node))) {
-            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .alias = .none });
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = constructor_scope, .alias = .none });
         }
         var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
         while (children.next()) |child| {
@@ -651,6 +661,7 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
         try clones.append(self.allocator, copy);
     }
     for (sites.items, 0..) |site, index| {
+        if (site.constructor_scope != self.current_scope) @panic("native super initializer lost its constructor owner");
         const instance = if (index == 0) statements else clones.items[index - 1].roots;
         const original = self.ast.getNode(site.node);
         const operation = try self.ast.addNode(original);

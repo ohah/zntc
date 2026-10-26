@@ -639,3 +639,218 @@ test "independent initializer clone exact named role rejects foreign identities"
     try std.testing.expectEqual(scope, try validate(&t, owner, from));
     try std.testing.expectEqual(t.semantic_editor.?.symbols.items[other_id].scope_id, try validate(&t, second, from));
 }
+
+const deferred_super_sources = [_][]const u8{
+    "class P{}class D extends P{x=42;constructor(){const go=()=>super();go()}}console.log(JSON.stringify(new D().x));",
+    "class P{}class D extends P{#x=42;read(){return this.#x}constructor(){const go=()=>super();go()}}console.log(JSON.stringify(new D().read()));",
+    "class P{}class D extends P{#x=()=>this;read(){return this.#x}constructor(){const go=()=>super();go()}}const d=new D;console.log(JSON.stringify([d.read()()===d,d.read().name]));",
+    "const log=[];class P{constructor(){log.push('base')}}class D extends P{x=(log.push('field'),42);constructor(){const go=()=>{log.push('arrow');return super()};log.push('before');go();log.push('after')}}const d=new D;console.log(JSON.stringify([log,d.x]));",
+    "class P{}class D extends P{#x=42;read(){return this.#x}constructor(){const go=()=>()=>super();go()()}}console.log(JSON.stringify(new D().read()));",
+    "class P{}class D extends P{#x=42;read(){return this.#x}constructor(flag){const go=flag?()=>super():()=>super();go()}}console.log(JSON.stringify([new D(true).read(),new D(false).read()]));",
+    "class P{}class D extends P{x=this;constructor(){const go=()=>super();const actual=go();console.log(JSON.stringify([actual===this,this.x===this]))}}new D;",
+    "class P{constructor(){return {ready:7}}}class D extends P{x=this.ready+1;constructor(){const go=()=>super();go()}}console.log(JSON.stringify(new D().x));",
+    "let fields=0;class P{constructor(){throw Error('base')}}class D extends P{x=++fields;constructor(){const go=()=>super();try{go()}catch(e){return {message:e.message}}}}const d=new D;console.log(JSON.stringify([d.message,fields]));",
+    "let fields=0;class P{}class D extends P{x=++fields;constructor(){const go=()=>super();return {go}}}const holder=new D;const before=fields;const actual=holder.go();console.log(JSON.stringify([before,fields,actual.x,actual instanceof D]));",
+};
+
+fn checkDeferredSuper(case: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = deferred_super_sources[case];
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    const Profiles = enum { es2015, es2017, es5, rn080_arrow };
+    var native_failures: usize = 0;
+    var residual_failures: usize = 0;
+    inline for (std.meta.tags(Profiles)) |profile| {
+        var unsupported = switch (profile) {
+            .es2015 => @import("transformer.zig").TransformOptions.compat.fromESTarget(.es2015),
+            .es2017 => @import("transformer.zig").TransformOptions.compat.fromESTarget(.es2017),
+            .es5 => @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5),
+            .rn080_arrow => @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80),
+        };
+        if (profile == .rn080_arrow) unsupported.arrow = true;
+        for ([_]bool{ false, true }) |minify| {
+            std.debug.print("DEFERRED START case={d} profile={s} minify={}\n", .{ case, @tagName(profile), minify });
+            const result = @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                .unsupported = unsupported,
+                .use_define_for_class_fields = true,
+                .keep_names = true,
+                .minify_syntax = minify,
+                .minify_identifiers = minify,
+                .minify_whitespace = minify,
+            }) catch |err| {
+                if (profile == .es2015 or profile == .es2017) native_failures += 1 else residual_failures += 1;
+                std.debug.print("DEFERRED RESULT case={d} profile={s} minify={} status=transform-error error={s}\n", .{ case, @tagName(profile), minify, @errorName(err) });
+                continue;
+            };
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            const passed = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, native.stdout, actual.stdout);
+            std.debug.print("DEFERRED RESULT case={d} profile={s} minify={} status={s}\n", .{ case, @tagName(profile), minify, if (passed) "pass" else "runtime-fail" });
+            if (!passed) {
+                if (profile == .es2015 or profile == .es2017) native_failures += 1 else residual_failures += 1;
+                std.debug.print("DEFERRED FAILURE case={d} profile={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ case, @tagName(profile), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+            }
+        }
+    }
+    std.debug.print("DEFERRED SUMMARY case={d} nativeFailures={d} residualFailures={d}\n", .{ case, native_failures, residual_failures });
+    try std.testing.expectEqual(@as(usize, 0), native_failures);
+}
+
+test "deferred native super repro 00" {
+    try checkDeferredSuper(0);
+}
+
+test "deferred native super repro 01" {
+    try checkDeferredSuper(1);
+}
+
+test "deferred native super repro 02" {
+    try checkDeferredSuper(2);
+}
+
+test "deferred native super repro 03" {
+    try checkDeferredSuper(3);
+}
+
+test "deferred native super repro 04" {
+    try checkDeferredSuper(4);
+}
+
+test "deferred native super repro 05" {
+    try checkDeferredSuper(5);
+}
+
+test "deferred native super repro 06" {
+    try checkDeferredSuper(6);
+}
+
+test "deferred native super repro 07" {
+    try checkDeferredSuper(7);
+}
+
+test "deferred native super repro 08" {
+    try checkDeferredSuper(8);
+}
+
+test "deferred native super repro 09" {
+    try checkDeferredSuper(9);
+}
+
+fn checkDeferredSuperBirth(source: []const u8, target: @import("compat.zig").ESTarget) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var t = try Transformer.init(a, &parser.ast, .{
+        .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+        .use_define_for_class_fields = true,
+    });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    try t.buildBlockRenameMap();
+    const output = try t.visitNode(root);
+    // Nothing below creates scopes, references or coordinate publication.
+    const utils = @import("output_scope_test_utils.zig");
+    const parents = try utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (t.ast.nodes.items, 0..) |_, raw| {
+        if (!parents.contains(@intCast(raw)) and raw != @backingInt(output)) continue;
+        if (t.outputOwnedScope(@fromBackingInt(@as(u32, @intCast(raw))))) |scope| try owners.put(a, @intCast(raw), @backingInt(scope));
+    }
+    const coordinates = try @import("../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+    const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, t.ast, output);
+    var checked: usize = 0;
+    for (refs) |node| {
+        const raw = @backingInt(node);
+        if (t.getSymbolIdAt(node)) |id| {
+            const row = (try t.semantic_editor.?.referenceForNode(node)) orelse return error.MissingDeferredReference;
+            const actual = coordinates[raw] orelse return error.MissingDeferredCoordinates;
+            try std.testing.expectEqual(id, @backingInt(row.symbol_id));
+            try std.testing.expectEqual(utils.expectedScope(t.ast, output, &parents, &owners, raw).?, row.scope_id);
+            if (actual.stmt_idx != row.stmt_idx or actual.scope_stmt_idx != row.scope_stmt_idx) std.debug.print("DEFERRED BIRTH node={d} name={s} sid={d} scope={d} stmt={d}/{d} scopeStmt={d}/{d} recordedOrigin={}\n", .{ raw, t.ast.getText(t.ast.getNode(node).data.string_ref), id, @backingInt(row.scope_id), row.stmt_idx, actual.stmt_idx, row.scope_stmt_idx, actual.scope_stmt_idx, t.native_constructor_reference_origins.contains(raw) });
+            try std.testing.expectEqual(actual.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(actual.scope_stmt_idx, row.scope_stmt_idx);
+            checked += 1;
+        } else {
+            const origin = t.reference_origin_map.get(raw) orelse raw;
+            try std.testing.expect(t.explicit_global_reference_nodes.contains(raw) or analyzer.unresolved_reference_nodes.contains(origin));
+        }
+    }
+    try std.testing.expect(checked > 0);
+    try std.testing.expectEqual(@as(usize, 0), t.native_constructor_timing_plans.count());
+    try std.testing.expect(!t.runtime_helpers.derived_constructor);
+    var sites: usize = 0;
+    var site_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (t.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .call_expression or !parents.contains(@intCast(raw))) continue;
+        const callee = t.ast.getNode(t.ast.readExtraNode(node.data.extra, 0));
+        if (callee.tag != .super_expression) continue;
+        sites += 1;
+        const sequence_idx = parents.get(@intCast(raw)).?;
+        const sequence = t.ast.nodes.items[sequence_idx];
+        try std.testing.expectEqual(ast.Node.Tag.sequence_expression, sequence.tag);
+        const list = t.ast.extra_data.items[sequence.data.list.start .. sequence.data.list.start + sequence.data.list.len];
+        try std.testing.expect(list.len >= 3);
+        try std.testing.expectEqual(@as(u32, @intCast(raw)), list[0]);
+        try std.testing.expectEqual(ast.Node.Tag.this_expression, t.ast.nodes.items[list[list.len - 1]].tag);
+        var cursor = parents.get(@intCast(raw));
+        var arrows: usize = 0;
+        var constructor_scope: ?u32 = null;
+        while (cursor) |parent_raw| {
+            const parent_node = t.ast.nodes.items[parent_raw];
+            if (parent_node.tag == .arrow_function_expression) arrows += 1;
+            if (parent_node.tag == .method_definition) {
+                try std.testing.expect(@import("es_helpers.zig").isConstructorKey(&t, t.ast.readExtraNode(parent_node.data.extra, ast.MethodExtra.key)));
+                constructor_scope = owners.get(parent_raw).?;
+                break;
+            }
+            cursor = parents.get(parent_raw);
+        }
+        try std.testing.expect(arrows > 0);
+        try std.testing.expect(constructor_scope != null);
+        const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, @intCast(raw)).?;
+        try std.testing.expect(@backingInt(use_scope) != constructor_scope.?);
+        var stack: std.ArrayList(ast.NodeIndex) = .empty;
+        try stack.append(a, @fromBackingInt(sequence_idx));
+        var local_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        while (stack.pop()) |child| {
+            if (child.isNone()) continue;
+            const child_raw = @backingInt(child);
+            const local = try local_nodes.getOrPut(a, child_raw);
+            if (local.found_existing) continue;
+            try std.testing.expect(!site_nodes.contains(child_raw));
+            var children = @import("../parser/ast_walk.zig").children(t.ast, t.ast.getNode(child));
+            while (children.next()) |next| try stack.append(a, next);
+        }
+        var nodes = local_nodes.keyIterator();
+        while (nodes.next()) |child| try site_nodes.put(a, child.*, {});
+    }
+    try std.testing.expect(sites > 0);
+    try @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
+}
+
+test "deferred native super exact birth before output walker" {
+    for (deferred_super_sources) |source| {
+        try checkDeferredSuperBirth(source, .es2015);
+        try checkDeferredSuperBirth(source, .es2017);
+    }
+}

@@ -72,6 +72,12 @@ fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, r
     const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, field.key);
     try es_helpers.trackKnownHoistedComputedKeyRef(self, key_arg, reference_scope);
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+    // Only an explicitly registered constructor-placement producer grants
+    // this origin; static field/block helpers keep their existing contract.
+    if (self.semantic_edit_enabled and self.native_constructor_placement_scopes.contains(@backingInt(reference_scope))) {
+        const id = self.getSymbolIdAt(callee) orelse @panic("public field callee has no exact helper identity");
+        try @import("../native_constructor_guard.zig").recordReference(self, callee, @fromBackingInt(id), reference_scope, .{ .read = true });
+    }
     const value = try namedFieldValue(self, field, reference_scope);
     const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, value }, field.span);
     return es_helpers.makeExprStmt(self, call, field.span);
@@ -721,7 +727,11 @@ pub fn insertFieldAssignmentsIntoConstructor(
     if (body_idx.isNone()) return ctor_idx;
     if (self.ast.getNode(body_idx).tag != .block_statement) return ctor_idx;
 
-    const insert_pos: u32 = if (has_super) (findSuperCallInsertPos(self, body_idx) orelse 0) else 0;
+    if (self.semantic_edit_enabled) {
+        const owner = self.outputOwnedScope(ctor_idx) orelse @panic("public initializer constructor has no actual owner");
+        if (owner != self.current_scope) @panic("public initializer lost its selected constructor scope");
+        try @import("../native_constructor_timing.zig").registerPlacementOwner(self, owner);
+    }
 
     // field assignments 를 먼저 빌드 (buildThisAssignment 가 AST 변형 — splice 전에 완료).
     const prefix: usize = if (capture_declaration.isNone()) 0 else 1;
@@ -730,7 +740,13 @@ pub fn insertFieldAssignmentsIntoConstructor(
     if (prefix != 0) field_stmts[0] = capture_declaration;
     for (fields, 0..) |field, i| field_stmts[i + prefix] = try buildThisAssignment(self, field);
 
-    const new_body = try spliceBlockStmtsAt(self, body_idx, insert_pos, field_stmts);
+    // The initializer plan already selected this exact constructor scope.
+    // Share the native super-site producer rather than guessing a top-level
+    // statement position (which prepended before a deferred arrow call).
+    const new_body = if (has_super)
+        try self.insertStatementsAfterSuper(body_idx, field_stmts)
+    else
+        try spliceBlockStmtsAt(self, body_idx, 0, field_stmts);
 
     // constructor method_definition을 새 body로 재생성
     // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
