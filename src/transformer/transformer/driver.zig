@@ -716,6 +716,7 @@ fn wrapFunctionBodyForParameterInitializers(
         editor.scopes.items[wrapper_scope.toIndex()].subtree_has_with = source_scope.subtree_has_with;
         try self.reparentGeneratedBodyScopes(function_scope, wrapper_scope, inner_body);
         try self.moveGeneratedFunctionBodyBindings(function_scope, wrapper_scope, inner_body);
+        try @import("../class_strict_context.zig").moveSourceReferences(self, inner_body, function_scope, function_scope, wrapper_scope);
     }
 
     const implicit_input = if (!is_async) try appendImplicitArgumentsBodyCopy(self, function_scope, wrapper_scope, arrow, inner_body, span) else null;
@@ -1194,6 +1195,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}",
         "function read([head]=[1],{a,...rest},get=()=>head){let body=1;var head;eval('head=9');return [head,get(),a,rest,body]}",
         "const object={read({a,...rest},value=2){let body=1;const sibling=()=>body;eval('a');return [a,value,rest,sibling()]}};",
+        "function read({a,...rest},get=()=>a){let body=1;function a(){return 9}eval('a');return [a(),get(),body]}",
     }) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1434,7 +1436,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
     }
     try std.testing.expect(sibling_controls > 0);
     try std.testing.expectEqual(@as(usize, 3), simple_cases);
-    try std.testing.expectEqual(@as(usize, 19), retained_non_simple_cases);
+    try std.testing.expectEqual(@as(usize, 20), retained_non_simple_cases);
     try std.testing.expectEqual(@as(usize, 2), no_split_environment_cases);
 }
 
@@ -1487,6 +1489,7 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest}){function a(){return other()}function other(){return 9}eval('a');return [a(),other.name]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest},value=2){function a(){return 9}eval('a');return [a(),value]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest}){function nested(){var a=8;return a}eval('a');return [a,nested()]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},get=()=>a){let body=1;function a(){return 9}eval('a');return [a(),get(),body]}", .call = "read({a:1,b:2})" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
