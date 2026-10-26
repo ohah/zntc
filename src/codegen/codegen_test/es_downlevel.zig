@@ -1578,7 +1578,7 @@ test "ES2022: static block this → class name" {
     // → class Foo {} (() => { Foo.x = 1; })();
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(()=>{\"use strict\";_classThis0.x=1;})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(function(){\"use strict\";_classThis0.x=1;}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block this in nested function not replaced" {
@@ -1616,7 +1616,7 @@ test "ES2022: static block this - no transform on esnext" {
 test "ES2022: multiple static blocks with this" {
     var r = try e2eTarget(std.testing.allocator, "class A { static { this.x = 1; } static { this.y = 2; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(()=>{\"use strict\";_classThis0.x=1;})();(()=>{\"use strict\";_classThis0.y=2;})();", r.output);
+    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(function(){\"use strict\";_classThis0.x=1;}).call(_classThis0);(function(){\"use strict\";_classThis0.y=2;}).call(_classThis0);", r.output);
 }
 
 // --- ES2015: template literal ---

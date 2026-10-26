@@ -595,6 +595,24 @@ fn checkWorkletClassFactoryExactCoverage(
     const generated_class_scope = edited.scopes[generated_symbol.scope_id.toIndex()];
     if (unsupported.class) {
         try std.testing.expect(generated_class_scope.kind == .function or generated_class_scope.kind == .class_body);
+    } else if (unsupported.class_static_block) {
+        // A native class expression whose static code moves out already has
+        // its real class-declaration storage in the planned wrapper function.
+        try std.testing.expectEqual(ScopeKind.function, generated_class_scope.kind);
+        const parents = try @import("output_scope_test_utils.zig").buildParentMap(allocator, transformer.ast, root);
+        var actual_declarations: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .class_declaration or !parents.contains(@intCast(raw))) continue;
+            const binding = transformer.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").ClassExtra.name);
+            if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != generated_class_self) continue;
+            const body = parents.get(@intCast(raw)).?;
+            const owner = parents.get(body).?;
+            try std.testing.expectEqual(.block_statement, transformer.ast.nodes.items[body].tag);
+            try std.testing.expectEqual(if (unsupported.arrow) @import("../parser/ast.zig").Node.Tag.function_expression else .arrow_function_expression, transformer.ast.nodes.items[owner].tag);
+            try std.testing.expectEqual(@as(?u32, @backingInt(generated_symbol.scope_id)), edited.scope_owner_map.get(owner));
+            actual_declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_declarations);
     } else {
         try std.testing.expectEqual(ScopeKind.class_body, generated_class_scope.kind);
     }
@@ -1912,4 +1930,18 @@ test "#2484 regression: deeply nested new expression — class factory captured"
     // worklet class factory: `new X()` 발견 시 closure 에 `X` 와 `X__classFactory` 함께 등록.
     // 깊이 한도가 살아있으면 두 키 모두 누락되므로 정확 매칭으로 검증.
     try std.testing.expect(std.mem.indexOf(u8, code, "{DeepClass,DeepClass__classFactory}=this.__closure") != null);
+}
+
+test "static block environment Worklet reconstruction consumes its body alias before copying" {
+    const source =
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static { globalThis.workletClassSelf = Clazz; }
+        \\  static self() { "worklet"; return Clazz; }
+        \\}
+        \\const observed = Clazz;
+        \\Clazz = null;
+    ;
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es5), "static-worklet-body-es5.ts", "Clazz", source);
+    try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2015), "static-worklet-body-es2015.ts", "Clazz", source);
 }

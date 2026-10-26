@@ -5824,33 +5824,111 @@ pub fn transferStaticBlockStorage(self: *Transformer, source: NodeIndex, functio
         if (editor.symbols.items[sid].scope_id != source_scope) continue;
         editor.relocateSymbol(@fromBackingInt(@intCast(sid)), function_scope) catch |err| return editError(err);
     }
-    try @import("../class_strict_context.zig").moveSourceReferences(self, body, source_scope, source_scope, function_scope);
+    try moveStaticBlockSourceReferences(self, body, source_scope, function_scope);
     try reparentGeneratedBodyScopes(self, source_scope, function_scope, body);
     // This exact body was a source environment alias, and is now the actual
     // generated function body. No unrelated block receives that owner.
     if (self.ast.getNode(source).data.unary.operand != body or self.outputOwnedScope(body) != source_scope)
         @panic("static block body lost its canonical source owner");
-    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(function_scope));
-    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(function_scope));
+    // The source alias is consumed before visitation. The actual ordinary
+    // function owns this body implicitly; in particular, the Worklet source
+    // owner copier must not mistake the container for a second function.
+    const origin = self.scope_owner_origins.get(@backingInt(body)) orelse @backingInt(body);
+    _ = self.scope_owner_remaps.remove(origin);
+    _ = editor.scope_owner_map.remove(@backingInt(body));
+    _ = self.transformed_scope_owner_map.remove(@backingInt(body));
+    _ = self.scope_owner_origins.remove(@backingInt(body));
+    try self.scope_owner_removed.put(self.allocator, @backingInt(body), {});
 }
 
 /// Source static bodies carry an alias because the static node owns their
 /// special environment. An ordinary function body instead uses its function
 /// owner directly. Retire only the exact alias used during body visitation.
-pub fn completeStaticBlockBody(self: *Transformer, source_body: NodeIndex, output_body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+pub fn completeStaticBlockBody(self: *Transformer, source: NodeIndex, source_body: NodeIndex, output_body: NodeIndex, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
+    try retireStaticBlockClassSelfSources(self, source, output_body);
     if (self.ast.getNode(source_body).tag != .block_statement or self.ast.getNode(output_body).tag != .block_statement or
-        self.outputOwnedScope(source_body) != scope or self.outputOwnedScope(output_body) != scope or
+        !self.scope_owner_removed.contains(@backingInt(source_body)) or
+        editor.scope_owner_map.contains(@backingInt(source_body)) or
+        self.transformed_scope_owner_map.contains(@backingInt(source_body)) or
+        editor.scope_owner_map.contains(@backingInt(output_body)) or
+        self.transformed_scope_owner_map.contains(@backingInt(output_body)) or
         editor.scopes.items[scope.toIndex()].kind != .function)
         @panic("static block output body lost its actual function environment");
     const source_origin = self.scope_owner_origins.get(@backingInt(source_body)) orelse @backingInt(source_body);
-    const output_origin = self.scope_owner_origins.get(@backingInt(output_body)) orelse @backingInt(source_body);
-    if (output_origin != source_origin) @panic("static body alias has a foreign source origin");
+    if (self.scope_owner_origins.get(@backingInt(output_body))) |output_origin| {
+        if (output_origin != source_origin) @panic("static body alias has a foreign source origin");
+    }
     _ = self.scope_owner_remaps.remove(source_origin);
     for ([_]NodeIndex{ source_body, output_body }) |body| {
         _ = editor.scope_owner_map.remove(@backingInt(body));
         _ = self.transformed_scope_owner_map.remove(@backingInt(body));
         _ = self.scope_owner_origins.remove(@backingInt(body));
+    }
+}
+
+fn staticBlockCapturesSelf(self: *Transformer, id: SymbolId) bool {
+    for (self.static_class_contexts.items) |context|
+        if (context.class_self_symbol_id == @as(?u32, @backingInt(id))) return true;
+    return false;
+}
+
+fn moveStaticBlockSourceReferences(self: *Transformer, body: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var temporary = std.heap.ArenaAllocator.init(self.allocator);
+    defer temporary.deinit();
+    const a = temporary.allocator();
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    try stack.append(a, body);
+    while (stack.pop()) |node| {
+        if (node.isNone()) continue;
+        try self.relocateNodeScopeProvenance(node, source, target);
+        const reference = editor.referenceForNode(node) catch |err| return editError(err);
+        if (reference) |ref| {
+            if (!ref.flags.declare and ref.scope_id == source) {
+                // The exact class-self reader/writer producer replaces this
+                // source use with its immutable capture during visitation.
+                // Keep the source row in its still-valid class environment
+                // until that precise node has actually been consumed.
+                if (!staticBlockCapturesSelf(self, ref.symbol_id)) {
+                    if (self.tracked_runtime_helper_ref_index.contains(@backingInt(node)))
+                        try self.relocateRuntimeHelperRef(node, target)
+                    else
+                        editor.moveReference(node, target, ref.stmt_idx, ref.scope_stmt_idx) catch |err| return editError(err);
+                }
+            }
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(node));
+        while (children.next()) |child| try stack.append(a, child);
+    }
+}
+
+fn retireStaticBlockClassSelfSources(self: *Transformer, source: NodeIndex, output_body: NodeIndex) Transformer.Error!void {
+    const editor = try editorFor(self);
+    const source_scope = self.outputOwnedScope(source) orelse @panic("static class-self lifecycle lost its source environment");
+    var pending = false;
+    for (editor.references.items) |ref| {
+        if (!ref.flags.declare and ref.scope_id == source_scope and staticBlockCapturesSelf(self, ref.symbol_id)) {
+            pending = true;
+            break;
+        }
+    }
+    if (!pending) return;
+    var temporary = std.heap.ArenaAllocator.init(self.allocator);
+    defer temporary.deinit();
+    const live = try ast_walk.collectReachableNodeIndicesFrom(temporary.allocator(), self.ast, output_body);
+    var index: usize = 0;
+    while (index < editor.references.items.len) {
+        const ref = editor.references.items[index];
+        if (ref.flags.declare or ref.scope_id != source_scope or !staticBlockCapturesSelf(self, ref.symbol_id)) {
+            index += 1;
+            continue;
+        }
+        if (std.mem.indexOfScalar(u32, live, @backingInt(ref.node_index)) != null)
+            @panic("static class-self source escaped its exact capture producer");
+        // Retire the output row/index while retaining the parser-node ID in
+        // Transformer's source staging array for later intentional revisits.
+        editor.removeReference(ref.node_index) catch |err| return editError(err);
     }
 }

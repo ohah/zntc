@@ -49,7 +49,7 @@ test "static block environment lowered storage and reference scopes exist before
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const source = "class C{static{var value=3;this.a=()=>value;console.log(value)}static{var value=9;this.b=()=>value;console.log(value)}}console.log(C.a(),C.b())";
+        const source = "class C{static{var value=3;this.a=()=>value;console.log(value,C===this)}static{var value=9;this.b=()=>value;console.log(value,C===this)}}console.log(C.a(),C.b())";
         var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
         const root = try parser.parse();
@@ -83,6 +83,22 @@ test "static block environment lowered storage and reference scopes exist before
             try owners.put(a, raw.*, @backingInt(scope));
         };
         const editor = &t.semantic_editor.?;
+        var consumed_self: usize = 0;
+        for (initial.references.items) |source_ref| {
+            if (source_ref.flags.declare or initial.scopes.items[source_ref.scope_id.toIndex()].kind != .class_static_block) continue;
+            if (initial.symbols.items[@backingInt(source_ref.symbol_id)].scope_id == source_ref.scope_id) continue;
+            var is_class_self = false;
+            var self_ids = initial.class_self_symbol_map.valueIterator();
+            while (self_ids.next()) |id| if (@backingInt(source_ref.symbol_id) == id.*) {
+                is_class_self = true;
+                break;
+            };
+            if (!is_class_self) continue;
+            try std.testing.expect((try editor.referenceForNode(source_ref.node_index)) == null);
+            try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(source_ref.node_index)]);
+            consumed_self += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), consumed_self);
         for (parser.ast.nodes.items) |source_node| {
             if (source_node.tag != .static_block) continue;
             const source_body = source_node.data.unary.operand;
@@ -183,6 +199,11 @@ test "static block environment exact owner accepts only its canonical body alias
 }
 
 const native_cases = [_][]const u8{
+    "// 객체 rest 선언 — static 블록·형제 함수 같은 임시 이름·제너레이터·async·반복별 클로저 (#4790)\nconst out = [];\n// static 블록\nclass Holder {\n  static {\n    const { valueLong, ...otherLong } = { valueLong: 2, z: 3 };\n    Holder.v = valueLong + Object.keys(otherLong).length;\n  }\n}\nout.push(Holder.v);\n// 형제 함수가 같은 임시 변수 이름을 쓴다\nfunction one(o) {\n  const { keyLong, ...remLong } = o;\n  return keyLong + Object.keys(remLong).length;\n}\nfunction two(o) {\n  let { keyLong, ...remLong } = o;\n  keyLong += 10;\n  return keyLong + Object.keys(remLong).length;\n}\nout.push(one({ keyLong: 1, q: 1 }), two({ keyLong: 1 }));\n// 제너레이터·async 안\nfunction* gen(o) {\n  const { gLong, ...gRest } = o;\n  yield gLong;\n  yield Object.keys(gRest).join();\n}\nout.push([...gen({ gLong: 'g', m: 1, n: 2 })].join('|'));\nasync function run(o) {\n  const { aLong, ...aRest } = await o;\n  return aLong + Object.keys(aRest).length;\n}\n// 반복마다 새 바인딩 (클로저)\nconst fns = [];\nfor (const item of [\n  { idLong: 1, x: 1 },\n  { idLong: 2, x: 2 },\n]) {\n  const { idLong, ...extraLong } = item;\n  fns.push(() => idLong + extraLong.x);\n}\nout.push(fns.map((f) => f()).join());\nrun(Promise.resolve({ aLong: 5, b: 1 })).then((v) => {\n  out.push(v);\n  console.log(out.join(','));\n});\n",
+    "// static 블록 안 객체 getter·중첩 클래스 메서드의 this (#4801)\nclass A {\n  static r = {};\n  static {\n    A.obj = {\n      get g() {\n        return this === A.obj;\n      },\n    };\n    A.C = class {\n      m() {\n        return this instanceof A.C;\n      }\n    };\n  }\n}\nconsole.log(A.obj.g, new A.C().m());\n",
+    "class C{static{try{C=7}catch(error){console.log(error.name)}this.value=9}}console.log(C.value)",
+    "class C{static{this.read=()=>C}}const saved=C;C=null;console.log(saved.read()===saved)",
+
     "class C{static{var value=3;this.a=()=>value}static{var value=9;this.b=()=>value}}console.log(C.a(),C.b())",
     "class C{static{let value=3;this.a=()=>value}static{let value=9;this.b=()=>value}}console.log(C.a(),C.b())",
     "class C{static{let value=3;function read(){return value}this.a=read}static{let value=9;function read(){return value}this.b=read}}console.log(C.a(),C.b())",

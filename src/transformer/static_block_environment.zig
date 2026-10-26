@@ -27,7 +27,7 @@ pub fn lower(self: anytype, source: ast.NodeIndex, parent: ScopeId, class_name: 
         defer self.in_extracted_fn_body = saved_extracted;
         break :blk try self.visitNode(body);
     };
-    try @import("transformer/semantic_edit.zig").completeStaticBlockBody(self, body, visited, function_scope);
+    try @import("transformer/semantic_edit.zig").completeStaticBlockBody(self, source, body, visited, function_scope);
     // The ordinary function owns its body implicitly. Use a fresh syntax
     // container so a source body returned unchanged cannot expose the retired
     // source static-block alias through the original owner map.
