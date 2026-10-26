@@ -5535,6 +5535,54 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'direct eval keeps exact graph after independent label and console drops',
+        source:
+          "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'combined label and console drops retain fallback when eval can see a removed binding',
+        source:
+          "function read() { DEV: { const hidden = 40; console.log('gone'); } console.warn('gone too'); return eval('typeof hidden'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined label and console drops retain fallback when a removed call contains eval',
+        source:
+          "function read() { DEV: throw 'label gone'; console.warn(eval('globalThis.__removed_eval = 40')); return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'combined label and console drops retain fallback with syntax minification',
+        source:
+          "function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV', '--minify-syntax'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'combined label and console drops retain fallback with a define transform',
+        source:
+          "function read(value) { const saved = __FLAG__; DEV: throw 'label gone'; console.warn('console gone'); return eval('value') + saved; } process.stdout.write(String(read(40)));",
+        args: ['--drop-labels=DEV', '--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '40',
+      },
+      {
+        name: 'combined label and console drops retain fallback beside class lowering',
+        source:
+          "class Local {} function read(value) { DEV: throw 'label gone'; console.warn('console gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'direct eval still reads a surviving local after console removal',
         source:
           "function read() { const hidden = 40; console.log('gone'); return eval('hidden'); } process.stdout.write(String(read() + 2));",
