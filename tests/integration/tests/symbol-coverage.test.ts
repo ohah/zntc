@@ -335,7 +335,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-global-namespace',
     source:
       'declare namespace global { export const value: number; } const result = 42; console.log(result);',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'ambient-string-module-shorthand',
@@ -374,13 +374,61 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-string-module-with-type-import',
     source:
       'declare module "ambient" { import type { Value } from "./types"; export const value: Value; } const result = 47; console.log(result);',
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'ambient-string-module-with-export-equals',
     source:
       'declare module "ambient" { const value: number; export = value; } const result = 48; console.log(result);',
-    graph: 'reanalyzed',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-default-type-import',
+    source:
+      'declare module "ambient" { import type Value from "./types"; export const value: Value; } console.log(1);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-type-import-equals',
+    source:
+      'declare module "ambient" { import type Value = require("./types"); export const value: Value; } console.log(2);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-import-equals-require',
+    source:
+      'declare module "ambient" { import Value = require("./value"); export const value: number; } console.log(3);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-import-equals-namespace',
+    source:
+      'declare module "ambient" { namespace Source { export const value: number; } import Alias = Source; export = Alias; } console.log(4);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-multiple-type-imports',
+    source:
+      'declare module "ambient" { import type { A } from "./a"; import type { B } from "./b"; export const value: A & B; } console.log(5);',
+    graph: 'retained',
+  },
+  {
+    name: 'multiple-ambient-string-modules-with-lenient-syntax',
+    source:
+      'declare module "ambient-a" { import type { A } from "./a"; export const value: A; } declare module "ambient-b" { const value: number; export = value; } console.log(6);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-global-namespace-and-import',
+    source:
+      'declare module "ambient" { import type { Value } from "./types"; declare namespace global { export const value: Value; } export const other: Value; } console.log(7);',
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-string-module-with-nested-namespace-and-export-equals',
+    source:
+      'declare module "ambient" { namespace Nested { export const value: number; } export = Nested; } console.log(8);',
+    graph: 'retained',
   },
 ] as const;
 const EXACT_ZERO_COUNTERS = [
@@ -2614,7 +2662,6 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       const reanalyzedSources = [
         'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);',
-        "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);",
       ];
       for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
         const reanalyzedInput = join(dir, `runtime-${index}.unknown`);
@@ -2630,6 +2677,21 @@ describe('symbol identity coverage gate (#4819)', () => {
           `${reanalyzedSource}\n${result.stderr}`,
         ).toEqual([]);
       }
+
+      const retainedAmbientModuleSource =
+        "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);";
+      const retainedAmbientInput = join(dir, 'ambient-module.unknown');
+      writeFileSync(retainedAmbientInput, retainedAmbientModuleSource);
+      const retainedAmbient = runCoverage(retainedAmbientInput, TARGETS[4], dir, true);
+      expect(retainedAmbient.exitCode, retainedAmbient.stderr).toBe(0);
+      expect(
+        transpileGraphModeProblems(retainedAmbient.stderr, true, 'retained'),
+        retainedAmbient.stderr,
+      ).toEqual([]);
+      expect(
+        transformIdentityAuditProblems(retainedAmbient.stderr),
+        retainedAmbient.stderr,
+      ).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2983,6 +3045,13 @@ describe('symbol identity coverage gate (#4819)', () => {
         graph: 'retained',
       },
       {
+        name: 'ambient-global-namespace',
+        source:
+          'declare namespace global { export const value: number; } console.log(typeof global, typeof global.value);',
+        setup: '',
+        graph: 'retained',
+      },
+      {
         name: 'ambient-string-module',
         source: [
           'declare module "ambient" {',
@@ -2998,6 +3067,20 @@ describe('symbol identity coverage gate (#4819)', () => {
       {
         name: 'ambient-string-module-shorthand',
         source: 'declare module "ambient"; const result = 43; console.log(result);',
+        setup: '',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-string-module-with-type-import',
+        source:
+          'declare module "ambient" { import type { Value } from "./types"; export const value: Value; } const result = 47; console.log(result);',
+        setup: '',
+        graph: 'retained',
+      },
+      {
+        name: 'ambient-string-module-with-export-equals',
+        source:
+          'declare module "ambient" { const value: number; export = value; } const result = 48; console.log(result);',
         setup: '',
         graph: 'retained',
       },
@@ -3109,6 +3192,73 @@ describe('symbol identity coverage gate (#4819)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test('erased ambient module subtrees contain lenient-only syntax and keep runtime identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-ambient-module-erased-subtrees-'));
+    const caseNames = new Set([
+      'ambient-string-module-with-type-import',
+      'ambient-string-module-with-export-equals',
+      'ambient-string-module-with-default-type-import',
+      'ambient-string-module-with-type-import-equals',
+      'ambient-string-module-with-import-equals-require',
+      'ambient-string-module-with-import-equals-namespace',
+      'ambient-string-module-with-multiple-type-imports',
+      'multiple-ambient-string-modules-with-lenient-syntax',
+      'ambient-string-module-with-global-namespace-and-import',
+      'ambient-string-module-with-nested-namespace-and-export-equals',
+    ]);
+    const cases = LENIENT_UNKNOWN_GATE_PROBES.filter((item) => caseNames.has(item.name));
+    expect(cases).toHaveLength(10);
+
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.unknown`);
+        const oraclePath = join(dir, `${item.name}.oracle.cjs`);
+        writeFileSync(input, item.source);
+        writeFileSync(
+          oraclePath,
+          ts.transpileModule(item.source, {
+            compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ESNext },
+          }).outputText,
+        );
+        const oracle = runNode([oraclePath]);
+        expect(oracle.status, `${item.name} TypeScript oracle: ${oracle.stderr}`).toBe(0);
+
+        for (const target of [TARGETS[0], TARGETS[4]]) {
+          const result = runCoverage(input, target, dir, true);
+          expect(result.exitCode, `${item.name} ${target.name}: ${result.stderr}`).toBe(0);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, 'retained'),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            transformIdentityAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          expect(
+            postMinifyAuditProblems(result.stderr),
+            `${item.name} ${target.name}: ${result.stderr}`,
+          ).toEqual([]);
+          const identity = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(
+            exactIdentityObservationProblems(identity ?? ''),
+            `${item.name} ${target.name}: ${identity ?? 'missing exact report'}`,
+          ).toEqual([]);
+
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${item.name} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${item.name} ${target.name}: runtime output mismatch`).toBe(
+            oracle.stdout,
+          );
+          expect(actual.stderr).toBe('');
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   test('lenient TypeScript enums retain exact graph across targets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-enum-graph-'));
