@@ -298,6 +298,152 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     graph: 'retained',
   },
   {
+    name: 'nested-const-enum-surviving-typeof',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  return typeof Status;',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-property-name-only',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  return { Status: 43 };',
+      '}',
+      'console.log(read().Status);',
+    ].join('\n'),
+    graph: 'retained',
+  },
+  {
+    name: 'nested-const-enum-surviving-dynamic-member',
+    source: [
+      'function read(key) {',
+      '  const enum Status { Ready = 42 }',
+      '  return Status[key];',
+      '}',
+      "console.log(read('Ready'));",
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-surviving-bare-reference',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  return Status;',
+      '}',
+      'console.log(typeof read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-surviving-assignment-target',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  Status = 43;',
+      '  return 42;',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-surviving-shorthand-reference',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  return { Status };',
+      '}',
+      'console.log(typeof read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-surviving-closure-reference',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  return () => Status;',
+      '}',
+      'console.log(typeof read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-shadowed-by-parameter',
+    source: [
+      'function outer() {',
+      '  const enum Status { Ready = 42 }',
+      '  return function read(Status) { return Status; };',
+      '}',
+      'console.log(typeof outer());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-shadowed-by-block-binding',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  { const Status = { Ready: 43 }; return Status.Ready; }',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-shadowed-by-unused-binding',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  { const Status = {}; }',
+      '  return 42;',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-shadowed-by-catch-binding',
+    source: [
+      'function read() {',
+      '  const enum Status { Ready = 42 }',
+      '  try { throw { Ready: 43 }; }',
+      '  catch (Status) { return Status.Ready; }',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-shadowed-by-method-parameter',
+    source: [
+      'function make() {',
+      '  const enum Status { Ready = 42 }',
+      '  return class { read(Status) { return Status.Ready; } };',
+      '}',
+      'console.log(typeof make());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'nested-const-enum-escaped-name-surviving-reference',
+    source: [
+      'function read() {',
+      '  const enum \\u0053tatus { Ready = 42 }',
+      '  return typeof Status;',
+      '}',
+      'console.log(read());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
     name: 'auto-accessor',
     source: 'class Box { accessor value: number = 1; } console.log(new Box().value);',
     graph: 'retained',
@@ -2381,6 +2527,35 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
   });
 
+  test('nested lenient const-enum gate rejects every surviving same-name edge', () => {
+    const cases = LENIENT_UNKNOWN_GATE_PROBES.filter((probe) =>
+      probe.name.startsWith('nested-const-enum-'),
+    );
+    expect(cases).toHaveLength(13);
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-nested-const-enum-gate-'));
+    try {
+      for (const probe of cases) {
+        const input = join(dir, `${probe.name}.unknown`);
+        writeFileSync(input, probe.source);
+        const result = runCoverage(input, TARGETS[0], dir, true);
+        expect(result.exitCode, `${probe.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), `${probe.name}: ${result.stderr}`).toEqual(
+          [],
+        );
+        expect(
+          transpileGraphModeProblems(result.stderr, true, probe.graph),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('all oracle fixtures retain exact identity accounting in legacy .unknown mode', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-matrix-'));
     const expectedParseFailures = new Set(LENIENT_UNKNOWN_PARSE_DIAGNOSTICS.keys());
@@ -2821,7 +2996,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'nested-function-scope',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: true,
         source: [
           'function read() {',
