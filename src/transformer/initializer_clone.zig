@@ -149,6 +149,19 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
         const original = entry.key_ptr.*;
         const node = entry.value_ptr.*;
         const raw = @backingInt(node);
+        if (comptime @hasField(@TypeOf(self.*), "native_arguments_reference_origins")) {
+            if (self.native_arguments_reference_origins.get(original)) |source_origin| {
+                var origin = source_origin;
+                origin.symbol_id = result.symbols.get(@backingInt(origin.symbol_id)) orelse origin.symbol_id;
+                origin.owner_scope = result.scope(origin.owner_scope);
+                origin.scope = result.scope(origin.scope);
+                origin.stmt = @import("../semantic/symbol.zig").Reference.NO_STMT;
+                origin.scope_stmt = @import("../semantic/symbol.zig").Reference.NO_STMT;
+                if (self.semantic_editor.?.symbol_ids.items[raw] != @as(?u32, @backingInt(origin.symbol_id)))
+                    @panic("cloned native arguments reference lost its owned identity");
+                try self.native_arguments_reference_origins.put(self.allocator, raw, origin);
+            }
+        }
         if (self.synthetic_idents) |*set| if (set.contains(original)) try set.put(self.allocator, raw, {});
         if (self.runtime_helper_ref_index.contains(original)) {
             try self.helper_ref_nodes.append(self.allocator, raw);

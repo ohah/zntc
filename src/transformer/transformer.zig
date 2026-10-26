@@ -434,6 +434,7 @@ pub const Transformer = struct {
     native_constructor_timing_fields: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     native_constructor_placement_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     native_arguments_declaration_origins: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
+    native_arguments_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_arguments.zig").ReferenceOrigin) = .empty,
     native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
     native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
