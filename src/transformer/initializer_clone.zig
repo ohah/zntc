@@ -30,6 +30,43 @@ pub fn namedExpressionScope(self: anytype, index: ast.NodeIndex, from: ScopeId) 
     return scope;
 }
 
+/// The actual initializer-placement producer resolves only already-bound
+/// capture frame/role edges before moving its fragment into the super site.
+pub fn bindPendingCaptures(self: anytype, roots: []const ast.NodeIndex) std.mem.Allocator.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    var stack: std.ArrayList(ast.NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.appendSlice(self.allocator, roots);
+    while (stack.pop()) |node| {
+        if (node.isNone()) continue;
+        const entry = try seen.getOrPut(self.allocator, @backingInt(node));
+        if (entry.found_existing) continue;
+        var children = @import("../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    try bindPendingNodes(self, &seen);
+}
+
+fn bindPendingNodes(self: anytype, seen: *std.AutoHashMapUnmanaged(u32, void)) std.mem.Allocator.Error!void {
+    if (self.semantic_edit_enabled) {
+        var reads = seen.keyIterator();
+        while (reads.next()) |raw| {
+            const node: ast.NodeIndex = @fromBackingInt(raw.*);
+            if (self.getSymbolIdAt(node) != null) continue;
+            const origin = self.reference_origin_map.get(raw.*) orelse raw.*;
+            const index = self.capture_ref_by_origin.get(origin) orelse continue;
+            const pending = self.capture_refs.items[index];
+            const key = (@as(u64, pending.frame) << 2) | @backingInt(pending.kind);
+            const id = self.capture_binding_ids.get(key) orelse @panic("cloned capture has no producer binding");
+            self.addSyntheticRefInScope(node, @fromBackingInt(id), pending.scope, pending.flags) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+        }
+    }
+}
+
 pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: ScopeId) std.mem.Allocator.Error!core.Result {
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(self.allocator);
@@ -46,24 +83,7 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
         var children = @import("../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
-    // The function declaration producer has already allocated a capture SID,
-    // but its reads may still await the ordinary finish pass. Resolve only
-    // exact pending frame/role edges before taking the semantic snapshot.
-    if (self.semantic_edit_enabled) {
-        var reads = seen.keyIterator();
-        while (reads.next()) |raw| {
-            const node: ast.NodeIndex = @fromBackingInt(raw.*);
-            if (self.getSymbolIdAt(node) != null) continue;
-            const origin = self.reference_origin_map.get(raw.*) orelse raw.*;
-            const index = self.capture_ref_by_origin.get(origin) orelse continue;
-            const pending = self.capture_refs.items[index];
-            const key = (@as(u64, pending.frame) << 2) | @backingInt(pending.kind);
-            const id = self.capture_binding_ids.get(key) orelse @panic("cloned capture has no producer binding");
-            self.addSyntheticRefInScope(node, @fromBackingInt(id), pending.scope, .{ .read = true }) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-        }
-    }
+    try bindPendingNodes(self, &seen);
     // Named expression self bindings have a lexical-name scope without an
     // output AST owner. Admit only its exact creator shape, not an arbitrary
     // ancestor of a function body.

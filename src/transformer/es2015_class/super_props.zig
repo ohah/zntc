@@ -94,9 +94,21 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
+            return makeThisAliasRefWithFlags(self, .{ .read = true });
+        }
+
+        fn makeThisAliasRefWithFlags(self: *Transformer, flags: @import("../../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeSyntheticRef(self, "_this");
-            if (self.semantic_edit_enabled and self.capture_frame != 0)
-                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+            if (flags.write) self.ast.nodes.items[@backingInt(ref)].tag = .assignment_target_identifier;
+            if (self.semantic_edit_enabled and self.capture_frame != 0) {
+                try self.trackLexicalCaptureRefWithFlags(ref, .none, .this_value, flags);
+                if (self.active_derived_constructor_new_target) |owner| {
+                    if (owner.capture_frame == self.capture_frame) {
+                        const id = owner.this_symbol_id orelse @panic("lowered super has no reserved this SID");
+                        if (self.getSymbolIdAt(ref) != @as(u32, @backingInt(id))) @panic("reserved super capture lost its exact SID");
+                    }
+                }
+            }
             return ref;
         }
 
@@ -166,13 +178,24 @@ pub fn SuperProps(comptime Transformer: type) type {
             // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
             // var _this / var _newTarget 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
-            const this_ref = try makeThisAliasRef(self);
+            const this_ref = try makeThisAliasRefWithFlags(self, .{ .write = true });
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
             });
-            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), {});
+            const marker: Transformer.GeneratedSuperCall = if (self.active_derived_constructor_new_target) |owner| .{
+                .constructor_frame = self.capture_frame,
+                .constructor_scope = owner.owner_scope,
+                .use_scope = self.current_scope,
+                .target_symbol = owner.this_symbol_id,
+                .callee_symbol = if (self.getSymbolIdAt(callee)) |id| @fromBackingInt(id) else null,
+                .native = false,
+            } else legacy: {
+                if (self.semantic_edit_enabled) @panic("lowered super lost its constructor owner");
+                break :legacy .{ .constructor_frame = 0, .constructor_scope = .none, .use_scope = .none, .target_symbol = null, .native = false };
+            };
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), marker);
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
             const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);

@@ -654,14 +654,17 @@ const deferred_super_sources = [_][]const u8{
 };
 
 fn checkDeferredSuper(case: usize) !void {
+    return checkDeferredSuperSource(deferred_super_sources[case], case);
+}
+
+fn checkDeferredSuperSource(source: []const u8, case: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const source = deferred_super_sources[case];
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     const Profiles = enum { es2015, es2017, es5, rn080_arrow };
-    var native_failures: usize = 0;
+    var supported_failures: usize = 0;
     var residual_failures: usize = 0;
     inline for (std.meta.tags(Profiles)) |profile| {
         var unsupported = switch (profile) {
@@ -681,7 +684,7 @@ fn checkDeferredSuper(case: usize) !void {
                 .minify_identifiers = minify,
                 .minify_whitespace = minify,
             }) catch |err| {
-                if (profile == .es2015 or profile == .es2017) native_failures += 1 else residual_failures += 1;
+                if (profile != .rn080_arrow) supported_failures += 1 else residual_failures += 1;
                 std.debug.print("DEFERRED RESULT case={d} profile={s} minify={} status=transform-error error={s}\n", .{ case, @tagName(profile), minify, @errorName(err) });
                 continue;
             };
@@ -689,13 +692,13 @@ fn checkDeferredSuper(case: usize) !void {
             const passed = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, native.stdout, actual.stdout);
             std.debug.print("DEFERRED RESULT case={d} profile={s} minify={} status={s}\n", .{ case, @tagName(profile), minify, if (passed) "pass" else "runtime-fail" });
             if (!passed) {
-                if (profile == .es2015 or profile == .es2017) native_failures += 1 else residual_failures += 1;
+                if (profile != .rn080_arrow) supported_failures += 1 else residual_failures += 1;
                 std.debug.print("DEFERRED FAILURE case={d} profile={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ case, @tagName(profile), minify, native.stdout, actual.stdout, actual.stderr, result.code });
             }
         }
     }
-    std.debug.print("DEFERRED SUMMARY case={d} nativeFailures={d} residualFailures={d}\n", .{ case, native_failures, residual_failures });
-    try std.testing.expectEqual(@as(usize, 0), native_failures);
+    std.debug.print("DEFERRED SUMMARY case={d} supportedFailures={d} residualFailures={d}\n", .{ case, supported_failures, residual_failures });
+    try std.testing.expectEqual(@as(usize, 0), supported_failures);
 }
 
 test "deferred native super repro 00" {
@@ -785,17 +788,59 @@ fn checkDeferredSuperBirth(source: []const u8, target: @import("compat.zig").EST
             const row = (try t.semantic_editor.?.referenceForNode(node)) orelse return error.MissingDeferredReference;
             const actual = coordinates[raw] orelse return error.MissingDeferredCoordinates;
             try std.testing.expectEqual(id, @backingInt(row.symbol_id));
-            try std.testing.expectEqual(utils.expectedScope(t.ast, output, &parents, &owners, raw).?, row.scope_id);
+            const physical_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
+            if (physical_scope != row.scope_id) std.debug.print("DEFERRED SCOPE node={d} name={s} SID={d} rowScope={d} actualScope={d} stmt={d}/{d} scopeStmt={d}/{d}\n", .{ raw, t.ast.getText(t.ast.getNode(node).data.string_ref), id, @backingInt(row.scope_id), @backingInt(physical_scope), row.stmt_idx, actual.stmt_idx, row.scope_stmt_idx, actual.scope_stmt_idx });
+            try std.testing.expectEqual(physical_scope, row.scope_id);
             if (actual.stmt_idx != row.stmt_idx or actual.scope_stmt_idx != row.scope_stmt_idx) std.debug.print("DEFERRED BIRTH node={d} name={s} sid={d} scope={d} stmt={d}/{d} scopeStmt={d}/{d} recordedOrigin={}\n", .{ raw, t.ast.getText(t.ast.getNode(node).data.string_ref), id, @backingInt(row.scope_id), row.stmt_idx, actual.stmt_idx, row.scope_stmt_idx, actual.scope_stmt_idx, t.native_constructor_reference_origins.contains(raw) });
             try std.testing.expectEqual(actual.stmt_idx, row.stmt_idx);
             try std.testing.expectEqual(actual.scope_stmt_idx, row.scope_stmt_idx);
             checked += 1;
         } else {
             const origin = t.reference_origin_map.get(raw) orelse raw;
+            if (!t.explicit_global_reference_nodes.contains(raw) and !analyzer.unresolved_reference_nodes.contains(origin)) std.debug.print("DEFERRED NULL node={d} name={s} origin={d} capture={} tag={s}\n", .{ raw, t.ast.getText(t.ast.getNode(node).data.string_ref), origin, t.capture_ref_by_origin.contains(origin), @tagName(t.ast.getNode(node).tag) });
             try std.testing.expect(t.explicit_global_reference_nodes.contains(raw) or analyzer.unresolved_reference_nodes.contains(origin));
         }
     }
     try std.testing.expect(checked > 0);
+    if (target == .es5) {
+        const declarations = @import("transformer/declarations.zig");
+        var markers = t.generated_super_call_assignments.iterator();
+        var sites: usize = 0;
+        while (markers.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            const marker = entry.value_ptr.*;
+            if (marker.native or !parents.contains(raw)) continue;
+            sites += 1;
+            const assignment = t.ast.nodes.items[raw];
+            try std.testing.expectEqual(ast.Node.Tag.assignment_expression, assignment.tag);
+            try std.testing.expectEqual(ast.Node.Tag.assignment_target_identifier, t.ast.getNode(assignment.data.binary.left).tag);
+            const id = t.getSymbolIdAt(assignment.data.binary.left).?;
+            const scope = t.semantic_editor.?.symbols.items[id].scope_id;
+            var frame: ?u32 = null;
+            var bindings = t.capture_binding_ids.iterator();
+            while (bindings.next()) |binding| {
+                if (binding.value_ptr.* != id or binding.key_ptr.* & 3 != @backingInt(@import("transformer.zig").LexicalCaptureKind.this_value)) continue;
+                try std.testing.expect(frame == null);
+                frame = @intCast(binding.key_ptr.* >> 2);
+            }
+            const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
+            try declarations.validateLoweredSuperSite(&t, @fromBackingInt(raw), marker, .{ .frame = frame.?, .scope = scope, .target = @fromBackingInt(id) }, use_scope);
+            const parent = t.ast.nodes.items[parents.get(raw).?];
+            try std.testing.expectEqual(ast.Node.Tag.sequence_expression, parent.tag);
+            const list = t.ast.extra_data.items[parent.data.list.start .. parent.data.list.start + parent.data.list.len];
+            try std.testing.expect(list.len >= 3);
+            try std.testing.expectEqual(raw, list[0]);
+            const result: ast.NodeIndex = @fromBackingInt(list[list.len - 1]);
+            try std.testing.expect(result != assignment.data.binary.left);
+            try std.testing.expectEqual(id, t.getSymbolIdAt(result).?);
+            const read = (try t.semantic_editor.?.referenceForNode(result)).?;
+            try std.testing.expectEqual(use_scope, read.scope_id);
+            try std.testing.expect(read.flags.read and !read.flags.write);
+        }
+        try std.testing.expect(sites > 0);
+        try @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
+        return;
+    }
     try std.testing.expectEqual(@as(usize, 0), t.native_constructor_timing_plans.count());
     try std.testing.expect(!t.runtime_helpers.derived_constructor);
     var sites: usize = 0;
@@ -853,4 +898,121 @@ test "deferred native super exact birth before output walker" {
         try checkDeferredSuperBirth(source, .es2015);
         try checkDeferredSuperBirth(source, .es2017);
     }
+}
+
+test "deferred ES5 exact birth before output walker" {
+    for (deferred_super_sources) |source| try checkDeferredSuperBirth(source, .es5);
+}
+
+test "deferred ES5 marker rejects sibling frame scope and SID" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "class P{}class Other extends P{constructor(){super()}}class D extends P{x=42;constructor(){const go=()=>super();go()}}new Other;new D;";
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(.es5), .use_define_for_class_fields = true });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
+    try t.buildBlockRenameMap();
+    const output = try t.visitNode(root);
+    const utils = @import("output_scope_test_utils.zig");
+    const parents = try utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (t.ast.nodes.items, 0..) |_, raw| {
+        if (!parents.contains(@intCast(raw)) and raw != @backingInt(output)) continue;
+        if (t.outputOwnedScope(@fromBackingInt(@as(u32, @intCast(raw))))) |scope| try owners.put(a, @intCast(raw), @backingInt(scope));
+    }
+    var selected_node: ?u32 = null;
+    var sibling: ?Transformer.GeneratedSuperCall = null;
+    var markers = t.generated_super_call_assignments.iterator();
+    while (markers.next()) |entry| {
+        if (!parents.contains(entry.key_ptr.*) or entry.value_ptr.native) continue;
+        if (entry.value_ptr.use_scope != entry.value_ptr.constructor_scope) selected_node = entry.key_ptr.* else sibling = entry.value_ptr.*;
+    }
+    const raw = selected_node.?;
+    const index: ast.NodeIndex = @fromBackingInt(raw);
+    const marker = t.generated_super_call_assignments.get(raw).?;
+    const foreign = sibling.?;
+    const lhs = t.ast.getNode(index).data.binary.left;
+    const id = t.getSymbolIdAt(lhs).?;
+    const scope = t.semantic_editor.?.symbols.items[id].scope_id;
+    const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
+    var frame: ?u32 = null;
+    var captures = t.capture_binding_ids.iterator();
+    while (captures.next()) |capture| {
+        if (capture.value_ptr.* == id and capture.key_ptr.* & 3 == @backingInt(@import("transformer.zig").LexicalCaptureKind.this_value)) {
+            try std.testing.expect(frame == null);
+            frame = @intCast(capture.key_ptr.* >> 2);
+        }
+    }
+    const validation = @import("transformer/declarations.zig");
+    const owner = validation.LoweredConstructorOwner{ .frame = frame.?, .scope = scope, .target = @fromBackingInt(id) };
+    try validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope);
+    try std.testing.expect(foreign.target_symbol != marker.target_symbol and foreign.constructor_scope != marker.constructor_scope and foreign.constructor_frame != marker.constructor_frame);
+    var bad = marker;
+    bad.constructor_frame = foreign.constructor_frame;
+    try std.testing.expectError(error.InvalidScope, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.constructor_scope = foreign.constructor_scope;
+    try std.testing.expectError(error.InvalidScope, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.use_scope = foreign.use_scope;
+    try std.testing.expectError(error.InvalidScope, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.target_symbol = foreign.target_symbol;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.target_symbol = null;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.callee_symbol = foreign.target_symbol;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.flags = .{ .read = true };
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.native = true;
+    try std.testing.expectError(error.InvalidNode, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    t.symbol_ids.items[@backingInt(lhs)] = @backingInt(foreign.target_symbol.?);
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
+    t.symbol_ids.items[@backingInt(lhs)] = id;
+    const row_index = t.semantic_editor.?.reference_index.get(@backingInt(lhs)).?;
+    const row = t.semantic_editor.?.references.items[row_index];
+    t.semantic_editor.?.references.items[row_index].scope_id = foreign.use_scope;
+    try std.testing.expectError(error.InvalidScope, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
+    t.semantic_editor.?.references.items[row_index] = row;
+    t.semantic_editor.?.references.items[row_index].flags = .{ .read = true };
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
+    t.semantic_editor.?.references.items[row_index] = row;
+    try validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope);
+}
+
+const deferred_sibling_sources = [_][]const u8{
+    "const log=[];class P{}class D extends P{#x=(log.push('outer'),1);read(){return this.#x}constructor(){function make(){class E extends P{y=(log.push('inner'),2);constructor(){const go=()=>super();go()}}return E}const E=make();const inner=new E;const go=()=>super();go();this.inner=inner}}const d=new D;console.log(JSON.stringify([log,d.read(),d.inner.y]));",
+    "const log=[];class P{}class D extends P{#x=(log.push('outer'),1);read(){return this.#x}constructor(){class E extends P{#y=(log.push('inner'),2);read(){return this.#y}constructor(){const go=()=>super();go()}}const go=()=>super();go();this.inner=new E}}const d=new D;console.log(JSON.stringify([log,d.read(),d.inner.read()]));",
+};
+test "deferred super ordinary function constructor frame isolation" {
+    try checkDeferredSuperSource(deferred_sibling_sources[0], 10);
+    try checkDeferredSuperBirth(deferred_sibling_sources[0], .es5);
+}
+test "deferred super nested constructor frame isolation" {
+    try checkDeferredSuperSource(deferred_sibling_sources[1], 11);
+    try checkDeferredSuperBirth(deferred_sibling_sources[1], .es5);
 }

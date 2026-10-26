@@ -182,7 +182,19 @@ pub const ParameterBodyVarCopy = struct {
 };
 
 pub const Transformer = struct {
+    pub const GeneratedSuperCall = struct {
+        constructor_frame: u32,
+        constructor_scope: ScopeId,
+        use_scope: ScopeId,
+        target_symbol: ?SymbolId,
+        callee_symbol: ?SymbolId = null,
+        flags: ReferenceFlags = .{ .write = true },
+        native: bool,
+    };
     pub const DerivedConstructorNewTarget = struct {
+        owner_scope: ScopeId = .none,
+        this_declaration: NodeIndex = .none,
+        this_symbol_id: ?SymbolId = null,
         binding: NodeIndex,
         name_span: Span,
         symbol_id: ?SymbolId,
@@ -411,6 +423,7 @@ pub const Transformer = struct {
         scope: ScopeId,
         frame: u32,
         kind: LexicalCaptureKind,
+        flags: ReferenceFlags = .{ .read = true },
     }) = .empty,
     capture_ref_by_origin: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
@@ -772,10 +785,10 @@ pub const Transformer = struct {
     /// __callSuper가 Reflect.construct를 사용하면 새 객체를 반환하므로,
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
-    /// Exact assignment nodes emitted for source `super()` calls. Derived
-    /// constructor field insertion follows these NodeIndex handles instead of
-    /// rediscovering generated code from `_this` or helper spellings.
-    generated_super_call_assignments: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact assignment nodes and creator frame/scope/target roles emitted
+    /// for source `super()` calls. Initializer placement consumes these typed
+    /// handles instead of rediscovering `_this` or helper spellings.
+    generated_super_call_assignments: std.AutoHashMapUnmanaged(u32, GeneratedSuperCall) = .empty,
 
     /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
     /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.
@@ -1184,6 +1197,7 @@ pub const Transformer = struct {
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
+    pub const trackLexicalCaptureRefWithFlags = @import("transformer/semantic_edit.zig").trackLexicalCaptureRefWithFlags;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
     pub const bindLexicalCaptureWithSyntheticKind = @import("transformer/semantic_edit.zig").bindLexicalCaptureWithSyntheticKind;
     pub const bindLexicalCaptureToExistingSymbol = @import("transformer/semantic_edit.zig").bindLexicalCaptureToExistingSymbol;
@@ -1361,6 +1375,7 @@ pub const Transformer = struct {
     pub const insertParameterPropertyAssignmentsAfterSuper = declarations_mod.insertParameterPropertyAssignmentsAfterSuper;
     pub const insertParameterPropertyAssignments = declarations_mod.insertParameterPropertyAssignments;
     pub const insertStatementsAfterSuper = declarations_mod.insertStatementsAfterSuper;
+    pub const insertLoweredSuperInitializers = @import("transformer/declarations.zig").insertLoweredSuperInitializers;
     pub const prependStatementsToBody = declarations_mod.prependStatementsToBody;
 
     pub const visitArrowFunction = function_visit_mod.visitArrowFunction;

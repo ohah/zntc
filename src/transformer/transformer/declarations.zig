@@ -16,6 +16,8 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
+const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 
 /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
 /// binding이 destructuring pattern (object/array)인지 판별.
@@ -598,12 +600,84 @@ fn placeNativeInitializer(self: *Transformer, statement: NodeIndex, from: ScopeI
 
 /// Every physical super site owns its initializer AST and owned bindings.
 /// Additional sites are cloned before moving the original fragment.
+const SuperSite = struct { node: NodeIndex, scope: ScopeId, constructor_scope: ScopeId, alias: NodeIndex };
+
+pub const LoweredConstructorOwner = struct {
+    frame: u32,
+    scope: ScopeId,
+    target: ?SymbolId,
+};
+pub const LoweredSiteError = std.mem.Allocator.Error || error{ InvalidScope, InvalidSymbol, InvalidNode };
+
+pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!void {
+    if (marker.native or index.isNone() or @backingInt(index) >= self.ast.nodes.items.len) return error.InvalidNode;
+    if (marker.constructor_frame != owner.frame or marker.constructor_scope != owner.scope or marker.use_scope != use_scope) return error.InvalidScope;
+    if (marker.target_symbol != owner.target or !std.meta.eql(marker.flags, ReferenceFlags{ .write = true })) return error.InvalidSymbol;
+    const node = self.ast.getNode(index);
+    if (node.tag != .assignment_expression or node.data.binary.right.isNone() or self.ast.getNode(node.data.binary.right).tag != .call_expression) return error.InvalidNode;
+    if (!self.semantic_edit_enabled) return;
+    const editor = if (self.semantic_editor) |*value| value else return error.InvalidNode;
+    if (owner.scope.isNone() or use_scope.isNone() or owner.scope.toIndex() >= editor.scopes.items.len or use_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[owner.scope.toIndex()].kind != .function) return error.InvalidScope;
+    const target = self.getSymbolIdAt(node.data.binary.left) orelse return error.InvalidSymbol;
+    if (target >= editor.symbols.items.len or editor.symbols.items[target].scope_id != owner.scope or editor.symbols.items[target].kind != .variable_var) return error.InvalidSymbol;
+    const callee = self.ast.readExtraNode(self.ast.getNode(node.data.binary.right).data.extra, 0);
+    const callee_id = self.getSymbolIdAt(callee) orelse return error.InvalidSymbol;
+    if (marker.target_symbol != @as(SymbolId, @fromBackingInt(target)) or marker.callee_symbol != @as(SymbolId, @fromBackingInt(callee_id))) return error.InvalidSymbol;
+    const row = (editor.referenceForNode(node.data.binary.left) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidNode,
+    }) orelse return error.InvalidNode;
+    if (row.scope_id != use_scope) return error.InvalidScope;
+    if (row.symbol_id != marker.target_symbol.? or !std.meta.eql(row.flags, marker.flags)) return error.InvalidSymbol;
+    const call_row = (editor.referenceForNode(callee) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidNode,
+    }) orelse return error.InvalidNode;
+    if (call_row.scope_id != use_scope) return error.InvalidScope;
+    if (call_row.symbol_id != marker.callee_symbol.? or !call_row.flags.read) return error.InvalidSymbol;
+}
+
+/// Only creator-recorded lowered calls belonging to this constructor frame
+/// are candidates. Traversal supplies actual use scopes, never binding IDs.
+pub fn insertLoweredSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex) Error!NodeIndex {
+    if (statements.len == 0) return body;
+    const owner = self.active_derived_constructor_new_target orelse @panic("lowered initializer has no constructor handle");
+    if (owner.capture_frame != self.capture_frame or owner.owner_scope != self.current_scope)
+        @panic("lowered initializer lost its exact constructor frame");
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var sites: std.ArrayList(SuperSite) = .empty;
+    defer sites.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = body, .scope = owner.owner_scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const node = self.ast.getNode(work.node);
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (self.generated_super_call_assignments.get(@backingInt(work.node))) |marker| {
+            if (!marker.native and (marker.constructor_frame == owner.capture_frame or marker.constructor_scope == owner.owner_scope)) {
+                validateLoweredSuperSite(self, work.node, marker, .{ .frame = owner.capture_frame, .scope = owner.owner_scope, .target = owner.this_symbol_id }, scope) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("lowered super changed its creator contract: {s}", .{@errorName(err)}),
+                };
+                try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = owner.owner_scope, .alias = node.data.binary.left });
+            }
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| {
+            const incoming = if (@import("semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(work.node), @backingInt(child))) work.scope else scope;
+            try stack.append(self.allocator, .{ .node = child, .scope = incoming });
+        }
+    }
+    return assembleSuperSites(self, body, statements, sites.items);
+}
+
 fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, derived: bool) Error!?NodeIndex {
     if (!derived) return try self.prependStatementsToBody(body, statements);
     if (statements.len == 0) return body;
     for (statements) |statement| if (self.ast.getNode(statement).tag != .expression_statement) return null;
     const constructor_scope = self.current_scope;
-    const Site = struct { node: NodeIndex, scope: ScopeId, constructor_scope: ScopeId, alias: NodeIndex };
+    const Site = SuperSite;
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(self.allocator);
@@ -648,6 +722,12 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
         }
     }
     if (sites.items.len == 0) return body;
+    return try assembleSuperSites(self, body, statements, sites.items);
+}
+
+fn assembleSuperSites(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, sites: []const SuperSite) Error!NodeIndex {
+    if (sites.len == 0) return body;
+    try @import("../initializer_clone.zig").bindPendingCaptures(self, statements);
     var clones: std.ArrayList(@import("../../semantic/runtime_subtree_clone.zig").Result) = .empty;
     defer {
         for (clones.items) |*copy| copy.deinit(self.allocator);
@@ -655,19 +735,20 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
     }
     // Snapshot all additional instances before the first placement reparents
     // the source fragment's scopes or moves any original reference rows.
-    for (sites.items[1..]) |site| {
+    for (sites[1..]) |site| {
         var copy = try @import("../initializer_clone.zig").clone(self, statements, self.current_scope, site.scope);
         errdefer copy.deinit(self.allocator);
         try clones.append(self.allocator, copy);
     }
-    for (sites.items, 0..) |site, index| {
+    for (sites, 0..) |site, index| {
         if (site.constructor_scope != self.current_scope) @panic("native super initializer lost its constructor owner");
         const instance = if (index == 0) statements else clones.items[index - 1].roots;
         const original = self.ast.getNode(site.node);
         const operation = try self.ast.addNode(original);
         if (!site.alias.isNone()) {
+            const owner = self.generated_super_call_assignments.get(@backingInt(site.node)).?;
             _ = self.generated_super_call_assignments.remove(@backingInt(site.node));
-            try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), {});
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), owner);
         }
         var expressions: std.ArrayList(NodeIndex) = .empty;
         defer expressions.deinit(self.allocator);

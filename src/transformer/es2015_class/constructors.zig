@@ -74,7 +74,23 @@ pub fn Constructors(comptime Transformer: type) type {
                         "_newTarget",
                     );
                 }
+                // Reserve storage identity before visiting any source super.
+                // This is an uninitialized declaration, never an eager this read.
+                const this_declaration = try self.buildVarDecl("_this", .none, span);
+                try self.bindLexicalCapture(this_declaration, .this_value);
+                const this_symbol: ?@import("../../semantic/symbol.zig").SymbolId = if (self.semantic_edit_enabled)
+                    @fromBackingInt(self.capture_binding_ids.get((@as(u64, self.capture_frame) << 2) | @backingInt(@import("../transformer.zig").LexicalCaptureKind.this_value)) orelse @panic("derived constructor has no reserved this binding"))
+                else
+                    null;
+                if (self.semantic_edit_enabled) {
+                    if (self.semantic_editor.?.symbols.items[@backingInt(this_symbol.?)].scope_id != self.current_scope)
+                        @panic("derived this reservation lost its actual constructor scope");
+                    try @import("../native_constructor_timing.zig").registerPlacementOwner(self, self.current_scope);
+                }
                 self.active_derived_constructor_new_target = .{
+                    .owner_scope = self.current_scope,
+                    .this_declaration = this_declaration,
+                    .this_symbol_id = this_symbol,
                     .binding = new_target_binding,
                     .name_span = self.ast.getNode(new_target_binding).data.string_ref,
                     .symbol_id = new_target_symbol,

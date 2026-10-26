@@ -68,7 +68,13 @@ pub fn initializeAfterSuper(self: anytype, callee: NodeIndex, call: NodeIndex, s
     const binding = self.ast.getNode(self.ast.readExtraNode(self.ast.getNode(declarator).data.extra, 0));
     const target = try helpers.makeTempRefFromIdentity(self, .{ .span = binding.data.string_ref, .symbol_id = @fromBackingInt(symbol), .owner_scope = plan.scope, .reference_scope = self.current_scope }, span, .{ .write = true });
     const initialized = try helpers.makeAssignExpr(self, target, call, span, @backingInt(@import("../lexer/token.zig").Kind.eq));
-    try self.generated_super_call_assignments.put(self.allocator, @backingInt(initialized), {});
+    try self.generated_super_call_assignments.put(self.allocator, @backingInt(initialized), .{
+        .constructor_frame = self.capture_frame,
+        .constructor_scope = plan.scope,
+        .use_scope = self.current_scope,
+        .target_symbol = @fromBackingInt(symbol),
+        .native = true,
+    });
     return initialized;
 }
 

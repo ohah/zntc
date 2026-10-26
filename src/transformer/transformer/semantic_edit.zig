@@ -2280,6 +2280,9 @@ fn reparentLiveSourceScopes(self: *Transformer, source_scope: ScopeId, target_sc
 pub fn relocateNodeScopeProvenance(self: *Transformer, node: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
+    if (self.generated_super_call_assignments.getPtr(@backingInt(node))) |call| {
+        if (call.use_scope == source) call.use_scope = target;
+    }
     const previous = editor.node_scope_provenance.get(node) orelse {
         if (self.ast.getNode(node).tag == .import_expression)
             std.debug.panic("moved import expression lost its creation scope provenance", .{});
@@ -3249,6 +3252,10 @@ pub fn ensureNativeConstructorCaptureBinding(self: *Transformer, plan: *@import(
 /// A generated lexical alias keeps its exact frame and source role. Moved
 /// fields with a known constructor owner create their Reference immediately.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
+    return trackLexicalCaptureRefWithFlags(self, node, source, kind, .{ .read = true });
+}
+
+pub fn trackLexicalCaptureRefWithFlags(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind, flags: ReferenceFlags) Transformer.Error!void {
     const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
     if (kind == .this_value) {
         if (self.native_parameter_arrow_this_capture) |capture| {
@@ -3257,7 +3264,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
                 self.needs_this_var = capture.needs_this_before;
                 if (self.semantic_edit_enabled) {
                     const id = capture.identity.symbol_id orelse @panic("native parameter this has no exact binding");
-                    try addSyntheticRefInScope(self, node, id, self.current_scope, .{ .read = true });
+                    try addSyntheticRefInScope(self, node, id, self.current_scope, flags);
                 }
                 return;
             }
@@ -3275,7 +3282,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
                 plan.symbol_id = self.capture_binding_ids.get(captureKey(plan.frame, .this_value)) orelse @panic("enum this storage has no exact SID");
             }
             const id = plan.symbol_id orelse @panic("enum this capture has no exact binding");
-            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
             self.needs_this_var = false;
             try self.lexical_capture_uses.append(self.allocator, .{ .frame = plan.frame, .kind = kind, .span = source_span });
             return;
@@ -3287,7 +3294,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
             try ensureNativeConstructorCaptureBinding(self, plan, source_span);
             const id = plan.symbol_id orelse std.debug.panic("field capture lost its declaration identity", .{});
             try self.bindLexicalCaptureToExistingSymbol(.this_value, @fromBackingInt(id));
-            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
             try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
             return;
         }
@@ -3316,6 +3323,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
         .scope = self.current_scope,
         .frame = self.capture_frame,
         .kind = kind,
+        .flags = flags,
     });
     const raw = @backingInt(node);
     if (self.capture_ref_by_origin.contains(raw)) std.debug.panic("lexical capture node tracked twice", .{});
@@ -3324,6 +3332,12 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
     // A later copy can precede declaration binding; preserve exact origin even
     // while this generated reference has no SymbolId yet.
     try self.reference_origin_map.put(self.allocator, raw, raw);
+    // A producer that reserved this frame/role already owns the identity.
+    // Bind at the actual use scope now instead of deferring known references
+    // to the output walker. Earlier unbound frames keep their pending edge.
+    if (self.capture_binding_ids.get(captureKey(self.capture_frame, kind))) |id| {
+        try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
+    }
 }
 
 /// Called at the actual capture declaration producer. A frame and role select
@@ -3435,7 +3449,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
             const reference_index = editor.reference_index.get(raw) orelse
                 std.debug.panic("bound lexical capture has no reference record: node={d} name={s} symbol={d} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), existing, pending.frame, @tagName(pending.kind) });
             const reference = editor.references.items[reference_index];
-            if (@backingInt(reference.symbol_id) != id or !reference.flags.read) {
+            if (@backingInt(reference.symbol_id) != id or !std.meta.eql(reference.flags, pending.flags)) {
                 std.debug.panic("bound lexical capture reference has inconsistent identity: node={d} name={s} ref_symbol={d} expected_symbol={d} ref_scope={d} output_scope={d} read={any} write={any} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), @backingInt(reference.symbol_id), id, reference.scope_id.toIndex(), output_scope.toIndex(), reference.flags.read, reference.flags.write, pending.frame, @tagName(pending.kind) });
             }
             if (reference.scope_id != output_scope) {
@@ -3443,7 +3457,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
             }
             continue;
         }
-        try addSyntheticRefInScope(self, @fromBackingInt(@intCast(raw)), @fromBackingInt(@intCast(id)), output_scope, .{ .read = true });
+        try addSyntheticRefInScope(self, @fromBackingInt(@intCast(raw)), @fromBackingInt(@intCast(id)), output_scope, pending.flags);
     }
 
     for (self.capture_refs.items) |pending| {
