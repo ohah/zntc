@@ -49,7 +49,7 @@ test "static block environment lowered storage and reference scopes exist before
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const source = "class C{static{var value=3;this.a=()=>value;console.log(value,C===this)}static{var value=9;this.b=()=>value;console.log(value,C===this)}}console.log(C.a(),C.b())";
+        const source = "class C{static{var value=3;this.a=()=>value;console.log(value,C===this)}static{var value=9;this.b=()=>value;console.log(value,C===this)}}console.log(C.a(),C.b());class D{static{this.ref=this}}";
         var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
         const root = try parser.parse();
@@ -145,6 +145,36 @@ test "static block environment lowered storage and reference scopes exist before
             entry.value_ptr.source_symbol_id = ids.items[0];
             try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
             entry.value_ptr.* = proof;
+            const source_staging_id = t.symbol_ids.items[@backingInt(proof.source)];
+            t.symbol_ids.items[@backingInt(proof.source)] = ids.items[0];
+            try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+            t.symbol_ids.items[@backingInt(proof.source)] = source_staging_id;
+            try std.testing.expectEqual(@as(u32, 0), t.static_class_captures.count());
+            var other_capture = t.completed_static_class_captures.iterator();
+            var checked_other = false;
+            while (other_capture.next()) |other| {
+                if (other.key_ptr.* == @backingInt(proof.class_binding)) continue;
+                entry.value_ptr.class_value_symbol_id = other.value_ptr.frame.class_symbol_id.?;
+                try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+                entry.value_ptr.* = proof;
+                entry.value_ptr.class_binding = other.value_ptr.frame.class_binding;
+                try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+                entry.value_ptr.* = proof;
+                const creator = t.completed_static_class_captures.getPtr(@backingInt(proof.class_binding)).?;
+                const saved_creator = creator.*;
+                creator.symbol_id = other.value_ptr.symbol_id;
+                try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+                creator.* = saved_creator;
+                creator.frame.class_self_symbol_id = other.value_ptr.frame.class_self_symbol_id;
+                try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+                creator.* = saved_creator;
+                creator.frame.class_binding = other.value_ptr.frame.class_binding;
+                try std.testing.expect(!@import("static_class_capture.zig").validOwnReferenceOrigin(&t, node));
+                creator.* = saved_creator;
+                checked_other = true;
+                break;
+            }
+            try std.testing.expect(checked_other);
             const source_raw = @backingInt(proof.source);
             const previous = t.reference_origin_map.get(source_raw);
             try t.reference_origin_map.put(a, source_raw, source_raw);

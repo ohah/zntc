@@ -155,6 +155,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_exact_symbol_refs.deinit(self.allocator);
     self.static_class_contexts.deinit(self.allocator);
     self.static_class_captures.deinit(self.allocator);
+    self.completed_static_class_captures.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.lexical_capture_uses.deinit(self.allocator);
     self.capture_refs.deinit(self.allocator);

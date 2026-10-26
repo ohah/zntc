@@ -59,7 +59,7 @@ pub fn pushContext(self: anytype, name: ?Span) !void {
 
 fn ensureCapture(self: anytype, frame: Frame) !Capture {
     if (self.static_class_captures.get(@backingInt(frame.class_binding))) |capture| {
-        if (capture.frame.class_symbol_id != frame.class_symbol_id or capture.frame.output_scope != frame.output_scope)
+        if (capture.frame.class_symbol_id != frame.class_symbol_id or capture.frame.class_self_symbol_id != frame.class_self_symbol_id or capture.frame.output_scope != frame.output_scope)
             std.debug.panic("static class capture changed its producer identity", .{});
         return capture;
     }
@@ -142,6 +142,7 @@ pub fn makeClassSelfReference(self: anytype, source: NodeIndex) !?NodeIndex {
                 .source = source,
                 .source_symbol_id = source_id,
                 .class_value_symbol_id = frame.class_symbol_id orelse @panic("static class replacement lost its class-value SID"),
+                .class_binding = frame.class_binding,
                 .reference = reference,
             });
             try self.reference_origin_map.put(self.allocator, raw, raw);
@@ -156,6 +157,9 @@ pub fn takeDeclaration(self: anytype, class_binding: NodeIndex, span: Span) !?No
     if (class_binding.isNone()) return null;
     const entry = self.static_class_captures.fetchRemove(@backingInt(class_binding)) orelse return null;
     const capture = entry.value;
+    // Keep the exact consumed creator record without keeping an active capture
+    // alive or weakening finishSemanticEdit's active-lifecycle guard.
+    try self.completed_static_class_captures.put(self.allocator, @backingInt(class_binding), capture);
     const value = try es_helpers.makeIdentifierRefFromSpan(self, capture.frame.class_name);
     if (capture.frame.class_symbol_id) |id| {
         if (self.semantic_edit_enabled) {
@@ -315,6 +319,12 @@ pub fn validOwnReferenceOrigin(self: anytype, node: NodeIndex) bool {
     const raw = @backingInt(node);
     if (raw < self.parser_node_count or self.reference_origin_map.get(raw) != raw) return false;
     const expected = self.static_class_reference_origins.get(raw) orelse return false;
+    const capture = self.static_class_captures.get(@backingInt(expected.class_binding)) orelse
+        self.completed_static_class_captures.get(@backingInt(expected.class_binding)) orelse return false;
+    if (capture.frame.class_binding != expected.class_binding or
+        capture.symbol_id != @backingInt(expected.reference.symbol_id) or
+        capture.frame.class_self_symbol_id != expected.source_symbol_id or
+        capture.frame.class_symbol_id != expected.class_value_symbol_id) return false;
     if (self.getSymbolIdAt(expected.source) != expected.source_symbol_id) return false;
     if (self.getSymbolIdAt(node) != @backingInt(expected.reference.symbol_id)) return false;
     if (expected.source_symbol_id == @backingInt(expected.reference.symbol_id)) return false;

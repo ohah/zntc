@@ -268,6 +268,7 @@ pub const Transformer = struct {
         source: NodeIndex,
         source_symbol_id: u32,
         class_value_symbol_id: u32,
+        class_binding: NodeIndex,
         reference: @import("../semantic/symbol.zig").Reference,
     }) = .empty,
     /// Provenance for generated refs that intentionally remain external.
@@ -391,6 +392,8 @@ pub const Transformer = struct {
     static_field_initializer_depth: u32 = 0,
     static_class_contexts: std.ArrayListUnmanaged(@import("static_class_capture.zig").Frame) = .empty,
     static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
+    /// Creator records consumed by takeDeclaration; active lifecycle stays empty.
+    completed_static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
