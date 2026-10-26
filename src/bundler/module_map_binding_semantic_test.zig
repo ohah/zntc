@@ -265,6 +265,13 @@ fn expectMapBodies(is_typescript: bool, bodies: []const []const u8, iife: bool) 
             // its binding graph, then invoke the same Map coordinate consumer.
             const ast = &module.ast.?;
             const root = ast.transformed_root.?;
+            for (try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(module.parse_arena.?.allocator(), ast, root)) |raw| {
+                const node = ast.nodes.items[raw];
+                if (node.tag != .ts_module_declaration) continue;
+                const primary_scope = original.scope_owner_map.get(raw) orelse return error.MissingMappedNamespacePrimary;
+                try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, original.scopes[primary_scope].kind);
+                try std.testing.expectEqual(@as(?u32, primary_scope), original.scope_owner_map.get(@backingInt(node.data.binary.right)));
+            }
             const list = ast.getNode(root).data.list;
             const old = try module.parse_arena.?.allocator().dupe(u32, ast.extra_data.items[list.start..][0..list.len]);
             var shifted: std.ArrayList(NodeIndex) = .empty;

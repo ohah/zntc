@@ -2517,6 +2517,38 @@ pub fn makeEnumOuterWrite(self: *Transformer, binding: NodeIndex, id: SymbolId, 
     return target;
 }
 
+/// Reserve only the source primary's actual namespace IIFE body. Source
+/// lexical child blocks keep their separate scopes; body copies carry this
+/// explicit alias through the existing creation-origin remap protocol.
+pub fn bindNamespaceBodyOwner(self: *Transformer, primary: NodeIndex, body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (primary.isNone() or body.isNone() or scope.isNone() or
+        @backingInt(primary) >= self.ast.nodes.items.len or @backingInt(body) >= self.ast.nodes.items.len or
+        scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("namespace body has no exact ordinary IIFE owner");
+    const owner = self.ast.getNode(primary);
+    const body_tag = self.ast.getNode(body).tag;
+    if (owner.tag != .ts_module_declaration or owner.data.binary.flags != 0 or
+        owner.data.binary.right != body or self.outputOwnedScope(primary) != scope or
+        (body_tag != .block_statement and body_tag != .ts_module_block))
+        @panic("namespace body is not the exact primary body edge");
+    if (self.outputOwnedScope(body)) |existing| {
+        if (existing != scope) @panic("namespace body already has a foreign owner");
+    }
+    var parameters: usize = 0;
+    for (editor.symbols.items) |symbol| {
+        if (symbol.scope_id != scope or symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        if (symbol.kind != .parameter) @panic("namespace IIFE parameter has an invalid typed role");
+        parameters += 1;
+    }
+    if (parameters != 1) @panic("namespace body has no unique typed IIFE parameter");
+    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    const origin = try self.scope_owner_origins.getOrPut(self.allocator, @backingInt(body));
+    if (!origin.found_existing) origin.value_ptr.* = @backingInt(body);
+}
+
 /// A TS enum's canonical prelude is its existing ordinary IIFE body, not a
 /// new block environment. Publish that known alias even before any identifier
 /// edit has caused lazy editor creation.

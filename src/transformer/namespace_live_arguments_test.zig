@@ -135,6 +135,9 @@ test "namespace live arguments identities exist before the output walker" {
         while (live_owners.next()) |raw| {
             if (t.ast.nodes.items[raw.*].tag != .ts_module_declaration) continue;
             const actual_owner = t.outputOwnedScope(@fromBackingInt(raw.*)) orelse return error.MissingActualIifeOwner;
+            const canonical_body = t.ast.nodes.items[raw.*].data.binary.right;
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.block_statement, t.ast.getNode(canonical_body).tag);
+            try std.testing.expectEqual(@as(?ScopeId, actual_owner), t.outputOwnedScope(canonical_body));
             const actual_parent = utils.expectedScope(t.ast, output, &parents, &output_owners, raw.*) orelse return error.MissingActualIifeParent;
             try std.testing.expectEqual(actual_parent, editor.scopes.items[actual_owner.toIndex()].parent);
             var parameters: usize = 0;

@@ -618,3 +618,69 @@ test "namespace generated references retain their declaration owner through two 
         );
     }
 }
+
+test "namespace canonical body reservation preserves source lexical frontier before output walker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ScopeId = @import("../semantic/scope.zig").ScopeId;
+    var scanner = try Scanner.init(a, "namespace N{{let left=1;const right=2;}export const value=3;}");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.is_ts = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    var lexical_scope: ?u32 = null;
+    var source_owners = analyzer.scope_owner_map.iterator();
+    while (source_owners.next()) |owner| {
+        if (parser.ast.nodes.items[owner.key_ptr.*].tag != .block_statement or analyzer.scopes.items[owner.value_ptr.*].kind != .block) continue;
+        try std.testing.expect(lexical_scope == null);
+        lexical_scope = owner.value_ptr.*;
+    }
+    const source_scope = lexical_scope orelse return error.MissingSourceLexicalFrontier;
+    const source_parent = analyzer.scopes.items[source_scope].parent;
+    var t = try Transformer.init(a, &parser.ast, .{});
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.namespace_member_owners = &analyzer.namespace_member_owners;
+    t.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const output = try t.visitNode(root);
+    // No output scope walker or finish may manufacture either of these owners.
+    var iifes: usize = 0;
+    var lexical_owners: usize = 0;
+    for (try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output)) |raw| {
+        const node = t.ast.nodes.items[raw];
+        if (node.tag == .ts_module_declaration) {
+            const owner = t.outputOwnedScope(@fromBackingInt(raw)) orelse return error.MissingNamespacePrimary;
+            try std.testing.expectEqual(@as(?ScopeId, owner), t.outputOwnedScope(node.data.binary.right));
+            try std.testing.expectEqual(source_parent, owner);
+            iifes += 1;
+        } else if (node.tag == .block_statement and t.outputOwnedScope(@fromBackingInt(raw)) == @as(?ScopeId, @fromBackingInt(source_scope))) {
+            lexical_owners += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), iifes);
+    try std.testing.expectEqual(@as(usize, 1), lexical_owners);
+    const editor = &t.semantic_editor.?;
+    try std.testing.expectEqual(source_parent, editor.scopes.items[source_scope].parent);
+    var bindings: usize = 0;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.scope_id != @as(ScopeId, @fromBackingInt(source_scope))) continue;
+        try std.testing.expect(symbol.kind == .variable_let or symbol.kind == .variable_const);
+        try std.testing.expectEqual(symbol.scope_id, editor.symbols.items[sid].scope_id);
+        try std.testing.expectEqual(symbol.kind, editor.symbols.items[sid].kind);
+        bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), bindings);
+}

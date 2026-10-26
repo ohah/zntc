@@ -60,7 +60,7 @@ pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
 /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
 /// flags=1: ambient module/namespace declaration -> strip.
 /// flags=0: namespace with runtime output; codegen emits the IIFE.
-pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitNamespaceDeclaration(self: *Transformer, primary: NodeIndex, node: Node) Error!NodeIndex {
     if (node.data.binary.flags == 1) return .none;
 
     const namespace_owner_symbol_id: ?u32 = if (self.getSymbolIdAt(node.data.binary.left)) |symbol_id| blk: {
@@ -121,7 +121,13 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         frame.exported_symbol_ids.deinit(self.allocator);
     };
 
-    var new_body = try self.visitNode(node.data.binary.right);
+    const source_body = node.data.binary.right;
+    if (!source_body.isNone()) {
+        const body_tag = self.ast.getNode(source_body).tag;
+        if (body_tag == .block_statement or body_tag == .ts_module_block)
+            try @import("semantic_edit.zig").bindNamespaceBodyOwner(self, primary, source_body, self.current_scope);
+    }
+    var new_body = try self.visitNode(source_body);
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
             if (self.getSymbolIdAt(entry.binding) != null) continue;
@@ -158,6 +164,10 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         if (self.semantic_edit_enabled) {
             try self.transformed_scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
             if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+            // This wrapper is born as this outer IIFE's actual body. Later
+            // strict/capture copies must carry that exact creation owner.
+            const origin = try self.scope_owner_origins.getOrPut(self.allocator, @backingInt(new_body));
+            if (!origin.found_existing) origin.value_ptr.* = @backingInt(new_body);
         }
     }
 

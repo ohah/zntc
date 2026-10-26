@@ -1275,7 +1275,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         // init expression 만 visit 필요 (다른 변환 영향 없음).
         .flow_enum_declaration => self.visitFlowEnumDeclaration(node),
         .flow_enum_member => self.visitBinaryNode(idx),
-        .ts_module_declaration => self.visitNamespaceDeclaration(node),
+        .ts_module_declaration => self.visitNamespaceDeclaration(idx, node),
         .ts_module_block => self.visitListNode(idx),
 
         // import x = require('y') → const x = require('y')
