@@ -5463,6 +5463,114 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'unmatched drop-label option keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; DEV: { value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label removes a block lexical scope with an import',
+        source:
+          "import { value } from './values.js'; DEV: { const hidden = value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label removes a var declaration with an import',
+        source:
+          "import { value } from './values.js'; DEV: var hidden = value; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label inside a function keeps the import fallback',
+        source:
+          "import { value } from './values.js'; function read() { DEV: { const hidden = value; } return value; } console.log(read()); process.stdout.write(String(read()));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label inside an arrow keeps the import fallback',
+        source:
+          "import { value } from './values.js'; const read = () => { DEV: { const hidden = value; } return value; }; console.log(read()); process.stdout.write(String(read()));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a loop keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: while (false) { break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a for loop keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: for (;;) { break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched drop-label around a switch keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: switch (value) { default: break DEV; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched nested drop-label keeps the import fallback',
+        source:
+          "import { value } from './values.js'; OUTER: DEV: { void value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'all matched drop-labels are checked with imports',
+        source:
+          "import { value } from './values.js'; DEV: { void value; } DEV: { void value; } console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'matched empty drop-label keeps the import fallback',
+        source:
+          "import { value } from './values.js'; DEV: {} console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'aliased named import keeps its local declaration anchor',
         source:
           "import { original as localValue } from './values.js'; console.log(localValue); process.stdout.write(String(localValue));",

@@ -488,8 +488,9 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
 /// Plain JavaScript imports are not elided by type-only import handling. A
 /// console-drop edit can therefore refresh their module records from the
 /// transformed AST and keep the same semantic graph, provided this is the only
-/// graph-changing transform in the module. Other modes keep the stricter
-/// verbatim-module-syntax gate.
+/// graph-changing transform in the module. Configured label names matter only
+/// when the AST contains a matching label; unmatched names are a no-op. Other
+/// modes keep the stricter verbatim-module-syntax gate.
 fn canRetainPlainJavaScriptImportsForConsoleDrop(
     self: anytype,
     module: *const Module,
@@ -507,7 +508,8 @@ fn canRetainPlainJavaScriptImportsForConsoleDrop(
     // Debugger statements have no binding or reference edges. The retained
     // console-drop path reindexes surviving references after both statements
     // are removed, so this option does not make plain JS imports unstable.
-    return !options.unsupported.hasAny() and options.drop_labels.len == 0 and options.define.len == 0 and
+    return !options.unsupported.hasAny() and !hasDroppedLabeledStatement(ast, options.drop_labels) and
+        options.define.len == 0 and
         !options.minify_syntax and !options.minify_whitespace and
         !options.experimental_decorators and !options.emit_decorator_metadata and
         !options.react_refresh and !options.styled_components and !options.emotion and
@@ -9040,10 +9042,24 @@ test "simple drop-console graph is retained by the full prepass gate" {
     ));
     var labeled_options = import_options;
     labeled_options.drop_labels = &[_][]const u8{"DEV"};
-    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
+        labeled_options,
+        true,
+    ));
+    const matching_label_source = "import { value } from './values.js'; DEV: { value; }";
+    var matching_label_scanner = try Scanner.init(allocator, matching_label_source);
+    defer matching_label_scanner.deinit();
+    var matching_label_parser = @import("../../parser/parser.zig").Parser.init(allocator, &matching_label_scanner);
+    matching_label_parser.configureFromExtension(".js");
+    defer matching_label_parser.deinit();
+    _ = try matching_label_parser.parse();
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &matching_label_parser.ast,
         labeled_options,
         true,
     ));
