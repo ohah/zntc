@@ -123,6 +123,18 @@ test "namespace live arguments identities exist before the output walker" {
             try std.testing.expectEqual(@as(usize, 1), declarations);
             try std.testing.expectEqual(@as(usize, 1), engine_reads);
             try std.testing.expect(source_refs > 0);
+            var live_nodes = parents.keyIterator();
+            while (live_nodes.next()) |raw| {
+                const id = t.getSymbolIdAt(@fromBackingInt(raw.*)) orelse continue;
+                if (id != entry.key_ptr.* and id != @backingInt(cell.engine_id)) continue;
+                const live_node = t.ast.nodes.items[raw.*];
+                if (live_node.tag != .identifier_reference and live_node.tag != .assignment_target_identifier) continue;
+                const reference = (try editor.referenceForNode(@fromBackingInt(raw.*))) orelse return error.MissingCreationTimeReference;
+                try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+                const actual = utils.expectedScope(t.ast, output, &parents, &editor.scope_owner_map, raw.*).?;
+                try std.testing.expectEqual(actual, reference.scope_id);
+                try std.testing.expect(reference.flags.read or reference.flags.write);
+            }
             checked += 1;
         }
         if (!std.mem.eql(u8, case.name, "property-negative") and !std.mem.eql(u8, case.name, "this-owner")) try std.testing.expect(checked > 0);
