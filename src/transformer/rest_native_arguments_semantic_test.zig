@@ -613,3 +613,71 @@ test "unlinked arguments default runtime matches native in sloppy and strict env
     }
     std.debug.print("UNLINKED ARGUMENTS RUNTIME sources=10 modes=2 native=20\n", .{});
 }
+
+test "unlinked arguments creator registers reads before parameter fragment movement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try unlinkedFixture(a, unlinked_source);
+    const params = f.t.ast.getNode(f.owner.params_node).data.list;
+    const id = (try Params.unlinkedArgumentsOwner(f.t, params, f.owner)).?;
+    const plan = f.t.native_arguments_parameter_handoffs.get(@backingInt(id)).?;
+    const second = f.t.ast.getNode(f.t.ast.readExtraNode(params.start, 1));
+    const binding = switch (second.tag) {
+        .assignment_pattern => second.data.binary.left,
+        .formal_parameter => f.t.ast.readExtraNode(second.data.extra, ast_mod.FormalParameterExtra.pattern),
+        else => return error.MissingActualDefaultBinding,
+    };
+    const binding_id = f.t.getSymbolIdAt(binding).?;
+    const before = f.t.semantic_editor.?.references.items.len;
+    const engines_before = f.t.native_arguments_declaration_origins.count();
+    var unlinked: std.ArrayList(NodeIndex) = .empty;
+    f.t.unlinked_parameter_bindings = &unlinked;
+    const lowered = try Params.lowerParamsPass2ForFunction(f.t, params, f.t.ast.getNode(f.owner.function_node).span, f.owner);
+    f.t.unlinked_parameter_bindings = null;
+    // These are the actual returned declaration fragments, before the driver
+    // moves source-parameter references or replaces the function body.
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var statements: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+    for (lowered.body_stmts.items, 0..) |statement, index| {
+        const live = try walk.collectReachableNodeIndicesFrom(a, f.t.ast, statement);
+        for (live) |raw| {
+            try statements.put(a, raw, index);
+            var children = walk.children(f.t.ast, f.t.ast.nodes.items[raw]);
+            while (children.next()) |child| {
+                const slot = try parents.getOrPut(a, @backingInt(child));
+                try std.testing.expect(!slot.found_existing);
+                slot.value_ptr.* = raw;
+            }
+        }
+    }
+    var reads: usize = 0;
+    for (f.t.semantic_editor.?.references.items[before..]) |row| {
+        if (row.symbol_id != id or row.flags.declare) continue;
+        try std.testing.expectEqual(f.owner.body_scope, row.scope_id);
+        try std.testing.expectEqualDeep(@as(symbol_mod.ReferenceFlags, .{ .read = true }), row.flags);
+        try std.testing.expectEqual(@as(?u32, @backingInt(id)), f.t.getSymbolIdAt(row.node_index));
+        try std.testing.expectEqual(symbol_mod.Reference.NO_STMT, row.stmt_idx);
+        try std.testing.expectEqual(symbol_mod.Reference.NO_STMT, row.scope_stmt_idx);
+        const origin = f.t.native_arguments_reference_origins.get(@backingInt(row.node_index)).?;
+        try std.testing.expectEqual(plan.source_scope, origin.owner_scope);
+        try std.testing.expectEqual(f.owner.body_scope, origin.scope);
+        var cursor = @backingInt(row.node_index);
+        const member = parents.get(cursor).?;
+        try std.testing.expectEqual(ast_mod.Node.Tag.computed_member_expression, f.t.ast.nodes.items[member].tag);
+        while (parents.get(cursor)) |parent| {
+            cursor = parent;
+            if (f.t.ast.nodes.items[cursor].tag == .variable_declarator) break;
+        }
+        const declarator = f.t.ast.nodes.items[cursor];
+        try std.testing.expectEqual(ast_mod.Node.Tag.variable_declarator, declarator.tag);
+        try std.testing.expectEqual(@as(?u32, binding_id), f.t.getSymbolIdAt(f.t.ast.readExtraNode(declarator.data.extra, 0)));
+        try std.testing.expectEqual(ast_mod.Node.Tag.variable_declaration, f.t.ast.nodes.items[parents.get(cursor).?].tag);
+        try std.testing.expectEqual(@as(?usize, 1), statements.get(@backingInt(row.node_index)));
+        _ = (try @import("native_arguments.zig").publication(f.t, @backingInt(row.node_index))).?;
+        reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), reads);
+    try std.testing.expectEqual(engines_before, f.t.native_arguments_declaration_origins.count());
+    std.debug.print("UNLINKED ARGUMENTS CREATOR reads=2 actual-declarator=1 pre-fragment-move=1\n", .{});
+}
