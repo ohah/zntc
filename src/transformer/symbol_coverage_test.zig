@@ -8561,3 +8561,108 @@ test "exact scope audit accepts a generated function-expression self-name scope 
     try std.testing.expect(detached.scope_owner_mismatch > 0);
     try std.testing.expect(!detached.isClean());
 }
+
+test "exact native Annex B counts include actual implicit assignments and reject stale metadata" {
+    const Audit = struct {
+        fn run(a: std.mem.Allocator, parser: *const Parser, root: AstNodeIndex, analyzer: *const SemanticAnalyzer, symbols: []const Symbol) !coverage.ExactReport {
+            const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+            return coverage.checkExactWithDeclarationAnchors(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), analyzer.symbol_ids.items, symbols, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, analyzer.helper_ref_nodes, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &.{}, &origins);
+        }
+    };
+    const cases = [_]struct { source: []const u8, assignments: u32 }{
+        .{ .source = "function run(){{function local(){return 1;}local();}return local();}", .assignments = 1 },
+        .{ .source = "function run(){{function local(){return 1;}function local(){return 2;}local();}return local();}", .assignments = 2 },
+        .{ .source = "function run(flag){if(flag)function local(){return 3;}return local();}", .assignments = 1 },
+        .{ .source = "function run(value=1){{function local(){return value;}local();}return local();}", .assignments = 1 },
+        .{ .source = "function run(){var unrelated=0;{function local(){return 1;}local();}return local();}function sibling(){var local=0;return local;}", .assignments = 1 },
+        .{ .source = "'use strict';function run(){{function local(){return 1;}local();}return 1;}", .assignments = 0 },
+        .{ .source = "function run(){{const local=()=>1;local();}return 1;}", .assignments = 0 },
+    };
+    var foreign_scope_checks: usize = 0;
+    var wrong_name_checks: usize = 0;
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".js");
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        const baseline = try Audit.run(a, &parser, root, &analyzer, analyzer.symbols.items);
+        if (!baseline.isClean()) {
+            std.debug.print("native Annex B source: {s}\n", .{case.source});
+            coverage.printExact("native-annex-source", baseline);
+            for (analyzer.references.items) |row| {
+                if (row.flags.declare) std.debug.print("decl sid={d} anchor={d} scope={d} stmt={d}/{d}\n", .{ @backingInt(row.symbol_id), @backingInt(row.declaration_node_index), @backingInt(row.scope_id), row.stmt_idx, row.scope_stmt_idx });
+            }
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .binding_identifier) std.debug.print("binding node={d} name={s} sid={any}\n", .{ raw, parser.ast.getText(node.span), analyzer.symbol_ids.items[raw] });
+            }
+        }
+        try std.testing.expect(baseline.isClean());
+        var roles: usize = 0;
+        for (analyzer.symbols.items, 0..) |symbol, lexical| {
+            const alias = symbol.annex_b_alias;
+            if (alias.variable.isNone()) continue;
+            roles += 1;
+            try std.testing.expectEqual(case.assignments, alias.source_assignment_count);
+            const variable = @backingInt(alias.variable);
+            for (0..10) |change| {
+                const symbols = try a.dupe(Symbol, analyzer.symbols.items);
+                switch (change) {
+                    0 => symbols[lexical].reference_count += 1,
+                    1 => symbols[variable].reference_count += 1,
+                    2 => symbols[variable].write_count += 1,
+                    3 => symbols[lexical].annex_b_alias.source_assignment_count += 1,
+                    4 => symbols[lexical].annex_b_alias.variable = @fromBackingInt(@as(u32, @intCast(lexical))),
+                    5 => symbols[variable].kind = .variable_let,
+                    6 => symbols[lexical].scope_id = symbols[variable].scope_id,
+                    7 => symbols[lexical].annex_b_alias.state = .lowered,
+                    8 => symbols[lexical].annex_b_alias.source_assignment_count = 0,
+                    9 => symbols[lexical].annex_b_alias.source_assignment_count -= 1,
+                    else => unreachable,
+                }
+                const broken = try Audit.run(a, &parser, root, &analyzer, symbols);
+                try std.testing.expect(!broken.isClean());
+                if (change < 2) try std.testing.expectEqual(@as(usize, 1), broken.reference_count_mismatch);
+                if (change == 2) try std.testing.expectEqual(@as(usize, 1), broken.write_count_mismatch);
+                if (change == 3) try std.testing.expect(broken.declaration_identity_mismatch > 0);
+            }
+            for (analyzer.symbols.items, 0..) |candidate, other| {
+                if (candidate.kind != .variable_var or other == variable) continue;
+                const foreign_scope = candidate.scope_id != analyzer.symbols.items[variable].scope_id;
+                const same_name = std.mem.eql(u8, parser.ast.getText(candidate.name), "local");
+                if (foreign_scope != same_name) continue;
+                const symbols = try a.dupe(Symbol, analyzer.symbols.items);
+                symbols[lexical].annex_b_alias.variable = @fromBackingInt(@as(u32, @intCast(other)));
+                // Retarget counts too: the exact producer pair, not merely the
+                // aggregate totals, must still reject this valid other symbol.
+                symbols[variable].reference_count -= case.assignments;
+                symbols[variable].write_count -= case.assignments;
+                symbols[other].reference_count += case.assignments;
+                symbols[other].write_count += case.assignments;
+                const broken = try Audit.run(a, &parser, root, &analyzer, symbols);
+                try std.testing.expect(!broken.isClean());
+                if (foreign_scope) {
+                    foreign_scope_checks += 1;
+                    try std.testing.expect(broken.declaration_scope_mismatch > 0);
+                } else {
+                    wrong_name_checks += 1;
+                    try std.testing.expect(broken.declaration_identity_mismatch > 0);
+                }
+            }
+            const restored = try Audit.run(a, &parser, root, &analyzer, analyzer.symbols.items);
+            try std.testing.expect(restored.isClean());
+        }
+        try std.testing.expectEqual(@as(usize, if (case.assignments == 0) 0 else 1), roles);
+    }
+    try std.testing.expect(foreign_scope_checks > 0);
+    try std.testing.expect(wrong_name_checks > 0);
+}

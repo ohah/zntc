@@ -4103,6 +4103,7 @@ fn checkExactImpl(
             };
         }
     }
+    try accountNativeAnnexBAssignments(allocator, ast, &reachable_nodes, symbol_ids, symbols, scopes, value_counts, write_counts, &report);
     for (symbols, 0..) |symbol, sid| {
         if (symbol.reference_count != value_counts[sid]) report.reference_count_mismatch += 1;
         if (symbol.write_count != write_counts[sid]) report.write_count_mismatch += 1;
@@ -5716,6 +5717,75 @@ fn isAnnexBBlockFunctionAlias(scopes: []const Scope, symbol: *const Symbol, bloc
     const block = scopes[block_scope];
     if (block.kind.isVarScope() or block.is_strict) return false;
     return nearestVarScope(block_scope, scopes) == @as(?u32, symbol.scope_id.toIndex());
+}
+
+// Native Annex B declarations execute V=L at each actual declaration. The
+// analyzer records those operations in symbol counts without identifier rows.
+fn accountNativeAnnexBAssignments(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    value_counts: []usize,
+    write_counts: []usize,
+    report: *ExactReport,
+) !void {
+    var has_roles = false;
+    for (symbols) |symbol| {
+        if (symbol.binding_instantiation.annex_b or !symbol.annex_b_alias.variable.isNone() or symbol.annex_b_alias.source_assignment_count != 0) {
+            has_roles = true;
+            break;
+        }
+    }
+    if (!has_roles) return;
+    const annex = @import("../semantic/annex_b_function.zig");
+    const observed = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(observed);
+    @memset(observed, 0);
+    var declarations = reachable_nodes.iterator();
+    while (declarations.next()) |entry| {
+        const index: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const declaration = ast.getNode(index);
+        if (declaration.tag != .function_declaration) continue;
+        if (ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name).isNone()) continue;
+        const role = (annex.forDeclaration(ast, symbol_ids, symbols, index) catch {
+            report.declaration_identity_mismatch += 1;
+            continue;
+        }) orelse continue;
+        if (role.state != .native) continue;
+        const lexical = @backingInt(role.lexical);
+        const variable = @backingInt(role.variable);
+        const lexical_scope = symbols[lexical].scope_id;
+        const variable_scope = symbols[variable].scope_id;
+        if (!exactValidScope(scopes, lexical_scope) or !exactValidScope(scopes, variable_scope) or
+            scopes[lexical_scope.toIndex()].is_strict or
+            nearestVarScope(lexical_scope.toIndex(), scopes) != variable_scope.toIndex())
+        {
+            report.declaration_scope_mismatch += 1;
+            continue;
+        }
+        // The pair is selected only by its typed source role. Spelling equality
+        // checks that role's consistency; it never selects a replacement SID.
+        const lexical_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, exactSymbolName(ast, &symbols[lexical]));
+        defer if (lexical_name.ptr != exactSymbolName(ast, &symbols[lexical]).ptr) allocator.free(lexical_name);
+        const variable_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, exactSymbolName(ast, &symbols[variable]));
+        defer if (variable_name.ptr != exactSymbolName(ast, &symbols[variable]).ptr) allocator.free(variable_name);
+        if (!std.mem.eql(u8, lexical_name, variable_name)) {
+            report.declaration_identity_mismatch += 1;
+            continue;
+        }
+        observed[lexical] += 1;
+        value_counts[lexical] += 1;
+        value_counts[variable] += 1;
+        write_counts[variable] += 1;
+    }
+    for (symbols, 0..) |symbol, sid| {
+        const alias = symbol.annex_b_alias;
+        if (alias.variable.isNone() or alias.state != .native) continue;
+        if (observed[sid] != alias.source_assignment_count) report.declaration_identity_mismatch += 1;
+    }
 }
 
 fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {

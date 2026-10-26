@@ -4625,6 +4625,23 @@ pub const SemanticAnalyzer = struct {
         if (symbol_id >= self.symbols.items.len) return false;
         const name_node = self.ast.getNode(name_idx);
         const symbol = self.symbols.items[symbol_id];
+        // A later sloppy block function can share the first declaration's SID
+        // while keeping its own exact source anchor. Reuse that completed
+        // predeclaration instead of recording this declaration a second time.
+        if (name_node.tag == .binding_identifier and symbol.kind == .function_decl and
+            symbol.scope_id == self.current_scope and symbol.origin_scope == self.current_scope)
+        {
+            const role = @import("annex_b_function.zig").forSymbol(self.symbols.items, @fromBackingInt(symbol_id)) catch return false;
+            if (role) |native| if (native.state == .native) {
+                var anchors: usize = 0;
+                for (self.references.items) |reference| {
+                    if (@backingInt(reference.symbol_id) == symbol_id and reference.scope_id == self.current_scope and
+                        reference.declaration_node_index == name_idx and reference.node_index.isNone() and
+                        std.meta.eql(reference.flags, @as(symbol_mod.ReferenceFlags, .{ .declare = true }))) anchors += 1;
+                }
+                if (anchors == 1) return true;
+            };
+        }
         return symbol.kind.isFunctionLike() and symbol.scope_id == self.current_scope and
             symbol.origin_scope == self.current_scope and
             symbol.name.start == name_node.span.start and symbol.name.end == name_node.span.end and
