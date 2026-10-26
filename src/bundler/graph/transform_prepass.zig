@@ -280,6 +280,24 @@ fn addGeneratedGlobal(
     try semantic.unresolved_references.put(allocator, stable_name, {});
 }
 
+fn recordExplicitGeneratedGlobals(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    parser_node_count: u32,
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    semantic: *ModuleSemanticData,
+) !void {
+    var nodes = explicit_global_reference_nodes.keyIterator();
+    while (nodes.next()) |raw| {
+        if (raw.* >= ast.nodes.items.len) return error.InvalidExplicitGlobalReference;
+        if (raw.* < parser_node_count) continue;
+        const node = ast.nodes.items[raw.*];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier)
+            return error.InvalidExplicitGlobalReference;
+        try addGeneratedGlobal(allocator, semantic, ast.getText(node.span));
+    }
+}
+
 fn hasExplicitGlobalReferenceNamed(
     ast: *const ast_mod.Ast,
     explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
@@ -6807,11 +6825,23 @@ fn hasNestedWorkletFunctionScope(
     return false;
 }
 
-/// Retain the graph for string and primitive define replacements only
-/// when every matching AST candidate is one exact, bound local identifier
-/// read. Composite expressions and dynamic scopes retain the full semantic
-/// reanalysis path.
-fn canRetainGraphForSimpleDefineReferences(
+/// A parsed define expression can introduce references and scopes that are
+/// not visible in the source AST. Validate the edited graph before retaining
+/// it; this predicate only proves the replaced source reads have exact owners.
+fn scopeChainHasDynamicNameLookup(scopes: []const SemanticScope, start: ScopeId) bool {
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        const index = current.toIndex();
+        if (index >= scopes.len) return true;
+        const scope = scopes[index];
+        if (scope.subtree_has_direct_eval or scope.subtree_has_with) return true;
+        current = scope.parent;
+    }
+    return !current.isNone();
+}
+
+fn canRetainGraphForDefineReferences(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6843,15 +6873,19 @@ fn canRetainGraphForSimpleDefineReferences(
     for (ast.nodes.items, 0..) |node, raw| {
         const value = define_mod.matchedDefineValue(ast, node, defines) orelse continue;
         found_define = true;
-        if (node.tag != .identifier_reference or
-            (!define_mod.isStringLiteralDefineValue(value) and
-                !define_mod.isGraphSafePrimitiveDefineValue(value))) return false;
+        if (node.tag != .identifier_reference) return false;
         if (raw >= semantic.symbol_ids.len) return false;
         const symbol_id = semantic.symbol_ids[raw] orelse return false;
         if (symbol_id >= semantic.symbols.items.len) return false;
         const reference = references_by_node.get(@intCast(raw)) orelse return false;
         if (reference.ambiguous or reference.symbol_id != symbol_id or
             reference.scope_id >= semantic.scopes.len) return false;
+        const complex_replacement = !define_mod.isStringLiteralDefineValue(value) and
+            !define_mod.isGraphSafePrimitiveDefineValue(value);
+        if (complex_replacement and scopeChainHasDynamicNameLookup(
+            semantic.scopes,
+            @fromBackingInt(reference.scope_id),
+        )) return false;
         const symbol = semantic.symbols.items[symbol_id];
         if (symbol.kind == .import_binding or symbol.synthetic_kind != null or
             symbol.scope_id.isNone() or @backingInt(symbol.scope_id) >= semantic.scopes.len)
@@ -6860,6 +6894,15 @@ fn canRetainGraphForSimpleDefineReferences(
         }
     }
     return found_define;
+}
+
+fn hasComplexDefineReplacement(ast: *const ast_mod.Ast, defines: []const define_mod.DefineEntry) bool {
+    for (ast.nodes.items) |node| {
+        const value = define_mod.matchedDefineValue(ast, node, defines) orelse continue;
+        if (!define_mod.isStringLiteralDefineValue(value) and
+            !define_mod.isGraphSafePrimitiveDefineValue(value)) return true;
+    }
+    return false;
 }
 
 const SimpleConsoleDrop = struct {
@@ -7159,7 +7202,7 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_set,
         );
     const uses_define = define_mod.astUsesDefine(ast, options.define);
-    const retained_simple_define = uses_define and canRetainGraphForSimpleDefineReferences(
+    const retained_define_references = uses_define and canRetainGraphForDefineReferences(
         self.allocator,
         ast,
         semantic,
@@ -7190,7 +7233,7 @@ fn canKeepPrepassSemanticGraph(
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
     if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
         (has_drop_console and !retained_simple_console_drops) or
-        (uses_define and !retained_simple_define) or
+        (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast)) or
         (ast.has_decorator and has_legacy_decorator_options and !retained_legacy_decorators)) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
@@ -7218,13 +7261,13 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    // A retained simple define replaces only exact bound local reads; it
-    // leaves declarations and their names available to direct eval. Other
-    // graph-changing transforms remain in this unsafe-transform accumulator.
+    // A retained define replaces only exact bound local reads; output graph
+    // validation below decides whether generated expression references/scopes
+    // can remain on this graph. Other graph-changing transforms remain here.
     var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or
         safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
-    var found_transform = found_other_transform or retained_simple_define or retained_simple_console_drops;
+    var found_transform = found_other_transform or retained_define_references or retained_simple_console_drops;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
         if (scope.subtree_has_direct_eval) {
@@ -8264,7 +8307,7 @@ test "syntax minify graph gate rejects eighteen hostile identity and statement c
     }
 }
 
-test "primitive defines retain exact local reference graphs without global sidecars" {
+test "define source reads with exact local owners can enter output graph audit" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -8313,7 +8356,7 @@ test "primitive defines retain exact local reference graphs without global sidec
         .emotion = false,
     };
     const primitive_defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "false" }};
-    const unsupported_defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "globalThis.value" }};
+    const compound_defines = [_]define_mod.DefineEntry{.{ .key = "flag", .value = "globalThis.value" }};
     var allow_super_get = false;
     var allow_super_set = false;
     const primitive_options: TransformOptions = .{ .strip_types = true, .define = &primitive_defines };
@@ -8328,16 +8371,16 @@ test "primitive defines retain exact local reference graphs without global sidec
     );
     try std.testing.expect(primitive_graph_retained);
     try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
-    const unsupported_graph_retained = canKeepPrepassSemanticGraph(
+    const compound_graph_candidate = canKeepPrepassSemanticGraph(
         &test_context,
         &module,
-        .{ .strip_types = true, .define = &unsupported_defines },
+        .{ .strip_types = true, .define = &compound_defines },
         &[_]Plugin{},
         &allow_super_get,
         &allow_super_set,
         null,
     );
-    try std.testing.expect(!unsupported_graph_retained);
+    try std.testing.expect(compound_graph_candidate);
     try std.testing.expect(!shouldRecordPrepassExplicitGlobals(false, false, false, false, false));
 }
 
@@ -9341,7 +9384,7 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
         .drop_console = true,
         .define = &primitive_defines,
     };
-    try std.testing.expect(try canRetainSimpleDefineForTest(
+    try std.testing.expect(try canRetainDefineForTest(
         "function read(__FLAG__) { const saved = __FLAG__; return eval('__FLAG__'); }",
         "__FLAG__",
         "false",
@@ -9352,7 +9395,7 @@ test "drop-console retention with direct eval requires unchanged dynamic scope" 
         define_and_console,
     ));
 
-    try std.testing.expect(!try canRetainSimpleDefineForTest(
+    try std.testing.expect(!try canRetainDefineForTest(
         "function read(__FLAG__) { const saved = __FLAG__; return eval('__FLAG__'); }",
         "__FLAG__",
         "42",
@@ -9420,7 +9463,7 @@ const DefinePreflightMutation = enum {
     synthetic_binding,
 };
 
-fn canRetainSimpleDefineForTest(
+fn canRetainDefineForTest(
     source: []const u8,
     key: []const u8,
     value: []const u8,
@@ -9534,10 +9577,10 @@ fn canRetainSimpleDefineForTest(
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    return canRetainGraphForSimpleDefineReferences(allocator, &parser.ast, &semantic, &defines);
+    return canRetainGraphForDefineReferences(allocator, &parser.ast, &semantic, &defines);
 }
 
-test "simple define graph preflight rejects hostile syntax and graph evidence" {
+test "define graph source preflight rejects hostile identity and dynamic-scope evidence" {
     const local_source = "const flag = 1; function read() { return flag; }";
     const HostileCase = struct {
         source: []const u8,
@@ -9546,11 +9589,10 @@ test "simple define graph preflight rejects hostile syntax and graph evidence" {
         mutation: DefinePreflightMutation,
     };
     const cases = [_]HostileCase{
-        .{ .source = local_source, .key = "flag", .value = "0", .mutation = .none },
-        .{ .source = local_source, .key = "flag", .value = "globalThis.value", .mutation = .none },
         .{ .source = "const object = {}; function read() { return object.flag; }", .key = "object.flag", .value = "false", .mutation = .none },
         .{ .source = "const object = {}; function read() { return object?.flag; }", .key = "object.flag", .value = "false", .mutation = .none },
         .{ .source = "function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
+        .{ .source = "function read(flag) { eval('flag'); return flag; }", .key = "flag", .value = "globalThis.value", .mutation = .none },
         .{ .source = "import { flag } from 'pkg'; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .none },
         .{ .source = local_source, .key = "flag", .value = "false", .mutation = .truncated_symbol_id_map },
         .{ .source = "const flag = 1; function read() { return flag; }", .key = "flag", .value = "false", .mutation = .missing_symbol_id },
@@ -9565,22 +9607,24 @@ test "simple define graph preflight rejects hostile syntax and graph evidence" {
         .{ .source = local_source, .key = "flag", .value = "false", .mutation = .synthetic_binding },
     };
     for (cases) |case| {
-        try std.testing.expect(!try canRetainSimpleDefineForTest(
+        try std.testing.expect(!try canRetainDefineForTest(
             case.source,
             case.key,
             case.value,
             case.mutation,
         ));
     }
-    try std.testing.expect(!try canRetainSimpleDefineForTest(local_source, "missing", "false", .none));
-    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "\"production\"", .none));
-    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "true", .none));
-    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "false", .none));
-    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "null", .none));
-    try std.testing.expect(try canRetainSimpleDefineForTest(local_source, "flag", "undefined", .none));
+    try std.testing.expect(!try canRetainDefineForTest(local_source, "missing", "false", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "\"production\"", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "true", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "false", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "null", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "undefined", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "0", .none));
+    try std.testing.expect(try canRetainDefineForTest(local_source, "flag", "globalThis.value", .none));
 }
 
-fn printPrepassExact(
+fn exactPrepassReport(
     allocator: std.mem.Allocator,
     module: *const Module,
     root: @import("../../parser/ast.zig").NodeIndex,
@@ -9589,12 +9633,12 @@ fn printPrepassExact(
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     pre_transform_scope_count: usize,
     retained_graph: bool,
-) !void {
-    const sem = if (module.semantic) |*value| value else return;
-    const ast = &(module.ast orelse return);
+) std.mem.Allocator.Error!?@import("../../transformer/symbol_coverage.zig").ExactReport {
+    const sem = if (module.semantic) |*value| value else return null;
+    const ast = &(module.ast orelse return null);
     const helper_refs = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
     const coverage = @import("../../transformer/symbol_coverage.zig");
-    const exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
+    return try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
         allocator,
         ast,
         root,
@@ -9616,6 +9660,29 @@ fn printPrepassExact(
         // retained source ScopeIds. A reanalyzed graph assigns scopes afresh.
         if (retained_graph) pre_transform_scope_count else null,
     );
+}
+
+fn printPrepassExact(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    root: @import("../../parser/ast.zig").NodeIndex,
+    parser_node_count: u32,
+    transformer: *const Transformer,
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    pre_transform_scope_count: usize,
+    retained_graph: bool,
+) !void {
+    const exact = (try exactPrepassReport(
+        allocator,
+        module,
+        root,
+        parser_node_count,
+        transformer,
+        unresolved_nodes,
+        pre_transform_scope_count,
+        retained_graph,
+    )) orelse return;
+    const coverage = @import("../../transformer/symbol_coverage.zig");
     coverage.printExactPrepass(module.path, exact, retained_graph);
 }
 
@@ -9719,6 +9786,33 @@ fn captureWorkletFactoryLocalBindings(
         });
     }
     return bindings.toOwnedSlice(allocator);
+}
+
+fn captureOpaqueDefineScopeOwnerNodes(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    semantic: *const ModuleSemanticData,
+) ![]const u32 {
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+    var reachable_nodes = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    for (reachable) |raw| reachable_nodes.set(@as(usize, raw));
+
+    var owners: std.ArrayListUnmanaged(u32) = .empty;
+    for (semantic.scopes, 0..) |scope, scope_index| {
+        if (!scope.subtree_has_direct_eval or !scope.subtree_has_with) continue;
+        var found_owner = false;
+        var owner_it = semantic.scope_owner_map.iterator();
+        while (owner_it.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (@as(usize, entry.value_ptr.*) != scope_index or @as(usize, raw) >= ast.nodes.items.len or
+                !reachable_nodes.isSet(@as(usize, raw))) continue;
+            try owners.append(allocator, raw);
+            found_owner = true;
+        }
+        if (!found_owner) return error.MissingOpaqueDefineScopeOwner;
+    }
+    return try owners.toOwnedSlice(allocator);
 }
 
 fn isPostGraphOutputNameKind(kind: SemanticSyntheticKind) bool {
@@ -9952,6 +10046,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         else
             @as(?bool, false);
     const has_dropped_labeled_statement = hasDroppedLabeledStatement(ast_ptr, opts.drop_labels);
+    const has_complex_define_replacement = hasComplexDefineReplacement(ast_ptr, opts.define);
     var allow_es5_async_method_super_get = false;
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
@@ -10002,13 +10097,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
-    transformer.record_explicit_global_references = shouldRecordPrepassExplicitGlobals(
-        flow_match_generated_globals.has_match,
-        has_lowered_object_spread,
-        has_lowered_exponentiation,
-        safe_builtin_worklet,
-        downlevel_static_public_class_field_scan orelse (opts.unsupported.class or opts.unsupported.class_field),
-    );
+    transformer.record_explicit_global_references = has_complex_define_replacement or
+        shouldRecordPrepassExplicitGlobals(
+            flow_match_generated_globals.has_match,
+            has_lowered_object_spread,
+            has_lowered_exponentiation,
+            safe_builtin_worklet,
+            downlevel_static_public_class_field_scan orelse (opts.unsupported.class or opts.unsupported.class_field),
+        );
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -10081,6 +10177,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    // Opaque define text is emitted as one synthetic identifier-shaped node.
+    // Its inner lexical references cannot pass as exact merely because that
+    // wrapper node has an external-reference marker.
+    if (has_complex_define_replacement and transformer.has_opaque_define_replacement)
+        can_keep_semantic_graph = false;
     if (transformer.unsupported_arrow_private_scope_span) |span| {
         self.addDiag(.arrow_private_dynamic_scope, .@"error", module.path, span, .parse, TransformOptions.arrow_private_dynamic_scope_msg, null);
         return;
@@ -10102,6 +10203,21 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.node_scope_provenance = module.semantic.?.node_scope_provenance;
         transformer.class_self_symbol_map = module.semantic.?.class_self_symbol_map;
         transformer.helper_scope_map = module.semantic.?.helper_scope_map;
+    }
+    if (can_keep_semantic_graph and has_complex_define_replacement) {
+        if (module.semantic) |*semantic| {
+            recordExplicitGeneratedGlobals(
+                arena_alloc,
+                transformer.ast,
+                parser_node_count,
+                &transformer.explicit_global_reference_nodes,
+                semantic,
+            ) catch {
+                can_keep_semantic_graph = false;
+            };
+        } else {
+            can_keep_semantic_graph = false;
+        }
     }
     // Removing a labeled statement or console call, or splitting a mapped
     // import, can shift statement indices and detach declarations or scopes. Reindex the surviving graph,
@@ -10258,6 +10374,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // tree shaking after semantic resync.
     const owned_preserved_class_names = transformer.preserved_simple_class_names.toOwnedSlice(arena_alloc) catch return;
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
+    const owned_opaque_define_scope_owner_nodes = if (transformer.has_opaque_define_replacement) blk: {
+        if (module.semantic) |*semantic| {
+            break :blk captureOpaqueDefineScopeOwnerNodes(arena_alloc, transformer.ast, root, semantic) catch return;
+        }
+        break :blk &[_]u32{};
+    } else &[_]u32{};
     const owned_worklet_factory_local_bindings = if (module.semantic) |*semantic|
         captureWorkletFactoryLocalBindings(arena_alloc, transformer.ast, semantic) catch return
     else
@@ -10295,6 +10417,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .symbol_ids = owned_symbol_ids,
         .helper_ref_nodes = owned_helper_ref_nodes,
         .explicit_global_ref_nodes = owned_explicit_global_ref_nodes,
+        .opaque_define_scope_owner_nodes = owned_opaque_define_scope_owner_nodes,
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
         .worklet_factory_local_bindings = owned_worklet_factory_local_bindings,
@@ -10302,6 +10425,23 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .runtime_helper_import_output_bindings = owned_runtime_helper_import_output_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
+
+    // Parsed define expressions can add lexical references and nested scopes.
+    // The source-only preflight cannot prove those generated edges, so retain
+    // the graph only when the exact output audit proves every identity.
+    if (can_keep_semantic_graph and has_complex_define_replacement) {
+        const exact = exactPrepassReport(
+            arena_alloc,
+            module,
+            root,
+            parser_node_count,
+            &transformer,
+            &unresolved_nodes,
+            pre_transform_scope_count,
+            true,
+        ) catch null;
+        can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
+    }
 
     if (shouldRefreshRetainedModuleTopLevelAwait(
         can_keep_semantic_graph,
@@ -12977,6 +13117,17 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 for (reachable) |raw| bitmap[raw] = true;
                 break :blk bitmap;
             } else null;
+            for (cache.opaque_define_scope_owner_nodes) |raw| {
+                if (reachable_post_graph_nodes) |reachable| {
+                    if (@as(usize, raw) >= reachable.len) return error.InvalidOpaqueDefineScopeOwner;
+                    if (!reachable[@as(usize, raw)]) continue;
+                }
+                const scope_raw = analyzer.scope_owner_map.get(raw) orelse
+                    return error.MissingReanalyzedOpaqueDefineScope;
+                if (@as(usize, scope_raw) >= analyzer.scopes.items.len) return error.InvalidReanalyzedOpaqueDefineScope;
+                analyzer.scopes.items[scope_raw].subtree_has_direct_eval = true;
+                analyzer.scopes.items[scope_raw].subtree_has_with = true;
+            }
             for (cache.preserved_class_name_nodes) |raw| {
                 if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
                     ast.nodes.items[raw].tag != .binding_identifier) continue;
@@ -13299,6 +13450,9 @@ fn minifiedConstGraphSidecarsRemainReachable(
             if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
         }
         for (cache.explicit_global_ref_nodes) |raw| {
+            if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
+        }
+        for (cache.opaque_define_scope_owner_nodes) |raw| {
             if (!isNodeReachableInMinifiedGraph(raw, reachable)) return false;
         }
         for (cache.preserved_class_name_nodes) |raw| {
@@ -13738,6 +13892,9 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
             if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
         }
         for (cache.explicit_global_ref_nodes) |raw| {
+            if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
+        }
+        for (cache.opaque_define_scope_owner_nodes) |raw| {
             if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
         }
         for (cache.preserved_class_name_nodes) |raw| {

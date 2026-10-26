@@ -965,6 +965,7 @@ pub fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
     // opaque value cannot be invalidated by identifier mangling or transforms
     // that assume no dynamic name lookup. This is a safety fallback; exact
     // SymbolId edges still require parsing the expression into the AST.
+    self.has_opaque_define_replacement = true;
     try preserveOpaqueDefineNames(self, value);
     return es_helpers.makeGlobalRefFromSpan(self, value_span);
 }
