@@ -396,3 +396,83 @@ test "native parameter handoff records and copies only the exact existing formal
     f.params = copied;
     try f.expectComplete();
 }
+
+test "native parameter handoff generated factory reads preserve exact published coordinates" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var sem = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    sem.enable_stmt_info = true;
+    sem.enable_exact_declaration_anchors = true;
+    try sem.analyze();
+    const source_symbol_count = sem.symbols.items.len;
+    const source_scope_count = sem.scopes.items.len;
+    try std.testing.expectEqual(@as(usize, 0), source_symbol_count);
+    var t = try Transformer.init(a, &parser.ast, .{});
+    try t.initSymbolIds(sem.symbol_ids.items);
+    t.symbols = sem.symbols.items;
+    t.references = sem.references.items;
+    t.scopes = sem.scopes.items;
+    t.scope_maps = sem.scope_maps.items;
+    t.scope_owner_map = sem.scope_owner_map;
+    t.node_scope_provenance = sem.node_scope_provenance;
+    t.semantic_edit_enabled = true;
+    const empty = try t.ast.addNodeList(&.{});
+    const params = try t.ast.addFormalParameters(empty, .EMPTY);
+    const body = try t.ast.addListNode(.block_statement, .EMPTY, empty);
+    const none = @backingInt(ast.NodeIndex.none);
+    const extra = try t.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
+    const function = try t.ast.addExtraNode(.function_expression, .EMPTY, extra);
+    const scope = try t.addGeneratedFunctionScope(t.programScope(), function);
+    try std.testing.expect(scope.toIndex() >= source_scope_count);
+    try std.testing.expectEqual(@as(?ScopeId, scope), t.outputOwnedScope(function));
+    const reference = try t.makeNativeArgumentsRef(scope, scope, .EMPTY);
+    const id = t.getSymbolIdAt(reference).?;
+    try std.testing.expect(id >= source_symbol_count);
+    try std.testing.expectEqual(@as(?u32, id), t.semantic_editor.?.symbol_ids.items[@backingInt(reference)]);
+    // New identity alone does not select the exact-reference consumer. The
+    // actual producer API reserves both its SID and its known output Scope.
+    try std.testing.expect(id >= t.symbols.len);
+    try t.trackExactOutputReferenceInScope(reference, id, scope);
+    try std.testing.expectEqual(@as(?u32, id), t.exact_output_ref_symbol_ids.get(@backingInt(reference)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(scope)), t.exact_output_ref_scope_ids.get(@backingInt(reference)));
+    const head = try t.ast.addNode(.{ .tag = .empty_statement, .span = .EMPTY, .data = .{ .none = 0 } });
+    const ret = try t.ast.addNode(.{ .tag = .return_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = reference, .flags = 0 } } });
+    const body_list = try t.ast.addNodeList(&.{ head, ret });
+    t.ast.nodes.items[@backingInt(body)].data.list = body_list;
+    const statement = try t.ast.addNode(.{ .tag = .expression_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = function, .flags = 0 } } });
+    const original = try t.ast.addListNode(.program, .EMPTY, try t.ast.addNodeList(&.{statement}));
+    try native.publish(&t, original);
+    try std.testing.expectEqual(@as(u32, 0), (try t.semantic_editor.?.referenceForNode(reference)).?.stmt_idx);
+    const prefix_a = try t.ast.addNode(.{ .tag = .empty_statement, .span = .EMPTY, .data = .{ .none = 0 } });
+    const prefix_b = try t.ast.addNode(.{ .tag = .empty_statement, .span = .EMPTY, .data = .{ .none = 0 } });
+    const program = try t.ast.addListNode(.program, .EMPTY, try t.ast.addNodeList(&.{ prefix_a, prefix_b, statement }));
+    // Independent owner oracle: actual program slot 2, actual body slot 1,
+    // actual function/body/return edges. No projector/publication helper is
+    // used to compute these expected coordinates.
+    const program_list = t.ast.getNode(program).data.list;
+    try std.testing.expectEqual(@backingInt(statement), t.ast.extra_data.items[program_list.start + 2]);
+    try std.testing.expectEqual(function, t.ast.getNode(statement).data.unary.operand);
+    try std.testing.expectEqual(body, t.ast.readExtraNode(t.ast.getNode(function).data.extra, ast.FunctionExtra.body));
+    try std.testing.expectEqual(@backingInt(ret), t.ast.extra_data.items[body_list.start + 1]);
+    try std.testing.expectEqual(reference, t.ast.getNode(ret).data.unary.operand);
+    try native.publish(&t, program);
+    const before = (try t.semantic_editor.?.referenceForNode(reference)).?;
+    try std.testing.expectEqual(@as(u32, 2), before.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 1), before.scope_stmt_idx);
+    try std.testing.expectEqual(scope, before.scope_id);
+    try std.testing.expectEqual(@as(u32, id), @backingInt(before.symbol_id));
+    try std.testing.expectEqualDeep(@as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true }), before.flags);
+    const origin = t.native_arguments_reference_origins.get(@backingInt(reference)).?;
+    try std.testing.expectEqual(@as(u32, 2), origin.stmt);
+    try std.testing.expectEqual(@as(u32, 1), origin.scope_stmt);
+    try @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, program, t.programScope());
+    const after = (try t.semantic_editor.?.referenceForNode(reference)).?;
+    try std.testing.expectEqualDeep(before, after);
+    try std.testing.expectEqualDeep(origin, t.native_arguments_reference_origins.get(@backingInt(reference)).?);
+    try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(reference));
+    try std.testing.expectEqual(scope, t.semantic_editor.?.symbols.items[id].scope_id);
+}
