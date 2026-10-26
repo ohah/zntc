@@ -164,6 +164,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_collected_function_roots.deinit(self.allocator);
     self.generator_collected_function_declarations.deinit(self.allocator);
     self.generator_annex_b_var_bindings.deinit(self.allocator);
+    self.annex_b_loop_setters.deinit(self.allocator);
     self.generator_function_storage_scopes.deinit(self.allocator);
     self.generator_function_statement_value_nodes.deinit(self.allocator);
     self.generator_function_coordinate_handoffs.deinit(self.allocator);

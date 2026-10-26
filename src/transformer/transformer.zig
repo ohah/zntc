@@ -451,6 +451,11 @@ pub const Transformer = struct {
     generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    /// Ordinary extracted loops publish Annex B aliases through exact
+    /// function-scope setter declarations, outside the extracted `_loop`.
+    annex_b_loop_setters: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    annex_b_setter_counter: u32 = 0,
+    annex_b_setter_param_counter: u32 = 0,
     generator_function_storage_changed: bool = false,
     generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     generator_function_coordinate_program_changed: bool = false,
@@ -1197,6 +1202,7 @@ pub const Transformer = struct {
     pub const rebindOutputBinding = @import("transformer/semantic_edit.zig").rebindOutputBinding;
     pub const splitOutputBindingAsVar = @import("transformer/semantic_edit.zig").splitOutputBindingAsVar;
     pub const relocateOutputSymbolAs = @import("transformer/semantic_edit.zig").relocateOutputSymbolAs;
+    pub const ensureAnnexBVariableStorage = @import("transformer/semantic_edit.zig").ensureAnnexBVariableStorage;
     pub const rebindOutputReference = @import("transformer/semantic_edit.zig").rebindOutputReference;
     pub const relocateNodeScopeProvenance = @import("transformer/semantic_edit.zig").relocateNodeScopeProvenance;
     pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
@@ -1333,6 +1339,7 @@ pub const Transformer = struct {
     pub const insertParameterPropertyAssignments = declarations_mod.insertParameterPropertyAssignments;
     pub const insertStatementsAfterSuper = declarations_mod.insertStatementsAfterSuper;
     pub const prependStatementsToBody = declarations_mod.prependStatementsToBody;
+    pub const appendStatementsToBody = declarations_mod.appendStatementsToBody;
 
     pub const visitArrowFunction = function_visit_mod.visitArrowFunction;
 

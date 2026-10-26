@@ -4774,6 +4774,30 @@ pub fn relocateOutputSymbolAs(self: *Transformer, raw_id: u32, scope: ScopeId, b
     editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id)), scope, binding) catch |err| return editError(err);
 }
 
+/// An Annex B block function's variable-side identity has no source binding
+/// when the declaration is implicit. Create the exact output binding now and
+/// let the final storage pass place it in its original var-scope owner.
+pub fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32, project_owner_scope: bool) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (self.generator_annex_b_var_bindings.contains(variable)) return;
+    const editor = try editorFor(self);
+    // An explicit source var/function already has a real declaration node.
+    // Only the initial anchorless Annex B var needs a generated binding.
+    for (editor.references.items) |reference| {
+        if (@backingInt(reference.symbol_id) == variable and reference.flags.declare and !reference.declaration_node_index.isNone()) return;
+    }
+    if (variable >= editor.symbols.items.len) std.debug.panic("invalid implicit Annex B var storage SymbolId", .{});
+    const symbol = editor.symbols.items[variable];
+    if (symbol.kind != .variable_var or symbol.scope_id.isNone()) std.debug.panic("invalid implicit Annex B var storage owner", .{});
+    const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbol.name);
+    try self.setGeneratedSymbolId(binding, variable);
+    try self.relocateOutputSymbolAs(variable, symbol.scope_id, binding);
+    try self.generator_annex_b_var_bindings.put(self.allocator, variable, binding);
+    if (project_owner_scope)
+        try self.generator_function_storage_scopes.put(self.allocator, @backingInt(symbol.scope_id), {});
+    self.generator_function_storage_changed = true;
+}
+
 /// Split the parameter identity from a same-named body `var` that the source
 /// analyzer represented with one SymbolId. The parameter binding gets a fresh
 /// emitted name; the original identity stays with the body environment.

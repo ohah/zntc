@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { createFixture, runZntcInDir } from './helpers';
+import { createFixture, runZntc } from './helpers';
 
 const cases = [
   {
@@ -56,6 +56,180 @@ do {
   readers.push(function () { return captured; });
 } while (count < 4);
 console.log(readers.map(read => read()).join(','));
+`,
+  },
+  {
+    name: 'sloppy Annex B loop functions preserve lexical and variable bindings',
+    extension: 'cjs',
+    source: `
+function collect() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    function local() { return index; }
+    readers.push(local);
+  }
+  return [local(), readers.map(read => read()).join(',')].join('|');
+}
+console.log(collect());
+`,
+  },
+  {
+    name: 'sloppy Annex B conditional declaration skipped by control flow',
+    extension: 'cjs',
+    source: `
+function conditional() {
+  for (let index = 0; index < 2; index++) {
+    if (false && index === 1) {
+      function later() { return index; }
+    }
+  }
+  return typeof later;
+}
+console.log(conditional());
+`,
+  },
+  {
+    name: 'sloppy Annex B conditional declaration executes and captures the final iteration',
+    extension: 'cjs',
+    source: `
+function conditional() {
+  for (let index = 0; index < 2; index++) {
+    if (index === 1) {
+      function later() { return index; }
+    }
+  }
+  return later();
+}
+console.log(conditional());
+`,
+  },
+  {
+    name: 'sloppy Annex B same-name branches update one variable binding',
+    extension: 'cjs',
+    source: `
+function alternatives() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    if (index === 0) {
+      function choose() { return 'a' + index; }
+      readers.push(choose);
+    } else {
+      function choose() { return 'b' + index; }
+      readers.push(choose);
+    }
+  }
+  return [choose(), readers.map(read => read()).join(',')].join('|');
+}
+console.log(alternatives());
+`,
+  },
+  {
+    name: 'sloppy Annex B reuses an explicit var binding',
+    extension: 'cjs',
+    source: `
+function explicitVar() {
+  var shared;
+  for (let index = 0; index < 2; index++) {
+    function shared() { return index; }
+  }
+  return shared();
+}
+console.log(explicitVar());
+`,
+  },
+  {
+    name: 'sloppy Annex B reuses an explicit function binding',
+    extension: 'cjs',
+    source: `
+function explicitFunction() {
+  function shared() { return -1; }
+  for (let index = 0; index < 2; index++) {
+    function shared() { return index; }
+  }
+  return shared();
+}
+console.log(explicitFunction());
+`,
+  },
+  {
+    name: 'sloppy Annex B declares variable storage when the loop never runs',
+    extension: 'cjs',
+    source: `
+function noIteration() {
+  for (let index = 0; index < 0; index++) {
+    function never() { return index; }
+  }
+  return typeof never;
+}
+console.log(noIteration());
+`,
+  },
+  {
+    name: 'sloppy Annex B at the program scope keeps the last loop binding',
+    extension: 'cjs',
+    source: `
+for (let index = 0; index < 2; index++) {
+  function topLevel() { return index; }
+}
+console.log(topLevel());
+`,
+  },
+  {
+    name: 'sloppy Annex B assignment runs at the declaration statement',
+    extension: 'cjs',
+    source: `
+function ordering() {
+  let before;
+  const readOuter = () => local;
+  for (let index = 0; index < 1; index++) {
+    before = typeof readOuter();
+    function local() { return index; }
+  }
+  return [before, typeof local].join('|');
+}
+console.log(ordering());
+`,
+  },
+  {
+    name: 'sloppy Annex B implicit var storage does not leak to the global object',
+    extension: 'cjs',
+    source: `
+function noGlobalLeak() {
+  for (let index = 0; index < 1; index++) {
+    function local() { return index; }
+  }
+  return Object.prototype.hasOwnProperty.call(globalThis, 'local');
+}
+console.log(noGlobalLeak());
+`,
+  },
+  {
+    name: 'sloppy Annex B setter names stay hidden from direct eval',
+    extension: 'cjs',
+    source: `
+function collect() {
+  const visible = eval('typeof __zntc_annexb_set');
+  for (let index = 0; index < 1; index++) {
+    function local() { return index; }
+  }
+  return visible;
+}
+console.log(collect());
+`,
+  },
+  {
+    name: 'strict loop block functions do not create Annex B variable bindings',
+    extension: 'mjs',
+    source: `
+function strictLoop() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    function local() { return index; }
+    readers.push(local);
+  }
+  return [typeof local, readers.map(read => read()).join(',')].join('|');
+}
+console.log(strictLoop());
 `,
   },
   {
@@ -142,27 +316,46 @@ describe('extracted loop scopes (#4819)', () => {
                   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
                 }).outputText
               : fixtureCase.source;
+          const referenceName = fixtureCase.extension === 'cjs' ? 'reference.cjs' : 'reference.mjs';
           const fixture = await createFixture({
             [inputName]: fixtureCase.source,
-            'reference.mjs': reference,
+            [referenceName]: reference,
           });
           cleanup = fixture.cleanup;
-          const native = spawnSync('node', [join(fixture.dir, 'reference.mjs')], {
+          const native = spawnSync('node', [join(fixture.dir, referenceName)], {
             encoding: 'utf8',
           });
           expect(native.status).toBe(0);
           expect(native.stdout.trim().length).toBeGreaterThan(0);
           const out = join(fixture.dir, 'out.cjs');
-          const result = await runZntcInDir(fixture.dir, [
-            ...(bundled ? ['--bundle'] : []),
-            inputName,
-            '--target=es5',
-            ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
-            ...(bundled ? ['--platform=node', '--format=cjs'] : []),
-            '-o',
-            out,
-          ]);
-          expect(result.exitCode).toBe(0);
+          const result = await runZntc(
+            [
+              ...(bundled ? ['--bundle'] : []),
+              join(fixture.dir, inputName),
+              '--target=es5',
+              ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+              ...(bundled ? ['--platform=node', '--format=cjs'] : []),
+              '-o',
+              out,
+            ],
+            { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+          );
+          expect(result.exitCode, result.stderr).toBe(0);
+          if (fixtureCase.extension === 'cjs') {
+            const exactPrefix = bundled
+              ? 'zntc: symbol-identity-prepass '
+              : 'zntc: symbol-identity ';
+            const exact = result.stderr.split(/\r?\n/).find((line) => line.startsWith(exactPrefix));
+            expect(exact, result.stderr).toBeDefined();
+            expect(exact).toMatch(/generated_bindings=[1-9]\d*/);
+            expect(exact).toMatch(/generated_references=[1-9]\d*/);
+            expect(exact).toMatch(/invalid_id=0(?:\s|$)/);
+            expect(exact).toMatch(/duplicate_reference=0(?:\s|$)/);
+            expect(exact).toMatch(/identity_mismatch=0(?:\s|$)/);
+            expect(exact).toMatch(/binding_scope_mismatch=0(?:\s|$)/);
+            expect(exact).toMatch(/unreachable_reference=0(?:\s|$)/);
+            expect(exact).toMatch(/clean=1(?:\s|$)/);
+          }
           if (fixtureCase.name.includes('control-flow result')) {
             const emitted = await Bun.file(out).text();
             expect(emitted).not.toContain('__zntc_loop_ret');
