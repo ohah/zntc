@@ -230,6 +230,14 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
                 const value = t.ast.getNode(node);
                 if (value.tag == .binding_identifier) {
                     const id = t.getSymbolIdAt(node) orelse return error.MissingClonedBinding;
+                    var anchored_declarations: usize = 0;
+                    for (t.semantic_editor.?.references.items) |row| {
+                        if (!row.flags.declare or row.declaration_node_index != node) continue;
+                        anchored_declarations += 1;
+                        try std.testing.expectEqual(id, @backingInt(row.symbol_id));
+                        try std.testing.expectEqual(t.semantic_editor.?.symbols.items[id].scope_id, row.scope_id);
+                    }
+                    try std.testing.expectEqual(@as(usize, 1), anchored_declarations);
                     bindings += 1;
                     if (index == 0) try first_bindings.put(a, id, {}) else try std.testing.expect(!first_bindings.contains(id));
                 }
