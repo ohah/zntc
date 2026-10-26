@@ -400,3 +400,7 @@ test "retained native fields initialize constructor this before callback use" {
     };
     try std.testing.expectEqual(@as(usize, 0), mismatches);
 }
+
+test {
+    _ = @import("native_constructor_timing_independent_test.zig");
+}
