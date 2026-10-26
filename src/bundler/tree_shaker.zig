@@ -2422,18 +2422,19 @@ pub const TreeShaker = struct {
             var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer removed_nodes.deinit(self.allocator);
             var needs_semantic_reanalysis = false;
+            const semantic = if (m.semantic) |*value| value else null;
             const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
                 self.allocator,
                 ast,
                 &removed_nodes,
+                semantic,
                 &needs_semantic_reanalysis,
             ) catch false;
             if (retained_folded) {
                 if (needs_semantic_reanalysis) {
-                    // The retained candidate has already removed the
-                    // alternate. Finish the legacy shape normalization before
-                    // rebuilding semantics so ordinary tree shaking can make
-                    // the same fallback declaration decision as before.
+                    // A direct eval/with can observe top-level fallback
+                    // functions after the alternate is removed. Preserve the
+                    // established analyzer path for that dynamic environment.
                     _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
                     self.markAstMutatedAndResync(m);
                     continue;
