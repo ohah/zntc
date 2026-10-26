@@ -59,7 +59,7 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
     needs_semantic_reanalysis: *bool,
 ) !bool {
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null, null);
 }
 
 /// The module owns the actual AST and semantic tables. Only this typed path
@@ -72,7 +72,35 @@ pub fn foldNodeBufferCapabilityIfsForModule(
     needs_semantic_reanalysis: *bool,
 ) !bool {
     if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, null);
+}
+
+/// Producer-owned relation consumed by named-export reachability. It is held
+/// only for one TreeShaker lifetime and never persisted in module/cache data.
+pub const FoldedNodeBufferExport = struct {
+    kind: enum { module_object, buffer_constructor },
+    ast_owner: *const Ast,
+    statement: NodeIndex,
+    kept: NodeIndex,
+    assignment: NodeIndex,
+    module_reference: NodeIndex,
+    module_symbol: u32,
+    object_reference: NodeIndex,
+    object_symbol: u32,
+    buffer_object_symbol: u32,
+};
+
+pub fn foldNodeBufferCapabilityIfsForModuleWithExports(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    ast: *Ast,
+    removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+    needs_semantic_reanalysis: *bool,
+    exports: *std.ArrayListUnmanaged(FoldedNodeBufferExport),
+) !bool {
+    exports.clearRetainingCapacity();
+    if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, exports);
 }
 
 fn foldNodeBufferCapabilityIfsWithContext(
@@ -81,6 +109,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
     needs_semantic_reanalysis: *bool,
     module: ?*const Module,
+    folded_exports: ?*std.ArrayListUnmanaged(FoldedNodeBufferExport),
 ) !bool {
     removed_nodes.clearRetainingCapacity();
     needs_semantic_reanalysis.* = false;
@@ -95,6 +124,20 @@ fn foldNodeBufferCapabilityIfsWithContext(
     try collectNodeBufferCtorNames(allocator, ast, &buffer_names, &buffer_ctor_names);
     if (buffer_ctor_names.count() == 0) return false;
 
+    // The arena retains old pre-minify if/block copies. Only the current
+    // program may authorize a semantic edit or provide an export fact.
+    var reachable: ?std.DynamicBitSet = null;
+    defer if (reachable) |*mask| mask.deinit();
+    if (module != null) {
+        _ = programNode(ast) orelse return false;
+        const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+        const nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
+        defer allocator.free(nodes);
+        var mask = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+        for (nodes) |raw| mask.set(raw);
+        reachable = mask;
+    }
+
     var branches: std.ArrayListUnmanaged(BufferCapabilityFoldBranch) = .empty;
     defer branches.deinit(allocator);
     var dead_fallback_names: std.StringHashMapUnmanaged(void) = .empty;
@@ -102,6 +145,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
 
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .if_statement) continue;
+        if (reachable) |mask| if (!mask.isSet(i)) continue;
         var caps: BufferCapabilitySet = .{};
         if (!collectNodeBufferCapabilityCondition(ast, node.data.ternary.a, &buffer_ctor_names, &caps)) continue;
         if (!caps.hasAll()) continue;
@@ -130,6 +174,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
     }
     if (branches.items.len == 0) return false;
     needs_semantic_reanalysis.* = hasTopLevelDeadFallbackFunction(ast, &dead_fallback_names);
+    const requires_function_consumer = needs_semantic_reanalysis.*;
 
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
@@ -160,6 +205,16 @@ fn foldNodeBufferCapabilityIfsWithContext(
             // those reads and rebuilds statement liveness from its new counts.
             if (!try fallbackFunctionGraphIsStable(allocator, owner, ast, branches.items, setup_statements.items, &dead_fallback_names)) return false;
             needs_semantic_reanalysis.* = false;
+        }
+    }
+
+    if (folded_exports) |out| {
+        if (module) |owner| {
+            for (branches.items) |branch| {
+                if (foldedBufferExportAt(owner, ast, branch.if_index, branch.kept)) |fact| {
+                    try out.append(allocator, fact);
+                } else if (requires_function_consumer) return false;
+            }
         }
     }
 
@@ -321,6 +376,140 @@ test "retained Node Buffer fold falls back for matching top-level fallback funct
         ));
         try std.testing.expectEqual(expected, needs_semantic_reanalysis);
     }
+}
+
+fn exactTopLevelVarInitializer(module: *const Module, ast: *const Ast, id: u32) ?NodeIndex {
+    const sem = &(module.semantic orelse return null);
+    if (id >= sem.symbols.items.len or sem.scopes.len == 0) return null;
+    const symbol = sem.symbols.items[id];
+    if (symbol.kind != .variable_var or symbol.synthetic_kind != null or symbol.write_count != 0) return null;
+    const program_scope = sem.scope_owner_map.get(@intCast(ast.nodes.items.len - 1)) orelse return null;
+    if (program_scope >= sem.scopes.len) return null;
+    if (symbol.scope_id.toIndex() != program_scope) {
+        const wrapper = sem.scopes[program_scope].parent;
+        if (wrapper.isNone() or symbol.scope_id != wrapper or wrapper.toIndex() >= sem.scopes.len or
+            sem.scopes[wrapper.toIndex()].kind != .function or !sem.scopes[wrapper.toIndex()].parent.isNone()) return null;
+    }
+    const program = programNode(ast) orelse return null;
+    const list = program.data.list;
+    if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return null;
+    var found: ?NodeIndex = null;
+    for (ast.extra_data.items[list.start..][0..list.len]) |raw| {
+        if (raw >= ast.nodes.items.len) return null;
+        const statement = ast.nodes.items[raw];
+        if (statement.tag != .variable_declaration) continue;
+        const extra = statement.data.extra;
+        if (!ast.hasExtra(extra, 2)) return null;
+        const start = ast.readExtra(extra, 1);
+        const len = ast.readExtra(extra, 2);
+        if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return null;
+        for (ast.extra_data.items[start..][0..len]) |decl_raw| {
+            if (decl_raw >= ast.nodes.items.len) return null;
+            const declaration = ast.nodes.items[decl_raw];
+            if (declaration.tag != .variable_declarator or !ast.hasExtra(declaration.data.extra, 2)) return null;
+            const binding = ast.readExtraNode(declaration.data.extra, 0);
+            if (binding.isNone() or @backingInt(binding) >= sem.symbol_ids.len) return null;
+            if (sem.symbol_ids[@backingInt(binding)] != id) continue;
+            const initializer = ast.readExtraNode(declaration.data.extra, 2);
+            if (found != null or initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len) return null;
+            found = initializer;
+        }
+    }
+    return found;
+}
+
+fn exactNodeBufferObjectBinding(module: *const Module, ast: *const Ast, id: u32) bool {
+    const sem = &(module.semantic orelse return false);
+    const initializer = exactTopLevelVarInitializer(module, ast, id) orelse return false;
+    if (!isRequireBufferCall(ast, initializer)) return false;
+    const callee = ast.readExtraNode(ast.getNode(initializer).data.extra, 0);
+    // This is the unresolved CommonJS host read, not a local `require`.
+    return @backingInt(callee) < sem.symbol_ids.len and sem.symbol_ids[@backingInt(callee)] == null and sem.unresolved_references.contains("require");
+}
+
+fn exactBufferValueRead(module: *const Module, node: NodeIndex, id: u32, scope: u32) bool {
+    const sem = &(module.semantic orelse return false);
+    if (node.isNone() or @backingInt(node) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(node)] != id or
+        scope >= sem.scopes.len) return false;
+    var count: usize = 0;
+    for (sem.references) |row| {
+        if (row.node_index != node) continue;
+        if (@backingInt(row.symbol_id) != id or row.scope_id.toIndex() != scope or
+            !row.declaration_node_index.isNone() or
+            !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true }))) return false;
+        count += 1;
+    }
+    return count == 1;
+}
+
+fn exactNodeBufferConstructorObject(module: *const Module, ast: *const Ast, id: u32) ?u32 {
+    const sem = &(module.semantic orelse return null);
+    const initializer = exactTopLevelVarInitializer(module, ast, id) orelse return null;
+    const parts = staticMemberParts(ast, initializer) orelse return null;
+    const property = ast.getNode(parts.property);
+    if (property.tag != .identifier_reference or !std.mem.eql(u8, ast.identifierNameText(property), "Buffer")) return null;
+    if (@backingInt(parts.object) >= sem.symbol_ids.len or ast.getNode(parts.object).tag != .identifier_reference) return null;
+    const object = sem.symbol_ids[@backingInt(parts.object)] orelse return null;
+    const scope = sem.scope_owner_map.get(@intCast(ast.nodes.items.len - 1)) orelse return null;
+    if (!exactBufferValueRead(module, parts.object, object, scope)) return null;
+    return if (exactNodeBufferObjectBinding(module, ast, object)) object else null;
+}
+
+fn foldedBufferExportAt(module: *const Module, ast: *const Ast, statement: NodeIndex, kept: NodeIndex) ?FoldedNodeBufferExport {
+    const sem = &(module.semantic orelse return null);
+    if (statement.isNone() or @backingInt(statement) >= ast.nodes.items.len) return null;
+    const branch = ast.getNode(statement);
+    if (branch.tag != .if_statement or branch.data.ternary.b != kept) return null;
+    const assignment_statement = singleBlockStatement(ast, kept) orelse kept;
+    if (assignment_statement.isNone() or @backingInt(assignment_statement) >= ast.nodes.items.len) return null;
+    const node = ast.getNode(assignment_statement);
+    if (node.tag != .expression_statement) return null;
+    const expression = node.data.unary.operand;
+    if (expression.isNone() or @backingInt(expression) >= ast.nodes.items.len) return null;
+    const assignment = ast.getNode(expression);
+    if (assignment.tag != .assignment_expression or !exactBufferWrapperRoot(module, ast, assignment.data.binary.left)) return null;
+    const module_object_export = isModuleExportsLhs(ast, assignment.data.binary.left);
+    if (!module_object_export) {
+        if (!isCjsNamedExportLhs(ast, assignment.data.binary.left)) return null;
+        const parts = staticMemberParts(ast, assignment.data.binary.left) orelse return null;
+        const property = ast.getNode(parts.property);
+        if (property.tag != .identifier_reference or !std.mem.eql(u8, ast.identifierNameText(property), "Buffer")) return null;
+    }
+    const module_reference = memberRootNode(ast, assignment.data.binary.left) orelse return null;
+    if (@backingInt(module_reference) >= sem.symbol_ids.len) return null;
+    const module_symbol = sem.symbol_ids[@backingInt(module_reference)] orelse return null;
+    if (module_object_export) {
+        const expected_module = module.cjs_wrapper_module_parameter_symbol orelse return null;
+        if (module_symbol != @backingInt(expected_module)) return null;
+    }
+    const object = assignment.data.binary.right;
+    if (object.isNone() or @backingInt(object) >= ast.nodes.items.len or @backingInt(object) >= sem.symbol_ids.len or
+        ast.getNode(object).tag != .identifier_reference) return null;
+    const object_symbol = sem.symbol_ids[@backingInt(object)] orelse return null;
+    const program_scope = sem.scope_owner_map.get(@intCast(ast.nodes.items.len - 1)) orelse return null;
+    if (program_scope >= sem.scopes.len) return null;
+    const use_scope = if (ast.getNode(kept).tag == .block_statement) blk: {
+        const scope = sem.scope_owner_map.get(@backingInt(kept)) orelse return null;
+        if (scope >= sem.scopes.len or sem.scopes[scope].kind != .block or
+            sem.scopes[scope].parent.toIndex() != program_scope) return null;
+        break :blk scope;
+    } else program_scope;
+    if (!exactBufferValueRead(module, object, object_symbol, use_scope)) return null;
+    const buffer_object = if (module_object_export) blk: {
+        if (!exactNodeBufferObjectBinding(module, ast, object_symbol)) return null;
+        break :blk object_symbol;
+    } else exactNodeBufferConstructorObject(module, ast, object_symbol) orelse return null;
+    return .{ .kind = if (module_object_export) .module_object else .buffer_constructor, .ast_owner = ast, .statement = statement, .kept = kept, .assignment = expression, .module_reference = module_reference, .module_symbol = module_symbol, .object_reference = object, .object_symbol = object_symbol, .buffer_object_symbol = buffer_object };
+}
+
+pub fn foldedNodeBufferExportIsCurrent(module: *const Module, ast: *const Ast, statement: NodeIndex, fact: FoldedNodeBufferExport) bool {
+    if (fact.ast_owner != ast or fact.statement != statement or statement.isNone() or @backingInt(statement) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(statement);
+    if (node.tag != .if_statement or !node.data.ternary.c.isNone() or node.data.ternary.b != fact.kept) return false;
+    const current = foldedBufferExportAt(module, ast, statement, fact.kept) orelse return false;
+    return current.kind == fact.kind and current.buffer_object_symbol == fact.buffer_object_symbol and
+        current.assignment == fact.assignment and current.module_reference == fact.module_reference and
+        current.module_symbol == fact.module_symbol and current.object_reference == fact.object_reference and current.object_symbol == fact.object_symbol;
 }
 
 fn memberRootNode(ast: *const Ast, start: NodeIndex) ?NodeIndex {
