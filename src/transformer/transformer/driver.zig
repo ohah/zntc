@@ -548,16 +548,70 @@ fn reserveDynamicBodyWrapperScope(
     return try self.reserveGeneratedFunctionScope(function_scope);
 }
 
-const DynamicParameterBody = struct { body: NodeIndex, arrow: NodeIndex };
+const DynamicParameterBody = struct { body: NodeIndex, arrow: NodeIndex, shadow: ?es2015_params.NativeArgumentShadow = null };
+
+fn validNativeArgumentShadow(self: anytype, plan: es2015_params.NativeArgumentShadow) bool {
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    if (plan.ast_owner != self.ast or plan.function_owner.isNone() or @backingInt(plan.function_owner) >= self.ast.nodes.items.len or plan.body_scope.isNone() or plan.scope.isNone() or plan.body_scope.toIndex() >= editor.scopes.items.len or plan.scope.toIndex() >= editor.scopes.items.len or plan.source_symbol >= editor.symbols.items.len) return false;
+    const helper_id = plan.native_symbol orelse return false;
+    if (helper_id >= editor.symbols.items.len or helper_id == plan.source_symbol or self.outputOwnedScope(plan.function_owner) != plan.body_scope) return false;
+    const function = self.ast.getNode(plan.function_owner);
+    switch (function.tag) {
+        .function, .function_declaration, .function_expression => {},
+        else => return false,
+    }
+    const source = editor.symbols.items[plan.source_symbol];
+    const helper = editor.symbols.items[helper_id];
+    if (helper.kind != .parameter or helper.scope_id != editor.scopes.items[plan.body_scope.toIndex()].parent or source.scope_id != plan.scope) return false;
+    const params = self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+    if (self.outputOwnedScope(params) != helper.scope_id) return false;
+    const list = self.ast.getNode(params).data.list;
+    if (list.len == 0) return false;
+    const formal = self.ast.getNode(self.ast.readExtraNode(list.start, list.len - 1));
+    if (formal.tag != .assignment_pattern or self.getSymbolIdAt(formal.data.binary.left) != @as(?u32, helper_id)) return false;
+    if (plan.source_declaration.isNone() or @backingInt(plan.source_declaration) >= self.ast.nodes.items.len) return false;
+    const declaration = self.ast.getNode(plan.source_declaration);
+    var source_binding: NodeIndex = .none;
+    if (!plan.block.isNone()) {
+        if (@backingInt(plan.block) >= self.ast.nodes.items.len or self.outputOwnedScope(plan.block) != plan.scope or editor.scopes.items[plan.scope.toIndex()].kind != .block or editor.scopes.items[plan.scope.toIndex()].parent != plan.body_scope or source.kind != .variable_let or declaration.tag != .variable_declaration or self.ast.variableDeclarationKind(declaration) != .let) return false;
+        const lexical = editor.scopes.items[plan.scope.toIndex()];
+        const original = editor.scopes.items[plan.body_scope.toIndex()];
+        if (lexical.subtree_has_direct_eval != original.subtree_has_direct_eval or lexical.subtree_has_with != original.subtree_has_with) return false;
+        const start = self.ast.readExtra(declaration.data.extra, 1);
+        if (self.ast.readExtra(declaration.data.extra, 2) != 1) return false;
+        const declarator = self.ast.getNode(self.ast.readExtraNode(start, 0));
+        source_binding = self.ast.readExtraNode(declarator.data.extra, 0);
+        if (self.ast.readExtraNode(declarator.data.extra, 2).isNone()) return false;
+        const block = self.ast.getNode(plan.block);
+        if (block.tag != .block_statement) return false;
+        var present: usize = 0;
+        for (0..block.data.list.len) |i| if (self.ast.readExtraNode(block.data.list.start, @intCast(i)) == plan.source_declaration) {
+            present += 1;
+        };
+        if (present != 1) return false;
+    } else {
+        if (plan.scope != plan.body_scope or source.kind != .parameter or declaration.tag != .expression_statement) return false;
+        const assignment = self.ast.getNode(declaration.data.unary.operand);
+        if (assignment.tag != .assignment_expression) return false;
+        source_binding = assignment.data.binary.left;
+    }
+    if (self.getSymbolIdAt(source_binding) != @as(?u32, plan.source_symbol)) return false;
+    return @import("../../lexer/scanner.zig").Scanner.identifierNamesEqual(self.ast.identifierNameText(self.ast.getNode(source_binding)), self.ast.identifierNameText(self.ast.getNode(formal.data.binary.left)));
+}
 
 fn validDynamicParameterEngineOwner(self: anytype, function_owner: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, wrapper: DynamicParameterBody) bool {
     if (!self.semantic_edit_enabled or self.options.unsupported.arrow or body_scope.isNone() or wrapper_scope.isNone() or
         self.outputOwnedScope(function_owner) != body_scope or self.outputOwnedScope(wrapper.arrow) != wrapper_scope) return false;
     const editor = if (self.semantic_editor) |*value| value else return false;
+    const execution_scope = if (wrapper.shadow) |plan| plan.scope else body_scope;
+    if (wrapper.shadow) |plan| {
+        if (!validNativeArgumentShadow(self, plan) or plan.function_owner != function_owner or plan.body_scope != body_scope) return false;
+        if (!plan.block.isNone() and (self.outputOwnedScope(plan.block) != plan.scope or editor.scopes.items[plan.scope.toIndex()].kind != .block or editor.scopes.items[plan.scope.toIndex()].parent != body_scope)) return false;
+    }
     if (body_scope.toIndex() >= editor.scopes.items.len or wrapper_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[body_scope.toIndex()].kind != .function or
         editor.scopes.items[wrapper_scope.toIndex()].kind != .function or
-        editor.scopes.items[wrapper_scope.toIndex()].parent != body_scope) return false;
+        editor.scopes.items[wrapper_scope.toIndex()].parent != execution_scope) return false;
     const function = self.ast.getNode(function_owner);
     switch (function.tag) {
         .function, .function_expression, .function_declaration, .method_definition => {},
@@ -572,7 +626,13 @@ fn validDynamicParameterEngineOwner(self: anytype, function_owner: NodeIndex, bo
     const body = self.ast.getNode(wrapper.body);
     if (body.tag != .block_statement and body.tag != .function_body) return false;
     if (body.data.list.len == 0) return false;
-    const tail = self.ast.getNode(self.ast.readExtraNode(body.data.list.start, body.data.list.len - 1));
+    var execution_body = body;
+    if (wrapper.shadow) |plan| if (!plan.block.isNone()) {
+        if (self.ast.readExtraNode(body.data.list.start, body.data.list.len - 1) != plan.block) return false;
+        execution_body = self.ast.getNode(plan.block);
+        if (execution_body.tag != .block_statement or execution_body.data.list.len == 0) return false;
+    };
+    const tail = self.ast.getNode(self.ast.readExtraNode(execution_body.data.list.start, execution_body.data.list.len - 1));
     if (tail.tag != .return_statement or tail.data.unary.operand.isNone()) return false;
     const call = self.ast.getNode(tail.data.unary.operand);
     return call.tag == .call_expression and self.ast.readExtraNode(call.data.extra, 0) == wrapper.arrow;
@@ -589,11 +649,21 @@ fn validImplicitArgumentsWrapper(self: anytype, function_scope: @import("../../s
     return body_tag == .block_statement or body_tag == .function_body;
 }
 
+fn validImplicitArgumentsShadowWrapper(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, execution_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, arrow: NodeIndex, body: NodeIndex, shadow: ?es2015_params.NativeArgumentShadow) bool {
+    if (execution_scope == function_scope) return validImplicitArgumentsWrapper(self, function_scope, wrapper_scope, arrow, body);
+    const plan = shadow orelse return false;
+    if (!validNativeArgumentShadow(self, plan) or plan.body_scope != function_scope or plan.scope != execution_scope or plan.block.isNone()) return false;
+    const editor = &self.semantic_editor.?;
+    if (wrapper_scope.isNone() or wrapper_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[wrapper_scope.toIndex()].kind != .function or editor.scopes.items[wrapper_scope.toIndex()].parent != execution_scope or self.outputOwnedScope(arrow) != wrapper_scope or arrow.isNone() or @backingInt(arrow) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.getNode(arrow);
+    return node.tag == .arrow_function_expression and self.ast.readExtra(node.data.extra, ast_mod.ArrowExtra.flags) == 0 and self.ast.readExtraNode(node.data.extra, ast_mod.ArrowExtra.body) == body;
+}
+
 /// Native initialization of the source body-var cell uses that cell itself as
 /// an actual wrapper formal. Do not expose a fresh private name to body eval.
-fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, arrow: NodeIndex, inner_body: NodeIndex, span: Span) Error!?NodeIndex {
+fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, execution_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, arrow: NodeIndex, inner_body: NodeIndex, span: Span, shadow: ?es2015_params.NativeArgumentShadow) Error!?NodeIndex {
     if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
-    if (!validImplicitArgumentsWrapper(self, function_scope, wrapper_scope, arrow, inner_body)) @panic("implicit arguments copy has no actual lexical wrapper owner");
+    if (!validImplicitArgumentsShadowWrapper(self, function_scope, execution_scope, wrapper_scope, arrow, inner_body, shadow)) @panic("implicit arguments copy has no actual lexical wrapper owner");
     const editor = if (self.semantic_editor) |*value| value else unreachable;
     if (editor.scopes.items[function_scope.toIndex()].is_strict) return null;
     var selected: ?usize = null;
@@ -619,7 +689,7 @@ fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../..
     }
     if (actual_bindings == 0) @panic("implicit arguments body copy has no actual wrapper binding");
     editor.relocateSymbol(@fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope) catch @panic("implicit arguments body cell cannot move to its actual wrapper");
-    const input = try self.makeNativeArgumentsRef(editor.symbols.items[@backingInt(parameter_id)].scope_id, function_scope, span);
+    const input = try self.makeNativeArgumentsRef(editor.symbols.items[@backingInt(parameter_id)].scope_id, execution_scope, span);
     if (self.getSymbolIdAt(input) != @as(?u32, @intCast(@backingInt(parameter_id)))) @panic("implicit arguments copy selected another engine");
     if (!editor.scopes.items[wrapper_scope.toIndex()].blocksMangling()) @panic("implicit arguments carrier requires the actual dynamic body environment");
     const body_symbol = editor.symbols.items[body_id];
@@ -642,7 +712,9 @@ fn wrapFunctionBodyForParameterInitializers(
     wrapper_scope: @import("../../semantic/scope.zig").ScopeId,
     is_async: bool,
     span: Span,
+    shadow: ?es2015_params.NativeArgumentShadow,
 ) Error!DynamicParameterBody {
+    const execution_scope = if (shadow) |plan| plan.scope else function_scope;
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .function_body)
         std.debug.panic("dynamic parameter wrapper requires a block function body", .{});
@@ -702,7 +774,7 @@ fn wrapFunctionBodyForParameterInitializers(
         try @import("../class_strict_context.zig").moveSourceReferences(self, inner_body, function_scope, function_scope, wrapper_scope);
     }
 
-    const implicit_input = if (!is_async) try appendImplicitArgumentsBodyCopy(self, function_scope, wrapper_scope, arrow, inner_body, span) else null;
+    const implicit_input = if (!is_async) try appendImplicitArgumentsBodyCopy(self, function_scope, execution_scope, wrapper_scope, arrow, inner_body, span, shadow) else null;
     const call = if (implicit_input) |input| try es_helpers.makeCallExpr(self, arrow, &.{input}, span) else try es_helpers.makeCallExpr(self, arrow, &.{}, span);
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
@@ -712,14 +784,20 @@ fn wrapFunctionBodyForParameterInitializers(
     const outer_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(outer_top);
     for (old[0..outer_prefix_len]) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
+    const parameter_top = self.scratch.items.len;
     try self.scratch.appendSlice(self.allocator, parameter_initializers);
     try self.scratch.append(self.allocator, return_stmt);
+    if (shadow) |plan| if (!plan.block.isNone()) {
+        self.ast.nodes.items[@backingInt(plan.block)].data.list = try self.ast.addNodeList(self.scratch.items[parameter_top..]);
+        self.scratch.shrinkRetainingCapacity(parameter_top);
+        try self.scratch.append(self.allocator, plan.block);
+    };
     const outer_list = try self.ast.addNodeList(self.scratch.items[outer_top..]);
     return .{ .body = try self.ast.addNode(.{
         .tag = body.tag,
         .span = body.span,
         .data = .{ .list = outer_list },
-    }), .arrow = arrow };
+    }), .arrow = arrow, .shadow = shadow };
 }
 
 /// A direct body function and a parameter-expression binding have distinct
@@ -846,14 +924,19 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 });
                 self.unlinked_parameter_bindings = null;
                 defer lr.body_stmts.deinit(self.allocator);
+                const parameter_execution_scope = if (lr.argument_shadow) |plan| plan.scope else self.current_scope;
+                if (lr.argument_shadow) |plan| if (!plan.block.isNone()) {
+                    const wrapper_scope = body_wrapper_scope orelse @panic("native lexical shadow requires its planned body wrapper");
+                    self.semantic_editor.?.reparentScope(wrapper_scope, plan.scope) catch @panic("native body wrapper cannot enter its real parameter shadow block");
+                };
                 // Parameter initializers now execute in the emitted function
                 // body. Move direct expression provenance and nested lexical
                 // roots at this producer, before publishing the new body.
                 if (self.semantic_edit_enabled) {
                     if (self.outputOwnedScope(params_idx)) |parameter_scope| {
                         for (lr.body_stmts.items) |statement| {
-                            try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
-                            try @import("../class_strict_context.zig").moveSourceReferences(self, statement, parameter_scope, parameter_scope, self.current_scope);
+                            try self.reparentGeneratedBodyScopes(parameter_scope, parameter_execution_scope, statement);
+                            try @import("../class_strict_context.zig").moveSourceReferences(self, statement, parameter_scope, parameter_scope, parameter_execution_scope);
                         }
                     }
                 }
@@ -889,6 +972,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                                 wrapper_scope,
                                 (function_flags & ast_mod.FunctionFlags.is_async) != 0,
                                 node.span,
+                                lr.argument_shadow,
                             )
                         else
                             null;
@@ -1480,6 +1564,9 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},code){try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},String.fromCharCode(95,98))" },
         .{ .source = "function read({a,...rest},code){return JSON.stringify(eval(code))}", .call = "read({a:1,b:2},String.fromCharCode(114,101,115,116))" },
         .{ .source = "function read({a,...rest},code){return JSON.stringify(eval(code))}", .call = "read({a:1,b:2},String.fromCharCode(114,101,115,116),9,10)" },
+        .{ .source = "function read({a=1,...rest},code){try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},String.fromCharCode(95,98))" },
+        .{ .source = "function read({a=1,...rest},code){return JSON.stringify(eval(code))}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9,10)" },
+        .{ .source = "function read({a=1,...rest},code){var rest;return JSON.stringify(eval(code))}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9,10)" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();

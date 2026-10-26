@@ -40,7 +40,19 @@ pub const RestArgumentsOwner = struct {
     body_scope: @import("../semantic/scope.zig").ScopeId,
 };
 
+pub const NativeArgumentShadow = struct {
+    ast_owner: *const ast_mod.Ast,
+    function_owner: NodeIndex,
+    body_scope: ScopeId,
+    block: NodeIndex = .none,
+    scope: ScopeId,
+    source_symbol: u32,
+    native_symbol: ?u32 = null,
+    source_declaration: NodeIndex = .none,
+};
+
 const NativeArgumentsShape = struct {
+    owner: RestArgumentsOwner,
     has_expressions: bool,
     first_default: u32,
     source_tail_binding: NodeIndex = .none,
@@ -411,7 +423,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             }
             var source_tail: NodeIndex = .none;
             var source_tail_id: ?u32 = null;
-            if (!expressions) {
+            if (!expressions or cutoff == params.len) {
                 const nodes = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, owner.params_node);
                 defer self.allocator.free(nodes);
                 find_rest: for (nodes) |raw| {
@@ -424,7 +436,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         if (self.ast.getNode(binding).tag != .binding_identifier) @panic("object rest tail has no exact source binding");
                         const id = self.getSymbolIdAt(binding) orelse @panic("object rest tail has no source identity");
                         const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-                        if (symbols[id].kind != .parameter or symbols[id].scope_id != owner.body_scope) @panic("native tail cannot reuse another parameter environment");
+                        const expected_scope = if (expressions) old_scope.? else owner.body_scope;
+                        if (symbols[id].kind != .parameter or symbols[id].scope_id != expected_scope) @panic("native tail cannot reuse another parameter environment");
                         source_tail = binding;
                         source_tail_id = id;
                         break :find_rest;
@@ -432,7 +445,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 }
                 if (source_tail_id == null) @panic("expression-free object rest has no native tail carrier");
             }
-            return .{ .has_expressions = expressions, .first_default = cutoff, .source_tail_binding = source_tail, .source_tail_id = source_tail_id };
+            return .{ .owner = owner, .has_expressions = expressions, .first_default = cutoff, .source_tail_binding = source_tail, .source_tail_id = source_tail_id };
         }
 
         /// Plan the environment of the actual emitted native formals before
@@ -530,6 +543,22 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 unlinkedArgumentsOwner(self, params, function_owner.?) catch @panic("unlinked parameter lost its native arguments handoff")
             else
                 null;
+            var argument_shadow: ?NativeArgumentShadow = null;
+            if (argument_shape) |shape| if (shape.has_expressions and shape.first_default == params.len) {
+                if (shape.owner.ast_owner != self.ast or shape.owner.body_scope != self.current_scope or self.outputOwnedScope(shape.owner.function_node) != self.current_scope) @panic("native parameter shadow lost its actual source owner");
+                var plan: NativeArgumentShadow = .{ .ast_owner = self.ast, .function_owner = shape.owner.function_node, .body_scope = self.current_scope, .scope = self.current_scope, .source_symbol = shape.source_tail_id orelse @panic("native parameter shadow has no source rest cell") };
+                const body = self.ast.functionBodyBlock(self.ast.getNode(shape.owner.function_node)) orelse @panic("native parameter shadow has no actual source body");
+                const needs_body_wrapper = !self.options.unsupported.arrow and try @import("parameter_environment.zig").functionBodyHasDynamicLookup(self, self.current_scope, body);
+                if (!self.options.unsupported.block_scoping and needs_body_wrapper) {
+                    plan.block = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+                    plan.scope = try self.addGeneratedScope(self.current_scope, plan.block, .block);
+                    const editor = &self.semantic_editor.?;
+                    const source = editor.scopes.items[plan.body_scope.toIndex()];
+                    editor.scopes.items[plan.scope.toIndex()].subtree_has_direct_eval = source.subtree_has_direct_eval;
+                    editor.scopes.items[plan.scope.toIndex()].subtree_has_with = source.subtree_has_with;
+                }
+                argument_shadow = plan;
+            };
 
             var param_index: usize = 0; // arguments index tracking
             var param_tdz_names: std.ArrayList(Span) = .empty;
@@ -810,10 +839,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         try self.setGeneratedSymbolId(output, id);
                         break :source_binding output;
                     } else new_binding: {
-                        const name = try es_helpers.makeTempVarSpan(self);
-                        const output = try es_helpers.makeSyntheticBinding(self, name);
-                        _ = try registerDestructuringTempIdentityInScope(self, output, name, span, .parameter, native_formal_scope orelse self.current_scope);
-                        es_helpers.consumeTempVarSpan(self, name);
+                        const plan = &argument_shadow.?;
+                        const editor = if (self.semantic_editor) |*value| value else unreachable;
+                        const source = editor.symbols.items[plan.source_symbol];
+                        if (source.kind != .parameter or source.scope_id != self.current_scope) @panic("native parameter shadow lost its moved source cell");
+                        const name = if (source.synthetic_name.len > 0) source.synthetic_name else self.ast.getText(source.name);
+                        const output = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(name));
+                        const id = (try self.declareSyntheticInScope(output, span, .parameter, native_formal_scope orelse @panic("native parameter shadow has no real parameter environment"))) orelse unreachable;
+                        plan.native_symbol = @intCast(@backingInt(id));
                         break :new_binding output;
                     };
                     const formal = if (shape.has_expressions)
@@ -829,11 +862,74 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (try ast_walk.parameterListHasExpressions(self.allocator, self.ast, new_params) != shape.has_expressions)
                     @panic("native argument shape changed its actual parameter expressions");
             }
+            if (argument_shadow) |plan| {
+                if (plan.native_symbol == null) @panic("native parameter shadow has no actual formal binding");
+                argument_shadow.?.source_declaration = try finalizeArgumentShadow(self, plan, &body_stmts, span);
+            }
             return .{
                 .new_params = new_params,
                 .body_stmts = body_stmts,
                 .native_formal_scope = native_formal_scope,
+                .argument_shadow = argument_shadow,
             };
+        }
+
+        fn finalizeArgumentShadow(self: *Transformer, plan: NativeArgumentShadow, statements: *std.ArrayList(NodeIndex), span: Span) Transformer.Error!NodeIndex {
+            const editor = &self.semantic_editor.?;
+            const source_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(plan.source_symbol);
+            if (editor.symbols.items[plan.source_symbol].scope_id != plan.body_scope) @panic("native shadow cell left its planned body storage");
+            if (plan.block.isNone()) {
+                // This mixed target already lowers lexical TDZ. Keep its old
+                // undefined entry value rather than exposing ignored extra N.
+                const source = editor.symbols.items[plan.source_symbol];
+                const name = if (source.synthetic_name.len > 0) source.synthetic_name else self.ast.getText(source.name);
+                const target = try es_helpers.makeTempRefFromIdentity(self, .{ .span = try self.ast.addString(name), .symbol_id = source_id, .reference_scope = plan.body_scope }, span, .{ .write = true });
+                const reset = try es_helpers.makeAssignStmt(self, target, try es_helpers.makeVoidZero(self, span), span, 0);
+                try statements.insert(self.allocator, 0, reset);
+                return reset;
+            }
+            if (self.outputOwnedScope(plan.block) != plan.scope or editor.scopes.items[plan.scope.toIndex()].parent != plan.body_scope) @panic("native shadow cell has no actual lexical block");
+            editor.relocateSymbol(source_id, plan.scope) catch @panic("native shadow cell cannot enter its lexical owner");
+            editor.symbols.items[plan.source_symbol].kind = .variable_let;
+            editor.symbols.items[plan.source_symbol].decl_flags = SymbolKind.variable_let.declFlags();
+            var output: std.ArrayList(NodeIndex) = .empty;
+            var declarations: usize = 0;
+            var source_declaration: NodeIndex = .none;
+            for (statements.items) |statement| {
+                const node = self.ast.getNode(statement);
+                var has_source = false;
+                if (node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var") {
+                    const start = self.ast.readExtra(node.data.extra, 1);
+                    const len = self.ast.readExtra(node.data.extra, 2);
+                    for (0..len) |i| {
+                        const decl = self.ast.getNode(self.ast.readExtraNode(start, @intCast(i)));
+                        const binding = self.ast.readExtraNode(decl.data.extra, 0);
+                        if (self.ast.getNode(binding).tag == .binding_identifier and self.getSymbolIdAt(binding) == @as(?u32, plan.source_symbol)) has_source = true;
+                    }
+                    if (has_source) for (0..len) |i| {
+                        const declarator = self.ast.readExtraNode(start, @intCast(i));
+                        const binding = self.ast.readExtraNode(self.ast.getNode(declarator).data.extra, 0);
+                        const selected = self.ast.getNode(binding).tag == .binding_identifier and self.getSymbolIdAt(binding) == @as(?u32, plan.source_symbol);
+                        const replacement = try es_helpers.makeVarDeclaration(self, &.{declarator}, if (selected) .let else .@"var", node.span);
+                        if (selected) {
+                            try self.ast.preserve_lexical_declaration_indices.append(self.allocator, @backingInt(replacement));
+                            declarations += 1;
+                            source_declaration = replacement;
+                        }
+                        try output.append(self.allocator, replacement);
+                    };
+                }
+                if (!has_source) try output.append(self.allocator, statement);
+            }
+            if (declarations != 1) @panic("native shadow cell must initialize at its one actual source binding point");
+            statements.deinit(self.allocator);
+            statements.* = output;
+            for (statements.items) |statement| {
+                try self.reparentGeneratedBodyScopes(plan.body_scope, plan.scope, statement);
+                try @import("class_strict_context.zig").moveSourceReferences(self, statement, plan.body_scope, plan.body_scope, plan.scope);
+            }
+            self.ast.nodes.items[@backingInt(plan.block)].data.list = try self.ast.addNodeList(statements.items);
+            return source_declaration;
         }
 
         pub const LowerResult = struct {
@@ -841,6 +937,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             body_stmts: std.ArrayList(NodeIndex),
             /// Existing split parameter environment selected before binding birth.
             native_formal_scope: ?ScopeId = null,
+            argument_shadow: ?NativeArgumentShadow = null,
         };
 
         /// destructuring + default parameter → temp 변수 경유.
