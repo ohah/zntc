@@ -1087,3 +1087,73 @@ test "strict adjacent factories keep their actual declaration owners through emi
         try validateContext(ast, current, allocator);
     }
 }
+test "strict function source census requires exact live binding without inventing factory roles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    // Legal SCRIPT declarations. Do not substitute export+var duplicate ESM syntax.
+    const input_source = "function read(value=1){return value};var read=5;function other(){};var other=6;";
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, input_source);
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "source-script.js");
+    module.ast = parser.ast;
+    module.source = input_source;
+    module.parse_arena = &arena;
+    module.wrap_kind = .esm;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+    };
+    const mutable_ids = try allocator.dupe(?u32, module.semantic.?.symbol_ids);
+    module.semantic.?.symbol_ids = mutable_ids;
+    const ast = &module.ast.?;
+    const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const list = ast.getNode(root).data.list;
+    var functions: [2]NodeIndex = undefined;
+    var count: usize = 0;
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const ni: NodeIndex = @fromBackingInt(raw);
+        if (ast.getNode(ni).tag != .function_declaration) continue;
+        functions[count] = ni;
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const binding = ast.readExtraNode(ast.getNode(functions[0]).data.extra, 0);
+    const sibling = ast.readExtraNode(ast.getNode(functions[1]).data.extra, 0);
+    const sid = module.semantic.?.symbol_ids[@backingInt(binding)].?;
+    const sibling_sid = module.semantic.?.symbol_ids[@backingInt(sibling)].?;
+    try std.testing.expect(sid != sibling_sid);
+    try validateContext(ast, module.semantic.?, allocator);
+    // A valid sibling SID is not proof for the original source function's var.
+    mutable_ids[@backingInt(binding)] = sibling_sid;
+    try std.testing.expectError(error.InvalidStrictFunctionRole, validateContext(ast, module.semantic.?, allocator));
+    mutable_ids[@backingInt(binding)] = null;
+    try std.testing.expectError(error.InvalidStrictFunctionRole, validateContext(ast, module.semantic.?, allocator));
+    mutable_ids[@backingInt(binding)] = sid;
+    const original_binding = ast.nodes.items[@backingInt(binding)];
+    ast.nodes.items[@backingInt(binding)].tag = .identifier_reference;
+    try std.testing.expectError(error.InvalidStrictFunctionRole, validateContext(ast, module.semantic.?, allocator));
+    ast.nodes.items[@backingInt(binding)] = original_binding;
+    // A producer-tagged function cannot borrow the source redeclaration exemption.
+    module.semantic.?.symbols.items[sid].binding_instantiation.strict_output_function = true;
+    try std.testing.expectError(error.InvalidStrictFunctionRole, validateContext(ast, module.semantic.?, allocator));
+    module.semantic.?.symbols.items[sid].binding_instantiation.strict_output_function = false;
+    try validateContext(ast, module.semantic.?, allocator);
+    try lowerModule(&module);
+    try validateContext(&module.ast.?, module.semantic.?, allocator);
+    // SCRIPT redeclarations do not manufacture a strict factory ledger.
+    try std.testing.expectEqual(@as(usize, 0), module.semantic.?.strict_output_context.functions.len);
+    try expectStableReapplication(&module, allocator);
+}
