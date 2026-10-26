@@ -331,6 +331,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       'console.log(read().Status);',
     ].join('\n'),
     graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-surviving-dynamic-member',
@@ -397,7 +398,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof outer());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'function\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-block-binding',
@@ -408,7 +410,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-unused-binding',
@@ -420,7 +423,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '42\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-catch-binding',
@@ -432,7 +436,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-method-parameter',
@@ -443,7 +448,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof make());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'function\n',
   },
   {
     name: 'nested-const-enum-escaped-name-surviving-reference',
@@ -2947,7 +2953,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
   });
 
-  test('nested lenient const-enum gate rejects every surviving same-name edge', () => {
+  test('nested lenient const-enum gate distinguishes exact shadows from surviving enum edges', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter((probe) =>
       probe.name.startsWith('nested-const-enum-'),
     );
@@ -2970,6 +2976,13 @@ describe('symbol identity coverage gate (#4819)', () => {
           transpileGraphModeProblems(result.stderr, true, probe.graph),
           `${probe.name}: ${result.stderr}`,
         ).toEqual([]);
+        if ('runtimeOutput' in probe) {
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${probe.name}: distinct shadow runtime changed`).toBe(
+            probe.runtimeOutput,
+          );
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -9729,3 +9729,86 @@ test "define callback arguments preserve private initializer branch instances" {
         }
     }
 }
+
+test "#6193 nested erased enum proof preserves distinct source shadow identities before output walk" {
+    const sources = [_][]const u8{
+        "function outer() {\n  const enum Status { Ready = 42 }\n  return function read(Status) { return Status; };\n}\nconsole.log(typeof outer());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  { const Status = { Ready: 43 }; return Status.Ready; }\n}\nconsole.log(read());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  { const Status = {}; }\n  return 42;\n}\nconsole.log(read());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  try { throw { Ready: 43 }; }\n  catch (Status) { return Status.Ready; }\n}\nconsole.log(read());",
+        "function make() {\n  const enum Status { Ready = 42 }\n  return class { read(Status) { return Status.Ready; } };\n}\nconsole.log(typeof make());",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const minify: TranspileOptions = .{ .minify_identifiers = true };
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".unknown");
+        const source_root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expect(parser.source_mode == .js_lenient);
+
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{});
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+        transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+        transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+        transformer.semantic_edit_enabled = true;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+
+        var enum_binding: ast_mod.NodeIndex = .none;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag == .ts_enum_declaration) enum_binding = parser.ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+        }
+        try std.testing.expect(!enum_binding.isNone());
+        const enum_id = transformer.symbol_ids.items[@backingInt(enum_binding)] orelse return error.MissingSourceEnumIdentity;
+        var shadow_binding: ast_mod.NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and raw != @backingInt(enum_binding) and std.mem.eql(u8, parser.ast.getText(node.span), "Status")) shadow_binding = @fromBackingInt(@as(u32, @intCast(raw)));
+        }
+        try std.testing.expect(!shadow_binding.isNone());
+        const shadow_id = transformer.symbol_ids.items[@backingInt(shadow_binding)] orelse return error.MissingSourceShadowIdentity;
+        const shadow_scope = analyzer.symbols.items[shadow_id].scope_id;
+        try std.testing.expect(enum_id != shadow_id);
+        try std.testing.expect(analyzer.symbols.items[enum_id].scope_id != shadow_scope);
+        const output_root = try transformer.visitNode(source_root);
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+        var surviving_shadows: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.getNode(@fromBackingInt(raw));
+            if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.span), "Status")) continue;
+            try std.testing.expectEqual(@as(?u32, shadow_id), transformer.symbol_ids.items[raw]);
+            surviving_shadows += 1;
+        }
+        try std.testing.expect(surviving_shadows > 0);
+        const output_symbols = if (transformer.semantic_editor) |editor| editor.symbols.items else transformer.symbols;
+        try std.testing.expectEqual(shadow_scope, output_symbols[shadow_id].scope_id);
+        try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = null;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = shadow_id;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = enum_id;
+        transformer.symbol_ids.items[@backingInt(shadow_binding)] = enum_id;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(shadow_binding)] = shadow_id;
+        try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    }
+}
