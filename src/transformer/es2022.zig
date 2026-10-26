@@ -1141,10 +1141,13 @@ pub fn ES2022(comptime Transformer: type) type {
             }
             const saved_super_is_static = self.current_super_is_static;
             const saved_method_is_static = self.current_method_is_static;
+            const saved_new_target = self.new_target_ctx;
             self.current_super_is_static = false;
             self.current_method_is_static = false;
+            self.new_target_ctx = .field_initializer;
             defer self.current_super_is_static = saved_super_is_static;
             defer self.current_method_is_static = saved_method_is_static;
+            defer self.new_target_ctx = saved_new_target;
             return self.visitNode(init_idx);
         }
 
