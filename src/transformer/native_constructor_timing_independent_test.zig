@@ -73,7 +73,10 @@ test "independent native constructor timing name 9" {
 }
 
 test "independent native constructor timing before output walker exact birth tuples" {
-    const source = "let saved;class P{}class D extends P{value=saved();constructor(argument){const read=()=>this;saved=read;super();console.log(this.value===this,argument)}}new D(42)";
+    try checkBirth("let saved;class P{}class D extends P{value=saved();constructor(argument){const read=()=>this;saved=read;super();console.log(this.value===this,argument)}}new D(42)");
+}
+
+fn checkBirth(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -194,4 +197,12 @@ test "independent moved private field native 8" {
 }
 test "independent moved private field native 9" {
     try checkName(moved_private_sources[9], 109);
+}
+
+test "independent moved private before output walker exact birth tuples" {
+    try checkBirth(moved_private_sources[0]);
+}
+
+test "independent moved private field native new target environment" {
+    try checkName("let saved;class Host{constructor(){return class extends Object{#value=()=>new.target;read(){return this.#value()}constructor(){saved=()=>this;super()}}}}const D=new Host;let d=new D;console.log(JSON.stringify([d.read()===undefined,saved()===d]));", 110);
 }
