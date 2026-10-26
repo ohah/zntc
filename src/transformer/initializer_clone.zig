@@ -23,6 +23,7 @@ pub fn namedExpressionScope(self: anytype, index: ast.NodeIndex, from: ScopeId) 
     if (!symbol.kind.isFunctionLike() or scope.isNone() or body_scope.isNone() or
         scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[scope.toIndex()].kind != .block or
+        editor.scopes.items[body_scope.toIndex()].kind != .function or
         editor.scopes.items[scope.toIndex()].parent != from or
         editor.scopes.items[body_scope.toIndex()].parent != scope)
         return error.InvalidCloneOwnership;

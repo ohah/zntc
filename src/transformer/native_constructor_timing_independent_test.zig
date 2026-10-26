@@ -624,6 +624,14 @@ test "independent initializer clone exact named role rejects foreign identities"
     t.semantic_editor.?.scopes.items[body.toIndex()].parent = from;
     try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
     t.semantic_editor.?.scopes.items[body.toIndex()].parent = body_parent;
+    const body_kind = t.semantic_editor.?.scopes.items[body.toIndex()].kind;
+    t.semantic_editor.?.scopes.items[body.toIndex()].kind = .block;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.semantic_editor.?.scopes.items[body.toIndex()].kind = body_kind;
+    const owner_tag = t.ast.nodes.items[@backingInt(owner)].tag;
+    t.ast.nodes.items[@backingInt(owner)].tag = .function_declaration;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.ast.nodes.items[@backingInt(owner)].tag = owner_tag;
     const name_tag = t.ast.nodes.items[@backingInt(name)].tag;
     t.ast.nodes.items[@backingInt(name)].tag = .identifier_reference;
     try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
