@@ -16,9 +16,47 @@ pub const Plan = struct {
 /// The actual simple formal list is supplied explicitly: a function may reuse
 /// its parameter's SID, whose original declaration anchor must remain intact.
 pub fn prepare(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, constructor_scope: ScopeId, try_scope: ScopeId) !Plan {
+    return prepareImpl(self, body, formals, constructor_scope, try_scope, null);
+}
+
+/// The original pattern and a direct body function share one native FDI cell.
+/// Restore only those exact groups after the pattern's moved initialization.
+pub fn prepareSharedParameterBody(self: anytype, owner: ast.NodeIndex, source_params: ast.NodeIndex, actual_params: ast.NodeIndex, body: ast.NodeIndex, scope: ScopeId) !Plan {
+    if (!self.semantic_edit_enabled or self.semantic_editor == null or owner.isNone() or source_params.isNone() or actual_params.isNone() or body.isNone() or scope.isNone() or
+        @backingInt(owner) >= self.ast.nodes.items.len or @backingInt(source_params) >= self.ast.nodes.items.len or @backingInt(actual_params) >= self.ast.nodes.items.len or @backingInt(body) >= self.ast.nodes.items.len or scope.toIndex() >= self.semantic_editor.?.scopes.items.len)
+        @panic("shared parameter function cells require a current AST and semantic owner");
+    const function = self.ast.getNode(owner);
+    switch (function.tag) {
+        .function, .function_declaration, .function_expression => {},
+        else => @panic("shared parameter cells require an ordinary function"),
+    }
+    const scope_data = self.semantic_editor.?.scopes.items[scope.toIndex()];
+    if (self.outputOwnedScope(owner) != scope or scope_data.kind != .function or scope_data.is_strict or self.options.unsupported.default_params or
+        self.ast.readExtra(function.data.extra, ast.FunctionExtra.flags) & (ast.FunctionFlags.is_async | ast.FunctionFlags.is_generator) != 0 or
+        self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.params) != actual_params or self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.body) != body or
+        self.ast.getNode(source_params).tag != .formal_parameters or self.ast.getNode(actual_params).tag != .formal_parameters)
+        @panic("shared parameter function cells lost their actual ordinary function edges");
+    if (self.outputOwnedScope(source_params)) |source_scope| if (source_scope != scope) @panic("shared parameter cells cannot erase a split environment");
+    if (self.outputOwnedScope(actual_params)) |actual_scope| if (actual_scope != scope) @panic("shared parameter cells cannot invent a parameter environment");
+    if (try @import("../parser/ast_walk.zig").parameterListHasExpressions(self.allocator, self.ast, self.ast.getNode(source_params).data.list) or
+        try @import("../parser/ast_walk.zig").parameterListHasExpressions(self.allocator, self.ast, self.ast.getNode(actual_params).data.list))
+        @panic("shared parameter cells cannot change parameter-expression environments");
+    var groups: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer groups.deinit(self.allocator);
+    var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, source_params, .{ .cover_grammar_assignment = true });
+    defer bindings.deinit();
+    while (try bindings.next()) |binding| {
+        const id = self.getSymbolIdAt(binding) orelse @panic("shared parameter lost its exact SID");
+        if (self.semantic_editor.?.symbols.items[id].scope_id != scope) @panic("shared parameter has another storage owner");
+        try groups.put(self.allocator, id, {});
+    }
+    return prepareImpl(self, body, .none, scope, scope, &groups);
+}
+
+fn prepareImpl(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, constructor_scope: ScopeId, try_scope: ScopeId, shared_groups: ?*const std.AutoHashMapUnmanaged(u32, void)) !Plan {
     if (!self.semantic_edit_enabled) @panic("constructor function cells require the retained semantic graph");
     const node = self.ast.getNode(body);
-    if (node.tag != .block_statement or self.outputOwnedScope(body) != try_scope)
+    if ((node.tag != .block_statement and node.tag != .function_body) or (shared_groups == null and self.outputOwnedScope(body) != try_scope))
         @panic("constructor function cells require the actual lexical body owner");
     const Entry = struct { source: ast.NodeIndex, id: u32, source_name: @import("../lexer/token.zig").Span };
     var entries: std.ArrayList(Entry) = .empty;
@@ -49,6 +87,14 @@ pub fn prepare(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, const
         }
         const binding = self.ast.readExtraNode(declaration.data.extra, ast.FunctionExtra.name);
         const id = self.getSymbolIdAt(binding) orelse @panic("body function has no exact source SID");
+        if (shared_groups) |groups| {
+            if (!groups.contains(id)) {
+                try remaining.append(self.allocator, statement);
+                continue;
+            }
+            if (self.semantic_editor.?.symbols.items[id].kind != .parameter) @panic("shared body function does not reuse its source parameter cell");
+            try formal_ids.put(self.allocator, id, {});
+        }
         if (self.semantic_editor.?.symbols.items[id].scope_id != constructor_scope)
             @panic("body function cell does not own constructor storage");
         try removed.append(self.allocator, binding);

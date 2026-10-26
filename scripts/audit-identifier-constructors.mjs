@@ -58,7 +58,7 @@ const ALLOWLIST = {
     '실제 enum storage binding Node/SID/Scope를 검증하고 동일 SID write row를 즉시 생성',
   'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
-  'src/transformer/native_constructor_function_cells.zig::prepare':
+  'src/transformer/native_constructor_function_cells.zig::prepareImpl':
     '생산자가 확정한 constructor 함수 셀 SID와 try Scope로 Reference를 먼저 등록한 뒤 대입 target으로 retag',
   'src/transformer/transformer/semantic_edit.zig::makeNativeArgumentsRef':
     '실제 함수 스코프의 native arguments SID/참조 생성; semantic-less 경로만 raw native operand를 생성',
