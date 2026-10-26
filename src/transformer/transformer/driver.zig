@@ -1065,6 +1065,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         "function read({a,...rest},...[tail]){let body=1;eval('a');return [a,tail,rest,body]}",
         "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}",
         "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}",
+        "function read([head]=[1],{a,...rest},get=()=>head){let body=1;var head;eval('head=9');return [head,get(),a,rest,body]}",
     }) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1208,6 +1209,9 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
                 try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, source_scope));
                 try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, params, params, body_scope));
                 try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, old_params, body_scope));
+                const foreign_formals = try t.ast.addFormalParameters(actual_formals, t.ast.getNode(params).span);
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, foreign_formals, body_scope));
+                try std.testing.expect(t.outputOwnedScope(foreign_formals) == null);
                 const saved_kind = editor.scopes.items[source_scope.toIndex()].kind;
                 editor.scopes.items[source_scope.toIndex()].kind = .block;
                 try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
@@ -1303,7 +1307,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
     }
     try std.testing.expect(sibling_controls > 0);
     try std.testing.expectEqual(@as(usize, 10), simple_cases);
-    try std.testing.expectEqual(@as(usize, 10), retained_non_simple_cases);
+    try std.testing.expectEqual(@as(usize, 11), retained_non_simple_cases);
     try std.testing.expectEqual(@as(usize, 2), no_split_environment_cases);
 }
 
@@ -1336,6 +1340,7 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},...[tail]){let body=1;eval('a');return [a,tail,rest,body]}", .call = "read({a:2,b:3},5,6)" },
         .{ .source = "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
         .{ .source = "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
+        .{ .source = "function read([head]=[1],{a,...rest},get=()=>head){let body=1;var head;eval('head=9');return [head,get(),a,rest,body]}", .call = "read(undefined,{a:2,b:3})" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
