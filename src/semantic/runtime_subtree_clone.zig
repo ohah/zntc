@@ -149,6 +149,19 @@ pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []
         }
     }
     for (implicit_symbols) |id| if (owned.contains(@backingInt(editor.symbols.items[@backingInt(id)].scope_id))) try selected.put(allocator, @backingInt(id), {});
+    // Count source rows once for all selected identities. A large initializer
+    // must not rescan the entire module for each local binding it owns.
+    const Counts = struct { value: u32 = 0, writes: u32 = 0 };
+    var counts: std.AutoHashMapUnmanaged(u32, Counts) = .empty;
+    defer counts.deinit(allocator);
+    for (editor.references.items[0..old_ref_count]) |row| {
+        const id = @backingInt(row.symbol_id);
+        if (!selected.contains(id) or !valueReference(row.flags)) continue;
+        const entry = try counts.getOrPut(allocator, id);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        entry.value_ptr.value += 1;
+        if (row.flags.write) entry.value_ptr.writes += 1;
+    }
     var selected_iter = selected.keyIterator();
     while (selected_iter.next()) |old_id| {
         const source = editor.symbols.items[old_id.*];
@@ -158,14 +171,9 @@ pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []
         // Numeric/string fact tables are owned by the old SID. The cloned AST
         // remains available to normal fact producers; do not transplant them.
         copied.const_kind = .none;
-        var explicit: u32 = 0;
-        var writes: u32 = 0;
-        for (editor.references.items[0..old_ref_count]) |row| {
-            if (@backingInt(row.symbol_id) == old_id.* and valueReference(row.flags)) {
-                explicit += 1;
-                if (row.flags.write) writes += 1;
-            }
-        }
+        const source_counts = counts.get(old_id.*) orelse Counts{};
+        const explicit = source_counts.value;
+        const writes = source_counts.writes;
         if (source.reference_count < explicit or source.write_count < writes) return error.InvalidSymbol;
         copied.reference_count -= explicit;
         copied.write_count -= writes;
