@@ -1,6 +1,10 @@
 const std = @import("std");
 const ast = @import("../parser/ast.zig");
 const Transformer = @import("transformer.zig").Transformer;
+
+test {
+    _ = @import("deferred_super_class_lowering.zig");
+}
 const sources = [_][]const u8{
     "let saved;const key=Symbol(\"method\");class P{}class D extends P{x=()=>this;constructor(){saved=()=>this;super()}}const d=new D;console.log(JSON.stringify([d.x.name,saved()===d,Object.getPrototypeOf(d)===D.prototype]));",
     "let saved;const key=Symbol(\"method\");class P{}class D extends P{x=()=>7;constructor(){saved=()=>this;super()}}const d=new D;console.log(JSON.stringify([d.x.name,saved()===d,Object.getPrototypeOf(d)===D.prototype]));",

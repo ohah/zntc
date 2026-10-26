@@ -137,6 +137,7 @@ fn checkSelection(source: []const u8, expected: usize) !void {
 }
 
 test "RN deferred class selector ten source roles" {
+    std.debug.print("RN SELECTOR START title=RN deferred class selector ten source roles sources=10\n", .{});
     const cases = [_]struct { source: []const u8, expected: usize }{
         .{ .source = "class P{}class D extends P{constructor(){const go=()=>super();go()}}", .expected = 1 },
         .{ .source = "class P{}class D extends P{constructor(){const go=()=>()=>super();go()()}}", .expected = 1 },
@@ -150,4 +151,5 @@ test "RN deferred class selector ten source roles" {
         .{ .source = "class P{}class D extends P{constructor(){function make(){return class E extends P{constructor(){const go=()=>super();go()}}}super();this.E=make()}}", .expected = 1 },
     };
     for (cases) |case| try checkSelection(case.source, case.expected);
+    std.debug.print("RN SELECTOR COMPLETE title=RN deferred class selector ten source roles sources={d}\n", .{cases.len});
 }
