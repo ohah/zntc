@@ -87,6 +87,19 @@ test "generated static creator native primary and canonical body are born before
         found += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), found);
+    t.ast.transformed_root = output;
+    const edited = (try t.finishSemanticEdit()).?;
+    nodes = parents.keyIterator();
+    while (nodes.next()) |raw| {
+        const node = t.ast.nodes.items[raw.*];
+        if (node.tag != .static_block) continue;
+        try std.testing.expectEqual(@as(?u32, @backingInt(block.scope)), edited.scope_owner_map.get(raw.*));
+        try std.testing.expectEqual(@as(?u32, @backingInt(block.scope)), edited.scope_owner_map.get(@backingInt(node.data.unary.operand)));
+        // Editor.finish transfers its maps away. The live Transformer reader
+        // must still retain both published owner edges after that handoff.
+        try std.testing.expectEqual(block.scope, t.outputOwnedScope(@fromBackingInt(raw.*)).?);
+        try std.testing.expectEqual(block.scope, t.outputOwnedScope(node.data.unary.operand).?);
+    }
 }
 const Case = struct { source: []const u8, native: []const u8, legacy: bool = false, assign: bool = false, erased: bool = false };
 const cases = [_]Case{
@@ -163,5 +176,44 @@ test "generated static creator ten native removed and lowered actual owner contr
     for (cases) |case| for ([_]@import("compat.zig").ESTarget{ .es2022, .es2021, .es5 }) |target| {
         errdefer std.debug.print("static creator target={s} source={s}\n", .{ @tagName(target), case.source });
         try beforeWalker(case, target);
+    };
+}
+
+test "generated static creator distinguishes every class and static feature role" {
+    for ([_]bool{ false, true }) |lower_class| for ([_]bool{ false, true }) |lower_static| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "");
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var initial = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        try initial.analyze();
+        var unsupported = @import("options.zig").TransformOptions.compat.fromESTarget(.esnext);
+        unsupported.class = lower_class;
+        unsupported.class_static_block = lower_static;
+        var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{ .unsupported = unsupported });
+        try t.initSymbolIdsOwned(&parser.ast, initial.symbol_ids.items);
+        t.symbols = initial.symbols.items;
+        t.references = initial.references.items;
+        t.scopes = initial.scopes.items;
+        t.scope_maps = initial.scope_maps.items;
+        t.scope_owner_map = initial.scope_owner_map;
+        t.semantic_edit_enabled = true;
+        const body = try t.ast.addListNode(.block_statement, .EMPTY, try t.ast.addNodeList(&.{}));
+        const generated = try creator.create(&t, @fromBackingInt(0), body, .EMPTY);
+        const editor = &t.semantic_editor.?;
+        if (!lower_class and !lower_static) {
+            try std.testing.expectEqual(.class_static_block, editor.scopes.items[generated.scope.toIndex()].kind);
+            try std.testing.expect(editor.scopes.items[generated.scope.toIndex()].is_strict);
+            try std.testing.expect(editor.scopes.items[generated.scope.toIndex()].kind.isVarScope());
+            try std.testing.expectEqual(generated.scope, t.outputOwnedScope(generated.node).?);
+        } else {
+            try std.testing.expectEqual(.block, editor.scopes.items[generated.scope.toIndex()].kind);
+            try std.testing.expect(!editor.scopes.items[generated.scope.toIndex()].is_strict);
+            try std.testing.expect(!editor.scopes.items[generated.scope.toIndex()].kind.isVarScope());
+            try std.testing.expect(t.outputOwnedScope(generated.node) == null);
+        }
+        try std.testing.expectEqual(generated.scope, t.outputOwnedScope(body).?);
     };
 }
