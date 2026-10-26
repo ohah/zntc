@@ -5472,6 +5472,105 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'unused define option keeps the plain JavaScript import graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__UNUSED_FLAG__=false'],
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'used define option keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used globalThis define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(globalThis.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used window define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(window.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used self define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(self.__FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used process env define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(process.env.NODE_ENV); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:process.env.NODE_ENV=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used optional member define keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; console.log(process?.env?.NODE_ENV); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:process.env.NODE_ENV=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in nested function keeps the plain JavaScript import fallback',
+        source:
+          "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read()); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a surviving declaration keeps the import fallback',
+        source:
+          "import { value } from './values.js'; const flag = __FLAG__; console.log(value); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a computed console property keeps the import fallback',
+        source:
+          "import { value } from './values.js'; console.log({ [__FLAG__]: value }); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'used define in a later console argument keeps the import fallback',
+        source:
+          "import { value } from './values.js'; console.log(value, __FLAG__); process.stdout.write(String(value));",
+        files: { 'values.js': 'export const value = 42;' },
+        args: ['--define:__FLAG__=false'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'matched drop-label keeps the plain JavaScript import fallback',
         source:
           "import { value } from './values.js'; DEV: { value; } console.log(value); process.stdout.write(String(value));",

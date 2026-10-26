@@ -488,9 +488,9 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
 /// Plain JavaScript imports are not elided by type-only import handling. A
 /// console-drop edit can therefore refresh their module records from the
 /// transformed AST and keep the same semantic graph, provided this is the only
-/// graph-changing transform in the module. Configured label names matter only
-/// when the AST contains a matching label; unmatched names are a no-op. Other
-/// modes keep the stricter verbatim-module-syntax gate.
+/// graph-changing transform in the module. Configured label names and define
+/// keys matter only when the AST contains a matching use; unmatched options
+/// are no-ops. Other modes keep the stricter verbatim-module-syntax gate.
 fn canRetainPlainJavaScriptImportsForConsoleDrop(
     self: anytype,
     module: *const Module,
@@ -509,7 +509,7 @@ fn canRetainPlainJavaScriptImportsForConsoleDrop(
     // console-drop path reindexes surviving references after both statements
     // are removed, so this option does not make plain JS imports unstable.
     return !options.unsupported.hasAny() and !hasDroppedLabeledStatement(ast, options.drop_labels) and
-        options.define.len == 0 and
+        !define_mod.astUsesDefine(ast, options.define) and
         !options.minify_syntax and !options.minify_whitespace and
         !options.experimental_decorators and !options.emit_decorator_metadata and
         !options.react_refresh and !options.styled_components and !options.emotion and
@@ -9066,13 +9066,60 @@ test "simple drop-console graph is retained by the full prepass gate" {
     const defines = [_]define_mod.DefineEntry{.{ .key = "__FLAG__", .value = "false" }};
     var define_options = import_options;
     define_options.define = &defines;
-    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+    try std.testing.expect(canRetainPlainJavaScriptImportsForConsoleDrop(
         &test_context,
         &module,
         import_ast,
         define_options,
         true,
     ));
+    const defined_source = "import { value } from './values.js'; console.log(__FLAG__);";
+    var defined_scanner = try Scanner.init(allocator, defined_source);
+    defer defined_scanner.deinit();
+    var defined_parser = @import("../../parser/parser.zig").Parser.init(allocator, &defined_scanner);
+    defined_parser.configureFromExtension(".js");
+    defer defined_parser.deinit();
+    _ = try defined_parser.parse();
+    try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &defined_parser.ast,
+        define_options,
+        true,
+    ));
+    const matched_define_inputs = [_]struct { source: []const u8, key: []const u8 }{
+        .{ .source = "import { value } from './values.js'; console.log(__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(globalThis.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(window.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(self.__FLAG__);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(process.env.NODE_ENV);", .key = "process.env.NODE_ENV" },
+        .{ .source = "import { value } from './values.js'; console.log(process?.env?.NODE_ENV);", .key = "process.env.NODE_ENV" },
+        .{
+            .source = "import { value } from './values.js'; function read() { return __FLAG__; } console.log(read());",
+            .key = "__FLAG__",
+        },
+        .{ .source = "import { value } from './values.js'; const flag = __FLAG__; console.log(value);", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log({ [__FLAG__]: value });", .key = "__FLAG__" },
+        .{ .source = "import { value } from './values.js'; console.log(value, __FLAG__);", .key = "__FLAG__" },
+    };
+    for (matched_define_inputs) |item| {
+        var matched_scanner = try Scanner.init(allocator, item.source);
+        defer matched_scanner.deinit();
+        var matched_parser = @import("../../parser/parser.zig").Parser.init(allocator, &matched_scanner);
+        matched_parser.configureFromExtension(".js");
+        defer matched_parser.deinit();
+        _ = try matched_parser.parse();
+        const matched_defines = [_]define_mod.DefineEntry{.{ .key = item.key, .value = "false" }};
+        var matched_options = import_options;
+        matched_options.define = &matched_defines;
+        try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
+            &test_context,
+            &module,
+            &matched_parser.ast,
+            matched_options,
+            true,
+        ));
+    }
     var whitespace_options = import_options;
     whitespace_options.minify_whitespace = true;
     try std.testing.expect(!canRetainPlainJavaScriptImportsForConsoleDrop(
