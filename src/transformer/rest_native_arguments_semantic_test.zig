@@ -525,6 +525,26 @@ test "unlinked arguments reject foreign handoffs engines and AST owners without 
     f.t.native_arguments_reference_origins.getPtr(origin_node.?).?.flags.write = true;
     try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, list, f.owner));
     f.t.native_arguments_reference_origins.getPtr(origin_node.?).?.* = original_origin;
+    // Make the first existing plan's actual owner the query target. A reader
+    // must still reject a second claim, rather than returning the first row.
+    var ordered = f.t.native_arguments_parameter_handoffs.iterator();
+    const first = ordered.next().?;
+    const first_id = first.key_ptr.*;
+    const first_plan = first.value_ptr.*;
+    const second_id = if (first_id == raw) other_id else raw;
+    const second_plan = f.t.native_arguments_parameter_handoffs.get(second_id).?;
+    var first_function: NodeIndex = .none;
+    for (live) |node| {
+        const index: NodeIndex = @fromBackingInt(node);
+        if (f.t.ast.getNode(index).tag == .function_declaration and f.t.outputOwnedScope(index) == first_plan.body_scope) first_function = index;
+    }
+    try std.testing.expect(!first_function.isNone());
+    const first_owner: Owner = .{ .ast_owner = f.t.ast, .function_node = first_function, .params_node = first_plan.params, .body_scope = first_plan.body_scope };
+    f.t.current_scope = first_plan.body_scope;
+    f.t.native_arguments_parameter_handoffs.getPtr(second_id).?.* = first_plan;
+    try std.testing.expectError(error.InvalidRestArgumentsOwner, Params.unlinkedArgumentsOwner(f.t, f.t.ast.getNode(first_plan.params).data.list, first_owner));
+    f.t.native_arguments_parameter_handoffs.getPtr(second_id).?.* = second_plan;
+    f.t.current_scope = f.owner.body_scope;
     try std.testing.expectEqualDeep(symbols_before, f.t.semantic_editor.?.symbols.items);
     try std.testing.expectEqualDeep(references_before, f.t.semantic_editor.?.references.items);
     try std.testing.expectEqual(id, (try Params.unlinkedArgumentsOwner(f.t, list, f.owner)).?);
@@ -559,7 +579,7 @@ test "unlinked arguments reject foreign handoffs engines and AST owners without 
         try std.testing.expectEqualDeep(before_symbols, boundary.t.semantic_editor.?.symbols.items);
         try std.testing.expectEqualDeep(before_refs, boundary.t.semantic_editor.?.references.items);
     }
-    std.debug.print("UNLINKED ARGUMENTS HOSTILE hostile=10 source-boundaries=3 restored=1\n", .{});
+    std.debug.print("UNLINKED ARGUMENTS HOSTILE hostile=11 source-boundaries=3 restored=1\n", .{});
 }
 
 test "unlinked arguments default runtime matches native in sloppy and strict environments" {
