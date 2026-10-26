@@ -83,6 +83,13 @@ test "namespace live arguments identities exist before the output walker" {
         try std.testing.expectEqual(saved_arrow_depth, t.arrow_this_depth);
         try std.testing.expectEqual(saved_needs_this, t.needs_this_var);
         try std.testing.expectEqual(saved_needs_arguments, t.needs_arguments_var);
+        if (t.semantic_editor == null) {
+            // A property key named arguments creates no lexical capture or
+            // semantic edit. Do not manufacture an editor for this control.
+            try std.testing.expectEqualStrings("property-negative", case.name);
+            try std.testing.expectEqual(@as(usize, 0), t.live_arguments_cells.count());
+            continue;
+        }
         var parents = try utils.buildParentMap(a, t.ast, output);
         const editor = &t.semantic_editor.?;
         // Copied owners are published immediately in the transformer's typed
