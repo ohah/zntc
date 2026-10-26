@@ -15,17 +15,21 @@ const sources = [_][]const u8{
 };
 
 fn checkName(source: []const u8, case: usize) !void {
+    return checkTypedName(source, source, "input.cjs", case);
+}
+
+fn checkTypedName(source: []const u8, native_source: []const u8, filename: []const u8, case: usize) !void {
     var failures: usize = 0;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     for ([_]bool{ false, true }) |minify| {
         var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
         unsupported.arrow = true;
         std.debug.print("NAME START case={d} minify={}\n", .{ case, minify });
-        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+        const result = try @import("../transpile.zig").transpile(a, source, filename, .{
             .unsupported = unsupported,
             .use_define_for_class_fields = true,
             .keep_names = true,
@@ -214,4 +218,31 @@ test "independent moved private before output walker exact birth tuples" {
 
 test "independent moved private field native new target environment" {
     try checkName("let saved;class Host{constructor(){return class extends Object{#value=()=>new.target;read(){return this.#value()}constructor(){saved=()=>this;super()}}}}const D=new Host;let d=new D;console.log(JSON.stringify([d.read()===undefined,saved()===d]));", 110);
+}
+
+test "independent native constructor typed simple parameter" {
+    try checkTypedName(
+        "let saved;class P{}class D extends P{value=saved();constructor(argument:number){saved=()=>this;super();this.argument=argument}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.argument]));",
+        "let saved;class P{}class D extends P{value=saved();constructor(argument){saved=()=>this;super();this.argument=argument}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.argument]));",
+        "input.cts",
+        120,
+    );
+}
+
+test "independent native constructor optional simple parameter" {
+    try checkTypedName(
+        "let saved;class P{}class D extends P{value=saved();constructor(argument?:number){saved=()=>this;super();this.argument=argument}}let d=new D;console.log(JSON.stringify([d.value===d,d.argument===undefined]));",
+        "let saved;class P{}class D extends P{value=saved();constructor(argument){saved=()=>this;super();this.argument=argument}}let d=new D;console.log(JSON.stringify([d.value===d,d.argument===undefined]));",
+        "input.cts",
+        121,
+    );
+}
+
+test "independent native constructor parameter property timing" {
+    try checkTypedName(
+        "let saved;class P{}class D extends P{value=saved();constructor(public argument:number){saved=()=>this;super()}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.argument]));",
+        "let saved;class P{}class D extends P{value=saved();constructor(argument){saved=()=>this;super();this.argument=argument}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.argument]));",
+        "input.cts",
+        122,
+    );
 }

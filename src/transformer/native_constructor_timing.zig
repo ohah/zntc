@@ -112,6 +112,19 @@ fn hasDeferredSuper(self: anytype, body: ast.NodeIndex) !bool {
     return false;
 }
 
+/// Type-only formal wrappers do not create a parameter initializer scope.
+/// Keep runtime defaults, patterns and decorators on their existing paths.
+pub fn simpleFormalBinding(self: anytype, index: ast.NodeIndex) ?ast.NodeIndex {
+    const node = self.ast.getNode(index);
+    if (node.tag == .binding_identifier) return index;
+    if (node.tag != .formal_parameter or
+        !self.ast.readExtraNode(node.data.extra, ast.FormalParameterExtra.default).isNone() or
+        self.ast.readExtra(node.data.extra, ast.FormalParameterExtra.deco_len) != 0) return null;
+    const pattern = self.ast.readExtraNode(node.data.extra, ast.FormalParameterExtra.pattern);
+    if (pattern.isNone() or self.ast.getNode(pattern).tag != .binding_identifier) return null;
+    return pattern;
+}
+
 pub fn prepareClass(self: anytype, class: ast.Node) !void {
     if (!self.semantic_edit_enabled or self.options.unsupported.class or !self.options.unsupported.arrow or
         self.options.experimental_decorators or self.options.plugins.len != 0 or self.plugins.worklet.auto_next) return;
@@ -149,7 +162,7 @@ pub fn prepareClass(self: anytype, class: ast.Node) !void {
     const parameters = self.ast.readExtraNode(method.data.extra, ast.MethodExtra.params);
     if (!parameters.isNone()) {
         const list = self.ast.getNode(parameters).data.list;
-        for (0..list.len) |offset| if (self.ast.getNode(self.ast.readExtraNode(list.start, @intCast(offset))).tag != .binding_identifier) return;
+        for (0..list.len) |offset| if (simpleFormalBinding(self, self.ast.readExtraNode(list.start, @intCast(offset))) == null) return;
     }
     if (!try @import("native_derived_this.zig").needsCellInScope(self, constructor, method, scope, true)) return;
     if (try hasDeferredSuper(self, self.ast.readExtraNode(method.data.extra, ast.MethodExtra.body))) return;

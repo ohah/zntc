@@ -31,8 +31,8 @@ pub fn prepare(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, const
         const params = self.ast.getNode(formals);
         if (params.tag != .formal_parameters) @panic("constructor cells require actual simple formals");
         for (0..params.data.list.len) |i| {
-            const binding = self.ast.readExtraNode(params.data.list.start, @intCast(i));
-            if (self.ast.getNode(binding).tag != .binding_identifier) @panic("constructor cells do not lower non-simple parameters");
+            const binding = @import("native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(params.data.list.start, @intCast(i))) orelse
+                @panic("constructor cells do not lower non-simple parameters");
             try formal_ids.put(self.allocator, self.getSymbolIdAt(binding) orelse @panic("formal has no exact SID"), {});
         }
     }
