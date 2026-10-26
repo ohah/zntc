@@ -732,6 +732,108 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     graph: 'reanalyzed',
   },
   {
+    name: 'ambient-namespace-import-equals-require',
+    source:
+      "declare namespace Types { import Shape = require('./shape'); export const value: Shape; } console.log(66);",
+    graph: 'retained',
+    runtimeOutput: '66\n',
+  },
+  {
+    name: 'ambient-namespace-type-import-equals',
+    source:
+      "declare namespace Types { import type Shape = require('./shape'); export const value: Shape; } console.log(77);",
+    graph: 'retained',
+    runtimeOutput: '77\n',
+  },
+  {
+    name: 'ambient-namespace-import-equals-qualified',
+    source:
+      'declare namespace Types { import Shape = Shapes.Shape; export const value: Shape; } console.log(67);',
+    graph: 'retained',
+    runtimeOutput: '67\n',
+  },
+  {
+    name: 'ambient-namespace-multiple-import-equals',
+    source: [
+      "declare namespace Types { import Shape = require('./shape');",
+      "import Color = require('./color'); export const value: Shape & Color; }",
+      'console.log(76);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '76\n',
+  },
+  {
+    name: 'ambient-namespace-nested-import-equals',
+    source: [
+      'declare namespace Types { namespace Nested { import Shape = Shapes.Shape; export const value: Shape; } }',
+      'console.log(68);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '68\n',
+  },
+  {
+    name: 'ambient-namespace-import-equals-escaped-name-property-only',
+    source: [
+      "declare namespace Types { import \\u0053hape = require('./shape'); export const value: \\u0053hape; }",
+      'console.log(({ Shape: 69 }).Shape);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '69\n',
+  },
+  {
+    name: 'ambient-namespace-import-equals-surviving-typeof',
+    source: [
+      "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
+      'console.log(typeof Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-surviving-escaped-name-reference',
+    source: [
+      "declare namespace Types { import \\u0053hape = require('./shape'); export const value: \\u0053hape; }",
+      'console.log(typeof Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-output-binding-collision',
+    source: [
+      "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
+      'const Shape = 70; console.log(Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-duplicate-local',
+    source: [
+      "declare namespace Types { import Shape = require('./shape');",
+      "import \\u0053hape = require('./other-shape'); export const value: Shape; }",
+      'console.log(75);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-nonambient',
+    source:
+      "namespace Types { import Shape = require('./shape'); export const value = 71; } console.log(71);",
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-global',
+    source: [
+      "declare namespace global { import Shape = require('./shape'); export const value: Shape; }",
+      'console.log(72);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-import-equals-escaped-global',
+    source:
+      "declare namespace gl\\u006fbal { import Shape = require('./shape'); export const value: Shape; } console.log(73);",
+    graph: 'reanalyzed',
+  },
+  {
     name: 'ambient-namespace-duplicate-type-import-local',
     source: [
       "declare namespace Types { import type { Shape as Alias } from './shape';",
@@ -2875,7 +2977,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(34);
+    expect(cases).toHaveLength(47);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {
