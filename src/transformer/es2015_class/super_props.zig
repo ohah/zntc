@@ -137,7 +137,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// super() 호출 후 this → _this 별칭을 활성화하여
         /// __callSuper가 반환하는 새 객체를 올바르게 참조.
         /// call_expression: extra = [callee, args_start, args_len, flags]
-        pub fn lowerSuperCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerSuperCall(self: *Transformer, source_call: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const args_start = self.readU32(e, 1);
@@ -189,6 +189,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = this_ref, .right = result_read, .flags = 0 } },
             });
             const marker: Transformer.GeneratedSuperCall = if (self.active_derived_constructor_new_target) |owner| .{
+                .source_call = source_call,
                 .constructor_frame = self.capture_frame,
                 .constructor_scope = owner.owner_scope,
                 .use_scope = self.current_scope,

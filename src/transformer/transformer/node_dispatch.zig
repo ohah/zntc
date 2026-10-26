@@ -791,7 +791,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2015: super.method(args) → Parent.prototype.method.call(this, args)
             if (self.needsSuperLowering()) {
                 if (es2015_class.ES2015Class(Transformer).isSuperCall(self, node)) {
-                    return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, node);
+                    return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, idx, node);
                 }
                 if (es2015_class.ES2015Class(Transformer).isSuperMethodCall(self, node)) {
                     return es2015_class.ES2015Class(Transformer).lowerSuperMethodCall(self, node);

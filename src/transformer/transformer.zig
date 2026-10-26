@@ -184,6 +184,8 @@ pub const ParameterBodyVarCopy = struct {
 pub const Transformer = struct {
     pub const LoweredClassOwner = struct { node: NodeIndex, source_scope: ScopeId };
     pub const GeneratedSuperCall = struct {
+        /// External original input anchor; cloning output never remaps it.
+        source_call: NodeIndex = .none,
         constructor_frame: u32,
         constructor_scope: ScopeId,
         use_scope: ScopeId,

@@ -10174,7 +10174,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
     const has_mapped_import_split = opts.hasMappedImportToSplit(ast_ptr);
-    const selective_class_source = if (module.semantic) |*semantic|
+    var selective_class_source = if (module.semantic) |*semantic|
         @import("../../transformer/selective_class_certificate.zig").sourcePlan(arena_alloc, ast_ptr, semantic, opts) catch null
     else
         null;
@@ -10224,7 +10224,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
-    if (can_keep_semantic_graph) transformer.selective_class_candidate = selective_class_source;
+    if (can_keep_semantic_graph) {
+        if (selective_class_source) |*source| {
+            source.owner_token = module.semantic.?.captureOwnerToken();
+            transformer.selective_class_candidate = source.*;
+        }
+    }
     transformer.record_explicit_global_references = transformer.selective_class_candidate != null or has_complex_define_replacement or
         shouldRecordPrepassExplicitGlobals(
             flow_match_generated_globals.has_match,
@@ -10496,6 +10501,13 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 를 clone 시 transformed_root 까지 복사되어 cache hit 분기 즉시 return.
     module.ast = transformer.ast.*;
 
+    // Validate the producer's sealed handles before transferring the node-ID
+    // array into the cache. No edit runs between this and the exact audit.
+    const selective_class_demand = if (can_keep_semantic_graph and selective_class_source != null and module.semantic != null)
+        @import("../../transformer/selective_class_certificate.zig").validate(&transformer, &module.semantic.?, selective_class_source.?) catch null
+    else
+        null;
+
     // Temporary bridge until the final name planner consumes transformed
     // SymbolIds directly. The ES5 named-class producers record only their
     // emitted constructor bindings; preserving unrelated class names can affect
@@ -10574,8 +10586,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var retained_helper_demands = transformer.runtime_helpers;
     if (can_keep_semantic_graph) {
         if (selective_class_source) |source| {
-            const demand = if (module.semantic) |*semantic|
-                @import("../../transformer/selective_class_certificate.zig").validate(&transformer, semantic, source) catch null
+            const demand = if (module.semantic != null and module.semantic.?.owner_token == source.owner_token)
+                selective_class_demand
             else
                 null;
             const exact = exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null;
@@ -11379,6 +11391,7 @@ fn validToBinaryRuntimeHelperSymbol(symbol_id: SemanticSymbolId, symbols: []cons
 const RuntimeHelperReanalysisTestFixture = struct {
     ast: ast_mod.Ast,
     semantic: ModuleSemanticData,
+    unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
 };
 
 fn runtimeHelperReanalysisTestFixture(
@@ -11398,6 +11411,45 @@ fn runtimeHelperReanalysisTestFixture(
 
     return .{
         .ast = parser.ast,
+        .semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        },
+    };
+}
+
+fn exactClassCertificateSourceFixture(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !RuntimeHelperReanalysisTestFixture {
+    var scanner = try Scanner.init(allocator, source);
+    scanner.is_module = false;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = false;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    return .{
+        .ast = parser.ast,
+        .unresolved_nodes = analyzer.unresolved_reference_nodes,
         .semantic = .{
             .symbols = analyzer.symbols,
             .scopes = analyzer.scopes.items,
@@ -15307,9 +15359,10 @@ fn checkAppliedClassCertificateForTest(source: []const u8, options: TransformOpt
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var fixture = try exactClassCertificateSourceFixture(allocator, source);
     const certificate = @import("../../transformer/selective_class_certificate.zig");
-    const expected = (try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)).?;
+    var expected = (try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)).?;
+    expected.owner_token = fixture.semantic.captureOwnerToken();
     var module = Module.init(@fromBackingInt(0), "candidate.js");
     module.ast = fixture.ast;
     module.semantic = fixture.semantic;
@@ -15335,4 +15388,94 @@ fn checkAppliedClassCertificateForTest(source: []const u8, options: TransformOpt
     if (try t.finishSemanticEdit()) |edited| fixture.semantic.applyEdit(edited);
     try std.testing.expectEqual(@as(usize, 1), t.selective_class_applications.items.len);
     try std.testing.expect((try certificate.validate(&t, &fixture.semantic, expected)) != null);
+}
+
+fn classCertificateBirthForTest(t: *Transformer, output: ast_mod.NodeIndex, unresolved: *const std.AutoHashMapUnmanaged(u32, void)) !usize {
+    const utils = @import("../../transformer/output_scope_test_utils.zig");
+    var parents = try utils.buildParentMap(t.allocator, t.ast, output);
+    defer parents.deinit(t.allocator);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(t.allocator);
+    for (t.ast.nodes.items, 0..) |_, raw| {
+        const node: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        if (node != output and !parents.contains(@intCast(raw))) continue;
+        if (t.outputOwnedScope(node)) |scope| try owners.put(t.allocator, @intCast(raw), @backingInt(scope));
+    }
+    const coordinates = try @import("../../semantic/statement_coordinates.zig").collect(t.allocator, t.ast, output);
+    defer t.allocator.free(coordinates);
+    const runtime_nodes = try @import("../../semantic/reference_walk.zig").collectIdentifierReferences(t.allocator, t.ast, output);
+    defer t.allocator.free(runtime_nodes);
+    for (runtime_nodes) |node| {
+        if (t.getSymbolIdAt(node)) |sid| {
+            const row = (try t.semantic_editor.?.referenceForNode(node)) orelse return error.MissingCertificateBirthReference;
+            if (@backingInt(row.symbol_id) != sid) return error.InvalidCertificateBirthIdentity;
+        } else {
+            const origin = t.reference_origin_map.get(@backingInt(node)) orelse @backingInt(node);
+            if (!unresolved.contains(origin) and !t.explicit_global_reference_nodes.contains(@backingInt(node))) return error.UnprovenCertificateBirthExternal;
+        }
+    }
+    var checked: usize = 0;
+    for (t.semantic_editor.?.references.items) |row| {
+        const node = if (row.flags.declare) row.declaration_node_index else row.node_index;
+        if (node.isNone() or !parents.contains(@backingInt(node))) continue;
+        var scope_node = node;
+        if (row.flags.declare) {
+            const parent_raw = parents.get(@backingInt(node)).?;
+            const parent = t.ast.nodes.items[parent_raw];
+            // A declaration's name is bound outside its own function. The
+            // shared utility intentionally models runtime reference edges.
+            if (parent.tag == .function_declaration and t.ast.readExtraNode(parent.data.extra, 0) == node)
+                scope_node = @fromBackingInt(@intCast(parent_raw));
+        }
+        const actual_scope = utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(scope_node)) orelse return error.MissingCertificateBirthScope;
+        const actual_coordinates = coordinates[@backingInt(node)] orelse return error.MissingCertificateBirthCoordinates;
+        if (t.getSymbolIdAt(node) != @backingInt(row.symbol_id) or row.scope_id != actual_scope or
+            row.stmt_idx != actual_coordinates.stmt_idx or row.scope_stmt_idx != actual_coordinates.scope_stmt_idx)
+        {
+            std.debug.print("SELECTIVE BIRTH mismatch node={d} declare={} SID={d}/{any} Scope={d}/{d} stmt={d}/{d} scopeStmt={d}/{d}\n", .{ @backingInt(node), row.flags.declare, @backingInt(row.symbol_id), t.getSymbolIdAt(node), @backingInt(row.scope_id), @backingInt(actual_scope), row.stmt_idx, actual_coordinates.stmt_idx, row.scope_stmt_idx, actual_coordinates.scope_stmt_idx });
+            return error.InvalidCertificateBirthTuple;
+        }
+        checked += 1;
+    }
+    return checked;
+}
+
+const certificate_source_controls = @import("../../transformer/selective_class_certificate_fixtures.zig").sources;
+
+test "selective class certificate source birth ten controls before output walker" {
+    std.debug.print("SELECTIVE BIRTH START sources=10\n", .{});
+    for (certificate_source_controls) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var fixture = try exactClassCertificateSourceFixture(allocator, source);
+        const options: TransformOptions = .{ .strip_types = true, .emit_runtime_helper_imports = true, .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) };
+        const certificate = @import("../../transformer/selective_class_certificate.zig");
+        var expected = (try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)).?;
+        expected.owner_token = fixture.semantic.captureOwnerToken();
+        var t = try Transformer.init(allocator, &fixture.ast, options);
+        try t.initSymbolIds(fixture.semantic.symbol_ids);
+        t.symbols = fixture.semantic.symbols.items;
+        t.references = fixture.semantic.references;
+        t.scopes = fixture.semantic.scopes;
+        t.scope_maps = fixture.semantic.scope_maps;
+        t.scope_owner_map = fixture.semantic.scope_owner_map;
+        t.node_scope_provenance = fixture.semantic.node_scope_provenance;
+        t.class_self_symbol_map = fixture.semantic.class_self_symbol_map;
+        t.helper_scope_map = fixture.semantic.helper_scope_map;
+        t.unresolved_references = &fixture.semantic.unresolved_references;
+        t.unresolved_reference_nodes = &fixture.unresolved_nodes;
+        t.semantic_edit_enabled = true;
+        t.record_explicit_global_references = true;
+        t.selective_class_candidate = expected;
+        try t.buildBlockRenameMap();
+        const output = try t.visitNode(@fromBackingInt(@intCast(t.parser_node_count - 1)));
+        try std.testing.expectEqual(@as(usize, 1), t.selective_class_applications.items.len);
+        try std.testing.expect((try classCertificateBirthForTest(&t, output, &fixture.unresolved_nodes)) >= 10);
+    }
+    std.debug.print("SELECTIVE BIRTH COMPLETE sources=10\n", .{});
+}
+
+test {
+    _ = @import("../../transformer/selective_class_certificate_test.zig");
 }
