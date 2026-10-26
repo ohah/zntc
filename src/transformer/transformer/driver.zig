@@ -507,6 +507,36 @@ fn reserveDynamicBodyWrapperScope(
     return try self.reserveGeneratedFunctionScope(function_scope);
 }
 
+const DynamicParameterBody = struct { body: NodeIndex, arrow: NodeIndex };
+
+fn validDynamicParameterEngineOwner(self: anytype, function_owner: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, wrapper: DynamicParameterBody) bool {
+    if (!self.semantic_edit_enabled or self.options.unsupported.arrow or body_scope.isNone() or wrapper_scope.isNone() or
+        self.outputOwnedScope(function_owner) != body_scope or self.outputOwnedScope(wrapper.arrow) != wrapper_scope) return false;
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    if (body_scope.toIndex() >= editor.scopes.items.len or wrapper_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[body_scope.toIndex()].kind != .function or
+        editor.scopes.items[wrapper_scope.toIndex()].kind != .function or
+        editor.scopes.items[wrapper_scope.toIndex()].parent != body_scope) return false;
+    const function = self.ast.getNode(function_owner);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return false,
+    }
+    const raw_flags = self.ast.extra_data.items[function.data.extra + ast_mod.FunctionExtra.flags];
+    const flags = if (function.tag == .method_definition) ast_mod.methodFlagsToFunctionFlags(raw_flags) else raw_flags;
+    if (flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) != 0 or
+        self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body) != wrapper.body) return false;
+    const arrow = self.ast.getNode(wrapper.arrow);
+    if (arrow.tag != .arrow_function_expression or self.ast.extra_data.items[arrow.data.extra + 2] != 0) return false;
+    const body = self.ast.getNode(wrapper.body);
+    if (body.tag != .block_statement and body.tag != .function_body) return false;
+    if (body.data.list.len == 0) return false;
+    const tail = self.ast.getNode(self.ast.readExtraNode(body.data.list.start, body.data.list.len - 1));
+    if (tail.tag != .return_statement or tail.data.unary.operand.isNone()) return false;
+    const call = self.ast.getNode(tail.data.unary.operand);
+    return call.tag == .call_expression and self.ast.readExtraNode(call.data.extra, 0) == wrapper.arrow;
+}
+
 fn wrapFunctionBodyForParameterInitializers(
     self: anytype,
     body_idx: NodeIndex,
@@ -516,7 +546,7 @@ fn wrapFunctionBodyForParameterInitializers(
     wrapper_scope: @import("../../semantic/scope.zig").ScopeId,
     is_async: bool,
     span: Span,
-) Error!NodeIndex {
+) Error!DynamicParameterBody {
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .function_body)
         std.debug.panic("dynamic parameter wrapper requires a block function body", .{});
@@ -580,11 +610,11 @@ fn wrapFunctionBodyForParameterInitializers(
     try self.scratch.appendSlice(self.allocator, parameter_initializers);
     try self.scratch.append(self.allocator, return_stmt);
     const outer_list = try self.ast.addNodeList(self.scratch.items[outer_top..]);
-    return self.ast.addNode(.{
+    return .{ .body = try self.ast.addNode(.{
         .tag = body.tag,
         .span = body.span,
         .data = .{ .list = outer_list },
-    });
+    }), .arrow = arrow };
 }
 
 fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
@@ -701,7 +731,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (lr.body_stmts.items.len > 0) {
                     const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
                     if (!body_idx.isNone()) {
-                        const new_body = if (body_wrapper_scope) |wrapper_scope|
+                        const wrapper = if (body_wrapper_scope) |wrapper_scope|
                             try wrapFunctionBodyForParameterInitializers(
                                 self,
                                 body_idx,
@@ -713,8 +743,16 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                                 node.span,
                             )
                         else
-                            try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
+                            null;
+                        const new_body = if (wrapper) |value| value.body else try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 2] = @backingInt(new_body);
+                        if (wrapper) |value| {
+                            if (function_flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) == 0) {
+                                if (!validDynamicParameterEngineOwner(self, @fromBackingInt(@as(u32, @intCast(i))), self.current_scope, body_wrapper_scope.?, value))
+                                    @panic("dynamic parameter engine lost its exact lexical wrapper owner");
+                                try moveUnusedParameterEngine(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
+                            }
+                        }
                     }
                 }
             },
@@ -946,6 +984,163 @@ test "lowered unused native arguments keeps its SID at the actual function owner
         }
         try std.testing.expectEqual(@as(usize, 1), declarations);
     }
+}
+
+test "dynamic body wrapper publishes the actual simple parameter engine owner" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+    var sibling_controls: usize = 0;
+    var simple_cases: usize = 0;
+    var retained_non_simple_cases: usize = 0;
+    source_cases: for ([_][]const u8{
+        "let outside=3;function run({a,...rest},value=outside){let body=1;var outside=4;eval('outside');return [a,value,outside,rest.b,body]}",
+        "let outside=3;function sameName({a,...rest},value=outside){let body=1;var outside=4,a;eval('a');return [a,value,outside,rest.b,body]}",
+        "function sameNameClosure({a,...rest},read=()=>a){let body=1;var a;eval('a=11');return [a,read(),rest.b,body]}",
+        "function read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}",
+        "const read=function({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]};",
+        "const object={read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}};",
+        "class Read{read({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]}}",
+        "const read=function self({a,...rest},value=2){let body=1;eval('a');return [a,value,rest,body]};",
+        "function read([{a,...rest}],value=2){let body=1;eval('a');return [a,value,rest,body]}",
+        "function read({a,...rest},value=2,tail=3){let body=1;eval('a');return [a,value,rest,tail,body]}",
+        "function read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}",
+    }) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        _ = try parser.parse();
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var body_scope: ScopeId = .none;
+        var engine: ?u32 = null;
+        for (analyzer.symbols.items, 0..) |symbol, id| {
+            if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "body")) body_scope = symbol.scope_id;
+            if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments) {
+                try std.testing.expect(engine == null);
+                engine = @intCast(id);
+            }
+        }
+        const id = engine orelse return error.MissingNativeEngine;
+        const source_scope = analyzer.symbols.items[id].scope_id;
+        try std.testing.expect(!body_scope.isNone() and source_scope != body_scope);
+        var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es2017), .emit_runtime_helper_imports = false });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.unresolved_references = &analyzer.unresolved_references;
+        t.semantic_edit_enabled = true;
+        const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
+        try t.buildBlockRenameMap();
+        const output = try t.visitNode(root);
+        try t.registerGeneratedFunctionScopes(output, t.programScope());
+        try lowerAllFunctionParams(&t, output);
+        const editor = &t.semantic_editor.?;
+        var actual_owners: usize = 0;
+        var actual_owner: ?u32 = null;
+        const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+        for (live) |raw| {
+            const owner: NodeIndex = @fromBackingInt(raw);
+            if (t.outputOwnedScope(owner) != body_scope) continue;
+            const function = t.ast.getNode(owner);
+            switch (function.tag) {
+                .function, .function_expression, .function_declaration, .method_definition => {},
+                else => continue,
+            }
+            const params = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+            try std.testing.expect(t.outputOwnedScope(params) == null);
+            const actual_formals = t.ast.getNode(params).data.list;
+            var actual_simple = true;
+            for (0..actual_formals.len) |offset| {
+                if (@import("../native_constructor_timing.zig").simpleFormalBinding(&t, t.ast.readExtraNode(actual_formals.start, @intCast(offset))) == null) actual_simple = false;
+            }
+            if (!actual_simple) {
+                // This retained native default requires a separate parameter
+                // carrier publication; do not pretend it became body storage.
+                try std.testing.expectEqual(source_scope, editor.symbols.items[id].scope_id);
+                try std.testing.expect(t.native_arguments_declaration_origins.get(id) == null);
+                retained_non_simple_cases += 1;
+                std.debug.print("retained non-simple parameter carrier residual id={d} sourceScope={d} newParams={d}\n", .{ id, source_scope.toIndex(), @backingInt(params) });
+                continue :source_cases;
+            }
+            simple_cases += 1;
+            try std.testing.expectEqual(source_scope, editor.scopes.items[body_scope.toIndex()].parent);
+            const actual_body = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body);
+            const body_list = t.ast.getNode(actual_body).data.list;
+            const return_node = t.ast.getNode(t.ast.readExtraNode(body_list.start, body_list.len - 1));
+            const call = t.ast.getNode(return_node.data.unary.operand);
+            const arrow = t.ast.readExtraNode(call.data.extra, 0);
+            const wrapper_scope = t.outputOwnedScope(arrow).?;
+            const wrapper: DynamicParameterBody = .{ .body = actual_body, .arrow = arrow };
+            try std.testing.expect(validDynamicParameterEngineOwner(&t, owner, body_scope, wrapper_scope, wrapper));
+            try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, source_scope, wrapper_scope, wrapper));
+            try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, source_scope, wrapper));
+            const arrow_flags = t.ast.extra_data.items[t.ast.getNode(arrow).data.extra + 2];
+            t.ast.extra_data.items[t.ast.getNode(arrow).data.extra + 2] = ast_mod.ArrowFlags.is_async;
+            try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, wrapper_scope, wrapper));
+            t.ast.extra_data.items[t.ast.getNode(arrow).data.extra + 2] = arrow_flags;
+            const saved_parent = editor.scopes.items[wrapper_scope.toIndex()].parent;
+            editor.scopes.items[wrapper_scope.toIndex()].parent = source_scope;
+            try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, wrapper_scope, wrapper));
+            editor.scopes.items[wrapper_scope.toIndex()].parent = saved_parent;
+            const saved_unsupported_arrow = t.options.unsupported.arrow;
+            t.options.unsupported.arrow = true;
+            try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, wrapper_scope, wrapper));
+            t.options.unsupported.arrow = saved_unsupported_arrow;
+            for (live) |candidate_raw| {
+                const candidate: NodeIndex = @fromBackingInt(candidate_raw);
+                if (candidate == arrow or t.ast.getNode(candidate).tag != .arrow_function_expression) continue;
+                const sibling_scope = t.outputOwnedScope(candidate) orelse continue;
+                if (editor.scopes.items[sibling_scope.toIndex()].parent != body_scope) continue;
+                try std.testing.expect(!validDynamicParameterEngineOwner(&t, owner, body_scope, sibling_scope, .{ .body = actual_body, .arrow = candidate }));
+                sibling_controls += 1;
+            }
+            try std.testing.expect(validDynamicParameterEngineOwner(&t, owner, body_scope, wrapper_scope, wrapper));
+            std.debug.print("dynamic wrapper engine id={d} sourceScope={d} bodyScope={d} actualOwner={d} newParams={d} simple=true recorded={any}\n", .{ id, source_scope.toIndex(), body_scope.toIndex(), raw, @backingInt(params), t.native_arguments_declaration_origins.get(id) });
+            actual_owners += 1;
+            actual_owner = raw;
+        }
+        try std.testing.expectEqual(@as(usize, 1), actual_owners);
+        try std.testing.expectEqual(@as(?ScopeId, body_scope), t.native_arguments_declaration_origins.get(id));
+        const source_contexts = try @import("../../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+        const original_context = source_contexts[actual_owner.?].?;
+        // Final program assembly changes positions, never the engine identity.
+        const empty = try t.ast.addNode(.{ .tag = .empty_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .none = 0 } });
+        const old_list = t.ast.getNode(output).data.list;
+        const entries = try a.alloc(NodeIndex, old_list.len + 1);
+        entries[0] = empty;
+        for (0..old_list.len) |offset| entries[offset + 1] = t.ast.readExtraNode(old_list.start, @intCast(offset));
+        t.ast.nodes.items[@backingInt(output)].data.list = try t.ast.addNodeList(entries);
+        try @import("../native_arguments.zig").publish(&t, output);
+        const contexts = try @import("../../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+        const expected_context = contexts[actual_owner.?].?;
+        try std.testing.expectEqual(original_context.stmt_idx + 1, expected_context.stmt_idx);
+        try std.testing.expectEqual(body_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[body_scope.toIndex()].get("arguments"));
+        try std.testing.expect(editor.scope_maps.items[source_scope.toIndex()].get("arguments") == null);
+        var declarations: usize = 0;
+        for (editor.references.items) |row| {
+            if (@backingInt(row.symbol_id) != id) continue;
+            try std.testing.expect(row.flags.declare and row.node_index.isNone() and row.declaration_node_index.isNone());
+            try std.testing.expectEqual(body_scope, row.scope_id);
+            try std.testing.expectEqual(expected_context.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(expected_context.scope_stmt_idx, row.scope_stmt_idx);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+    }
+    try std.testing.expect(sibling_controls > 0);
+    try std.testing.expectEqual(@as(usize, 10), simple_cases);
+    try std.testing.expectEqual(@as(usize, 1), retained_non_simple_cases);
 }
 
 test "lowered unused native arguments rejects malformed ownership without identity recovery" {
