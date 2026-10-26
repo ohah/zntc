@@ -3046,3 +3046,7 @@ test "guard name selection keeps split raw callsites on the public binding" {
     try std.testing.expectEqualStrings(GUARD_LAMBDA_OPEN, guardLambdaOpen(true, true));
     try std.testing.expect(std.mem.indexOf(u8, guardedRuntime(true, true), "function __zntc_guarded") != null);
 }
+
+test {
+    _ = @import("native_constructor_frame_runtime.zig");
+}
