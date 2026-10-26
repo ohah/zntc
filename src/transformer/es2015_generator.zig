@@ -3635,14 +3635,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn projectFunctionStorageCoordinates(self: *Transformer, root: NodeIndex) Transformer.Error!void {
             if (!self.generator_function_storage_changed or self.semantic_editor == null) return;
             const editor = &self.semantic_editor.?;
-            // A program prefix/removal changes every enclosing top-level
-            // bucket. Otherwise the publication stays in the changed function
-            // environments and their actual descendants.
+            // A program prefix/removal can shift statement coordinates for
+            // references nested anywhere under a top-level statement. Keep
+            // that coordinate-reindexing scope separate from the function
+            // storage producers: it must not authorize generator-cell
+            // publication checks for every function in the program.
             const original_root: NodeIndex = @fromBackingInt(@as(u32, @intCast(self.parser_node_count - 1)));
             const original = self.ast.getNode(original_root);
             const output = self.ast.getNode(root);
             if (original.tag == .program and output.tag == .program and original.data.list.len != output.data.list.len)
-                try self.generator_function_storage_scopes.put(self.allocator, @backingInt(self.programScope()), {});
+                self.generator_function_coordinate_program_changed = true;
             // Public import/export/property spellings are not runtime reads,
             // even when their nodes carry the associated local SID.
             const value_nodes = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, root);
@@ -3662,7 +3664,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             defer indices.deinit(self.allocator);
             for (editor.references.items, 0..) |reference, index| {
                 var current = reference.scope_id;
-                var participates = false;
+                var participates = self.generator_function_coordinate_program_changed;
                 var hops: usize = 0;
                 while (!current.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
                     if (current.toIndex() >= editor.scopes.items.len) @panic("generator statement reference has an invalid owner");

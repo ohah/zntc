@@ -449,6 +449,7 @@ pub const Transformer = struct {
     generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
     generator_function_storage_changed: bool = false,
     generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    generator_function_coordinate_program_changed: bool = false,
     generator_function_statement_value_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, struct {
         symbol_id: @import("../semantic/symbol.zig").SymbolId,
