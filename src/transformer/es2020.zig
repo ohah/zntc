@@ -1024,7 +1024,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     // 직접 변환 — 재구성된 private_field_expression이 transformer visit을 거치지 않고
                     // 그대로 codegen되면 `o.#x` 가 class body 밖으로 새어나가 런타임 에러 (#1492).
                     if (old_node.tag == .private_field_expression and
-                        self.options.unsupported.privateLoweringPlan().fields and
+                        self.effectivePrivateLoweringPlan().fields and
                         self.current_private_fields.len > 0)
                     {
                         if (try es2015_class.ES2015Class(Transformer).emitPrivateFieldGetWithNewObj(self, old_prop, new_obj, old_node.span)) |call| {

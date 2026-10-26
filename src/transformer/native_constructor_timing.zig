@@ -48,6 +48,7 @@ pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
     // length stays constant. Reindex existing rows only; their IDs, use scopes
     // and publication eligibility remain the original producers' authority.
     const reindex_existing_positions = program_shifted or
+        self.class_factory_statement_lists_changed or
         (self.options.unsupported.class and self.native_constructor_placement_scopes.count() != 0);
     var generated = self.native_constructor_reference_origins.iterator();
     while (generated.next()) |entry| {

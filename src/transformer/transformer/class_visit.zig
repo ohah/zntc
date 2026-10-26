@@ -253,6 +253,9 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
         // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)
         const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+        const saved_lowered_class = self.active_lowered_class;
+        self.active_lowered_class = null;
+        defer self.active_lowered_class = saved_lowered_class;
         self.current_super_in_extracted_fn = false;
         defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 

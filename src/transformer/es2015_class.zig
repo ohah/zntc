@@ -350,6 +350,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.active_class_super_parameter = .{ .binding = super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
 
+            const saved_lowered_class = self.active_lowered_class;
+            self.active_lowered_class = .{ .node = source_idx, .source_scope = source_class_scope };
+            defer self.active_lowered_class = saved_lowered_class;
+
             // super class context 설정 (constructor/method body 방문 시 사용)
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
@@ -379,6 +383,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            if (self.pending_deferred_super_class_plan) |plan| {
+                if (plan.class_node != source_idx or plan.class_scope != source_class_scope or
+                    cm.constructor_idx != plan.constructor_node or self.outputOwnedScope(plan.constructor_node) != plan.constructor_scope)
+                    @panic("deferred super class lost its exact source owner");
+            }
             try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
             try bindComputedKeyTemps(self, &cm, iife_scope, span);
             const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
@@ -651,6 +660,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
@@ -777,6 +787,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.active_class_super_parameter = saved_class_super_parameter;
             self.active_class_super_parameter = null;
 
+            const saved_lowered_class = self.active_lowered_class;
+            self.active_lowered_class = .{ .node = source_idx, .source_scope = source_class_scope };
+            defer self.active_lowered_class = saved_lowered_class;
+
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
@@ -805,6 +819,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            if (self.pending_deferred_super_class_plan) |plan| {
+                if (plan.class_node != source_idx or plan.class_scope != source_class_scope or
+                    cm.constructor_idx != plan.constructor_node or self.outputOwnedScope(plan.constructor_node) != plan.constructor_scope)
+                    @panic("deferred super class lost its exact source owner");
+            }
 
             // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
@@ -1063,6 +1082,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(wrapper_body), 0, none });
                 const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
                 try self.bindReservedFunctionOwner(iife_scope, wrapper);
+                if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
                 return es_helpers.makeCallExpr(self, wrapper, &.{}, span);
             }
 
@@ -1185,6 +1205,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(wrapper_params_node2), @backingInt(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)

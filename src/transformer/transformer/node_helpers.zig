@@ -699,7 +699,7 @@ pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
     // `(_t=get(),set(_t+1),_t)` 3-part 시퀀스 대신 compact `set(get()+1)` 로
     // lowering (lru-cache@es2021 등 private-heavy es2021 size 회수, 의미 보존).
     if (node.tag == .expression_statement and
-        self.options.unsupported.privateLoweringPlan().fields)
+        self.effectivePrivateLoweringPlan().fields)
     {
         const opn = self.ast.getNode(old_operand);
         if (opn.tag == .update_expression) {
@@ -826,7 +826,7 @@ pub fn visitUnaryExtra(self: anytype, node: Node) Error!NodeIndex {
                 return try result;
             }
         }
-        if (self.options.unsupported.privateLoweringPlan().fields and
+        if (self.effectivePrivateLoweringPlan().fields and
             operand.tag == .private_field_expression)
         {
             if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {

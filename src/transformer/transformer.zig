@@ -182,6 +182,7 @@ pub const ParameterBodyVarCopy = struct {
 };
 
 pub const Transformer = struct {
+    pub const LoweredClassOwner = struct { node: NodeIndex, source_scope: ScopeId };
     pub const GeneratedSuperCall = struct {
         constructor_frame: u32,
         constructor_scope: ScopeId,
@@ -219,6 +220,9 @@ pub const Transformer = struct {
         target_id: ?@import("../semantic/symbol.zig").SymbolId,
         previous: ?*@This(),
     };
+    active_lowered_class: ?LoweredClassOwner = null,
+    class_factory_statement_lists_changed: bool = false,
+    pending_deferred_super_class_plan: ?@import("deferred_super_class_lowering.zig").Plan = null,
     active_class_self_write_target: ?*ClassSelfWriteTarget = null,
     class_self_written_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
     class_self_written_symbols_built: bool = false,
@@ -946,15 +950,24 @@ pub const Transformer = struct {
     /// 아닌데 위 3 flag 도 모두 false 면 (즉 평범한 native class method) 어차피 false 반환 ⇒
     /// 가드 제거가 일반 native class method 의 raw super 를 건드릴 위험 없음.
     pub inline fn needsSuperLowering(self: *const Transformer) bool {
-        return @import("retained_field_arrow.zig").activeSuper(self) or self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn or
+        return @import("retained_field_arrow.zig").activeSuper(self) or self.isClassLowered() or self.current_super_is_static or self.current_super_in_extracted_fn or
             self.current_super_home_object != null;
+    }
+
+    pub inline fn isClassLowered(self: *const Transformer) bool {
+        return self.options.unsupported.class or self.active_lowered_class != null;
+    }
+
+    pub inline fn effectivePrivateLoweringPlan(self: *const Transformer) @import("compat.zig").UnsupportedFeatures.PrivateLoweringPlan {
+        if (self.active_lowered_class != null) return .{ .methods = true, .fields = true };
+        return self.options.unsupported.privateLoweringPlan();
     }
 
     /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.
     /// 공통 private lowering 계획이 활성이고 현재 class 에 추출한
     /// private field/method mapping 이 있을 때 true.
     pub inline fn hasActivePrivateFieldLowering(self: *const Transformer) bool {
-        return self.options.unsupported.privateLoweringPlan().fields and
+        return self.effectivePrivateLoweringPlan().fields and
             (self.current_private_fields.len > 0 or self.current_private_methods.len > 0);
     }
 
@@ -1015,6 +1028,7 @@ pub const Transformer = struct {
         class_name_node: NodeIndex,
         class_self_symbol_id: ?u32,
         this_depth: u32,
+        lowered_class: ?LoweredClassOwner = null,
 
         /// 아무 super 문맥도 없는 상태(최상위). 이 안의 클래스 키에는 `super` 가 올 수 없다.
         pub fn isEmpty(ctx: SuperContext) bool {
@@ -1041,6 +1055,7 @@ pub const Transformer = struct {
             .class_name_node = self.current_class_name_node,
             .class_self_symbol_id = self.current_class_self_symbol_id,
             .this_depth = self.this_depth,
+            .lowered_class = self.active_lowered_class,
         };
     }
 
@@ -1059,6 +1074,7 @@ pub const Transformer = struct {
         self.current_class_name_node = ctx.class_name_node;
         self.current_class_self_symbol_id = ctx.class_self_symbol_id;
         self.this_depth = ctx.this_depth;
+        self.active_lowered_class = ctx.lowered_class;
     }
 
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {

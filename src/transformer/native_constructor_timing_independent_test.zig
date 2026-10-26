@@ -746,6 +746,10 @@ fn checkDeferredSuperBirth(source: []const u8, target: @import("compat.zig").EST
 }
 
 fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("compat.zig").ESTarget, check_placement: bool) !void {
+    return checkDeferredSuperBirthWithFeatures(source, @import("compat.zig").fromESTarget(target), target == .es5, check_placement);
+}
+
+fn checkDeferredSuperBirthWithFeatures(source: []const u8, unsupported: @import("compat.zig").UnsupportedFeatures, lowered: bool, check_placement: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -758,7 +762,7 @@ fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("com
     analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
     var t = try Transformer.init(a, &parser.ast, .{
-        .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+        .unsupported = unsupported,
         .use_define_for_class_fields = true,
     });
     try t.initSymbolIds(analyzer.symbol_ids.items);
@@ -775,6 +779,13 @@ fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("com
     t.record_explicit_global_references = true;
     try t.buildBlockRenameMap();
     const output = try t.visitNode(root);
+    try std.testing.expect(std.meta.eql(unsupported, t.options.unsupported));
+    try std.testing.expect(t.active_lowered_class == null);
+    try std.testing.expect(t.pending_deferred_super_class_plan == null);
+    if (!unsupported.class and unsupported.arrow) {
+        try std.testing.expectEqual(lowered, t.class_factory_statement_lists_changed);
+        if (!lowered) try std.testing.expect(!t.runtime_helpers.extends and !t.runtime_helpers.call_super);
+    }
     // Nothing below creates scopes, references or coordinate publication.
     const utils = @import("output_scope_test_utils.zig");
     const parents = try utils.buildParentMap(a, t.ast, output);
@@ -810,7 +821,7 @@ fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("com
         try @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
         return;
     }
-    if (target == .es5) {
+    if (lowered) {
         const declarations = @import("transformer/declarations.zig");
         var markers = t.generated_super_call_assignments.iterator();
         var sites: usize = 0;
@@ -842,6 +853,12 @@ fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("com
             try std.testing.expectEqual(ast.Node.Tag.sequence_expression, parent.tag);
             const list = t.ast.extra_data.items[parent.data.list.start .. parent.data.list.start + parent.data.list.len];
             try std.testing.expect(list.len >= 3);
+            if (parents.get(raw).? == @backingInt(marker.evaluation_sequence)) {
+                // A constructor without instance initializers keeps the exact
+                // evaluation sequence; assigning this is itself the result.
+                try std.testing.expectEqual(raw, list[2]);
+                continue;
+            }
             try std.testing.expectEqual(raw, list[0]);
             const result: ast.NodeIndex = @fromBackingInt(list[list.len - 1]);
             try std.testing.expect(result != assignment.data.binary.left);
@@ -1075,6 +1092,10 @@ test "deferred super nested constructor frame isolation" {
 }
 
 fn checkDeferredDefaultRuntime(source: []const u8, target: @import("compat.zig").ESTarget) !void {
+    return checkDeferredProfileRuntime(source, @import("compat.zig").fromESTarget(target));
+}
+
+fn checkDeferredProfileRuntime(source: []const u8, unsupported: @import("compat.zig").UnsupportedFeatures) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1082,7 +1103,7 @@ fn checkDeferredDefaultRuntime(source: []const u8, target: @import("compat.zig")
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     for ([_]bool{ false, true }) |minify| {
         const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
-            .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+            .unsupported = unsupported,
             .use_define_for_class_fields = true,
             .keep_names = true,
             .minify_syntax = minify,
@@ -1173,4 +1194,41 @@ test "lowered repeated super producer 9" {
     const source = "let calls=0,fields=0;class P{constructor(){calls++}}class D extends P{x=(fields++,this);constructor(){const go=()=>super();const first=go();try{go()}catch(e){this.error=e instanceof ReferenceError}this.same=first===this&&this.x===this}}const d=new D;console.log(JSON.stringify([calls,fields,d.same,d.error]));";
     try checkDeferredDefaultRuntime(source, .es5);
     try checkDeferredSuperBirth(source, .es5);
+}
+
+test "RN deferred class producer preserves all birth tuples" {
+    const unsupported = @import("compat.zig").fromReactNativeVersion(0, 80);
+    try std.testing.expect(!unsupported.class and unsupported.arrow);
+    for (deferred_super_sources) |source|
+        try checkDeferredSuperBirthWithFeatures(source, unsupported, true, true);
+}
+
+test "RN deferred class producer retains surrounding class contexts" {
+    const controls = [_]struct { source: []const u8, lowered: bool }{
+        .{ .source = "class P{}class D extends P{constructor(){super()}}console.log(JSON.stringify([new D instanceof P,Object.getOwnPropertyDescriptor(D,'prototype').writable]));", .lowered = false },
+        .{ .source = "class P{m(){return 7}}class D extends P{constructor(){const go=()=>super();go();class E extends P{m(){return super.m()+1}}this.E=E}}const d=new D;console.log(JSON.stringify(new d.E().m()));", .lowered = true },
+        .{ .source = "const log=[];class P{m(){log.push('key');return 7}}class D extends P{constructor(){const go=()=>super();go();class E{[(super.m(),'k')](){return 1}}this.E=E}}const d=new D;console.log(JSON.stringify([log,new d.E().k()]));", .lowered = true },
+        .{ .source = "class P{base(){return class{}}}class D extends P{constructor(){const go=()=>super();go();class E extends(super.base()){value=1}this.E=E}}const d=new D;console.log(JSON.stringify(new d.E().value));", .lowered = true },
+        .{ .source = "class P{}const D=class extends P{#value=3;read(){return this.#value}constructor(){const go=()=>super();go()}};console.log(JSON.stringify([new D().read(),D.name]));", .lowered = true },
+        .{ .source = "class P{}class D extends P{constructor(){const go=()=>super();go()}}class E extends P{constructor(){super()}}console.log(JSON.stringify([new D instanceof P,new E instanceof P,Object.getOwnPropertyDescriptor(E,'prototype').writable]));", .lowered = true },
+        .{ .source = "class P{}class D extends P{constructor(){function make(){return class E extends P{#value=4;read(){return this.#value}constructor(){const go=()=>super();go()}}}const E=make();const inner=new E;const go=()=>super();go();this.inner=inner}}console.log(JSON.stringify(new D().inner.read()));", .lowered = true },
+        .{ .source = "class P{}class D extends P{constructor(){const go=()=>super();go()}}class E extends D{}console.log(JSON.stringify([new E instanceof E,new E instanceof D]));", .lowered = true },
+        .{ .source = "class P{m(){return 8}}class D extends P{m(){const go=()=>8;return super.m()+go()-8}}console.log(JSON.stringify(new D().m()));", .lowered = false },
+        .{ .source = "class P{}class D extends P{#value=2;constructor(){super()}read(){return this.#value}}console.log(JSON.stringify(new D().read()));", .lowered = false },
+    };
+    const unsupported = @import("compat.zig").fromReactNativeVersion(0, 80);
+    for (controls, 0..) |control, case| {
+        std.debug.print("RN CONTEXT START case={d}\n", .{case});
+        try checkDeferredSuperBirthWithFeatures(control.source, unsupported, control.lowered, control.lowered);
+        try checkDeferredProfileRuntime(control.source, unsupported);
+    }
+}
+
+test "RN deferred class producer supports an independently supported private feature" {
+    var unsupported = @import("compat.zig").fromESTarget(.es2022);
+    unsupported.arrow = true;
+    try std.testing.expect(!unsupported.class and !unsupported.privateLoweringPlan().fields);
+    const source = "class P{}class D extends P{#value=4;constructor(){const go=()=>super();go()}read(){this.#value++;return this?.#value}}console.log(JSON.stringify(new D().read()));";
+    try checkDeferredProfileRuntime(source, unsupported);
+    try checkDeferredSuperBirthWithFeatures(source, unsupported, true, true);
 }

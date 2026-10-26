@@ -27,6 +27,17 @@ fn methodComputedKeyScope(self: *Transformer, source_owner: NodeIndex, fallback:
     return fallback;
 }
 
+fn visitMethodComputedKey(self: *Transformer, key: NodeIndex, scope: ScopeId) Error!NodeIndex {
+    if (key.isNone() or self.ast.getNode(key).tag != .computed_property_key) return key;
+    const saved_scope = self.current_scope;
+    if (self.semantic_edit_enabled) {
+        if (scope.isNone()) @panic("computed method key has no actual environment");
+        self.current_scope = scope;
+    }
+    defer self.current_scope = saved_scope;
+    return self.visitNode(key);
+}
+
 fn trackKnownMethodComputedKey(self: *Transformer, key: NodeIndex, scope: ScopeId) Error!void {
     if (self.semantic_edit_enabled)
         try es_helpers.trackKnownHoistedComputedKeyRef(self, key, scope);
@@ -100,7 +111,7 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
 
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
-    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
+    const new_key = try visitMethodComputedKey(self, key, key_scope);
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 본문의 `super` 를 그 기준으로
     // 낮춘다 (#4729). 계산된 키는 바깥 문맥이라 키 방문 **뒤에** 켠다.
@@ -185,7 +196,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
-    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
+    const new_key = try visitMethodComputedKey(self, key, key_scope);
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 메서드(객체 리터럴 메서드·getter 포함)는 자기 `this` 를 가진다 — static 초기값·static 블록
     // 안에서도 클래스 이름으로 치환하면 안 된다. 계산된 키는 바깥 `this` 라 키 방문 **뒤에** 올린다 (#4801).

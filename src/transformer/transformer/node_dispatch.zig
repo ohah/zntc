@@ -715,7 +715,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const pre_legacy_hoist_idx = target_node_idx;
             target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
             target_node = self.ast.getNode(target_node_idx);
-            if (self.options.unsupported.class) {
+            const deferred_super = try @import("../deferred_super_class_lowering.zig").select(self, idx, target_node);
+            if (self.options.unsupported.class or deferred_super != null) {
+                const previous_plan = self.pending_deferred_super_class_plan;
+                self.pending_deferred_super_class_plan = deferred_super;
+                defer self.pending_deferred_super_class_plan = previous_plan;
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
             if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);
@@ -756,7 +760,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const pre_legacy_hoist_idx = target_node_idx;
             target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
             target_node = self.ast.getNode(target_node_idx);
-            if (self.options.unsupported.class) {
+            const deferred_super = try @import("../deferred_super_class_lowering.zig").select(self, idx, target_node);
+            if (self.options.unsupported.class or deferred_super != null) {
+                const previous_plan = self.pending_deferred_super_class_plan;
+                self.pending_deferred_super_class_plan = deferred_super;
+                defer self.pending_deferred_super_class_plan = previous_plan;
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
             if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);

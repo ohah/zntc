@@ -745,7 +745,7 @@ fn wrapNativeParameterArrow(self: anytype, source_owner: NodeIndex, lowered_arro
             use.reference_scope = plan.callsite_scope;
             break :blk try es_helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
         } else blk: {
-            if (self.options.unsupported.new_target and (self.options.unsupported.class or self.new_target_ctx != .constructor))
+            if (self.options.unsupported.new_target and (self.isClassLowered() or self.new_target_ctx != .constructor))
                 break :blk try self.lowerNewTarget(span);
             break :blk try self.ast.addNode(.{ .tag = .meta_property, .span = plan.target_span.?, .data = .{ .none = 1 } });
         };
