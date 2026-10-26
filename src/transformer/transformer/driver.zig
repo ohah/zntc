@@ -589,8 +589,8 @@ fn validImplicitArgumentsWrapper(self: anytype, function_scope: @import("../../s
     return body_tag == .block_statement or body_tag == .function_body;
 }
 
-/// Copy the native parameter engine into its distinct source body-var cell.
-/// A private wrapper formal carries the value across the body's shadowing edge.
+/// Native initialization of the source body-var cell uses that cell itself as
+/// an actual wrapper formal. Do not expose a fresh private name to body eval.
 fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, wrapper_scope: @import("../../semantic/scope.zig").ScopeId, arrow: NodeIndex, inner_body: NodeIndex, span: Span) Error!?NodeIndex {
     if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
     if (!validImplicitArgumentsWrapper(self, function_scope, wrapper_scope, arrow, inner_body)) @panic("implicit arguments copy has no actual lexical wrapper owner");
@@ -621,29 +621,12 @@ fn appendImplicitArgumentsBodyCopy(self: anytype, function_scope: @import("../..
     editor.relocateSymbol(@fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope) catch @panic("implicit arguments body cell cannot move to its actual wrapper");
     const input = try self.makeNativeArgumentsRef(editor.symbols.items[@backingInt(parameter_id)].scope_id, function_scope, span);
     if (self.getSymbolIdAt(input) != @as(?u32, @intCast(@backingInt(parameter_id)))) @panic("implicit arguments copy selected another engine");
-    const temp_name = try es_helpers.makeTempVarSpan(self);
-    const binding = try es_helpers.makeSyntheticBinding(self, temp_name);
-    const temp_id = (try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope)) orelse unreachable;
-    es_helpers.markStandaloneLateSyntheticTemp(self, temp_id, wrapper_scope);
-    es_helpers.consumeTempVarSpan(self, temp_name);
-    const read = try es_helpers.makeIdentifierRefFromSpan(self, temp_name);
-    try self.addSyntheticRefInScope(read, temp_id, wrapper_scope, .{ .read = true });
-    try self.trackExactOutputRead(read, @intCast(@backingInt(temp_id)));
-    const target = try self.makeSyntheticRefForSymbol(@fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope, .{ .write = true });
-    const statement = try es_helpers.makeAssignStmt(self, target, read, span, 0);
-    const old = self.ast.getNode(inner_body).data.list;
-    const entries = try self.allocator.alloc(NodeIndex, old.len + 1);
-    defer self.allocator.free(entries);
-    var directive_len: usize = 0;
-    for (0..old.len) |i| {
-        const candidate = self.ast.getNode(self.ast.readExtraNode(old.start, @intCast(i)));
-        if (candidate.tag != .directive and (candidate.tag != .expression_statement or self.ast.getNode(candidate.data.unary.operand).tag != .string_literal)) break;
-        directive_len += 1;
-    }
-    for (0..directive_len) |i| entries[i] = self.ast.readExtraNode(old.start, @intCast(i));
-    entries[directive_len] = statement;
-    for (directive_len..old.len) |i| entries[i + 1] = self.ast.readExtraNode(old.start, @intCast(i));
-    self.ast.nodes.items[@backingInt(inner_body)].data.list = try self.ast.addNodeList(entries);
+    if (!editor.scopes.items[wrapper_scope.toIndex()].blocksMangling()) @panic("implicit arguments carrier requires the actual dynamic body environment");
+    const body_symbol = editor.symbols.items[body_id];
+    const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
+    const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(body_name));
+    editor.attachVarRedeclaration(binding, @fromBackingInt(@as(u32, @intCast(body_id))), wrapper_scope) catch @panic("implicit arguments formal cannot claim the exact body cell");
+    try self.setGeneratedSymbolId(binding, @intCast(body_id));
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
     self.ast.extra_data.items[self.ast.getNode(arrow).data.extra + ast_mod.ArrowExtra.params] = @backingInt(params);
     @import("../../semantic/parameter_body_var.zig").markLowered(editor.symbols.items, @fromBackingInt(@as(u32, @intCast(body_id))), parameter_id) catch @panic("implicit arguments copy changed its source role");
@@ -1493,6 +1476,7 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},value=2){var a;function a(){return 9}eval('a');return [a(),value]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest},value=2){function a(){return 9}var a;eval('a');return [a(),value]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest}){var a;function a(){return 9}eval('a');return a()}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest},value=2,code){var arguments;try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},undefined,String.fromCharCode(95,98))" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1727,31 +1711,35 @@ test "dynamic body wrapper implicit arguments copy is born in actual scopes" {
         const list = t.ast.getNode(params).data.list;
         try std.testing.expectEqual(@as(u32, 1), list.len);
         const binding = t.ast.readExtraNode(list.start, 0);
-        const temp_id = t.getSymbolIdAt(binding).?;
-        try std.testing.expectEqual(wrapper_scope, editor.symbols.items[temp_id].scope_id);
-        var temp_reads: usize = 0;
-        var body_writes: usize = 0;
+        const carrier_id = t.getSymbolIdAt(binding).?;
+        try std.testing.expectEqual(v, carrier_id);
+        try std.testing.expect(editor.symbols.items[v].kind == .variable_var);
+        try std.testing.expectEqual(wrapper_scope, editor.symbols.items[carrier_id].scope_id);
+        var body_reads: usize = 0;
+        var carrier_declarations: usize = 0;
+        var original_declarations: usize = 0;
         var parameter_reads: usize = 0;
         for (editor.references.items) |row| {
-            if (row.node_index.isNone()) continue;
             const id = @backingInt(row.symbol_id);
-            if (id == temp_id and row.flags.read) {
+            if (id == v and row.flags.declare) {
                 try std.testing.expectEqual(wrapper_scope, row.scope_id);
-                temp_reads += 1;
+                if (row.declaration_node_index == binding) carrier_declarations += 1 else original_declarations += 1;
             }
-            if (id == v and row.flags.write) {
+            if (row.node_index.isNone()) continue;
+            if (id == v and row.flags.read) {
                 try std.testing.expectEqual(wrapper_scope, row.scope_id);
-                body_writes += 1;
+                body_reads += 1;
             }
             if (id == p and row.flags.read) {
                 try std.testing.expectEqual(original_scope, row.scope_id);
                 parameter_reads += 1;
             }
-            if ((id == temp_id and row.flags.read) or (id == v and row.flags.write) or (id == p and row.flags.read))
+            if ((id == v and row.flags.read) or (id == p and row.flags.read))
                 try std.testing.expectEqual(@as(?@import("../../semantic/scope.zig").ScopeId, row.scope_id), scope_utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(row.node_index)));
         }
-        try std.testing.expectEqual(@as(usize, 1), temp_reads);
-        try std.testing.expectEqual(@as(usize, 1), body_writes);
+        try std.testing.expectEqual(@as(usize, 1), body_reads);
+        try std.testing.expectEqual(@as(usize, 1), carrier_declarations);
+        try std.testing.expectEqual(@as(usize, 1), original_declarations);
         try std.testing.expectEqual(@as(usize, 1), parameter_reads);
         const stmts = t.ast.getNode(body).data.list;
         const directive = t.ast.getNode(t.ast.readExtraNode(stmts.start, 0));
