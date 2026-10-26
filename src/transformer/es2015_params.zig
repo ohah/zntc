@@ -29,6 +29,7 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 /// Ephemeral ownership proof from the caller's current AST, never persisted
 /// or reconstructed from an identifier spelling.
@@ -50,8 +51,18 @@ pub fn ES2015Params(comptime Transformer: type) type {
             declaration_span: Span,
             kind: SymbolKind,
         ) Transformer.Error!es_helpers.TempIdentityCapture {
+            return registerDestructuringTempIdentityInScope(self, binding, name_span, declaration_span, kind, self.current_scope);
+        }
+
+        fn registerDestructuringTempIdentityInScope(
+            self: *Transformer,
+            binding: NodeIndex,
+            name_span: Span,
+            declaration_span: Span,
+            kind: SymbolKind,
+            scope: ScopeId,
+        ) Transformer.Error!es_helpers.TempIdentityCapture {
             if (!self.semantic_edit_enabled) return .{ .span = name_span };
-            const scope = self.current_scope;
             const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
             if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != ScopeKind.function)
                 std.debug.panic("destructuring parameter temp requires an active function scope", .{});
@@ -244,7 +255,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, false, null);
+            return lowerParamsImpl(self, params, span, false, null, null);
         }
 
         pub fn lowerParamsPass2(
@@ -252,7 +263,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params, span, true, null);
+            return lowerParamsImpl(self, params, span, true, null, null);
         }
 
         /// Structural mistakes are not an invitation to create a global.
@@ -323,7 +334,53 @@ pub fn ES2015Params(comptime Transformer: type) type {
         pub fn lowerParamsPass2ForFunction(self: *Transformer, params: NodeList, span: Span, owner: RestArgumentsOwner) Transformer.Error!LowerResult {
             const native_owner = restArgumentsOwner(self, params, owner) catch
                 @panic("rest parameter producer has invalid actual function ownership");
-            return lowerParamsImpl(self, params, span, true, native_owner);
+            const native_formal_scope = try plannedNativeFormalScope(self, params, owner);
+            return lowerParamsImpl(self, params, span, true, native_owner, native_formal_scope);
+        }
+
+        /// Plan the environment of the actual emitted native formals before
+        /// any destructuring temporary is declared.
+        fn plannedNativeFormalScope(self: *Transformer, params: NodeList, owner: RestArgumentsOwner) Transformer.Error!?ScopeId {
+            if (!self.semantic_edit_enabled or self.options.unsupported.default_params) return null;
+            var seen_object_rest = false;
+            var retains_native_environment = false;
+            for (0..params.len) |offset| {
+                const index = self.ast.readExtraNode(params.start, @intCast(offset));
+                const param = self.ast.getNode(index);
+                if (param.tag == .spread_element or param.tag == .rest_element) {
+                    retains_native_environment = true;
+                    break;
+                }
+                const has_object_rest = try parameterHasObjectRest(self, index);
+                if (!seen_object_rest and !has_object_rest) {
+                    if (@import("native_constructor_timing.zig").simpleFormalBinding(self, index) == null) retains_native_environment = true;
+                    continue;
+                }
+                if (has_object_rest) seen_object_rest = true;
+                if (param.tag == .formal_parameter and !self.ast.readExtraNode(param.data.extra, ast_mod.FormalParameterExtra.default).isNone()) retains_native_environment = true;
+                if (param.tag == .assignment_pattern and try bindingPatternHasObjectRest(self, param.data.binary.left)) retains_native_environment = true;
+            }
+            if (!retains_native_environment) return null;
+            if (owner.ast_owner != self.ast or owner.function_node.isNone() or owner.params_node.isNone() or
+                self.outputOwnedScope(owner.function_node) != owner.body_scope)
+                @panic("native formal planner has no exact ordinary function owner");
+            const function = self.ast.getNode(owner.function_node);
+            switch (function.tag) {
+                .function, .function_expression, .function_declaration, .method_definition => {},
+                else => @panic("native formal planner requires an ordinary function"),
+            }
+            const formals = self.ast.getNode(owner.params_node);
+            if (self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params) != owner.params_node or
+                formals.tag != .formal_parameters or formals.data.list.start != params.start or formals.data.list.len != params.len)
+                @panic("native formal planner lost its actual parameter edge");
+            // Rest-only lists have no separate source parameter environment.
+            // This API only transfers an existing, exact split carrier.
+            const scope = self.outputOwnedScope(owner.params_node) orelse return null;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (scope.isNone() or owner.body_scope.isNone() or scope.toIndex() >= scopes.len or owner.body_scope.toIndex() >= scopes.len or
+                scopes[scope.toIndex()].kind != .function or scopes[owner.body_scope.toIndex()].kind != .function or scopes[owner.body_scope.toIndex()].parent != scope)
+                @panic("native formal planner has no exact parameter/body scope pair");
+            return scope;
         }
 
         fn lowerParamsImpl(
@@ -332,6 +389,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
             comptime pass2: bool,
             rest_owner: ?RestArgumentsOwner,
+            native_formal_scope: ?ScopeId,
         ) Transformer.Error!LowerResult {
             const param_scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(param_scratch_top);
@@ -474,7 +532,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                             const visited_pattern = try maybeVisit(self, pattern_idx);
                             const visited_default = try maybeVisit(self, default_idx);
                             try es_helpers.rewriteTDZReferences(self, visited_default, param_tdz_names.items[name_starts[i_loop]..]);
-                            const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span);
+                            const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span, native_formal_scope);
                             const extras = try self.ast.addExtras(&.{
                                 @backingInt(temp),
                                 @backingInt(NodeIndex.none),
@@ -517,7 +575,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         const visited_pattern = try maybeVisit(self, param.data.binary.left);
                         const visited_default = try maybeVisit(self, param.data.binary.right);
                         try es_helpers.rewriteTDZReferences(self, visited_default, param_tdz_names.items[name_starts[i_loop]..]);
-                        const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span);
+                        const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span, native_formal_scope);
                         const lowered_param = try self.ast.addNode(.{
                             .tag = .assignment_pattern,
                             .span = param.span,
@@ -559,7 +617,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 const pattern_node = self.ast.getNode(@fromBackingInt(@intCast(pattern_idx_raw)));
 
                 if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
-                    const result = try buildDestructuringParam(self, @fromBackingInt(@intCast(pattern_idx_raw)), &body_stmts, span);
+                    const result = try buildDestructuringParam(self, @fromBackingInt(@intCast(pattern_idx_raw)), &body_stmts, span, native_formal_scope);
                     try self.scratch.append(self.allocator, result);
                     param_index += 1;
                     continue;
@@ -578,12 +636,15 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return .{
                 .new_params = new_params,
                 .body_stmts = body_stmts,
+                .native_formal_scope = native_formal_scope,
             };
         }
 
         pub const LowerResult = struct {
             new_params: NodeList,
             body_stmts: std.ArrayList(NodeIndex),
+            /// Existing split parameter environment selected before binding birth.
+            native_formal_scope: ?ScopeId = null,
         };
 
         /// destructuring + default parameter → temp 변수 경유.
@@ -654,16 +715,19 @@ pub fn ES2015Params(comptime Transformer: type) type {
             pattern_idx: NodeIndex,
             body_stmts: *std.ArrayList(NodeIndex),
             span: Span,
+            native_formal_scope: ?ScopeId,
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
-            const temp_identity = try registerDestructuringTempIdentityAtCreation(
+            var temp_identity = try registerDestructuringTempIdentityInScope(
                 self,
                 temp_binding,
                 temp_span,
                 span,
                 .parameter,
+                native_formal_scope orelse self.current_scope,
             );
+            temp_identity.reference_scope = self.current_scope;
             es_helpers.consumeTempVarSpan(self, temp_span);
 
             const scratch_top = self.scratch.items.len;

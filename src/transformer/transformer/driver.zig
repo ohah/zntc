@@ -290,6 +290,7 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
 fn moveLoweredPatternParameterBindings(
     self: anytype,
     params_list: ast_mod.NodeList,
+    retained_params: ast_mod.NodeList,
     body_scope: @import("../../semantic/scope.zig").ScopeId,
 ) Error!void {
     if (!self.semantic_edit_enabled or body_scope.isNone()) return;
@@ -302,11 +303,20 @@ fn moveLoweredPatternParameterBindings(
     if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[parameter_scope.toIndex()].kind != .function) return;
     const parameter_scope_raw = @backingInt(parameter_scope);
+    var retained_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_bindings.deinit(self.allocator);
+    for (0..retained_params.len) |offset| {
+        var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, self.ast.readExtraNode(retained_params.start, @intCast(offset)), .{ .cover_grammar_assignment = true });
+        defer bindings.deinit();
+        while (try bindings.next()) |binding| try retained_bindings.put(self.allocator, @backingInt(binding), {});
+    }
     for (self.ast.extra_data.items[params_list.start .. params_list.start + params_list.len]) |raw_param| {
         const pattern = loweredParameterPattern(self, @fromBackingInt(@intCast(raw_param))) orelse continue;
         var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, pattern, .{});
         defer bindings.deinit();
         while (try bindings.next()) |binding| {
+            // A native prefix pattern still binds in the parameter environment.
+            if (retained_bindings.contains(@backingInt(binding))) continue;
             const id = self.getSymbolIdAt(binding) orelse continue;
             if (id >= editor.symbols.items.len) continue;
             if (@backingInt(editor.symbols.items[id].scope_id) != parameter_scope_raw) continue;
@@ -366,6 +376,37 @@ fn moveUnusedParameterEngine(self: anytype, function_owner: NodeIndex, old_param
     if (declarations != 1) return;
     try self.moveSymbolToOutputScope(id, body_scope);
     try @import("../native_arguments.zig").record(self, @fromBackingInt(id), body_scope);
+}
+
+/// A native non-simple replacement retains the original parameter environment.
+/// Publish its actual formal edge without relocating any binding or reference.
+fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_params: NodeIndex, new_params: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!bool {
+    if (!self.semantic_edit_enabled or body_scope.isNone() or old_params == new_params) return false;
+    for ([_]NodeIndex{ function_owner, old_params, new_params }) |node|
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return false;
+    const function = self.ast.getNode(function_owner);
+    switch (function.tag) {
+        .function, .function_expression, .function_declaration, .method_definition => {},
+        else => return false,
+    }
+    if (self.outputOwnedScope(function_owner) != body_scope or
+        self.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params) != new_params or
+        self.ast.getNode(old_params).tag != .formal_parameters or self.ast.getNode(new_params).tag != .formal_parameters) return false;
+    const source_scope = self.outputOwnedScope(old_params) orelse return false;
+    if (source_scope.isNone() or source_scope == body_scope) return false;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (source_scope.toIndex() >= scopes.len or body_scope.toIndex() >= scopes.len or
+        scopes[source_scope.toIndex()].kind != .function or scopes[body_scope.toIndex()].kind != .function or
+        scopes[body_scope.toIndex()].parent != source_scope) return false;
+    if (self.outputOwnedScope(new_params)) |existing| if (existing != source_scope) return false;
+    const formals = self.ast.getNode(new_params).data.list;
+    var non_simple = false;
+    for (0..formals.len) |offset| {
+        if (@import("../native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(formals.start, @intCast(offset))) == null) non_simple = true;
+    }
+    if (!non_simple) return false;
+    try self.remapCopiedScopeOwner(old_params, new_params);
+    return true;
 }
 
 /// Bindings of identifier parameters lowered into body `var`s move to the
@@ -707,7 +748,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                         }
                     }
                 }
-                try moveLoweredPatternParameterBindings(self, params_list, self.current_scope);
+                try moveLoweredPatternParameterBindings(self, params_list, lr.new_params, self.current_scope);
                 try moveUnlinkedParameterBindings(self, unlinked_parameters.items, self.current_scope);
                 const parameter_initializer_len = lr.body_stmts.items.len;
                 const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
@@ -725,6 +766,11 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                 self.ast.extra_data.items[e + 1] = @backingInt(new_params_node);
+                const retained_carrier = try retainNativeParameterCarrier(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
+                if (lr.native_formal_scope) |scope| {
+                    if (!retained_carrier or self.outputOwnedScope(new_params_node) != scope)
+                        @panic("native formal bindings lost their exact planned parameter carrier");
+                }
                 if (body_wrapper_scope == null and function_flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) == 0)
                     try moveUnusedParameterEngine(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
 
@@ -995,6 +1041,7 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
     var sibling_controls: usize = 0;
     var simple_cases: usize = 0;
     var retained_non_simple_cases: usize = 0;
+    var no_split_environment_cases: usize = 0;
     source_cases: for ([_][]const u8{
         "let outside=3;function run({a,...rest},value=outside){let body=1;var outside=4;eval('outside');return [a,value,outside,rest.b,body]}",
         "let outside=3;function sameName({a,...rest},value=outside){let body=1;var outside=4,a;eval('a');return [a,value,outside,rest.b,body]}",
@@ -1007,6 +1054,17 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         "function read([{a,...rest}],value=2){let body=1;eval('a');return [a,value,rest,body]}",
         "function read({a,...rest},value=2,tail=3){let body=1;eval('a');return [a,value,rest,tail,body]}",
         "function read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}",
+        "const read=function({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]};",
+        "const object={read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}};",
+        "class Read{read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}}",
+        "const read=function self({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]};",
+        "function read([{a,...rest}]=[{a:2}],value=3){let body=1;eval('a');return [a,value,rest,body]}",
+        "function read(head=1,{a,...rest}){let body=1;eval('a');return [a,head,rest,body]}",
+        "function read({a,...rest},...tail){let body=1;eval('a');return [a,tail,rest,body]}",
+        "function read([head]=[1],{a,...rest}){let body=1;eval('a');return [a,head,rest,body]}",
+        "function read({a,...rest},...[tail]){let body=1;eval('a');return [a,tail,rest,body]}",
+        "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}",
+        "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}",
     }) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1027,9 +1085,14 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
                 engine = @intCast(id);
             }
         }
-        const id = engine orelse return error.MissingNativeEngine;
-        const source_scope = analyzer.symbols.items[id].scope_id;
+        const source_scope = if (engine) |sid| analyzer.symbols.items[sid].scope_id else ScopeId.none;
         try std.testing.expect(!body_scope.isNone() and source_scope != body_scope);
+        if (engine == null) {
+            var initial_owners = analyzer.scope_owner_map.iterator();
+            while (initial_owners.next()) |entry| {
+                try std.testing.expect(parser.ast.getNode(@fromBackingInt(entry.key_ptr.*)).tag != .formal_parameters);
+            }
+        }
         var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es2017), .emit_runtime_helper_imports = false });
         try t.initSymbolIds(analyzer.symbol_ids.items);
         t.symbols = analyzer.symbols.items;
@@ -1048,6 +1111,33 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
         var actual_owners: usize = 0;
         var actual_owner: ?u32 = null;
         const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+        if (engine == null) {
+            var owners: usize = 0;
+            for (live) |raw| {
+                const owner: NodeIndex = @fromBackingInt(raw);
+                if (t.outputOwnedScope(owner) != body_scope) continue;
+                const function = t.ast.getNode(owner);
+                switch (function.tag) {
+                    .function, .function_expression, .function_declaration, .method_definition => {},
+                    else => continue,
+                }
+                const params = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+                try std.testing.expect(t.outputOwnedScope(params) == null);
+                var bindings = try ast_walk.bindingIdentifiers(a, t.ast, params, .{ .cover_grammar_assignment = true });
+                var count: usize = 0;
+                while (try bindings.next()) |binding| {
+                    const binding_id = t.getSymbolIdAt(binding) orelse return error.MissingNativeParameterBinding;
+                    try std.testing.expectEqual(body_scope, editor.symbols.items[binding_id].scope_id);
+                    count += 1;
+                }
+                try std.testing.expect(count > 0);
+                owners += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), owners);
+            no_split_environment_cases += 1;
+            continue :source_cases;
+        }
+        const id = engine.?;
         for (live) |raw| {
             const owner: NodeIndex = @fromBackingInt(raw);
             if (t.outputOwnedScope(owner) != body_scope) continue;
@@ -1057,21 +1147,94 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
                 else => continue,
             }
             const params = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
-            try std.testing.expect(t.outputOwnedScope(params) == null);
             const actual_formals = t.ast.getNode(params).data.list;
+
             var actual_simple = true;
             for (0..actual_formals.len) |offset| {
                 if (@import("../native_constructor_timing.zig").simpleFormalBinding(&t, t.ast.readExtraNode(actual_formals.start, @intCast(offset))) == null) actual_simple = false;
             }
             if (!actual_simple) {
-                // This retained native default requires a separate parameter
-                // carrier publication; do not pretend it became body storage.
+                // Native defaults keep their original environment and IDs;
+                // only the exact current formal carrier changes.
                 try std.testing.expectEqual(source_scope, editor.symbols.items[id].scope_id);
+                try std.testing.expectEqual(@as(?ScopeId, source_scope), t.outputOwnedScope(params));
+                const scope_utils = @import("../output_scope_test_utils.zig");
+                var actual_parents = try scope_utils.buildParentMap(a, t.ast, output);
+                var actual_scope_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+                for (live) |candidate| {
+                    if (t.outputOwnedScope(@fromBackingInt(candidate))) |scope| try actual_scope_owners.put(a, candidate, @backingInt(scope));
+                }
+                var native_bindings = try ast_walk.bindingIdentifiers(a, t.ast, params, .{ .cover_grammar_assignment = true });
+                var native_binding_count: usize = 0;
+                while (try native_bindings.next()) |binding| {
+                    const binding_id = t.getSymbolIdAt(binding) orelse return error.MissingNativeParameterBinding;
+                    try std.testing.expectEqual(source_scope, editor.symbols.items[binding_id].scope_id);
+                    try std.testing.expectEqual(@as(?ScopeId, source_scope), scope_utils.expectedScope(t.ast, output, &actual_parents, &actual_scope_owners, @backingInt(binding)));
+                    if (binding_id >= analyzer.symbols.items.len) {
+                        var raw_reads: usize = 0;
+                        for (editor.references.items) |row| {
+                            if (@backingInt(row.symbol_id) != binding_id or !row.flags.read) continue;
+                            try std.testing.expect(!row.node_index.isNone());
+                            try std.testing.expectEqual(body_scope, row.scope_id);
+                            try std.testing.expectEqual(@as(?ScopeId, body_scope), scope_utils.expectedScope(t.ast, output, &actual_parents, &actual_scope_owners, @backingInt(row.node_index)));
+                            raw_reads += 1;
+                        }
+                        try std.testing.expect(raw_reads > 0);
+                    }
+                    native_binding_count += 1;
+                }
+                try std.testing.expect(native_binding_count > 0);
+                var native_engine_declarations: usize = 0;
+                for (editor.references.items) |row| {
+                    if (@backingInt(row.symbol_id) != id) continue;
+                    try std.testing.expect(row.node_index.isNone() and row.declaration_node_index.isNone() and row.flags.declare);
+                    try std.testing.expectEqual(source_scope, row.scope_id);
+                    native_engine_declarations += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), native_engine_declarations);
                 try std.testing.expect(t.native_arguments_declaration_origins.get(id) == null);
+                var old_params: NodeIndex = .none;
+                var source_parameter_owners: usize = 0;
+                var source_owners = analyzer.scope_owner_map.iterator();
+                while (source_owners.next()) |entry| {
+                    const source_node: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+                    if (entry.value_ptr.* != @backingInt(source_scope) or t.ast.getNode(source_node).tag != .formal_parameters) continue;
+                    old_params = source_node;
+                    source_parameter_owners += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), source_parameter_owners);
+                const rows_before = try a.dupe(@import("../../semantic/symbol.zig").Reference, editor.references.items);
+                const symbols_before = try a.dupe(@import("../../semantic/symbol.zig").Symbol, editor.symbols.items);
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, source_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, params, params, body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, old_params, body_scope));
+                const saved_kind = editor.scopes.items[source_scope.toIndex()].kind;
+                editor.scopes.items[source_scope.toIndex()].kind = .block;
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                editor.scopes.items[source_scope.toIndex()].kind = saved_kind;
+                const saved_parent = editor.scopes.items[body_scope.toIndex()].parent;
+                editor.scopes.items[body_scope.toIndex()].parent = t.programScope();
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                editor.scopes.items[body_scope.toIndex()].parent = saved_parent;
+                const new_scope = t.transformed_scope_owner_map.get(@backingInt(params)).?;
+                try t.transformed_scope_owner_map.put(a, @backingInt(params), @backingInt(body_scope));
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try t.transformed_scope_owner_map.put(a, @backingInt(params), new_scope);
+                const saved_formals = t.ast.getNode(params).data.list;
+                var first_binding = try ast_walk.bindingIdentifiers(a, t.ast, params, .{ .cover_grammar_assignment = true });
+                const binding = (try first_binding.next()).?;
+                t.ast.nodes.items[@backingInt(params)].data.list = try t.ast.addNodeList(&.{binding});
+                try std.testing.expect(!try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                t.ast.nodes.items[@backingInt(params)].data.list = saved_formals;
+                try std.testing.expect(try retainNativeParameterCarrier(&t, owner, old_params, params, body_scope));
+                try std.testing.expectEqual(@as(?ScopeId, source_scope), t.outputOwnedScope(params));
+                try std.testing.expectEqualDeep(rows_before, editor.references.items);
+                try std.testing.expectEqualDeep(symbols_before, editor.symbols.items);
                 retained_non_simple_cases += 1;
-                std.debug.print("retained non-simple parameter carrier residual id={d} sourceScope={d} newParams={d}\n", .{ id, source_scope.toIndex(), @backingInt(params) });
+                std.debug.print("retained non-simple parameter carrier id={d} sourceScope={d} newParams={d}\n", .{ id, source_scope.toIndex(), @backingInt(params) });
                 continue :source_cases;
             }
+            try std.testing.expect(t.outputOwnedScope(params) == null);
             simple_cases += 1;
             try std.testing.expectEqual(source_scope, editor.scopes.items[body_scope.toIndex()].parent);
             const actual_body = t.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.body);
@@ -1140,7 +1303,8 @@ test "dynamic body wrapper publishes the actual simple parameter engine owner" {
     }
     try std.testing.expect(sibling_controls > 0);
     try std.testing.expectEqual(@as(usize, 10), simple_cases);
-    try std.testing.expectEqual(@as(usize, 1), retained_non_simple_cases);
+    try std.testing.expectEqual(@as(usize, 10), retained_non_simple_cases);
+    try std.testing.expectEqual(@as(usize, 2), no_split_environment_cases);
 }
 
 test "dynamic body wrapper native runtime and source arguments controls" {
@@ -1160,6 +1324,18 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a,...rest},value=2){var arguments=['source'];eval('arguments');return [a,value,arguments[0],rest.b]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest},value=2){eval('a');return [a,value,arguments.length,rest.b]}", .call = "read({a:1,b:2})" },
         .{ .source = "function read({a,...rest},value=2){const get=()=>arguments;eval('a');return [a,value,get().length,rest.b]}", .call = "read({a:1,b:2})" },
+        .{ .source = "function read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}", .call = "read()" },
+        .{ .source = "const read=function({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]};", .call = "read()" },
+        .{ .source = "const object={read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}};", .call = "object.read()" },
+        .{ .source = "class Read{read({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]}}", .call = "new Read().read()" },
+        .{ .source = "const read=function self({a,...rest}={a:2},value=3){let body=1;eval('a');return [a,value,rest,body]};", .call = "read()" },
+        .{ .source = "function read([{a,...rest}]=[{a:2}],value=3){let body=1;eval('a');return [a,value,rest,body]}", .call = "read()" },
+        .{ .source = "function read(head=1,{a,...rest}){let body=1;eval('a');return [a,head,rest,body]}", .call = "read(undefined,{a:2,b:3})" },
+        .{ .source = "function read({a,...rest},...tail){let body=1;eval('a');return [a,tail,rest,body]}", .call = "read({a:2,b:3},5,6)" },
+        .{ .source = "function read([head]=[1],{a,...rest}){let body=1;eval('a');return [a,head,rest,body]}", .call = "read(undefined,{a:2,b:3})" },
+        .{ .source = "function read({a,...rest},...[tail]){let body=1;eval('a');return [a,tail,rest,body]}", .call = "read({a:2,b:3},5,6)" },
+        .{ .source = "function read(head=1,{a,...rest},...tail){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
+        .{ .source = "function read(head=1,{a,...rest},...[tail]){let body=1;eval('a');return [a,head,tail,rest,body]}", .call = "read(undefined,{a:2,b:3},5,6)" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
