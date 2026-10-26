@@ -5885,7 +5885,16 @@ pub const SemanticAnalyzer = struct {
                         try self.addAnnexBBarrier(self.ast.readExtraNode(declaration.data.extra, 0), added);
                 }
             },
-            .function_declaration, .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
+            .function_declaration => {
+                // Sloppy ordinary block functions permit the nested Annex B
+                // var binding of the same name. Other lexical functions and
+                // erased/strict declarations retain their existing barrier.
+                const flags = self.ast.extra_data.items[statement.data.extra + ast_mod.FunctionExtra.flags];
+                const body = self.ast.readExtraNode(statement.data.extra, ast_mod.FunctionExtra.body);
+                if (self.isCurrentStrict() or functionSymbolKind(flags) != .function_decl or body.isNone())
+                    try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added);
+            },
+            .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
             .labeled_statement => try self.addAnnexBLexicalBarriers(self.ast.getNode(statement.data.binary.right), added),
             else => {},
         }

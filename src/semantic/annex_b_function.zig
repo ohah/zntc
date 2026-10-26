@@ -25,7 +25,11 @@ pub fn forSymbol(symbols: []const Symbol, lexical: SymbolId) error{InvalidAnnexB
     const variable = symbols[@backingInt(alias.variable)];
     if (variable.kind != .variable_var and variable.kind != .function_decl) return error.InvalidAnnexBRole;
     if (!variable.parameter_copy.parameter_source.isNone()) return error.InvalidAnnexBRole;
-    if (source.kind != .function_decl and (alias.state != .lowered or source.kind != .variable_var)) return error.InvalidAnnexBRole;
+    switch (alias.state) {
+        .native => if (source.kind != .function_decl) return error.InvalidAnnexBRole,
+        .lowered => if (source.kind != .function_decl and source.kind != .variable_var) return error.InvalidAnnexBRole,
+        .lowered_catch => if (source.kind != .catch_binding) return error.InvalidAnnexBRole,
+    }
     if (alias.state != .lowered and source.scope_id == variable.scope_id) return error.InvalidAnnexBRole;
     return .{ .lexical = lexical, .variable = alias.variable, .state = alias.state, .source_assignment_count = alias.source_assignment_count };
 }
@@ -45,7 +49,7 @@ pub fn forDeclaration(ast: *const ast_mod.Ast, symbol_ids: []const ?u32, symbols
 pub fn markLowered(symbols: []Symbol, lexical: SymbolId, source_assignment_count: u32) error{InvalidAnnexBRole}!Role {
     var role = (try forSymbol(symbols, lexical)) orelse return error.InvalidAnnexBRole;
     if (source_assignment_count != role.source_assignment_count) return error.InvalidAnnexBRole;
-    if (role.state == .lowered) return role;
+    if (role.state != .native) return role;
     const variable = @backingInt(role.variable);
     const local = @backingInt(lexical);
     if (symbols[local].reference_count < source_assignment_count or symbols[variable].reference_count < source_assignment_count or
@@ -71,7 +75,7 @@ pub fn nativeBindingMask(allocator: @import("std").mem.Allocator, symbols: []con
     errdefer mask.deinit();
     for (symbols, 0..) |_, index| {
         const role = (try forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(index))))) orelse continue;
-        if (role.state == .lowered) continue;
+        if (role.state != .native) continue;
         mask.set(@backingInt(role.lexical));
         mask.set(@backingInt(role.variable));
     }

@@ -519,6 +519,8 @@ pub const Transformer = struct {
     generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    /// Setter values are created at the known outer Annex B variable owner.
+    loop_annex_b_setters: std.AutoHashMapUnmanaged(u32, struct { binding: NodeIndex, value: NodeIndex, symbol: SymbolId, owner: ScopeId }) = .empty,
     generator_function_storage_changed: bool = false,
     generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     generator_function_coordinate_program_changed: bool = false,

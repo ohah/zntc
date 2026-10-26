@@ -62,7 +62,7 @@ test "Annex B lexical barriers and non-ordinary declarations do not create an ou
         "function root(){{let read=1;{function /*decl*/read(){}}}}",
         "function root(){{const {read}=object;{function /*decl*/read(){}}}}",
         "function root(){{class read{};{function /*decl*/read(){}}}}",
-        "function root(){{function read(){};{function /*decl*/read(){}}}}",
+        "function root(){{async function* read(){};{function /*decl*/read(){}}}}",
         "function root(){try{throw{read:1}}catch({read}){{function /*decl*/read(){}}}}",
         "function root(){{async function /*decl*/read(){}}}",
         "function root(){{function* /*decl*/read(){}}}",
@@ -183,4 +183,122 @@ test "Annex B direct labelled function shares a simple parameter binding" {
     const use = try nodeAt(&parser.ast, source, "/*use*/", false);
     try std.testing.expectEqual(analyzer.symbol_ids.items[@backingInt(parameter)], analyzer.symbol_ids.items[@backingInt(declaration)]);
     try std.testing.expectEqual(analyzer.symbol_ids.items[@backingInt(parameter)], analyzer.symbol_ids.items[@backingInt(use)]);
+}
+
+test "Annex B lowered catch state requires catch storage and has no native name affinity" {
+    const sym = @import("symbol.zig");
+    const roles = @import("annex_b_function.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "function run(){{function local(){return 1}}return local}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var lexical: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| if (!symbol.annex_b_alias.variable.isNone()) {
+        lexical = @intCast(id);
+    };
+    const id = lexical orelse return error.MissingAnnexRole;
+    const original = (try roles.forSymbol(analyzer.symbols.items, @fromBackingInt(id))).?;
+    _ = try roles.markLowered(analyzer.symbols.items, original.lexical, original.source_assignment_count);
+    analyzer.symbols.items[id].kind = .catch_binding;
+    analyzer.symbols.items[id].decl_flags = sym.SymbolKind.catch_binding.declFlags();
+    analyzer.symbols.items[id].annex_b_alias.state = .lowered_catch;
+    const actual = (try roles.forSymbol(analyzer.symbols.items, original.lexical)).?;
+    try std.testing.expectEqual(original.lexical, actual.lexical);
+    try std.testing.expectEqual(original.variable, actual.variable);
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(sym.AnnexBFunctionAlias.State.native));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(sym.AnnexBFunctionAlias.State.lowered));
+    try std.testing.expectEqual(@as(u32, 2), @backingInt(sym.AnnexBFunctionAlias.State.lowered_catch));
+    var mask = try roles.nativeBindingMask(a, analyzer.symbols.items);
+    defer mask.deinit();
+    try std.testing.expect(!mask.isSet(id));
+    try std.testing.expect(!mask.isSet(@backingInt(original.variable)));
+    for ([_]sym.SymbolKind{ .function_decl, .variable_var, .parameter }) |kind| {
+        analyzer.symbols.items[id].kind = kind;
+        try std.testing.expectError(error.InvalidAnnexBRole, roles.forSymbol(analyzer.symbols.items, original.lexical));
+    }
+    analyzer.symbols.items[id].kind = .catch_binding;
+    for ([_]sym.AnnexBFunctionAlias.State{ .native, .lowered }) |state| {
+        analyzer.symbols.items[id].annex_b_alias.state = state;
+        try std.testing.expectError(error.InvalidAnnexBRole, roles.forSymbol(analyzer.symbols.items, original.lexical));
+    }
+    analyzer.symbols.items[id].annex_b_alias.state = .lowered_catch;
+    try std.testing.expect(roles.validate(analyzer.symbols.items));
+}
+
+test "Annex B nested ordinary functions own distinct lexical IDs and the same outer variable" {
+    const roles = @import("annex_b_function.zig");
+    const cases = [_]struct { source: []const u8, inner_count: u32 }{
+        .{ .source = "function run(){{function /*outer*/local(){return 1}{function /*inner*/local(){return 2}}}return local}", .inner_count = 1 },
+        .{ .source = "function run(){{function /*outer*/local(){return 1}{function /*inner*/local(){return 2}function local(){return 3}}}return local}", .inner_count = 2 },
+        .{ .source = "function run(){{function /*outer*/l\\u006fcal(){return 1}{function /*inner*/local(){return 2}}}return local}", .inner_count = 1 },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, case.source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        const outer_node = try nodeAt(&parser.ast, case.source, "/*outer*/", true);
+        const inner_node = try nodeAt(&parser.ast, case.source, "/*inner*/", true);
+        const outer = analyzer.symbol_ids.items[@backingInt(outer_node)].?;
+        const inner = analyzer.symbol_ids.items[@backingInt(inner_node)].?;
+        try std.testing.expect(outer != inner);
+        const outer_role = (try roles.forSymbol(analyzer.symbols.items, @fromBackingInt(outer))) orelse return error.MissingOuterNativeAnnexRole;
+        const inner_role = (try roles.forSymbol(analyzer.symbols.items, @fromBackingInt(inner))) orelse return error.MissingInnerNativeAnnexRole;
+        try std.testing.expectEqual(outer_role.variable, inner_role.variable);
+        try std.testing.expect(outer_role.variable != outer_role.lexical and inner_role.variable != inner_role.lexical);
+        const outer_scope = analyzer.symbols.items[outer].scope_id;
+        const inner_scope = analyzer.symbols.items[inner].scope_id;
+        const variable_scope = analyzer.symbols.items[@backingInt(outer_role.variable)].scope_id;
+        try std.testing.expect(outer_scope != inner_scope and outer_scope != variable_scope and inner_scope != variable_scope);
+        try std.testing.expectEqual(outer_scope, analyzer.scopes.items[inner_scope.toIndex()].parent);
+        try std.testing.expect(analyzer.scopes.items[variable_scope.toIndex()].kind.isVarScope());
+        try std.testing.expectEqual(@as(u32, 1), outer_role.source_assignment_count);
+        try std.testing.expectEqual(case.inner_count, inner_role.source_assignment_count);
+        try std.testing.expectEqual(case.inner_count + 1, analyzer.symbols.items[@backingInt(outer_role.variable)].write_count);
+        var inner_declarations: usize = 0;
+        for (analyzer.references.items) |reference| if (reference.flags.declare and @backingInt(reference.symbol_id) == inner) {
+            try std.testing.expectEqual(inner_scope, reference.scope_id);
+            try std.testing.expect(!reference.declaration_node_index.isNone());
+            inner_declarations += 1;
+        };
+        try std.testing.expectEqual(@as(usize, case.inner_count), inner_declarations);
+    }
+}
+
+test "Annex B nested ordinary alias keeps strict lexical class async and generator barriers" {
+    const cases = [_][]const u8{
+        "'use strict';function run(){{function local(){}{function /*inner*/local(){}}}}",
+        "function run(){{let local;{function /*inner*/local(){}}}}",
+        "function run(){{const local=1;{function /*inner*/local(){}}}}",
+        "function run(){{class local{}{function /*inner*/local(){}}}}",
+        "function run(){{async function local(){}{function /*inner*/local(){}}}}",
+        "function run(){{function* local(){}{function /*inner*/local(){}}}}",
+    };
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        try analyzer.analyze();
+        const binding = try nodeAt(&parser.ast, source, "/*inner*/", true);
+        const sid = analyzer.symbol_ids.items[@backingInt(binding)].?;
+        try std.testing.expect((try @import("annex_b_function.zig").forSymbol(analyzer.symbols.items, @fromBackingInt(sid))) == null);
+    }
 }

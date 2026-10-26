@@ -36,7 +36,8 @@ pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
 // Reusing a v23 source graph can omit those bindings or restore var lifetimes.
 // v25: class static blocks own distinct var environments and source IDs.
 // v24 graphs hoisted these vars into unrelated enclosing activations.
-pub const FORMAT_VERSION: u32 = 25;
+// v26: lowered Annex B catch carriers preserve their exact lexical binding.
+pub const FORMAT_VERSION: u32 = 26;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로

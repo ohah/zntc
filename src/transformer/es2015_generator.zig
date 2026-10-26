@@ -3501,7 +3501,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return null;
         }
 
-        fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
+        pub fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
             if (self.generator_annex_b_var_bindings.contains(variable)) return;
             const editor = &self.semantic_editor.?;
             // An explicit source var/function already has an actual declaration
@@ -3510,6 +3510,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (@backingInt(reference.symbol_id) == variable and reference.flags.declare and !reference.declaration_node_index.isNone()) return;
             }
             const symbol = editor.symbols.items[variable];
+            // Production source analysis can omit declaration rows. A known
+            // source binding on this exact V still proves explicit storage;
+            // implicit Annex B V has no parser binding of its own.
+            for (self.ast.nodes.items[0..self.parser_node_count], 0..) |node, raw| {
+                if (node.tag == .binding_identifier and raw < self.symbol_ids.items.len and
+                    self.symbol_ids.items[raw] == variable) return;
+            }
             if (symbol.kind != .variable_var or symbol.scope_id.isNone()) @panic("invalid implicit Annex B var storage");
             const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbol.name);
             try self.setGeneratedSymbolId(binding, variable);
@@ -3554,7 +3561,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 has_fdi = true;
                 break;
             };
-            if (!has_fdi and self.generator_annex_b_var_bindings.count() == 0) return;
+            if (!has_fdi and self.generator_annex_b_var_bindings.count() == 0 and self.loop_annex_b_setters.count() == 0) return;
             var owners: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
             defer owners.deinit(self.allocator);
             var parameter_owners: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
@@ -3571,6 +3578,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const node = self.ast.getNode(index);
                 const scope = self.outputOwnedScope(index) orelse work.scope;
                 switch (node.tag) {
+                    .program => {
+                        if (scope != self.programScope()) @panic("Annex B program storage changed owner");
+                        try owners.put(self.allocator, @backingInt(scope), index);
+                    },
                     .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {
                         const slot = try owners.getOrPut(self.allocator, @backingInt(scope));
                         if (slot.found_existing and slot.value_ptr.* != index) @panic("entry storage has ambiguous live function owner");
@@ -3646,16 +3657,49 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const symbol = editor.symbols.items[entry.key_ptr.*];
                 const function = owners.get(@backingInt(symbol.scope_id)) orelse @panic("entry var lost its owning function");
                 const node = self.ast.getNode(function);
+                const declarator = try es_helpers.makeDeclarator(self, entry.value_ptr.*, .none, node.span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                try prependAnnexBStorage(self, function, declaration);
+            }
+            self.generator_annex_b_var_bindings.clearRetainingCapacity();
+            var setters = self.loop_annex_b_setters.iterator();
+            while (setters.next()) |entry| {
+                const setter = entry.value_ptr.*;
+                const variable = entry.key_ptr.*;
+                if (variable >= editor.symbols.items.len or @backingInt(setter.symbol) >= editor.symbols.items.len or
+                    editor.symbols.items[variable].scope_id != setter.owner or
+                    editor.symbols.items[@backingInt(setter.symbol)].scope_id != setter.owner or
+                    self.getSymbolIdAt(setter.binding) != @as(?u32, @backingInt(setter.symbol)) or
+                    self.ast.getNode(setter.value).tag != .function_expression) @panic("Annex B setter lost its actual owner or identity");
+                const function_scope = self.outputOwnedScope(setter.value) orelse @panic("Annex B setter has no actual function owner");
+                if (editor.scopes.items[function_scope.toIndex()].parent != setter.owner) @panic("Annex B setter moved into a foreign frame");
+                const owner = owners.get(@backingInt(setter.owner)) orelse @panic("Annex B setter lost its live outer owner");
+                const declarator = try es_helpers.makeDeclarator(self, setter.binding, setter.value, self.ast.getNode(owner).span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", self.ast.getNode(owner).span);
+                try prependAnnexBStorage(self, owner, declaration);
+            }
+            self.loop_annex_b_setters.clearRetainingCapacity();
+        }
+
+        fn prependAnnexBStorage(self: *Transformer, owner: NodeIndex, declaration: NodeIndex) Transformer.Error!void {
+            const node = self.ast.getNode(owner);
+            if (node.tag == .program) {
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.allocator);
+                try statements.append(self.allocator, declaration);
+                for (self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len]) |raw|
+                    try statements.append(self.allocator, @fromBackingInt(raw));
+                const list = try self.ast.addNodeList(statements.items);
+                self.ast.nodes.items[@backingInt(owner)].data.list = list;
+                self.generator_function_coordinate_program_changed = true;
+            } else {
                 const body_slot: u32 = if (node.tag == .arrow_function_expression) 1 else 2;
                 const body = self.readNodeIdx(node.data.extra, body_slot);
                 const body_node = self.ast.getNode(body);
                 if (body_node.tag != .block_statement and body_node.tag != .function_body) @panic("entry var has no actual function body");
-                const declarator = try es_helpers.makeDeclarator(self, entry.value_ptr.*, .none, node.span);
-                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
                 const replacement = try self.prependStatementsToBody(body, &.{declaration});
                 self.ast.extra_data.items[node.data.extra + body_slot] = @backingInt(replacement);
             }
-            self.generator_annex_b_var_bindings.clearRetainingCapacity();
         }
 
         /// Close the rewritten statement lists before the generic output

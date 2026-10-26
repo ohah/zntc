@@ -904,7 +904,11 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .lowered }) |state| {
+    const original_kind = sem.symbols.items[lexical].kind;
+    const original_flags = sem.symbols.items[lexical].decl_flags;
+    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .lowered, .lowered_catch }) |state| {
+        sem.symbols.items[lexical].kind = if (state == .lowered_catch) .catch_binding else original_kind;
+        sem.symbols.items[lexical].decl_flags = sem.symbols.items[lexical].kind.declFlags();
         sem.symbols.items[lexical].annex_b_alias.state = state;
         var bytes: std.ArrayList(u8) = .empty;
         try codec.serialize(&sem, &bytes, allocator);
@@ -923,6 +927,14 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         try testing.expectEqualSlices(?u32, sem.symbol_ids, restored.symbol_ids);
         try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, restored.owner_token);
     }
+    sem.symbols.items[lexical].annex_b_alias.state = .lowered_catch;
+    for ([_]@import("../semantic/symbol.zig").SymbolKind{ .function_decl, .variable_var, .parameter }) |kind| {
+        sem.symbols.items[lexical].kind = kind;
+        var invalid_state_kind: std.ArrayList(u8) = .empty;
+        try testing.expectError(error.InvalidAnnexBRole, codec.serialize(&sem, &invalid_state_kind, allocator));
+    }
+    sem.symbols.items[lexical].kind = original_kind;
+    sem.symbols.items[lexical].decl_flags = original_flags;
     sem.symbols.items[lexical].annex_b_alias.state = .native;
     const saved_alias = sem.symbols.items[lexical].annex_b_alias;
     var copied_parameter: ?u32 = null;

@@ -152,3 +152,7 @@ test {
 test {
     _ = @import("legacy_default_static_capture_test.zig");
 }
+
+test {
+    _ = @import("loop_annex_b_semantic_test.zig");
+}

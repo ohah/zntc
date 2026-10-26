@@ -142,7 +142,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     for (symbols, 0..) |sym, i| {
         const annex_role = @import("../../semantic/annex_b_function.zig").forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(i)))) catch
             std.debug.panic("invalid native Annex B name allocation role", .{});
-        if (annex_role) |role| if (role.state != .lowered) {
+        if (annex_role) |role| if (role.state == .native) {
             // Source syntax still performs V=L. Only a previously allocated
             // exact V alias may change this group's spelling; L never receives
             // an independent lexical-block rename.

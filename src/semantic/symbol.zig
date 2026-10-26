@@ -32,7 +32,7 @@ pub const AnnexBFunctionAlias = struct {
     state: State = .native,
     source_assignment_count: u32 = 0,
 
-    pub const State = enum(u32) { native, lowered };
+    pub const State = enum(u32) { native, lowered, lowered_catch };
 };
 
 /// A distinct body var is initialized from this formal parameter by native

@@ -514,6 +514,25 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
         fn visitArrowParameter(self: *Transformer, idx: NodeIndex) Transformer.Error!NodeIndex {
             const node = self.ast.getNode(idx);
+            // Cover grammar uses assignment-target leaves for actual arrow
+            // formals. Publish their binding role before emitting an ordinary
+            // function; they must not become synthetic value references.
+            if (node.tag == .assignment_target_identifier or node.tag == .identifier_reference) {
+                const binding = try self.makeUserBinding(node.data.string_ref, idx);
+                if (self.semantic_edit_enabled) {
+                    const sid = self.getSymbolIdAt(idx) orelse @panic("arrow formal lost its source SID");
+                    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                    if (sid >= symbols.len or symbols[sid].kind != .parameter or symbols[sid].scope_id != self.current_scope)
+                        @panic("arrow formal has no exact parameter environment");
+                    const owner_scope = symbols[sid].scope_id;
+                    // The public rebind operation initializes a lazy editor
+                    // while preserving the already selected source identity.
+                    try self.rebindOutputBinding(binding, sid);
+                    const editor = &self.semantic_editor.?;
+                    editor.ensureDeclarationAtNode(@fromBackingInt(sid), owner_scope, binding) catch @panic("arrow formal declaration handoff failed");
+                }
+                return self.visitParameterNode(binding);
+            }
             if (node.tag != .assignment_expression or node.data.binary.flags != @backingInt(@import("../lexer/token.zig").Kind.eq))
                 return self.visitParameterNode(idx);
             // Cover-grammar defaults need their parameter role before visiting
