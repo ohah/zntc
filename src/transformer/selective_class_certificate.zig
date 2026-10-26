@@ -24,10 +24,10 @@ pub const Applied = struct {
     super_symbol: u32,
 };
 
-pub fn record(self: anytype, plan: Plan, factory: NodeIndex, factory_scope: ScopeId, constructor: NodeIndex, constructor_scope: ScopeId, binding: NodeIndex, constructor_binding: NodeIndex, super_binding: NodeIndex) std.mem.Allocator.Error!void {
+pub fn record(self: anytype, plan: Plan, factory: NodeIndex, factory_scope: ScopeId, constructor: NodeIndex, constructor_scope: ScopeId, source_constructor: NodeIndex, binding: NodeIndex, constructor_binding: NodeIndex, super_binding: NodeIndex) std.mem.Allocator.Error!void {
     const requested = self.selective_class_candidate orelse return;
     if (!samePlan(requested.plan, plan)) return;
-    if (!self.semantic_edit_enabled or plan.constructor_scope != constructor_scope or
+    if (!self.semantic_edit_enabled or source_constructor != plan.constructor_node or plan.constructor_scope != constructor_scope or
         self.outputOwnedScope(factory) != factory_scope or self.outputOwnedScope(constructor) != constructor_scope)
         @panic("invalid selective class owner");
     if (@backingInt(binding) >= self.symbol_ids.items.len) @panic("invalid selective class binding");
@@ -68,7 +68,7 @@ const SourceView = struct {
 pub const Source = struct { plan: Plan, binding: NodeIndex, symbol: u32, constructor_symbol: u32 };
 
 pub fn sourcePlan(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, sem: *const ModuleSemanticData, options: TransformOptions) !?Source {
-    if (options.unsupported.class or !options.unsupported.arrow or options.minify_syntax or ast.has_decorator or ast.has_jsx or
+    if (!options.unsupported.arrow or options.minify_syntax or ast.has_decorator or ast.has_jsx or
         sem.scopes.len == 0 or sem.scopes[0].blocksMangling() or sem.class_self_symbol_map.count() == 0) return null;
     const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, ast);
     defer allocator.free(nodes);
@@ -94,12 +94,12 @@ pub fn sourcePlan(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, sem: *c
                 if (body.tag != .class_body) return null;
                 // The only lowered member may be the exact constructor. An
                 // empty native base class remains on the existing native path.
-                if (try @import("deferred_super_class_lowering.zig").selectInScopes(&view, @fromBackingInt(@intCast(raw)), node, sem.scopes)) |plan| {
+                if (try @import("deferred_super_class_lowering.zig").inspectConstructor(&view, @fromBackingInt(@intCast(raw)), node, sem.scopes)) |plan| {
                     if (selected != null or body.data.list.len != 1) return null;
                     const parameters = ast.getNode(ast.readExtraNode(ast.getNode(plan.constructor_node).data.extra, ast_mod.MethodExtra.params));
                     if (parameters.data.list.len != 0) return null;
                     selected = plan;
-                } else if (body.data.list.len != 0) return null;
+                } else if (options.unsupported.class or body.data.list.len != 0) return null;
             },
             else => {},
         }

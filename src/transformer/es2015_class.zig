@@ -677,8 +677,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
             const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             try self.pending_nodes.append(self.allocator, var_decl);
-            if (self.pending_deferred_super_class_plan) |plan| {
-                try @import("selective_class_certificate.zig").record(self, plan, wrapper_fn, iife_scope, func_node, ctor_scope, new_name, fresh_name, super_param_binding);
+            if (self.selective_class_candidate) |candidate| {
+                if (candidate.plan.class_node == source_idx)
+                    try @import("selective_class_certificate.zig").record(self, candidate.plan, wrapper_fn, iife_scope, func_node, ctor_scope, cm.constructor_idx orelse .none, new_name, fresh_name, super_param_binding);
             }
 
             // experimentalDecorators
