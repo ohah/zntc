@@ -52,6 +52,19 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
         try self.symbol_ids.resize(self.allocator, self.ast.nodes.items.len);
         @memset(self.symbol_ids.items[old_slots..], null);
     }
+    if (comptime @hasField(@TypeOf(self.*), "native_arguments_declaration_origins")) {
+        // Only an owned SID present in the source ledger creates a cloned
+        // engine declaration. External function engines stay on their owner.
+        var symbols = result.symbols.iterator();
+        while (symbols.next()) |entry| {
+            const origin = self.native_arguments_declaration_origins.get(entry.key_ptr.*) orelse continue;
+            const scope = result.scope(origin);
+            const symbol = self.semantic_editor.?.symbols.items[@backingInt(entry.value_ptr.*)];
+            if (scope == origin or symbol.scope_id != scope or symbol.synthetic_kind != .implicit_arguments)
+                @panic("cloned arguments engine lost its exact owned scope");
+            try self.native_arguments_declaration_origins.put(self.allocator, @backingInt(entry.value_ptr.*), scope);
+        }
+    }
     var nodes = result.nodes.iterator();
     while (nodes.next()) |entry| {
         const original = entry.key_ptr.*;
