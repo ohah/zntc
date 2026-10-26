@@ -47,6 +47,7 @@ test "namespace live arguments identities exist before the output walker" {
         const root = try parser.parse();
         try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
         var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
         analyzer.is_ts = true;
         analyzer.enable_stmt_info = true;
@@ -82,6 +83,15 @@ test "namespace live arguments identities exist before the output walker" {
         try std.testing.expectEqual(saved_needs_arguments, t.needs_arguments_var);
         var parents = try utils.buildParentMap(a, t.ast, output);
         const editor = &t.semantic_editor.?;
+        // Copied owners are published immediately in the transformer's typed
+        // override map; finish later commits those known handles to the editor.
+        // Inspect that current owner contract without running the final walker.
+        var output_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        if (t.outputOwnedScope(output)) |scope| try output_owners.put(a, @backingInt(output), @backingInt(scope));
+        var live_owners = parents.keyIterator();
+        while (live_owners.next()) |raw| {
+            if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| try output_owners.put(a, raw.*, @backingInt(scope));
+        }
         var cells = t.live_arguments_cells.iterator();
         var checked: usize = 0;
         while (cells.next()) |entry| {
@@ -104,14 +114,14 @@ test "namespace live arguments identities exist before the output walker" {
                 if (@backingInt(reference.symbol_id) == entry.key_ptr.* and reference.flags.declare) {
                     const anchor = reference.declaration_node_index;
                     try std.testing.expect(!anchor.isNone() and parents.contains(@backingInt(anchor)));
-                    const actual = utils.expectedScope(t.ast, output, &parents, &editor.scope_owner_map, @backingInt(anchor)).?;
+                    const actual = utils.expectedScope(t.ast, output, &parents, &output_owners, @backingInt(anchor)) orelse return error.MissingActualDeclarationOwner;
                     try std.testing.expectEqual(cell.scope, actual);
                     try std.testing.expectEqual(cell.scope, reference.scope_id);
                     declarations += 1;
                 }
                 if (reference.node_index.isNone() or !parents.contains(@backingInt(reference.node_index))) continue;
                 if (reference.symbol_id != cell.engine_id and @backingInt(reference.symbol_id) != entry.key_ptr.*) continue;
-                const actual: ScopeId = utils.expectedScope(t.ast, output, &parents, &editor.scope_owner_map, @backingInt(reference.node_index)).?;
+                const actual: ScopeId = utils.expectedScope(t.ast, output, &parents, &output_owners, @backingInt(reference.node_index)) orelse return error.MissingActualReferenceOwner;
                 try std.testing.expectEqual(actual, reference.scope_id);
                 try std.testing.expectEqual(@backingInt(reference.symbol_id), t.getSymbolIdAt(reference.node_index).?);
                 if (reference.symbol_id == cell.engine_id) {
@@ -131,7 +141,7 @@ test "namespace live arguments identities exist before the output walker" {
                 if (live_node.tag != .identifier_reference and live_node.tag != .assignment_target_identifier) continue;
                 const reference = (try editor.referenceForNode(@fromBackingInt(raw.*))) orelse return error.MissingCreationTimeReference;
                 try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
-                const actual = utils.expectedScope(t.ast, output, &parents, &editor.scope_owner_map, raw.*).?;
+                const actual = utils.expectedScope(t.ast, output, &parents, &output_owners, raw.*) orelse return error.MissingActualReferenceOwner;
                 try std.testing.expectEqual(actual, reference.scope_id);
                 try std.testing.expect(reference.flags.read or reference.flags.write);
             }

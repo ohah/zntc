@@ -122,6 +122,24 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
 
     var new_body = try self.visitNode(node.data.binary.right);
     if (!new_body.isNone()) {
+        for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
+            if (self.getSymbolIdAt(entry.binding) != null) continue;
+            if (self.pending_temp_ref_chains.contains(self.currentPendingTempRefKey(entry.span))) {
+                try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
+            } else {
+                // An empty destructuring pattern still emits the initializer's
+                // local temp, even though no member reads that binding.
+                _ = try self.declareSyntheticInScope(entry.binding, node.span, .variable_var, entry.scope);
+            }
+        }
+        self.namespace_temp_bindings.shrinkRetainingCapacity(saved_binding_len);
+        const body_tag = self.ast.getNode(new_body).tag;
+        if (body_tag == .block_statement) {
+            new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span);
+            self.temp_var_counter = saved_temp_counter;
+        }
+    }
+    if (!new_body.isNone()) {
         var captures: [3]NodeIndex = undefined;
         const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
         const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
@@ -146,24 +164,6 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
             const captured_body = try self.ast.addNode(.{ .tag = previous_body.tag, .span = previous_body.span, .data = .{ .list = try self.ast.addNodeList(statements.items) } });
             try self.remapCopiedScopeOwner(new_body, captured_body);
             new_body = captured_body;
-        }
-    }
-    if (!new_body.isNone()) {
-        for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
-            if (self.getSymbolIdAt(entry.binding) != null) continue;
-            if (self.pending_temp_ref_chains.contains(self.currentPendingTempRefKey(entry.span))) {
-                try self.bindHoistedTemp(entry.binding, entry.span, node.span, entry.scope);
-            } else {
-                // An empty destructuring pattern still emits the initializer's
-                // local temp, even though no member reads that binding.
-                _ = try self.declareSyntheticInScope(entry.binding, node.span, .variable_var, entry.scope);
-            }
-        }
-        self.namespace_temp_bindings.shrinkRetainingCapacity(saved_binding_len);
-        const body_tag = self.ast.getNode(new_body).tag;
-        if (body_tag == .block_statement) {
-            new_body = try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span);
-            self.temp_var_counter = saved_temp_counter;
         }
     }
     if (new_body.isNone()) return .none;
