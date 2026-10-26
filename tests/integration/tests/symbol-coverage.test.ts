@@ -2989,6 +2989,49 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('reanalyzed enum erasure audits the actual codegen graph across escaped and outer bindings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-enum-codegen-graph-'));
+    try {
+      for (const name of ['Status', '\\u0053tatus']) {
+        for (const prefix of [
+          '',
+          'globalThis.Status = { Ready: 77 };',
+          'let Status = { Ready: 78 };',
+        ]) {
+          const input = join(dir, 'entry.unknown');
+          const native = join(dir, 'native.js');
+          writeFileSync(
+            input,
+            `${prefix}function read(){const enum ${name}{Ready=42}return typeof Status}console.log(read());`,
+          );
+          writeFileSync(
+            native,
+            `${prefix}function read(){return typeof Status}console.log(read());`,
+          );
+          const expected = runNode([native]);
+          expect(expected.status, expected.stderr).toBe(0);
+          const result = runCoverage(input, TARGETS[0], dir, true);
+          expect(result.exitCode, result.stderr).toBe(0);
+          expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+          expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, 'reanalyzed'),
+            result.stderr,
+          ).toEqual([]);
+          const post = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
+          expect(post, result.stderr).toContain('preserved_transform_refs=0');
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(expected.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('erased lenient type-only and ambient namespace imports retain only with exact proof', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),

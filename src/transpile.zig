@@ -3095,7 +3095,14 @@ fn transpileWithCallbackInternal(
     // final SymbolId-to-name map. Audit after both decisions so syntax-only,
     // identifier-only, and combined minification all pass through this gate.
     if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {
-        const source_analyzer = &(analyzer_storage.?);
+        // Audit the exact graph whose node-to-SymbolId map codegen consumes.
+        // Reanalysis owns a new identity space; transform IDs and helper roles
+        // cannot be paired with that graph's symbols or binding resolution.
+        const audit_uses_reanalyzed_graph = mangle_result != null and !mangle_uses_transform_semantic;
+        const audit_graph = if (audit_uses_reanalyzed_graph) mangle_analyzer.? else &(analyzer_storage.?);
+        const audit_symbol_ids = if (audit_uses_reanalyzed_graph) audit_graph.symbol_ids.items else transformer.symbol_ids.items;
+        const audit_helper_nodes = if (audit_uses_reanalyzed_graph) audit_graph.helper_ref_nodes else transformer.helper_ref_nodes.items;
+        const audit_class_self = if (audit_uses_reanalyzed_graph) &audit_graph.class_self_symbol_map else &transformer.class_self_symbol_map;
         const post_minify_coverage = @import("transformer/symbol_coverage.zig");
         var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);
         post_minify_analyzer.is_strict_mode = parser.is_strict_mode;
@@ -3106,18 +3113,18 @@ fn transpileWithCallbackInternal(
             arena_alloc,
             transformer.ast,
             root,
-            transformer.symbol_ids.items,
+            audit_symbol_ids,
             post_minify_analyzer.symbol_ids.items,
-            source_analyzer.symbols.items,
+            audit_graph.symbols.items,
             post_minify_analyzer.symbols.items,
-            source_analyzer.references.items,
-            transformer.helper_ref_nodes.items,
-            &source_analyzer.helper_scope_map,
+            audit_graph.references.items,
+            audit_helper_nodes,
+            &audit_graph.helper_scope_map,
             &post_minify_analyzer.unresolved_reference_nodes,
             &transformer.explicit_global_reference_nodes,
-            &transformer.class_self_symbol_map,
+            audit_class_self,
             &post_minify_analyzer.class_self_symbol_map,
-            .{ .scopes = source_analyzer.scopes.items, .scope_owner_map = &source_analyzer.scope_owner_map },
+            .{ .scopes = audit_graph.scopes.items, .scope_owner_map = &audit_graph.scope_owner_map },
             .{ .scopes = post_minify_analyzer.scopes.items, .scope_owner_map = &post_minify_analyzer.scope_owner_map },
         );
         post_minify_coverage.printPostMinify(file_path, post_minify_report);
