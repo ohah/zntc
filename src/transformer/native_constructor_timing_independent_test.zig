@@ -558,3 +558,76 @@ test "independent moved private actual engine clone before output walker" {
     unsupported.arrow = true;
     try checkBirthWithOwnedOptions(private_owned_clone_sources[3], ".cjs", unsupported, true, true);
 }
+
+test "independent initializer clone exact named role rejects foreign identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "const first=function alpha(){return()=>this};const second=function beta(){return()=>this};first();second();");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+    unsupported.arrow = true;
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = unsupported });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    const output = try t.visitNode(root);
+    const parents = try @import("output_scope_test_utils.zig").buildParentMap(a, t.ast, output);
+    var functions: std.ArrayList(ast.NodeIndex) = .empty;
+    for (t.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_expression and !t.ast.readExtraNode(node.data.extra, 0).isNone() and parents.contains(@intCast(raw))) try functions.append(a, @fromBackingInt(@as(u32, @intCast(raw))));
+    }
+    try std.testing.expectEqual(@as(usize, 2), functions.items.len);
+    const owner = functions.items[0];
+    const second = functions.items[1];
+    const name = t.ast.readExtraNode(t.ast.getNode(owner).data.extra, 0);
+    const other_name = t.ast.readExtraNode(t.ast.getNode(second).data.extra, 0);
+    const id = t.getSymbolIdAt(name).?;
+    const other_id = t.getSymbolIdAt(other_name).?;
+    const validate = @import("initializer_clone.zig").namedExpressionScope;
+    const from = t.programScope();
+    const scope = try validate(&t, owner, from);
+    const body = t.outputOwnedScope(owner).?;
+    // A different valid function SID is insufficient: this physical function
+    // must have the exact self-name scope as its own body's parent.
+    t.symbol_ids.items[@backingInt(name)] = other_id;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.symbol_ids.items[@backingInt(name)] = null;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.symbol_ids.items[@backingInt(name)] = @intCast(t.semantic_editor.?.symbols.items.len);
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.symbol_ids.items[@backingInt(name)] = id;
+    const kind = t.semantic_editor.?.symbols.items[id].kind;
+    t.semantic_editor.?.symbols.items[id].kind = .variable_let;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.semantic_editor.?.symbols.items[id].kind = kind;
+    const scope_kind = t.semantic_editor.?.scopes.items[scope.toIndex()].kind;
+    t.semantic_editor.?.scopes.items[scope.toIndex()].kind = .function;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.semantic_editor.?.scopes.items[scope.toIndex()].kind = scope_kind;
+    t.semantic_editor.?.scopes.items[scope.toIndex()].parent = body;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.semantic_editor.?.scopes.items[scope.toIndex()].parent = from;
+    const body_parent = t.semantic_editor.?.scopes.items[body.toIndex()].parent;
+    t.semantic_editor.?.scopes.items[body.toIndex()].parent = from;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.semantic_editor.?.scopes.items[body.toIndex()].parent = body_parent;
+    const name_tag = t.ast.nodes.items[@backingInt(name)].tag;
+    t.ast.nodes.items[@backingInt(name)].tag = .identifier_reference;
+    try std.testing.expectError(error.InvalidCloneOwnership, validate(&t, owner, from));
+    t.ast.nodes.items[@backingInt(name)].tag = name_tag;
+    try std.testing.expectEqual(scope, try validate(&t, owner, from));
+    try std.testing.expectEqual(t.semantic_editor.?.symbols.items[other_id].scope_id, try validate(&t, second, from));
+}

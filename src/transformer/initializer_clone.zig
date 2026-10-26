@@ -5,6 +5,30 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const core = @import("../semantic/runtime_subtree_clone.zig");
 
+/// Validate the analyzer's exact named-expression lexical boundary. Hidden
+/// name scopes have no output owner node and must not be inferred from an
+/// arbitrary ancestor chain.
+pub fn namedExpressionScope(self: anytype, index: ast.NodeIndex, from: ScopeId) error{InvalidCloneOwnership}!ScopeId {
+    if (index.isNone() or @backingInt(index) >= self.ast.nodes.items.len) return error.InvalidCloneOwnership;
+    const node = self.ast.getNode(index);
+    if (node.tag != .function_expression or !self.ast.hasExtra(node.data.extra, 0)) return error.InvalidCloneOwnership;
+    const name = self.ast.readExtraNode(node.data.extra, 0);
+    if (name.isNone() or @backingInt(name) >= self.ast.nodes.items.len or self.ast.getNode(name).tag != .binding_identifier) return error.InvalidCloneOwnership;
+    const id = self.getSymbolIdAt(name) orelse return error.InvalidCloneOwnership;
+    const editor = if (self.semantic_editor) |*value| value else return error.InvalidCloneOwnership;
+    if (id >= editor.symbols.items.len) return error.InvalidCloneOwnership;
+    const symbol = editor.symbols.items[id];
+    const scope = symbol.scope_id;
+    const body_scope = self.outputOwnedScope(index) orelse return error.InvalidCloneOwnership;
+    if (!symbol.kind.isFunctionLike() or scope.isNone() or body_scope.isNone() or
+        scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[scope.toIndex()].kind != .block or
+        editor.scopes.items[scope.toIndex()].parent != from or
+        editor.scopes.items[body_scope.toIndex()].parent != scope)
+        return error.InvalidCloneOwnership;
+    return scope;
+}
+
 pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: ScopeId) std.mem.Allocator.Error!core.Result {
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(self.allocator);
@@ -44,24 +68,14 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
     // ancestor of a function body.
     var lexical_names: std.ArrayList(ScopeId) = .empty;
     defer lexical_names.deinit(self.allocator);
-    if (self.semantic_editor) |*editor| {
+    if (self.semantic_editor != null) {
         var source_nodes = seen.keyIterator();
         while (source_nodes.next()) |raw| {
             const node = self.ast.getNode(@fromBackingInt(raw.*));
             if (node.tag != .function_expression) continue;
             const name = self.ast.readExtraNode(node.data.extra, 0);
             if (name.isNone()) continue;
-            const id = self.getSymbolIdAt(name) orelse @panic("named clone has no exact self binding");
-            if (id >= editor.symbols.items.len) @panic("named clone self binding is out of range");
-            const symbol = editor.symbols.items[id];
-            const scope = symbol.scope_id;
-            const body_scope = self.outputOwnedScope(@fromBackingInt(raw.*)) orelse @panic("named clone has no body scope");
-            if (!symbol.kind.isFunctionLike() or scope.isNone() or
-                scope.toIndex() >= editor.scopes.items.len or
-                editor.scopes.items[scope.toIndex()].kind != .block or
-                editor.scopes.items[scope.toIndex()].parent != from or
-                editor.scopes.items[body_scope.toIndex()].parent != scope)
-                @panic("named clone lost its exact lexical self scope");
+            const scope = namedExpressionScope(self, @fromBackingInt(raw.*), from) catch @panic("named clone lost its exact lexical self scope");
             try lexical_names.append(self.allocator, scope);
         }
     }
