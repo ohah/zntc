@@ -85,9 +85,13 @@ before visiting, publishes native this at the first retained field, and probes
 source try bodies before catch/finally entry. The first implementation is gated
 to simple parameters and excludes decorators, lowered private members, accessors,
 deferred super and computed anonymous values without an existing key cell.
-Final coordinate publication, independent creation-site checks, the additional
-name controls, broader runtime/API/cache validation and implementation mutants
-remain due. Handwritten
+The program assembly now publishes statement coordinates while retaining each
+recorded SID and Scope. An independent parent-map check passes before the generic
+output walker; separate SID, Scope, stmt, scope-stmt and missing-tuple corruptions
+are rejected, and the restored graph passes. Explicit name preservation controls
+also pass in sixteen native comparisons. Broader runtime/API/cache validation,
+remaining capability combinations and final implementation mutants remain due.
+Handwritten
 parameter-environment prototypes match two native reentry/private-brand examples;
 they do not establish complete FDI, naming, scope, eval or target support.
 
@@ -106,7 +110,30 @@ Its exact declaration lifecycle removes rows by declaration_node_index and
 preserves formal anchors and source-var rows, including multiple rows sharing
 one anchor. The composed scope, function-cell and runtime prerequisites pass a
 25-test focused selection on the main62a base. The 73-input field matrix also
-passes all 146 native comparisons on that base. These prerequisites still have
-a production constructor-bridge caller in the current WIP snapshot. The final
-constructor-body assembly must still publish its changed statement coordinates
-before validation.
+passes all 146 native comparisons on that base and again after the timing and
+coordinate producers are composed on main6e17. These prerequisites have a
+production constructor-bridge caller in the current WIP snapshot.
+
+Moved private initializers use a separate actual-constructor placement owner.
+Their receiver factory and field new-target role restore twenty-two native
+comparisons, while the independent combined selection passes 59 tests without an
+extra test-only publication call. Private sibling-method references record their
+known mapping SID and actual use Scope at creation; a program prefix shifts only
+existing-row coordinates. A bounded insertion producer now preserves the
+completion value of one actual native super site, initializes its exact compiler
+receiver alias before the fields, and runs field initialization before a user
+assignment setter. Zero-site derived constructors keep their object-return path.
+Seven inputs pass fourteen native comparisons and independent pre-walker checks,
+including five tuple corruptions and restoration per input. Three multi-site
+inputs still fail six native comparisons; initializer ASTs are not shared across
+sites.
+
+Type-only constructor formal wrappers now retain the original binding SID for
+function-cell storage. Parameter-property reads use fresh reference nodes for
+that same SID. Typed, optional and public-property controls match native output
+in both minification modes; the property case also passes the independent
+pre-walker check. Ten formal-shape controls keep defaults, destructuring and rest
+outside this simple-formal path. The combined constructor selection passes 38
+tests; this does not cover the remaining multi-site failures. The separate
+inner-with capture selection passes 24 tests using exact live-cell and native
+arguments-engine identities rather than the obsolete pending-capture channel.

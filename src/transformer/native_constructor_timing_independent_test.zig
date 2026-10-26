@@ -81,12 +81,16 @@ test "independent native constructor timing before output walker exact birth tup
 }
 
 fn checkBirth(source: []const u8) !void {
+    return checkTypedBirth(source, ".cjs");
+}
+
+fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
     var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
-    parser.configureFromExtension(".cjs");
+    parser.configureFromExtension(extension);
     const root = try parser.parse();
     var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
     analyzer.enable_stmt_info = true;
@@ -292,4 +296,45 @@ test "independent moved private super control 9" {
 
 test "independent moved private single super before output walker exact site tuples" {
     for ([_]usize{ 0, 1, 2, 3, 5, 7, 8 }) |index| try checkBirth(private_super_sources[index]);
+}
+
+test "independent native constructor parameter property before output walker" {
+    try checkTypedBirth("let saved;class P{}class D extends P{value=saved();constructor(public argument:number){saved=()=>this;super()}}new D(42)", ".cts");
+}
+
+test "independent native constructor simple formal eligibility boundaries" {
+    const cases = .{
+        .{ "argument:number", true },
+        .{ "argument?:number", true },
+        .{ "public argument:number", true },
+        .{ "private readonly argument:number", true },
+        .{ "protected argument:number", true },
+        .{ "argument=1", false },
+        .{ "public argument:number=1", false },
+        .{ "{argument}:any", false },
+        .{ "[argument]:any", false },
+        .{ "...argument:any[]", false },
+    };
+    inline for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "class D extends Object{constructor(" ++ case[0] ++ "){super()}}";
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".cts");
+        const root = try parser.parse();
+        const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, &parser.ast, root);
+        var checked: usize = 0;
+        for (live) |raw| {
+            const node = parser.ast.getNode(@fromBackingInt(raw));
+            if (node.tag != .method_definition) continue;
+            const params = parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, ast.MethodExtra.params)).data.list;
+            try std.testing.expectEqual(@as(u32, 1), params.len);
+            const binding = @import("native_constructor_timing.zig").simpleFormalBinding(.{ .ast = &parser.ast }, parser.ast.readExtraNode(params.start, 0));
+            try std.testing.expectEqual(case[1], binding != null);
+            checked += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), checked);
+    }
 }
