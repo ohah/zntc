@@ -5710,12 +5710,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn paramsHaveExpressions(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!bool {
-        const split = self.ast.nodeListSplitRest(params);
-        for (split.elements) |raw_idx| {
-            if (try parameterHasExpressions(self, @fromBackingInt(@intCast(raw_idx)))) return true;
-        }
-        if (split.rest_operand) |rest| return parameterHasExpressions(self, rest);
-        return false;
+        return ast_walk.parameterListHasExpressions(self.allocator, self.ast, params);
     }
 
     fn functionParamsNode(self: *const SemanticAnalyzer, function: Node) NodeIndex {
@@ -5729,68 +5724,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn parameterHasExpressions(self: *SemanticAnalyzer, root: NodeIndex) AllocError!bool {
-        if (root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return false;
-        var pending: std.ArrayList(NodeIndex) = .empty;
-        defer pending.deinit(self.allocator);
-        try pending.append(self.allocator, root);
-        while (pending.pop()) |idx| {
-            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
-            const node = self.ast.getNode(idx);
-            switch (node.tag) {
-                .formal_parameter => {
-                    const extra = node.data.extra;
-                    if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) continue;
-                    const default_value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]));
-                    if (!default_value.isNone()) return true;
-                    try pending.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])));
-                },
-                .formal_parameters, .sequence_expression => {
-                    const list = node.data.list;
-                    if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) continue;
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                        try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
-                    }
-                },
-                .parenthesized_expression => try pending.append(self.allocator, node.data.unary.operand),
-                .assignment_pattern, .assignment_expression, .assignment_target_with_default => return true,
-                .array_pattern, .array_assignment_target => {
-                    const split = self.ast.nodeListSplitRest(node.data.list);
-                    for (split.elements) |raw| try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
-                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
-                },
-                .object_pattern, .object_assignment_target => {
-                    const split = self.ast.nodeListSplitRest(node.data.list);
-                    for (split.elements) |raw| {
-                        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
-                        if (child_idx.isNone() or @backingInt(child_idx) >= self.ast.nodes.items.len) continue;
-                        const child = self.ast.getNode(child_idx);
-                        if (child.tag == .binding_property or child.tag == .assignment_target_property_property) {
-                            const key = child.data.binary.left;
-                            if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
-                                self.ast.getNode(key).tag == .computed_property_key) return true;
-                            try pending.append(self.allocator, child.data.binary.right);
-                        } else if (child.tag == .assignment_target_property_identifier) {
-                            if (!child.data.binary.right.isNone()) return true;
-                        } else {
-                            try pending.append(self.allocator, child_idx);
-                        }
-                    }
-                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
-                },
-                .rest_element, .spread_element, .binding_rest_element, .assignment_target_rest => try pending.append(self.allocator, node.data.unary.operand),
-                .binding_property, .assignment_target_property_property => {
-                    const key = node.data.binary.left;
-                    if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
-                        self.ast.getNode(key).tag == .computed_property_key) return true;
-                    try pending.append(self.allocator, node.data.binary.right);
-                },
-                .assignment_target_property_identifier => {
-                    if (!node.data.binary.right.isNone()) return true;
-                },
-                else => {},
-            }
-        }
-        return false;
+        return ast_walk.parameterHasExpressions(self.allocator, self.ast, root);
     }
 
     /// 함수 본문 내부를 순회한다 (block_statement의 스코프 중복 생성 방지).

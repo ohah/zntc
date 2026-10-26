@@ -325,3 +325,41 @@ test "bindingIdentifiers: cover_grammar_assignment 옵션이 arrow param 의 ass
     };
     try std.testing.expect(seen_x);
 }
+
+test "parameter expressions distinguish unmapped syntax from split environments" {
+    const Case = struct { source: []const u8, expressions: bool };
+    for ([_]Case{
+        .{ .source = "function read(value){}", .expressions = false },
+        .{ .source = "function read({value}){}", .expressions = false },
+        .{ .source = "function read({value,...rest}){}", .expressions = false },
+        .{ .source = "function read(...rest){}", .expressions = false },
+        .{ .source = "function read(value=1){}", .expressions = true },
+        .{ .source = "function read({value=1}){}", .expressions = true },
+        .{ .source = "function read({[0]:value}){}", .expressions = true },
+        .{ .source = "function read(...[value=1]){}", .expressions = true },
+        .{ .source = "function read(raw,value=void 0,...tail){}", .expressions = true },
+        .{ .source = "function read(raw,...tail){}", .expressions = false },
+        .{ .source = "function read(...{length}){}", .expressions = false },
+        .{ .source = "function read(...{['length']:length}){}", .expressions = true },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        const root = try parser.parse();
+        const statement = parser.ast.readExtraNode(parser.ast.getNode(root).data.list.start, 0);
+        const function = parser.ast.getNode(statement);
+        const params = parser.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+        try std.testing.expectEqual(case.expressions, try ast_walk.parameterListHasExpressions(a, &parser.ast, parser.ast.getNode(params).data.list));
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        const body_scope = analyzer.scope_owner_map.get(@backingInt(statement)).?;
+        const parameter_scope = analyzer.scope_owner_map.get(@backingInt(params));
+        try std.testing.expectEqual(case.expressions, parameter_scope != null);
+        if (parameter_scope) |scope| {
+            try std.testing.expect(scope != body_scope);
+            try std.testing.expectEqual(@as(u32, @intCast(scope)), @backingInt(analyzer.scopes.items[body_scope].parent));
+        }
+    }
+}
