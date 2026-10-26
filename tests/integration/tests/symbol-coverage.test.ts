@@ -1037,6 +1037,31 @@ function runCoverage(
   };
 }
 
+function runPlainTranspile(
+  file: string,
+  target: (typeof TARGETS)[number],
+  output: string,
+  minifyIdentifiers = false,
+  extraArgs: string[] = [],
+): { stderr: string; exitCode: number } {
+  const env = { ...process.env, PATH: process.env.PATH ?? '/usr/bin:/bin' };
+  delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+  delete env.ZNTC_DEBUG_SYNTHETIC_COVERAGE;
+  const proc = spawnSync(
+    ZNTC_BIN,
+    [
+      file,
+      target.arg,
+      ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+      ...extraArgs,
+      '-o',
+      output,
+    ],
+    { env, encoding: 'utf8' },
+  );
+  return { stderr: proc.stderr ?? '', exitCode: proc.status ?? -1 };
+}
+
 function transformIdentityAuditProblems(stderr: string): string[] {
   const lines = stderr.split(/\r?\n/);
   const problems: string[] = [];
@@ -2613,7 +2638,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('lenient type-only TypeScript retains exact graph while runtime forms reanalyze', () => {
+  test('lenient type-only TypeScript and erased ambient const enums retain exact graphs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-type-graph-'));
     const input = join(dir, 'case.unknown');
     const output = join(dir, 'out.js');
@@ -2660,23 +2685,25 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe(baseline.stdout);
 
-      const reanalyzedSources = [
-        'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);',
-      ];
-      for (const [index, reanalyzedSource] of reanalyzedSources.entries()) {
-        const reanalyzedInput = join(dir, `runtime-${index}.unknown`);
-        writeFileSync(reanalyzedInput, reanalyzedSource);
-        const result = runCoverage(reanalyzedInput, TARGETS[4], dir, true);
-        expect(result.exitCode, `${reanalyzedSource}\n${result.stderr}`).toBe(0);
-        expect(
-          transpileGraphModeProblems(result.stderr, true, 'reanalyzed'),
-          `${reanalyzedSource}\n${result.stderr}`,
-        ).toEqual([]);
-        expect(
-          transformIdentityAuditProblems(result.stderr),
-          `${reanalyzedSource}\n${result.stderr}`,
-        ).toEqual([]);
-      }
+      const retainedAmbientConstEnumSource =
+        'declare const enum Ambient { Value = 1 } console.log(typeof Ambient);';
+      const retainedAmbientConstEnumInput = join(dir, 'ambient-const-enum.unknown');
+      writeFileSync(retainedAmbientConstEnumInput, retainedAmbientConstEnumSource);
+      const retainedAmbientConstEnum = runCoverage(
+        retainedAmbientConstEnumInput,
+        TARGETS[4],
+        dir,
+        true,
+      );
+      expect(retainedAmbientConstEnum.exitCode, retainedAmbientConstEnum.stderr).toBe(0);
+      expect(
+        transpileGraphModeProblems(retainedAmbientConstEnum.stderr, true, 'retained'),
+        retainedAmbientConstEnum.stderr,
+      ).toEqual([]);
+      expect(
+        transformIdentityAuditProblems(retainedAmbientConstEnum.stderr),
+        retainedAmbientConstEnum.stderr,
+      ).toEqual([]);
 
       const retainedAmbientModuleSource =
         "declare module 'ambient' { export const value: number; } console.log(typeof Ambient);";
@@ -2806,15 +2833,26 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'ambient-const-enum-surviving-member-reference',
-        graph: 'reanalyzed',
-        runtime: false,
-        source: 'declare const enum Ambient { Value = 42 } console.log(Ambient.Value);',
+        graph: 'retained',
+        runtime: true,
+        source:
+          'globalThis.Ambient = { Value: 42 }; declare const enum Ambient { Value = 42 } console.log(Ambient.Value);',
       },
       {
         name: 'ambient-const-enum-surviving-typeof-reference',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: true,
         source: 'declare const enum Ambient { Value = 42 } console.log(typeof Ambient);',
+      },
+      {
+        name: 'ambient-const-enum-shadowed-by-parameter',
+        graph: 'reanalyzed',
+        runtime: true,
+        source: [
+          'declare const enum Ambient { Value = 42 }',
+          'function read(Ambient: { Value: number }) { return Ambient.Value; }',
+          'console.log(read({ Value: 43 }));',
+        ].join('\n'),
       },
       {
         name: 'surviving-typeof-reference',
@@ -2836,7 +2874,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'local-and-ambient-const-enum',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: true,
         source: [
           'const enum Local { Value = 41 }',
@@ -2846,7 +2884,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'const-enum-with-string-module',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: true,
         source: [
           'const enum Color { Red = 41 }',
@@ -2902,6 +2940,21 @@ describe('symbol identity coverage gate (#4819)', () => {
               `${item.name} ${target.name}: output differs from TypeScript`,
             ).toBe(oracle.stdout);
             expect(actual.stderr, `${item.name} ${target.name}`).toBe('');
+          }
+
+          if (
+            target.name === 'esnext' &&
+            (item.name === 'ambient-const-enum-surviving-member-reference' ||
+              item.name === 'ambient-const-enum-surviving-typeof-reference')
+          ) {
+            const plainOutput = join(dir, `${item.name}.plain.js`);
+            const plain = runPlainTranspile(input, target, plainOutput, true, ['--format=cjs']);
+            expect(plain.exitCode, `${item.name} without coverage: ${plain.stderr}`).toBe(0);
+            const plainActual = runNode([plainOutput]);
+            expect(plainActual.status, `${item.name} without coverage: ${plainActual.stderr}`).toBe(
+              0,
+            );
+            expect(plainActual.stdout, `${item.name} without coverage`).toBe(oracle.stdout);
           }
         }
       }
