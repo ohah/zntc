@@ -10,6 +10,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const Scope = @import("../../semantic/scope.zig").Scope;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
@@ -108,10 +109,12 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
         });
     }
     if (branches.items.len == 0) return false;
+    // The retained graph cannot rebuild function-declaration liveness for an
+    // exact dead fallback function. Dynamic root reads are handled by the
+    // TreeShaker's declaration and writer seeds below; missing semantic data
+    // still takes the full analyzer path because visibility cannot be proven.
     needs_semantic_reanalysis.* = hasTopLevelDeadFallbackFunction(ast, &dead_fallback_names) or
-        (dead_fallback_names.count() > 0 and
-            hasTopLevelFunctionDeclaration(ast) and
-            moduleHasDynamicRootScope(semantic));
+        (if (semantic) |sem| sem.scopes.len == 0 else true);
 
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
@@ -152,15 +155,7 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
 }
 
 /// The retained graph does not rebuild function-declaration liveness for an
-/// exact dead fallback function. Dynamic lookup can also observe unrelated
-/// top-level functions after fallback references are removed. Keep both cases
-/// on the established full semantic-resynchronization path.
-fn moduleHasDynamicRootScope(semantic: ?*const ModuleSemanticData) bool {
-    const sem = semantic orelse return true;
-    if (sem.scopes.len == 0) return true;
-    return sem.scopes[0].blocksMangling();
-}
-
+/// exact dead fallback function, so keep its established full-analysis path.
 fn hasTopLevelDeadFallbackFunction(
     ast: *const Ast,
     dead_names: *const std.StringHashMapUnmanaged(void),
@@ -183,19 +178,6 @@ fn hasTopLevelDeadFallbackFunction(
         const name = ast.nodes.items[@backingInt(name_idx)];
         if (name.tag != .binding_identifier) return true;
         if (dead_names.contains(ast.getText(name.span))) return true;
-    }
-    return false;
-}
-
-fn hasTopLevelFunctionDeclaration(ast: *const Ast) bool {
-    const root = programNode(ast) orelse return true;
-    const list = root.data.list;
-    const extra_len = ast.extra_data.items.len;
-    if (list.start > extra_len or list.len > extra_len - list.start) return true;
-    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
-        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return true;
-        if (ast.nodes.items[@backingInt(stmt_idx)].tag == .function_declaration) return true;
     }
     return false;
 }
@@ -234,7 +216,7 @@ test "retained Node Buffer capability branch accepts only var declarations" {
     try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(.if_statement, null));
 }
 
-test "retained Node Buffer fold captures matching top-level fallback functions" {
+test "retained Node Buffer fold defers missing semantic scope data to full analysis" {
     const sources = [_][]const u8{
         \\var buffer = require("buffer"); var B = buffer.Buffer;
         \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
@@ -309,6 +291,74 @@ test "retained Node Buffer fold captures matching top-level fallback functions" 
             &needs_semantic_reanalysis,
         ));
         try std.testing.expect(removed_nodes.items.len > 0);
+        try std.testing.expect(needs_semantic_reanalysis);
+    }
+}
+
+test "retained Node Buffer fold reanalyzes dead top-level fallback functions only" {
+    const cases = [_]struct {
+        source: []const u8,
+        has_direct_eval: bool,
+        expected_reanalysis: bool,
+    }{
+        .{
+            .source =
+            \\var buffer = require("buffer"); var B = buffer.Buffer;
+            \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+            \\else { exports.Buffer = SafeBuffer; }
+            \\function SafeBuffer() { return 1; }
+            ,
+            .has_direct_eval = false,
+            .expected_reanalysis = true,
+        },
+        .{
+            .source =
+            \\var buffer = require("buffer"); var B = buffer.Buffer;
+            \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+            \\else { exports.Buffer = Missing; }
+            \\function unrelated() { return 1; }
+            \\eval("unrelated");
+            ,
+            .has_direct_eval = true,
+            .expected_reanalysis = false,
+        },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, case.source);
+        scanner.is_module = false;
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".cjs");
+        parser.is_module = false;
+        _ = try parser.parse();
+
+        const root_scope: Scope = .{
+            .parent = .none,
+            .kind = .global,
+            .is_strict = false,
+            .subtree_has_direct_eval = case.has_direct_eval,
+        };
+        const scopes = [_]Scope{root_scope};
+        const semantic: ModuleSemanticData = .{
+            .symbols = .empty,
+            .scopes = &scopes,
+            .scope_maps = &.{},
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        var needs_semantic_reanalysis = false;
+        try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+            allocator,
+            &parser.ast,
+            &removed_nodes,
+            &semantic,
+            &needs_semantic_reanalysis,
+        ));
+        try std.testing.expectEqual(case.expected_reanalysis, needs_semantic_reanalysis);
     }
 }
 
@@ -348,8 +398,22 @@ test "retained Node Buffer fold fails closed when semantic scope data is unavail
         .symbol_ids = &.{},
         .unresolved_references = .empty,
     };
-    try std.testing.expect(moduleHasDynamicRootScope(null));
-    try std.testing.expect(moduleHasDynamicRootScope(&empty_semantic));
+    var empty_scope_scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+    empty_scope_scanner.is_module = false;
+    var empty_scope_parser = @import("../../parser/parser.zig").Parser.init(allocator, &empty_scope_scanner);
+    empty_scope_parser.configureFromExtension(".cjs");
+    empty_scope_parser.is_module = false;
+    _ = try empty_scope_parser.parse();
+    var empty_scope_removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var empty_scope_needs_semantic_reanalysis = false;
+    try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+        allocator,
+        &empty_scope_parser.ast,
+        &empty_scope_removed_nodes,
+        &empty_semantic,
+        &empty_scope_needs_semantic_reanalysis,
+    ));
+    try std.testing.expect(empty_scope_needs_semantic_reanalysis);
 }
 
 const BufferCapabilityFoldBranch = struct {
