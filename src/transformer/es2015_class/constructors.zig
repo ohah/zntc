@@ -123,6 +123,18 @@ pub fn Constructors(comptime Transformer: type) type {
 
             // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
+            // Pass 2 emits these initializers in the actual constructor body.
+            // Move their lexical roots before visiting them: a deferred super
+            // already needs the body-owned constructor cells during creation.
+            if (self.semantic_edit_enabled and es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_list_old)) {
+                if (self.outputOwnedScope(self.readNodeIdx(me, MethodExtra.params))) |parameter_scope| {
+                    for (self.ast.extra_data.items[params_list_old.start .. params_list_old.start + params_list_old.len]) |raw| {
+                        const parameter: NodeIndex = @fromBackingInt(raw);
+                        try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, parameter);
+                        try @import("../class_strict_context.zig").moveSourceReferences(self, parameter, parameter_scope, parameter_scope, self.current_scope);
+                    }
+                }
+            }
             const parameter_temp_start = self.temp_var_counter;
             const param_capture_use_start = self.lexical_capture_uses.items.len;
             var pp = try self.visitParamsCollectProperties(params_list_old);
@@ -144,8 +156,10 @@ pub fn Constructors(comptime Transformer: type) type {
                 if (param_lowering) |lr| {
                     const old_params = self.readNodeIdx(me, MethodExtra.params);
                     if (self.outputOwnedScope(old_params)) |parameter_scope| {
-                        for (lr.body_stmts.items) |statement|
+                        for (lr.body_stmts.items) |statement| {
                             try self.reparentGeneratedBodyScopes(parameter_scope, self.current_scope, statement);
+                            try @import("../class_strict_context.zig").moveSourceReferences(self, statement, parameter_scope, parameter_scope, self.current_scope);
+                        }
                     }
                 }
             }

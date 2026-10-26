@@ -742,6 +742,10 @@ test "deferred native super repro 09" {
 }
 
 fn checkDeferredSuperBirth(source: []const u8, target: @import("compat.zig").ESTarget) !void {
+    return checkDeferredSuperBirthWithPlacement(source, target, true);
+}
+
+fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("compat.zig").ESTarget, check_placement: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -802,6 +806,10 @@ fn checkDeferredSuperBirth(source: []const u8, target: @import("compat.zig").EST
         }
     }
     try std.testing.expect(checked > 0);
+    if (!check_placement) {
+        try @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
+        return;
+    }
     if (target == .es5) {
         const declarations = @import("transformer/declarations.zig");
         var markers = t.generated_super_call_assignments.iterator();
@@ -1015,4 +1023,45 @@ test "deferred super ordinary function constructor frame isolation" {
 test "deferred super nested constructor frame isolation" {
     try checkDeferredSuperSource(deferred_sibling_sources[1], 11);
     try checkDeferredSuperBirth(deferred_sibling_sources[1], .es5);
+}
+
+fn checkDeferredDefaultRuntime(source: []const u8, target: @import("compat.zig").ESTarget) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]bool{ false, true }) |minify| {
+        const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+            .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+            .use_define_for_class_fields = true,
+            .keep_names = true,
+            .minify_syntax = minify,
+            .minify_identifiers = minify,
+            .minify_whitespace = minify,
+        });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+            std.debug.print("DEFAULT ENV expected={s} actual={s} stderr={s} code={s}\n", .{ native.stdout, actual.stdout, actual.stderr, result.code });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    }
+}
+
+test "deferred default producer runtime and birth" {
+    const source = "class P{}class D extends P{x=42;constructor(go=()=>super(),read=()=>this.x){go();this.out=read()}}console.log(JSON.stringify(new D().out));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "deferred default producer preserves body var shadow" {
+    const source = "const value=7;class P{}class D extends P{x=42;constructor(go=()=>super(),read=()=>value){var value=9;go();this.out=[read(),value]}}console.log(JSON.stringify(new D().out));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "deferred default producer leaves native parameters owned" {
+    const source = "const value=7;class P{}class D extends P{x=42;constructor(go=()=>super(),read=()=>value){var value=9;go();this.out=[read(),value]}}console.log(JSON.stringify(new D().out));";
+    try checkDeferredDefaultRuntime(source, .es2015);
+    try checkDeferredSuperBirthWithPlacement(source, .es2015, false);
 }
