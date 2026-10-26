@@ -38,6 +38,7 @@ const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
 const drop_mod = @import("../../transformer/transformer/drop.zig");
+const drop_scan = @import("../../transformer/drop_scan.zig");
 const worklet_mod = @import("../../transformer/transformer/worklet.zig");
 const styled_components_scan = @import("../../transformer/transformer/styled_components.zig");
 const emotion_scan = @import("../../transformer/transformer/emotion.zig");
@@ -502,12 +503,115 @@ fn hasDroppedLabeledStatement(ast: *const ast_mod.Ast, labels: []const []const u
         if (node.tag != .labeled_statement) continue;
         const label_idx = node.data.binary.left;
         if (label_idx.isNone() or @backingInt(label_idx) >= ast.nodes.items.len) return true;
-        const label_name = ast.getText(ast.getNode(label_idx).span);
-        for (labels) |dropped| {
-            if (std.mem.eql(u8, label_name, dropped)) return true;
-        }
+        if (drop_scan.isDroppedLabel(ast, node, labels)) return true;
     }
     return false;
+}
+
+/// Direct eval can observe declarations that have no surviving static
+/// reference. Retain its graph across label removal only when every matched
+/// label subtree contains no binding, scope owner, `with`, or eval expression.
+fn droppedLabelBodiesPreserveDynamicEnvironment(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    labels: []const []const u8,
+) bool {
+    if (labels.len == 0) return false;
+
+    const DroppedBody = struct {
+        root: ast_mod.NodeIndex,
+        span: Span,
+    };
+    var dropped_bodies: std.ArrayListUnmanaged(DroppedBody) = .empty;
+    defer dropped_bodies.deinit(allocator);
+    var found_dropped_label = false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .labeled_statement) continue;
+        const label_idx = node.data.binary.left;
+        if (label_idx.isNone() or @backingInt(label_idx) >= ast.nodes.items.len) return false;
+        if (!drop_scan.isDroppedLabel(ast, node, labels)) continue;
+        found_dropped_label = true;
+
+        const body_idx = node.data.binary.right;
+        if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
+        const body = ast.getNode(body_idx);
+        if (body.span.end <= body.span.start or body.span.start < node.span.start or
+            body.span.end > node.span.end) return false;
+        dropped_bodies.append(allocator, .{ .root = body_idx, .span = body.span }) catch return false;
+    }
+    if (!found_dropped_label) return false;
+
+    // Nested matched labels are removed by their outer matched label too.
+    // Sort by source span so each disjoint erased body is checked once.
+    std.mem.sort(DroppedBody, dropped_bodies.items, {}, struct {
+        fn lessThan(_: void, a: DroppedBody, b: DroppedBody) bool {
+            if (a.span.start != b.span.start) return a.span.start < b.span.start;
+            return a.span.end > b.span.end;
+        }
+    }.lessThan);
+
+    var covered_end: ?u32 = null;
+    var outer_body_count: usize = 0;
+    for (dropped_bodies.items) |dropped_body| {
+        if (covered_end) |end| {
+            if (dropped_body.span.start < end) {
+                if (dropped_body.span.end <= end) continue;
+                return false;
+            }
+        }
+        dropped_bodies.items[outer_body_count] = dropped_body;
+        outer_body_count += 1;
+        covered_end = dropped_body.span.end;
+    }
+    const outer_bodies = dropped_bodies.items[0..outer_body_count];
+
+    for (outer_bodies) |dropped_body| {
+        {
+            const body_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                allocator,
+                ast,
+                dropped_body.root,
+            ) catch return false;
+            defer allocator.free(body_nodes);
+            for (body_nodes) |raw| {
+                if (raw >= ast.nodes.items.len or semantic.scope_owner_map.contains(raw)) return false;
+                const body_node = ast.nodes.items[raw];
+                switch (body_node.tag) {
+                    .binding_identifier, .with_statement => return false,
+                    .identifier_reference => if (Scanner.identifierNamesEqual(
+                        ast.identifierNameText(body_node),
+                        "eval",
+                    )) return false,
+                    else => {},
+                }
+            }
+        }
+    }
+
+    const spanIsWithinDroppedBody = struct {
+        fn check(bodies: []const DroppedBody, span: Span) bool {
+            if (span.end <= span.start) return false;
+            var low: usize = 0;
+            var high: usize = bodies.len;
+            while (low < high) {
+                const middle = low + (high - low) / 2;
+                if (bodies[middle].span.start <= span.start) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            if (low == 0) return false;
+            const body = bodies[low - 1].span;
+            return span.start >= body.start and span.end <= body.end;
+        }
+    }.check;
+    for (semantic.symbols.items) |symbol| {
+        if (spanIsWithinDroppedBody(outer_bodies, symbol.name) or
+            spanIsWithinDroppedBody(outer_bodies, symbol.declaration_span)) return false;
+    }
+    return true;
 }
 
 fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
@@ -7066,7 +7170,7 @@ fn canKeepPrepassSemanticGraph(
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
     var found_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
-        retained_simple_console_drops or has_dropped_labeled_statement or safe_styled_components or
+        retained_simple_console_drops or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
@@ -7201,10 +7305,18 @@ fn canKeepPrepassSemanticGraph(
     // the existing full semantic rescan as the recovery boundary.
     // Removing a debugger statement changes no binding or reference edges, so
     // it does not make an otherwise unchanged graph unsafe for direct eval.
+    const has_any_transform = found_transform or has_dropped_labeled_statement;
+    const direct_eval_label_drop_is_safe = has_direct_eval and has_dropped_labeled_statement and
+        !found_transform and droppedLabelBodiesPreserveDynamicEnvironment(
+        self.allocator,
+        ast,
+        semantic,
+        options.drop_labels,
+    );
     const safe_graph = if (has_direct_eval)
-        !found_transform and unchanged_graph_is_safe
+        (!has_any_transform or direct_eval_label_drop_is_safe) and unchanged_graph_is_safe
     else
-        found_transform or unchanged_graph_is_safe;
+        has_any_transform or unchanged_graph_is_safe;
     allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
     allow_es5_async_method_super_set.* = safe_graph and retainable_async_method_super_set;
     return safe_graph;
@@ -9039,9 +9151,94 @@ fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
     );
 }
 
+fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    const labels = [_][]const u8{ "DEV", "TEST" };
+    const options: TransformOptions = .{ .strip_types = true, .drop_labels = &labels };
+    var allow_super_get = false;
+    var allow_super_set = false;
+    return canKeepPrepassSemanticGraph(
+        &context,
+        &module,
+        options,
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+        null,
+    );
+}
+
 test "drop-label TLA retains the graph only for native TLA output" {
     try std.testing.expect(try canRetainDroppedLabelTlaForTest(false));
     try std.testing.expect(!try canRetainDroppedLabelTlaForTest(true));
+}
+
+test "drop-label retention with direct eval requires an unchanged dynamic environment" {
+    const Case = struct {
+        source: []const u8,
+        retain: bool,
+    };
+    const cases = [_]Case{
+        .{ .source = "function read(value) { DEV: console.log('gone'); return eval('value'); }", .retain = true },
+        .{ .source = "function read() { DEV: TEST: console.log('gone'); return eval('40'); }", .retain = true },
+        .{ .source = "function read() { \\u0044EV: console.log('gone'); return eval('40'); }", .retain = false },
+        .{ .source = "DEV: var hidden = 40; function read() { return eval('typeof hidden'); }", .retain = false },
+        .{ .source = "function read() { DEV: { const hidden = 40; } return eval('typeof hidden'); }", .retain = false },
+        .{ .source = "function read() { DEV: (() => {})(); return eval('40'); }", .retain = false },
+        .{ .source = "function read() { DEV: console.log('gone'); DEV: var hidden = 40; return eval('typeof hidden'); }", .retain = false },
+        .{ .source = "function read() { DEV: console.log('gone'); class Local {} return eval('40'); }", .retain = false },
+        .{ .source = "DEV: console.log(eval('40'));", .retain = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.retain, try canRetainDroppedLabelWithEvalForTest(case.source));
+    }
 }
 
 test "TLA refresh is limited to retained edits that can remove module await" {
@@ -9066,6 +9263,17 @@ test "drop-label source scan recognizes only configured labels" {
     const other_labels = [_][]const u8{"TEST"};
     try std.testing.expect(hasDroppedLabeledStatement(&parser.ast, &configured_labels));
     try std.testing.expect(!hasDroppedLabeledStatement(&parser.ast, &other_labels));
+
+    {
+        var escaped_scanner = try Scanner.init(allocator, "\\u0044EV: await Promise.resolve();");
+        defer escaped_scanner.deinit();
+        var escaped_parser = @import("../../parser/parser.zig").Parser.init(allocator, &escaped_scanner);
+        escaped_parser.configureFromExtension(".mjs");
+        defer escaped_parser.deinit();
+        _ = try escaped_parser.parse();
+        try std.testing.expect(hasDroppedLabeledStatement(&escaped_parser.ast, &configured_labels));
+        try std.testing.expect(!hasDroppedLabeledStatement(&escaped_parser.ast, &other_labels));
+    }
 }
 
 const DefinePreflightMutation = enum {
