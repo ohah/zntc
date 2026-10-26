@@ -402,7 +402,7 @@ fn checkAliasStoragePublication(source: []const u8) !void {
     t.unresolved_references = &analyzer.unresolved_references;
     t.semantic_edit_enabled = true;
     const output = try t.transform();
-    const Pair = struct { read: ast.NodeIndex, lexical_binding: ast.NodeIndex, variable_binding: ast.NodeIndex };
+    const Pair = struct { read: ast.NodeIndex, write: ast.NodeIndex, lexical_binding: ast.NodeIndex, variable_binding: ast.NodeIndex };
     var pairs: std.ArrayList(Pair) = .empty;
     var stack: std.ArrayList(ast.NodeIndex) = .empty;
     try stack.append(a, output);
@@ -432,9 +432,9 @@ fn checkAliasStoragePublication(source: []const u8) !void {
                         try std.testing.expect(!lexical_binding.isNone() and !variable_binding.isNone());
                         // Exact declaration anchors, not matching source text,
                         // prove both physical spellings at this producer.
-                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(lexical_binding).data.string_ref), t.ast.getText(t.ast.getNode(right).data.string_ref));
-                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(variable_binding).data.string_ref), t.ast.getText(t.ast.getNode(left).data.string_ref));
-                        try pairs.append(a, .{ .read = right, .lexical_binding = lexical_binding, .variable_binding = variable_binding });
+                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(lexical_binding).data.string_ref), t.ast.identifierNameText(t.ast.getNode(right)));
+                        try std.testing.expectEqualStrings(t.ast.getText(t.ast.getNode(variable_binding).data.string_ref), t.ast.identifierNameText(t.ast.getNode(left)));
+                        try pairs.append(a, .{ .read = right, .write = left, .lexical_binding = lexical_binding, .variable_binding = variable_binding });
                     }
                 }
             }
@@ -454,6 +454,21 @@ fn checkAliasStoragePublication(source: []const u8) !void {
         const variable = fresh.symbol_ids.items[@backingInt(pair.variable_binding)] orelse return error.MissingFreshVariableBinding;
         try std.testing.expect(local != variable);
         try std.testing.expectEqual(@as(?u32, local), fresh.symbol_ids.items[@backingInt(pair.read)]);
+        try std.testing.expectEqual(@as(?u32, variable), fresh.symbol_ids.items[@backingInt(pair.write)]);
+        var read_scope: ?ScopeId = null;
+        var write_scope: ?ScopeId = null;
+        for (fresh.references.items) |reference| {
+            if (reference.node_index == pair.read) {
+                try std.testing.expect(reference.flags.read and !reference.flags.write);
+                read_scope = reference.scope_id;
+            }
+            if (reference.node_index == pair.write) {
+                try std.testing.expect(reference.flags.write and !reference.flags.read);
+                write_scope = reference.scope_id;
+            }
+        }
+        try std.testing.expect(read_scope != null and write_scope != null);
+        try std.testing.expectEqual(read_scope, write_scope);
     }
 }
 
