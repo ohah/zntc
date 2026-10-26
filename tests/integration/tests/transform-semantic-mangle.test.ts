@@ -33,7 +33,8 @@ function expectPrepassGraph(stderr: string, entry: string, mode: 'retained' | 'r
   const modeLine = lines.find(
     (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(`/${entry}:`),
   );
-  expect(modeLine, entry).toContain(`semantic_graph=${mode}`);
+  if (!modeLine) throw new Error(`missing prepass mode for ${entry}; stderr:\n${stderr}`);
+  expect(modeLine).toContain(`semantic_graph=${mode}`);
   const identity = lines.find(
     (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(`/${entry}:`),
   );
@@ -428,6 +429,313 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const execution = await runNode(output);
     expect(execution.stderr).toBe('');
     expect(execution.stdout).toBe('47');
+  });
+
+  test('bundler retains parsed compound define expressions only with an exact output graph', async () => {
+    const cases = [
+      { name: 'global call', value: 'globalThis.reader.flag()', expected: '7' },
+      { name: 'generated external global', value: 'Math.max(input, 2)', expected: '40' },
+      { name: 'lexical argument', value: 'globalThis.reader.flag(input)', expected: '40' },
+      { name: 'optional call', value: 'globalThis.reader.flag?.()', expected: '7' },
+      { name: 'computed global member', value: 'globalThis["reader"].flag()', expected: '7' },
+      {
+        name: 'binary lexical argument',
+        value: 'globalThis.reader.flag(input + 2)',
+        expected: '42',
+      },
+      {
+        name: 'conditional lexical argument',
+        value: 'globalThis.reader.flag(input ? 41 : 7)',
+        expected: '41',
+      },
+      {
+        name: 'assignment updates the use-site binding',
+        value: '(input = input + 2)',
+        expected: '42',
+      },
+      {
+        name: 'object lexical argument',
+        value: 'globalThis.reader.flag({ input })',
+        expected: '40',
+      },
+      {
+        name: 'array lexical argument',
+        value: 'globalThis.reader.flag([input, 2])',
+        expected: '42',
+      },
+      {
+        name: 'template lexical argument',
+        value: 'globalThis.reader.flag(`v${input}`)',
+        expected: 'v40',
+      },
+      {
+        name: 'nested calls',
+        value: 'globalThis.reader.add(globalThis.reader.flag(input), 2)',
+        expected: '42',
+      },
+      {
+        name: 'generated function scope captures lexical input',
+        value: 'globalThis.reader.flag(function () { return input; })',
+        expected: '40',
+      },
+      {
+        name: 'generated arrow scope captures lexical input',
+        value: 'globalThis.reader.flag(() => input)',
+        expected: '40',
+      },
+    ];
+    const fixture = await createFixture({
+      'input.js': [
+        'globalThis.reader = {',
+        '  flag(value) {',
+        '    if (typeof value === "function") return value();',
+        '    if (value === undefined) return 7;',
+        '    if (Array.isArray(value)) return value[0] + value[1];',
+        "    if (value && typeof value === 'object') return value.input;",
+        '    return value;',
+        '  },',
+        '  add(left, right) { return left + right; },',
+        '};',
+        'function read(input) { const FLAG = 0; return FLAG; }',
+        'process.stdout.write(String(read(40)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+
+    for (const [index, item] of cases.entries()) {
+      const output = join(fixture.dir, `output-${index}.cjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          input,
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          '--minify-identifiers',
+          `--define:FLAG=${item.value}`,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${item.name}: ${result.stderr}`).toBe(0);
+      const identity = expectPrepassGraph(
+        `${result.stdout}\n${result.stderr}`,
+        'input.js',
+        'retained',
+      );
+      expect(identity, item.name).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity, item.name).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const execution = await runNode(output);
+      expect(execution.stderr, item.name).toBe('');
+      expect(execution.stdout.trim(), item.name).toBe(item.expected);
+    }
+  });
+
+  test('compound define falls back to reanalysis when syntax minification changes its graph', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'globalThis.reader = { flag(value) { return value + 2; } };',
+        'function read(input) { const FLAG = 0; return FLAG; }',
+        'process.stdout.write(String(read(40)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+        '--minify-syntax',
+        '--define:FLAG=globalThis.reader.flag(input + 2)',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'reanalyzed',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('44');
+  });
+
+  test('compound define globals reserve same-named bindings in other modules', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'import "./shadow.js";',
+        'function read(input) { const FLAG = 0; return FLAG; }',
+        "process.stdout.write(String(read(40)) + ':' + globalThis.shadow);",
+      ].join('\n'),
+      'shadow.js': 'const Math = 5; globalThis.shadow = Math;',
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--define:FLAG=Math.max(input, 2)',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'retained',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('40:5');
+  });
+
+  test('compound define in a direct-eval scope keeps the reanalysis fallback', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'globalThis.reader = { flag(value) { return value; } };',
+        "function read(input) { const FLAG = 0; eval('input = 41'); return FLAG; }",
+        'process.stdout.write(String(read(0)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+        '--define:FLAG=input + 1',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'reanalyzed',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('42');
+  });
+
+  test('compound define in a with scope keeps the reanalysis fallback', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'function read(input) {',
+        '  const FLAG = 0;',
+        '  with ({ input: 90 }) { input; }',
+        '  return FLAG;',
+        '}',
+        'process.stdout.write(String(read(40)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+        '--define:FLAG=input + 1',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'reanalyzed',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('41');
+  });
+
+  test('opaque compound define does not claim an exact retained graph', async () => {
+    const fixture = await createFixture({
+      'input.js': [
+        'function read(input) { const FLAG = 0; return FLAG; }',
+        'process.stdout.write(String(read(40)));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+        '--define:FLAG=(function (value) { return input + value; })(2)',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    const identity = expectPrepassGraph(
+      `${result.stdout}\n${result.stderr}`,
+      'input.js',
+      'reanalyzed',
+    );
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout.trim()).toBe('42');
   });
 
   test('single-file minifier renames enum IIFE parameters by SymbolId', async () => {

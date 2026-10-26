@@ -49,6 +49,26 @@ test "define primitive graph safety accepts only exact values" {
     for (rejected_values) |value| try std.testing.expect(!is_safe(value));
 }
 
+test "unsupported compound define values are marked opaque" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "console.log(FLAG);");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    const defines = [_]transformer_mod.DefineEntry{.{
+        .key = "FLAG",
+        .value = "(function (value) { return value; })(2)",
+    }};
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .define = &defines });
+    defer transformer.deinit();
+    _ = try transformer.transform();
+    try std.testing.expect(transformer.has_opaque_define_replacement);
+}
+
 test "define replacement removes the exact source reference from semantic graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
