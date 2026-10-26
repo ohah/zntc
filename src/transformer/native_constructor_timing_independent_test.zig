@@ -186,6 +186,8 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
         }
         const branches = [_]ast.NodeIndex{ conditional.?.data.ternary.b, conditional.?.data.ternary.c };
         var first_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var first_external: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var shared_external: usize = 0;
         var first_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
         var first_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
         for (branches, 0..) |branch, index| {
@@ -211,8 +213,33 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
                 var children = @import("../parser/ast_walk.zig").children(t.ast, value);
                 while (children.next()) |child| try stack.append(a, child);
             }
+            // References to storage outside the copied function/class stay
+            // attached to the same selected identity in both physical sites.
+            const branch_refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, t.ast, branch);
+            for (branch_refs) |ref| {
+                const id = t.getSymbolIdAt(ref) orelse continue;
+                const symbol_scope = t.semantic_editor.?.symbols.items[id].scope_id;
+                var scope_owned_by_branch = false;
+                var all_owners = owners.iterator();
+                while (all_owners.next()) |owner| {
+                    if (owner.value_ptr.* != @backingInt(symbol_scope)) continue;
+                    var cursor: ?u32 = owner.key_ptr.*;
+                    while (cursor) |node_raw| {
+                        if (node_raw == @backingInt(branch)) {
+                            scope_owned_by_branch = true;
+                            break;
+                        }
+                        cursor = parents.get(node_raw);
+                    }
+                }
+                if (scope_owned_by_branch) continue;
+                if (index == 0) try first_external.put(a, id, {}) else if (first_external.contains(id)) {
+                    shared_external += 1;
+                }
+            }
             try std.testing.expect(bindings > 0);
         }
+        try std.testing.expect(shared_external > 0);
     }
     var origins = t.native_constructor_reference_origins.iterator();
     var selected: ?u32 = null;
