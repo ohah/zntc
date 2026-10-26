@@ -105,7 +105,8 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
     // The block body exists before its statement so the statement's
     // references and the initializer's scopes can live in the block scope.
     const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
-    const block_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(class_scope, body, .block) else class_scope;
+    const block = try @import("../generated_static_block.zig").create(self, class_scope, body, span);
+    const block_scope = block.scope;
     const visited_init = try self.visitNode(init_idx);
     if (self.semantic_edit_enabled)
         try self.reparentMovedStaticInitializerScopes(visited_init, class_scope, block_scope);
@@ -123,7 +124,7 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
         .name_by_key = try pe.needsRuntimeKeyName(self, key_idx, init_idx),
     });
     self.ast.nodes.items[@backingInt(body)].data = .{ .list = try self.ast.addNodeList(&.{stmt}) };
-    return self.ast.addNode(.{ .tag = .static_block, .span = span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } });
+    return block.node;
 }
 
 /// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.

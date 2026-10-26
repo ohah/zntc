@@ -280,22 +280,16 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 .span = node.span,
                 .data = .{ .list = try self.ast.addNodeList(&.{}) },
             });
-            const block_scope = if (self.semantic_edit_enabled)
-                try self.addGeneratedScope(class_scope, block_body, .block)
-            else
-                class_scope;
+            const name_block = try @import("../generated_static_block.zig").create(self, class_scope, block_body, node.span);
+            const block_scope = name_block.scope;
             const this_ref = try es_helpers.makeThisExpr(self, node.span);
             const name_statement = try parameter_environment.classNameStatement(self, this_ref, name, block_scope, node.span);
             self.ast.nodes.items[@backingInt(block_body)].data.list = try self.ast.addNodeList(&.{name_statement});
-            const name_block = try self.ast.addNode(.{
-                .tag = .static_block,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = block_body, .flags = 0 } },
-            });
+
             const old_members = self.ast.getNode(body_idx).data.list;
             var members: std.ArrayList(NodeIndex) = .empty;
             defer members.deinit(self.allocator);
-            try members.append(self.allocator, name_block);
+            try members.append(self.allocator, name_block.node);
             for (self.ast.extra_data.items[old_members.start .. old_members.start + old_members.len]) |raw|
                 try members.append(self.allocator, @fromBackingInt(@intCast(raw)));
             self.ast.nodes.items[@backingInt(body_idx)].data.list = try self.ast.addNodeList(members.items);

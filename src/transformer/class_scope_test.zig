@@ -328,6 +328,16 @@ fn expectStage3ComputedKeyIdentityCase(expression: []const u8) !void {
         }
     }
     const exact_metadata_scope = metadata_scope orelse return error.MissingStage3MetadataScope;
+    try std.testing.expectEqual(.class_static_block, edited.scopes[exact_metadata_scope.toIndex()].kind);
+    try std.testing.expect(edited.scopes[exact_metadata_scope.toIndex()].is_strict);
+    var metadata_owners: usize = 0;
+    for (reachable) |raw| {
+        const candidate = transformer.ast.nodes.items[raw];
+        if (candidate.tag != .static_block or edited.scope_owner_map.get(raw) != @backingInt(exact_metadata_scope)) continue;
+        try std.testing.expectEqual(@as(?u32, @backingInt(exact_metadata_scope)), edited.scope_owner_map.get(@backingInt(candidate.data.unary.operand)));
+        metadata_owners += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), metadata_owners);
     var producers = transformer.temp_symbol_ids_by_counter.iterator();
     var saw_three_reads = false;
     var saw_four_reads = false;
@@ -397,7 +407,7 @@ fn expectStage3ComputedKeyIdentityCase(expression: []const u8) !void {
                     try std.testing.expect(!parent.isNone());
                     try std.testing.expectEqual(exact_metadata_scope, parent);
                 },
-                .block => {
+                .class_static_block => {
                     try std.testing.expectEqual(exact_metadata_scope, reference.scope_id);
                     block_reads += 1;
                     metadata_read_scope = reference.scope_id;
