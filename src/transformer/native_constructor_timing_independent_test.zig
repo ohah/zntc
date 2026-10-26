@@ -81,7 +81,13 @@ test "independent native constructor timing before output walker exact birth tup
 }
 
 fn checkBirth(source: []const u8) !void {
-    return checkTypedBirth(source, ".cjs");
+    return checkBirthOwned(source, false);
+}
+
+fn checkBirthOwned(source: []const u8, require_owned_clones: bool) !void {
+    var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+    unsupported.arrow = true;
+    return checkBirthWithOwnedOptions(source, ".cjs", unsupported, require_owned_clones);
 }
 
 fn checkBirthProfile(source: []const u8, unsupported: @TypeOf(@import("transformer.zig").TransformOptions.compat.fromESTarget(.es2015))) !void {
@@ -95,6 +101,10 @@ fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
 }
 
 fn checkBirthWithOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures) !void {
+    return checkBirthWithOwnedOptions(source, extension, unsupported, false);
+}
+
+fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures, require_owned_clones: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -145,6 +155,40 @@ fn checkBirthWithOptions(source: []const u8, extension: []const u8, unsupported:
     }
     try std.testing.expect(checked > 5);
     try std.testing.expectEqual(@as(usize, 0), mismatches);
+    if (require_owned_clones) {
+        var conditional: ?ast.Node = null;
+        for (t.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .if_statement and parents.contains(@intCast(raw))) {
+                conditional = node;
+                break;
+            }
+        }
+        const branches = [_]ast.NodeIndex{ conditional.?.data.ternary.b, conditional.?.data.ternary.c };
+        var first_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var first_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        for (branches, 0..) |branch, index| {
+            var stack: std.ArrayList(ast.NodeIndex) = .empty;
+            try stack.append(a, branch);
+            var bindings: usize = 0;
+            while (stack.pop()) |node| {
+                if (node.isNone()) continue;
+                const raw = @backingInt(node);
+                if (index == 0) {
+                    const entry = try first_nodes.getOrPut(a, raw);
+                    if (entry.found_existing) continue;
+                } else try std.testing.expect(!first_nodes.contains(raw));
+                const value = t.ast.getNode(node);
+                if (value.tag == .binding_identifier) {
+                    const id = t.getSymbolIdAt(node) orelse return error.MissingClonedBinding;
+                    bindings += 1;
+                    if (index == 0) try first_bindings.put(a, id, {}) else try std.testing.expect(!first_bindings.contains(id));
+                }
+                var children = @import("../parser/ast_walk.zig").children(t.ast, value);
+                while (children.next()) |child| try stack.append(a, child);
+            }
+            try std.testing.expect(bindings > 0);
+        }
+    }
     var origins = t.native_constructor_reference_origins.iterator();
     var selected: ?u32 = null;
     while (origins.next()) |entry| {
@@ -399,4 +443,24 @@ test "independent private forof getter six exact minify runtime controls" {
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
     }
+}
+
+const private_owned_clone_sources = [_][]const u8{
+    "let saved;class P{}class D extends P{#value=()=>this;read(){return this.#value}constructor(flag){saved=()=>this;if(flag){let _this=11;super();this.argument=_this}else{let _this=22;super();this.argument=_this}}}const a=new D(true),b=new D(false);console.log(JSON.stringify([a.read().name,b.read().name,a.read()()===a,b.read()()===b,a.argument,b.argument]));",
+    "let saved;class P{}class D extends P{#value=function named(parameter){let local=parameter;local++;return()=>[named,local,this]};read(){return this.#value}constructor(flag){saved=()=>this;if(flag){super()}else{super()}}}const a=new D(true),b=new D(false),f=a.read(),g=b.read();const x=f.call(a,7)(),y=g.call(b,11)();console.log(JSON.stringify([f.name,g.name,x[0]===f,y[0]===g,x[1],y[1],x[2]===a,y[2]===b]));",
+    "let saved;class P{}class D extends P{#value=class Inner{read(){return Inner}};read(){return this.#value}constructor(flag){saved=()=>this;if(flag){super()}else{super()}}}const a=new D(true),b=new D(false),A=a.read(),B=b.read();console.log(JSON.stringify([A.name,B.name,new A().read()===A,new B().read()===B,A!==B]));",
+};
+test "independent moved private owned clone native 0" {
+    try checkName(private_owned_clone_sources[0], 300);
+}
+test "independent moved private owned clone native 1" {
+    try checkName(private_owned_clone_sources[1], 301);
+}
+test "independent moved private owned clone native 2" {
+    try checkName(private_owned_clone_sources[2], 302);
+}
+
+test "independent moved private multi super before output walker exact site tuples" {
+    for ([_]usize{ 4, 6, 9 }) |index| try checkBirth(private_super_sources[index]);
+    for (private_owned_clone_sources) |source| try checkBirthOwned(source, true);
 }

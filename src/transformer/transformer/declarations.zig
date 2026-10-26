@@ -596,8 +596,8 @@ fn placeNativeInitializer(self: *Transformer, statement: NodeIndex, from: ScopeI
     }
 }
 
-/// A single physical site owns the initializer AST. Multiple sites require
-/// explicit semantic cloning and deliberately stay on the existing path.
+/// Every physical super site owns its initializer AST and owned bindings.
+/// Additional sites are cloned before moving the original fragment.
 fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, derived: bool) Error!?NodeIndex {
     if (!derived) return try self.prependStatementsToBody(body, statements);
     if (statements.len == 0) return body;
@@ -638,33 +638,46 @@ fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements
         }
     }
     if (sites.items.len == 0) return body;
-    if (sites.items.len != 1) return null;
-    const site = sites.items[0];
-    const original = self.ast.getNode(site.node);
-    const operation = try self.ast.addNode(original);
-    if (!site.alias.isNone()) {
-        _ = self.generated_super_call_assignments.remove(@backingInt(site.node));
-        try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), {});
+    var clones: std.ArrayList(@import("../../semantic/runtime_subtree_clone.zig").Result) = .empty;
+    defer {
+        for (clones.items) |*copy| copy.deinit(self.allocator);
+        clones.deinit(self.allocator);
     }
-    var expressions: std.ArrayList(NodeIndex) = .empty;
-    defer expressions.deinit(self.allocator);
-    try expressions.append(self.allocator, operation);
-    for (statements) |statement| {
-        try placeNativeInitializer(self, statement, self.current_scope, site.scope);
-        try expressions.append(self.allocator, self.ast.getNode(statement).data.unary.operand);
+    // Snapshot all additional instances before the first placement reparents
+    // the source fragment's scopes or moves any original reference rows.
+    for (sites.items[1..]) |site| {
+        var copy = try @import("../initializer_clone.zig").clone(self, statements, self.current_scope, site.scope);
+        errdefer copy.deinit(self.allocator);
+        try clones.append(self.allocator, copy);
     }
-    const result = if (site.alias.isNone()) try self.ast.addNode(.{ .tag = .this_expression, .span = original.span, .data = .{ .none = 0 } }) else blk: {
-        const id = self.getSymbolIdAt(site.alias) orelse @panic("native super producer alias lost its exact SID");
-        const editor = &self.semantic_editor.?;
-        const row = (editor.referenceForNode(site.alias) catch @panic("native super alias reference index is invalid")) orelse @panic("native super alias has no write reference");
-        if (@backingInt(row.symbol_id) != id or !row.flags.write or row.scope_id != site.scope or editor.symbols.items[id].scope_id != self.current_scope)
-            @panic("native super alias changed its actual constructor role");
-        const read = try es_helpers.makeTempRefFromIdentity(self, .{ .span = self.ast.getNode(site.alias).data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = self.current_scope, .reference_scope = site.scope }, original.span, .{ .read = true });
-        try @import("../native_constructor_guard.zig").recordReference(self, read, @fromBackingInt(id), site.scope, .{ .read = true });
-        break :blk read;
-    };
-    try expressions.append(self.allocator, result);
-    self.ast.nodes.items[@backingInt(site.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try self.ast.addNodeList(expressions.items) } };
+    for (sites.items, 0..) |site, index| {
+        const instance = if (index == 0) statements else clones.items[index - 1].roots;
+        const original = self.ast.getNode(site.node);
+        const operation = try self.ast.addNode(original);
+        if (!site.alias.isNone()) {
+            _ = self.generated_super_call_assignments.remove(@backingInt(site.node));
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), {});
+        }
+        var expressions: std.ArrayList(NodeIndex) = .empty;
+        defer expressions.deinit(self.allocator);
+        try expressions.append(self.allocator, operation);
+        for (instance) |statement| {
+            try placeNativeInitializer(self, statement, self.current_scope, site.scope);
+            try expressions.append(self.allocator, self.ast.getNode(statement).data.unary.operand);
+        }
+        const result = if (site.alias.isNone()) try self.ast.addNode(.{ .tag = .this_expression, .span = original.span, .data = .{ .none = 0 } }) else blk: {
+            const id = self.getSymbolIdAt(site.alias) orelse @panic("native super producer alias lost its exact SID");
+            const editor = &self.semantic_editor.?;
+            const row = (editor.referenceForNode(site.alias) catch @panic("native super alias reference index is invalid")) orelse @panic("native super alias has no write reference");
+            if (@backingInt(row.symbol_id) != id or !row.flags.write or row.scope_id != site.scope or editor.symbols.items[id].scope_id != self.current_scope)
+                @panic("native super alias changed its actual constructor role");
+            const read = try es_helpers.makeTempRefFromIdentity(self, .{ .span = self.ast.getNode(site.alias).data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = self.current_scope, .reference_scope = site.scope }, original.span, .{ .read = true });
+            try @import("../native_constructor_guard.zig").recordReference(self, read, @fromBackingInt(id), site.scope, .{ .read = true });
+            break :blk read;
+        };
+        try expressions.append(self.allocator, result);
+        self.ast.nodes.items[@backingInt(site.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try self.ast.addNodeList(expressions.items) } };
+    }
     return body;
 }
 
