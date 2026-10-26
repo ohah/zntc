@@ -117,6 +117,7 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
     var t = try Transformer.init(a, &parser.ast, .{ .unsupported = unsupported, .use_define_for_class_fields = true });
     try t.initSymbolIds(analyzer.symbol_ids.items);
@@ -128,7 +129,9 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
     t.class_self_symbol_map = analyzer.class_self_symbol_map;
     t.node_scope_provenance = analyzer.node_scope_provenance;
     t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     t.semantic_edit_enabled = true;
+    t.record_explicit_global_references = true;
     const output = try t.visitNode(root);
     const utils = @import("output_scope_test_utils.zig");
     var parents = try utils.buildParentMap(a, t.ast, output);
@@ -139,6 +142,24 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
         if (t.outputOwnedScope(node)) |scope| try owners.put(a, @intCast(raw), @backingInt(scope));
     }
     const coords = try @import("../semantic/statement_coordinates.zig").collect(a, t.ast, output);
+    if (require_owned_clones) {
+        const runtime_refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, t.ast, output);
+        for (runtime_refs) |node| {
+            const raw = @backingInt(node);
+            if (t.getSymbolIdAt(node)) |id| {
+                const row = (try t.semantic_editor.?.referenceForNode(node)) orelse return error.MissingRuntimeReference;
+                try std.testing.expectEqual(id, @backingInt(row.symbol_id));
+            } else {
+                const origin = t.reference_origin_map.get(raw) orelse raw;
+                if (!t.explicit_global_reference_nodes.contains(raw) and
+                    !analyzer.unresolved_reference_nodes.contains(origin))
+                {
+                    std.debug.print("NULL RUNTIME node={d} text={s} origin={d}\n", .{ raw, t.ast.getText(t.ast.getNode(node).data.string_ref), origin });
+                    return error.UnprovenRuntimeExternal;
+                }
+            }
+        }
+    }
     var checked: usize = 0;
     var mismatches: usize = 0;
     for (t.semantic_editor.?.references.items) |row| {
@@ -165,6 +186,7 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
         }
         const branches = [_]ast.NodeIndex{ conditional.?.data.ternary.b, conditional.?.data.ternary.c };
         var first_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var first_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
         var first_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty;
         for (branches, 0..) |branch, index| {
             var stack: std.ArrayList(ast.NodeIndex) = .empty;
@@ -177,6 +199,9 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
                     const entry = try first_nodes.getOrPut(a, raw);
                     if (entry.found_existing) continue;
                 } else try std.testing.expect(!first_nodes.contains(raw));
+                if (t.outputOwnedScope(node)) |scope| {
+                    if (index == 0) try first_scopes.put(a, @backingInt(scope), {}) else try std.testing.expect(!first_scopes.contains(@backingInt(scope)));
+                }
                 const value = t.ast.getNode(node);
                 if (value.tag == .binding_identifier) {
                     const id = t.getSymbolIdAt(node) orelse return error.MissingClonedBinding;

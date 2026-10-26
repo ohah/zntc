@@ -93,7 +93,7 @@ fn cloneScope(allocator: std.mem.Allocator, editor: *Editor, result: *Result, ow
         result.to
     else
         return error.InvalidCloneOwnership;
-    const cloned = try editor.addScope(parent, result.nodes.get(owner) orelse return error.InvalidNode, source.kind, source.is_strict);
+    const cloned = try editor.addScope(parent, if (owner == @backingInt(NodeIndex.none)) .none else result.nodes.get(owner) orelse return error.InvalidNode, source.kind, source.is_strict);
     editor.scopes.items[cloned.toIndex()].subtree_has_direct_eval = source.subtree_has_direct_eval;
     editor.scopes.items[cloned.toIndex()].subtree_has_with = source.subtree_has_with;
     try result.scopes.put(allocator, @backingInt(original), cloned);
@@ -114,7 +114,7 @@ pub fn cloneAst(allocator: std.mem.Allocator, ast: *Ast, roots: []const NodeInde
 /// `owners` and `implicit_symbols` come from exact source owner/role maps,
 /// never identifier spelling. The original fragment must not move until all
 /// requested clones have been made.
-pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []const NodeIndex, owners: *const std.AutoHashMapUnmanaged(u32, u32), implicit_symbols: []const SymbolId, from: ScopeId, to: ScopeId) Error!Result {
+pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []const NodeIndex, owners: *const std.AutoHashMapUnmanaged(u32, u32), lexical_name_scopes: []const ScopeId, implicit_symbols: []const SymbolId, from: ScopeId, to: ScopeId) Error!Result {
     if (from.isNone() or to.isNone() or from.toIndex() >= editor.scopes.items.len or to.toIndex() >= editor.scopes.items.len) return error.InvalidScope;
     var result = try cloneAst(allocator, ast, roots, from, to);
     errdefer result.deinit(allocator);
@@ -126,6 +126,10 @@ pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []
     while (owner_iter.next()) |entry| {
         if (!result.nodes.contains(entry.key_ptr.*) or entry.value_ptr.* == @backingInt(from)) continue;
         try owned.put(allocator, entry.value_ptr.*, entry.key_ptr.*);
+    }
+    for (lexical_name_scopes) |id| {
+        if (id.isNone() or id.toIndex() >= editor.scopes.items.len or editor.scopes.items[id.toIndex()].parent != from or editor.scopes.items[id.toIndex()].kind != .block) return error.InvalidCloneOwnership;
+        try owned.put(allocator, @backingInt(id), @backingInt(NodeIndex.none));
     }
     var scope_iter = owned.keyIterator();
     while (scope_iter.next()) |id| _ = try cloneScope(allocator, editor, &result, &owned, @fromBackingInt(id.*), 0);

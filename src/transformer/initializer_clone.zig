@@ -21,6 +21,50 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
         var children = @import("../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
+    // The function declaration producer has already allocated a capture SID,
+    // but its reads may still await the ordinary finish pass. Resolve only
+    // exact pending frame/role edges before taking the semantic snapshot.
+    if (self.semantic_edit_enabled) {
+        var reads = seen.keyIterator();
+        while (reads.next()) |raw| {
+            const node: ast.NodeIndex = @fromBackingInt(raw.*);
+            if (self.getSymbolIdAt(node) != null) continue;
+            const origin = self.reference_origin_map.get(raw.*) orelse raw.*;
+            const index = self.capture_ref_by_origin.get(origin) orelse continue;
+            const pending = self.capture_refs.items[index];
+            const key = (@as(u64, pending.frame) << 2) | @backingInt(pending.kind);
+            const id = self.capture_binding_ids.get(key) orelse @panic("cloned capture has no producer binding");
+            self.addSyntheticRefInScope(node, @fromBackingInt(id), pending.scope, .{ .read = true }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+        }
+    }
+    // Named expression self bindings have a lexical-name scope without an
+    // output AST owner. Admit only its exact creator shape, not an arbitrary
+    // ancestor of a function body.
+    var lexical_names: std.ArrayList(ScopeId) = .empty;
+    defer lexical_names.deinit(self.allocator);
+    if (self.semantic_editor) |*editor| {
+        var source_nodes = seen.keyIterator();
+        while (source_nodes.next()) |raw| {
+            const node = self.ast.getNode(@fromBackingInt(raw.*));
+            if (node.tag != .function_expression) continue;
+            const name = self.ast.readExtraNode(node.data.extra, 0);
+            if (name.isNone()) continue;
+            const id = self.getSymbolIdAt(name) orelse @panic("named clone has no exact self binding");
+            if (id >= editor.symbols.items.len) @panic("named clone self binding is out of range");
+            const symbol = editor.symbols.items[id];
+            const scope = symbol.scope_id;
+            const body_scope = self.outputOwnedScope(@fromBackingInt(raw.*)) orelse @panic("named clone has no body scope");
+            if (!symbol.kind.isFunctionLike() or scope.isNone() or
+                scope.toIndex() >= editor.scopes.items.len or
+                editor.scopes.items[scope.toIndex()].kind != .block or
+                editor.scopes.items[scope.toIndex()].parent != from or
+                editor.scopes.items[body_scope.toIndex()].parent != scope)
+                @panic("named clone lost its exact lexical self scope");
+            try lexical_names.append(self.allocator, scope);
+        }
+    }
     var implicit: std.ArrayList(SymbolId) = .empty;
     defer implicit.deinit(self.allocator);
     var class_ids = self.class_self_symbol_map.valueIterator();
@@ -35,7 +79,7 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
     }
     const result = if (self.semantic_edit_enabled) blk: {
         const editor = if (self.semantic_editor) |*value| value else @panic("typed initializer clone has no semantic owner");
-        break :blk core.clone(self.allocator, self.ast, editor, roots, &owners, implicit.items, from, to) catch |err| switch (err) {
+        break :blk core.clone(self.allocator, self.ast, editor, roots, &owners, lexical_names.items, implicit.items, from, to) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => std.debug.panic("invalid typed initializer clone: {s}", .{@errorName(err)}),
         };
