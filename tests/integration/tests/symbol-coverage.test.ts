@@ -579,7 +579,24 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace-inline-type-import-specifier',
     source:
       "declare namespace Types { import { type Shape } from './shape'; export const value: Shape; } console.log(45);",
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '45\n',
+  },
+  {
+    name: 'ambient-namespace-inline-type-import-multiple-specifiers',
+    source: [
+      "declare namespace Types { import { type Shape, type Color } from './types';",
+      'export const value: Shape | Color; } console.log(49);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '49\n',
+  },
+  {
+    name: 'ambient-namespace-inline-type-import-escaped-name',
+    source:
+      "declare namespace Types { import { type Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; } console.log(50);",
+    graph: 'retained',
+    runtimeOutput: '50\n',
   },
   {
     name: 'ambient-namespace-value-import',
@@ -2736,11 +2753,11 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('erased lenient declaration-level type imports retain only with exact output erasure proof', () => {
+  test('erased lenient type-only imports retain only with exact output erasure proof', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(17);
+    expect(cases).toHaveLength(19);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {
@@ -2763,7 +2780,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           const actual = runNode([join(dir, 'out.js')]);
           expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
           expect(actual.stdout, `${probe.name}: runtime output changed`).toBe(
-            probe.name.includes('escaped-name') ? '43\n' : '42\n',
+            ('runtimeOutput' in probe ? probe.runtimeOutput : undefined) ??
+              (probe.name.includes('escaped-name') ? '43\n' : '42\n'),
           );
         }
       }
