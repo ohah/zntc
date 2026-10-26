@@ -615,7 +615,7 @@ test "Codegen: namespace with export const" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export const x = 1; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;((_Foo) => {_Foo.x=1;})(Foo || (Foo = {}));",
+        "var Foo;(function(_Foo) {\"use strict\";_Foo.x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -624,7 +624,7 @@ test "Codegen: namespace with export function" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export function bar() {} }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;((_Foo) => {function bar(){}_Foo.bar=bar;})(Foo || (Foo = {}));",
+        "var Foo;(function(_Foo) {\"use strict\";function bar(){}_Foo.bar=bar;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -679,7 +679,7 @@ test "Codegen: namespace export var — direct property assignment (no local var
     var r = try e2e(std.testing.allocator, "namespace x { export let foo = 1, bar = foo; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var x;((_x) => {_x.foo=1;_x.bar=_x.foo;})(x || (x = {}));",
+        "var x;(function(_x) {\"use strict\";_x.foo=1;_x.bar=_x.foo;})(x || (x = {}));",
         r.output,
     );
 }
@@ -754,7 +754,7 @@ test "Codegen: namespace export — 패턴이 섞인 선언은 선언자마다 �
     var r = try e2e(std.testing.allocator, "namespace N { export const x = 1, [y] = [x]; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var N;((_N) => {_N.x=1;const [y]=[_N.x];_N.y=y;})(N || (N = {}));",
+        "var N;(function(_N) {\"use strict\";_N.x=1;const [y]=[_N.x];_N.y=y;})(N || (N = {}));",
         r.output,
     );
 }

@@ -30,7 +30,9 @@ pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
 // 바이트 레이아웃이 완전히 달라 구버전 캐시를 읽으면 위험 → bump 로 version mismatch=miss degrade.
 // cache_key.CODEC_FORMAT 가 이 값을 키에 접으므로 구 캐시는 키 자체가 달라져 무효화된다.
 // v5: retain initial named-default declaration semantics after operand lowering.
-pub const FORMAT_VERSION: u32 = 5;
+// v6: TS enums have a fifth canonical runtime-prelude child slot. A v5
+// four-slot enum must never be traversed as the new layout after cache restore.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// null `?[]const u8` 표식 (jsx_pragma offset 자리).
 const NULL_OFFSET: u32 = std.math.maxInt(u32);

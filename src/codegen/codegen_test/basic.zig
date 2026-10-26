@@ -335,7 +335,7 @@ test "Codegen: enum IIFE" {
     var r = try e2e(std.testing.allocator, "enum Color { Red, Green, Blue }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Color = /* @__PURE__ */ ((Color) => {Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";return Color;})(Color || {});",
+        "var Color = /* @__PURE__ */ (function(Color) {\"use strict\";Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";return Color;})(Color || {});",
         r.output,
     );
 }
@@ -345,7 +345,7 @@ test "Codegen: namespace IIFE" {
     defer r.deinit();
     // 내부 const는 export 아니므로 Foo.x = x 없음
     try std.testing.expectEqualStrings(
-        "var Foo;((_Foo) => {const x=1;})(Foo || (Foo = {}));",
+        "var Foo;(function(_Foo) {\"use strict\";const x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -435,7 +435,7 @@ test "Codegen: enum with initializer" {
     var r = try e2e(std.testing.allocator, "enum Status { Active = 1, Inactive = 0 }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Status = /* @__PURE__ */ ((Status) => {Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";return Status;})(Status || {});",
+        "var Status = /* @__PURE__ */ (function(Status) {\"use strict\";Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";return Status;})(Status || {});",
         r.output,
     );
 }
@@ -1373,7 +1373,7 @@ test "#4819 Codegen keeps namespace text fallback when semantic owners are absen
     var cg = Codegen.init(allocator, transformer.ast);
     defer cg.deinit();
     const output = try cg.generate(root);
-    try std.testing.expectEqualStrings("var N;((N) => {N.value=1;})(N || (N = {}));\n", output);
+    try std.testing.expectEqualStrings("var N;(function(N) {N.value=1;})(N || (N = {}));\n", output);
 }
 
 test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" {
@@ -1426,7 +1426,7 @@ test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" 
     var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
     defer valid_cg.deinit();
     const output = try valid_cg.generate(root);
-    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(function(_Self)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
 
     var missing_enum_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -1460,7 +1460,7 @@ test "#4819 Codegen keeps collision-safe enum fallback without semantic owners" 
     var cg = Codegen.init(allocator, transformer.ast);
     defer cg.deinit();
     const output = try cg.generate(root);
-    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(function(_Self)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
 }
 

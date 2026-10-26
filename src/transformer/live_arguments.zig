@@ -26,14 +26,14 @@ pub fn unsplitOwner(self: anytype, scope: ScopeId) ?NodeIndex {
         if (raw >= self.parser_node_count or raw >= self.ast.nodes.items.len) continue;
         switch (self.ast.nodes.items[raw].tag) {
             .function_declaration, .function_expression, .function => {},
-            .ts_module_declaration => {
+            .ts_module_declaration, .ts_enum_declaration => {
                 // This source node is an actual ordinary IIFE creator. Its
                 // exact typed parameter must belong to this same function
                 // scope; source member proxies are not native arguments.
                 const table = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 var parameters: usize = 0;
                 for (table) |symbol| {
-                    if (symbol.scope_id == scope and symbol.synthetic_kind == .namespace_iife_parameter) {
+                    if (symbol.scope_id == scope and symbol.synthetic_kind == (if (self.ast.nodes.items[raw].tag == .ts_enum_declaration) symbols.SyntheticKind.enum_iife_parameter else symbols.SyntheticKind.namespace_iife_parameter)) {
                         if (symbol.kind != .parameter) @panic("namespace IIFE parameter has no native parameter role");
                         parameters += 1;
                     }

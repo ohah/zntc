@@ -154,8 +154,8 @@ fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIn
     self.restoreScratch(scratch_top);
 
     const extra_start = try self.ast.addExtras(&.{
-        @backingInt(name),                                     members.start, members.len,
-        flags | (if (self.ctx.in_ambient) @as(u32, 2) else 0),
+        @backingInt(name),                                     members.start,               members.len,
+        flags | (if (self.ctx.in_ambient) @as(u32, 2) else 0), @backingInt(NodeIndex.none),
     });
 
     return try self.ast.addNode(.{

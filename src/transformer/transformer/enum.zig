@@ -7,6 +7,7 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const cooked_name = @import("../cooked_name.zig");
 const ast_walk = @import("../../parser/ast_walk.zig");
+const es_helpers = @import("../es_helpers.zig");
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const transformer_mod = @import("../transformer.zig");
@@ -29,7 +30,7 @@ pub fn visitFlowEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
     });
 }
 
-/// ts_enum_declaration: extra = [name, members_start, members_len, flags]
+/// ts_enum_declaration: extra = [name, members_start, members_len, flags, runtime_prelude]
 /// flags bit0=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → literal 인라인),
 /// bit1=ambient declare 문맥 (일반 enum은 런타임 선언 없음).
 pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
@@ -51,10 +52,67 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     }
 
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+    const arrow_environment = es_helpers.pushArrowEnv(self);
+    defer es_helpers.popArrowEnv(self, arrow_environment);
+    const saved_extracted_body = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = false;
+    defer self.in_extracted_fn_body = saved_extracted_body;
+    const saved_new_target = self.new_target_ctx;
+    if (self.options.unsupported.new_target) self.new_target_ctx = .method;
+    defer self.new_target_ctx = saved_new_target;
+    // The implicit ordinary function is also a this/label frontier when the
+    // enum occurs inside a lowered class static block or derived constructor.
+    const in_static_block = self.static_block_class_name != null;
+    if (in_static_block) self.this_depth += 1;
+    defer if (in_static_block) {
+        self.this_depth -= 1;
+    };
+    try self.label_scope.append(self.allocator, null);
+    defer _ = self.label_scope.pop();
+    var capture_plan: transformer_mod.EnumCapturePlan = .{ .frame = self.capture_frame, .scope = self.current_scope };
+    const previous_plan = self.enum_capture_plan;
+    self.enum_capture_plan = &capture_plan;
+    defer self.enum_capture_plan = previous_plan;
+    // Claim the actual body container before any member initializer can
+    // publish a generated reference into this ordinary IIFE environment.
+    const prelude = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+    if (self.semantic_edit_enabled) {
+        try self.transformed_scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
+        if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
+    }
     const new_members = try visitEnumMembers(self, node);
-    return self.addExtraNode(.ts_enum_declaration, node.span, &.{
+    var statements: std.ArrayList(NodeIndex) = .empty;
+    defer statements.deinit(self.allocator);
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (!self.current_scope.isNone() and self.current_scope.toIndex() < scopes.len and scopes[self.current_scope.toIndex()].is_strict) {
+        const text = try self.ast.addString("\"use strict\"");
+        try statements.append(self.allocator, try self.ast.addNode(.{ .tag = .directive, .span = text, .data = .{ .none = 0 } }));
+    }
+    if (!capture_plan.this_declaration.isNone()) try statements.append(self.allocator, capture_plan.this_declaration);
+    var captures: [3]NodeIndex = undefined;
+    const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
+    try statements.appendSlice(self.allocator, captures[0..capture_count]);
+    self.ast.nodes.items[@backingInt(prelude)].data.list = try self.ast.addNodeList(statements.items);
+    const result = try self.addExtraNode(.ts_enum_declaration, node.span, &.{
         @backingInt(new_name), new_members.start, new_members.len, flags & ~@as(u32, 1),
+        @backingInt(prelude),
     });
+    if (self.semantic_editor) |*editor| {
+        // This fragment knows its actual IIFE statement list, not an enclosing
+        // Program's final index. Preserve existing top-level coordinates;
+        // whole-output projection publishes those after outer assembly.
+        const coordinates = @import("../../semantic/statement_coordinates.zig").collect(self.allocator, self.ast, result) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => @panic("enum prelude has ambiguous statement ownership"),
+        };
+        defer self.allocator.free(coordinates);
+        for (editor.references.items) |*reference| {
+            const anchor = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
+            if (anchor.isNone() or anchor == new_name or @backingInt(anchor) >= coordinates.len) continue;
+            if (coordinates[@backingInt(anchor)]) |context| reference.scope_stmt_idx = context.scope_stmt_idx;
+        }
+    }
+    return result;
 }
 
 /// 런타임 enum 멤버를 방문하며, 값이 정해진 두 경우 초기값을 숫자/문자열 리터럴로 채운다

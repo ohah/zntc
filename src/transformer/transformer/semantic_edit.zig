@@ -3174,6 +3174,24 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
             }
         }
     }
+    if (self.enum_capture_plan) |plan| {
+        if (kind == .this_value and self.semantic_edit_enabled and plan.frame == self.capture_frame) {
+            if (plan.scope != self.capture_scope) @panic("enum capture escaped its actual IIFE frame");
+            if (plan.this_declaration.isNone()) {
+                const previous = self.current_scope;
+                self.current_scope = plan.scope;
+                defer self.current_scope = previous;
+                plan.this_declaration = try self.buildVarDecl("_this", try es_helpers.makeThisExpr(self, source_span), source_span);
+                try self.bindLexicalCapture(plan.this_declaration, .this_value);
+                plan.symbol_id = self.capture_binding_ids.get(captureKey(plan.frame, .this_value)) orelse @panic("enum this storage has no exact SID");
+            }
+            const id = plan.symbol_id orelse @panic("enum this capture has no exact binding");
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
+            self.needs_this_var = false;
+            try self.lexical_capture_uses.append(self.allocator, .{ .frame = plan.frame, .kind = kind, .span = source_span });
+            return;
+        }
+    }
     if (nativeFieldCaptureOwner(self)) |plan| {
         if (kind == .this_value) {
             if (plan.scope != self.capture_scope) std.debug.panic("field capture lost its actual constructor scope", .{});

@@ -807,9 +807,11 @@ pub const Node = struct {
                 .variable_declarator => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
                 // formal_parameter: extra = [pattern(0), type_ann(1), default(2), flags, deco_start, deco_len]
                 .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
-                // Runtime enum: extra = [name(0), members_start(1), members_len(2), flags/base_type].
-                // Initializer expressions are runtime children of the emitted enum IIFE.
-                .ts_enum_declaration, .flow_enum_declaration => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                // TS enum: [name, members_start, members_len, flags, runtime_prelude].
+                // Prelude is .none in parsed source and a real IIFE-body block
+                // after lowering. Flow keeps its independent four-slot layout.
+                .ts_enum_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 4 }, .list_offsets = &.{.{ 1, 2 }} },
+                .flow_enum_declaration => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // unary/update_expression: 파서에서 data.extra로 생성 — extra = [operand(0), flags]
                 .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
                 // object_property: binary = { left: key, right: value, flags: prop_flags }
@@ -1923,6 +1925,16 @@ pub const FunctionExtra = struct {
     pub const body: u32 = 2;
     pub const flags: u32 = 3;
     pub const return_type: u32 = 4;
+};
+
+/// The optional runtime prelude is part of the canonical AST graph. It shares
+/// the enum IIFE's existing function scope and is emitted before member actions.
+pub const EnumExtra = struct {
+    pub const name: u32 = 0;
+    pub const members_start: u32 = 1;
+    pub const members_len: u32 = 2;
+    pub const flags: u32 = 3;
+    pub const runtime_prelude: u32 = 4;
 };
 
 /// method_definition의 flags 비트 (extra[3] u16).

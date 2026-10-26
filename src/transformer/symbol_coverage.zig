@@ -458,6 +458,7 @@ pub const AstEdgeFinding = struct {
 pub const AstLayoutIssue = enum {
     list_range,
     extra_child_slot,
+    enum_prelude_kind,
     extra_list_descriptor,
     extra_list_range,
 };
@@ -493,6 +494,15 @@ fn invalidExactAstLayout(ast: *const Ast, node_index: u32) ?AstLayoutFinding {
                     .tag = node.tag,
                     .issue = .extra_child_slot,
                     .data_index = base,
+                };
+            }
+            if (node.tag == .ts_enum_declaration) {
+                const prelude = ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.runtime_prelude);
+                if (!prelude.isNone() and @backingInt(prelude) < ast.nodes.items.len and ast.getNode(prelude).tag != .block_statement) return .{
+                    .node_index = node_index,
+                    .tag = node.tag,
+                    .issue = .enum_prelude_kind,
+                    .data_index = base + ast_mod.EnumExtra.runtime_prelude,
                 };
             }
             for (Node.Tag.extraListOffsets(node.tag)) |offsets| {
@@ -1682,6 +1692,14 @@ fn isNamespaceBodyBlock(
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
+}
+
+fn enumPreludeOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
+    const owner = parents.get(block) orelse return null;
+    if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
+    const node = ast.nodes.items[owner];
+    if (node.tag != .ts_enum_declaration or node.data.extra + ast_mod.EnumExtra.runtime_prelude >= ast.extra_data.items.len) return null;
+    return if (@backingInt(ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.runtime_prelude)) == block) owner else null;
 }
 
 fn isFlowComponentImplementationFunction(
@@ -3115,6 +3133,9 @@ fn checkExactImpl(
         if (scope_id >= scopes.len) continue;
         const tag = ast.nodes.items[raw].tag;
         if (!scopeOwnerKindMatches(tag, scopes[scope_id].kind)) continue;
+        if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .function) continue;
+        }
         const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
         if (first_owner.found_existing) {
             if (first_owner.value_ptr.* != raw) {
@@ -3525,6 +3546,14 @@ fn checkExactImpl(
             // visits this block's statement list directly. The block is a
             // syntax container, not a second lexical ScopeId owner.
             if (isNamespaceBodyBlock(ast, &parent_by_node, raw)) continue;
+            if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+                const enum_scope = scope_owner_map.get(owner);
+                const body_scope = scope_owner_map.get(raw);
+                if (enum_scope == null or body_scope == null or enum_scope.? != body_scope.? or
+                    body_scope.? >= scopes.len or scopes[body_scope.?].kind != .function)
+                    recordScopeOwnerMismatch(&report, raw, tag, "enum-prelude-owner", body_scope, .function, if (body_scope != null and body_scope.? < scopes.len) scopes[body_scope.?].kind else null);
+                continue;
+            }
             const is_function_body = if (parent_raw) |parent| blk: {
                 const parent_node = ast.nodes.items[parent];
                 break :blk ast.functionBodyBlock(parent_node) != null and
@@ -3589,6 +3618,9 @@ fn checkExactImpl(
         }
         if (scope_raw >= scopes.len) continue;
         const owner_scope = scopes[scope_raw];
+        if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_raw and owner_scope.kind == .function) continue;
+        }
         if (raw == @backingInt(root)) {
             // A non-Program root can be a fragment nested inside an implicit
             // outer scope, so only a Program owner is required to be parentless.

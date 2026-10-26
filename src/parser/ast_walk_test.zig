@@ -130,15 +130,16 @@ test "ChildIterator: runtime enum reaches member initializers" {
     const enum_idx = findFirstTag(&parser.ast, .ts_enum_declaration) orelse return error.NotFound;
     var enum_children = try collectChildren(a, &parser.ast, enum_idx);
     defer enum_children.deinit(a);
-    try std.testing.expectEqual(@as(usize, 3), enum_children.items.len);
+    try std.testing.expectEqual(@as(usize, 4), enum_children.items.len);
+    try std.testing.expect(enum_children.items[1].isNone());
     try std.testing.expectEqual(Node.Tag.binding_identifier, parser.ast.getNode(enum_children.items[0]).tag);
-    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[1]).tag);
     try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[2]).tag);
+    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[3]).tag);
 
-    const next_member = parser.ast.getNode(enum_children.items[2]);
+    const next_member = parser.ast.getNode(enum_children.items[3]);
     const initializer = next_member.data.binary.right;
     try std.testing.expectEqual(Node.Tag.binary_expression, parser.ast.getNode(initializer).tag);
-    var member_children = try collectChildren(a, &parser.ast, enum_children.items[2]);
+    var member_children = try collectChildren(a, &parser.ast, enum_children.items[3]);
     defer member_children.deinit(a);
     try std.testing.expectEqual(@as(usize, 2), member_children.items.len);
     try std.testing.expectEqual(initializer, member_children.items[1]);

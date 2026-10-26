@@ -68,6 +68,13 @@ pub const NativeFieldCapturePlan = struct {
     this_declaration: NodeIndex = .none,
     symbol_id: ?u32 = null,
 };
+/// Actual ordinary enum IIFE storage, allocated before its member expressions.
+pub const EnumCapturePlan = struct {
+    frame: u32,
+    scope: ScopeId,
+    this_declaration: NodeIndex = .none,
+    symbol_id: ?u32 = null,
+};
 pub const DeferredGeneratorLoopMigration = struct {
     loop_function: NodeIndex,
     body: NodeIndex,
@@ -415,6 +422,7 @@ pub const Transformer = struct {
     native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
     native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    enum_capture_plan: ?*EnumCapturePlan = null,
     retained_loop_key_cells: std.AutoHashMapUnmanaged(u32, []@import("retained_class_keys.zig").Cell) = .empty,
     retained_class_key_plan: ?*@import("retained_class_keys.zig").Plan = null,
     retained_field_name_cell: ?@import("retained_class_keys.zig").Cell = null,
@@ -919,10 +927,8 @@ pub const Transformer = struct {
     pub const ownedHelperRefNodes = lifecycle_mod.ownedHelperRefNodes;
     pub const ownedExplicitGlobalRefNodes = lifecycle_mod.ownedExplicitGlobalRefNodes;
 
-    // ================================================================
-    // 공개 API
-    // ================================================================
-
+    // =========================================================    // 공개 API
+    // =========================================================
     /// 변환을 실행한다. 원본 AST의 마지막 노드(program)부터 시작.
     ///
     /// 반환값: 새 AST에서의 루트 NodeIndex.
@@ -931,10 +937,8 @@ pub const Transformer = struct {
     pub const transform = driver_mod.transform;
     pub const prependParameterInitializersToBody = driver_mod.prependParameterInitializers;
 
-    // ================================================================
-    // 핵심 visitor — switch 기반 (D042)
-    // ================================================================
-
+    // =========================================================    // 핵심 visitor — switch 기반 (D042)
+    // =========================================================
     /// 노드 하나를 방문하여 새 AST에 복사/변환/스킵한다.
     ///
     /// 반환값:
@@ -1078,10 +1082,8 @@ pub const Transformer = struct {
     pub const needsDestructuringAssignmentLowering = node_dispatch_mod.needsDestructuringAssignmentLowering;
     const visitNodeInner = node_dispatch_mod.visitNodeInner;
 
-    // ================================================================
-    // Node/symbol/extra helpers — transformer/node_helpers.zig로 위임
-    // ================================================================
-    const node_helpers = @import("transformer/node_helpers.zig");
+    // =========================================================    // Node/symbol/extra helpers — transformer/node_helpers.zig로 위임
+    // =========================================================    const node_helpers = @import("transformer/node_helpers.zig");
     pub const copyNodeDirect = node_helpers.copyNodeDirect;
     pub const tryRenameIdentifierLike = node_helpers.tryRenameIdentifierLike;
     pub const getClassNameSpan = node_helpers.getClassNameSpan;
@@ -1238,10 +1240,8 @@ pub const Transformer = struct {
 
     pub const visitTaggedTemplate = tagged_template_mod.visitTaggedTemplate;
 
-    // ================================================================
-    // Control-flow visitors — transformer/control_flow.zig로 위임
-    // ================================================================
-    const control_flow_mod = @import("transformer/control_flow.zig");
+    // =========================================================    // Control-flow visitors — transformer/control_flow.zig로 위임
+    // =========================================================    const control_flow_mod = @import("transformer/control_flow.zig");
     pub const visitIfStatement = control_flow_mod.visitIfStatement;
     pub const visitBinaryStatementBody = control_flow_mod.visitBinaryStatementBody;
     pub const visitWithStatement = control_flow_mod.visitWithStatement;
@@ -1252,10 +1252,8 @@ pub const Transformer = struct {
     pub const visitSwitchStatement = control_flow_mod.visitSwitchStatement;
     pub const visitSwitchCase = control_flow_mod.visitSwitchCase;
 
-    // ================================================================
-    // List traversal / block-scope helpers — transformer/lists.zig로 위임
-    // ================================================================
-    const lists_mod = @import("transformer/lists.zig");
+    // =========================================================    // List traversal / block-scope helpers — transformer/lists.zig로 위임
+    // =========================================================    const lists_mod = @import("transformer/lists.zig");
     pub const visitListNode = lists_mod.visitListNode;
     pub const visitExtraList = lists_mod.visitExtraList;
     pub const stableName = lists_mod.stableName;
@@ -1271,72 +1269,52 @@ pub const Transformer = struct {
     pub const hoistStateMachineTempsAndRestore = lists_mod.hoistStateMachineTempsAndRestore;
     pub const hoistTempVarsRecording = lists_mod.hoistTempVarsRecording;
 
-    // ================================================================
-    // Flow syntax 변환 — transformer/flow.zig로 위임
-    // ================================================================
-    pub const visitFlowMatch = flow_mod.visitFlowMatch;
+    // =========================================================    // Flow syntax 변환 — transformer/flow.zig로 위임
+    // =========================================================    pub const visitFlowMatch = flow_mod.visitFlowMatch;
     pub const visitFlowComponentWrapper = flow_mod.visitFlowComponentWrapper;
 
-    // ================================================================
-    // TS expression 변환 — 타입 부분 제거, 값만 보존
-    // ================================================================
-
+    // =========================================================    // TS expression 변환 — 타입 부분 제거, 값만 보존
+    // =========================================================
     const type_expression_mod = @import("transformer/type_expression.zig");
     pub const visitTsExpression = type_expression_mod.visitTsExpression;
 
-    // ================================================================
-    // Extra 기반 노드 변환
-    // ================================================================
-
-    // ================================================================
-    // --drop 헬퍼
-    // ================================================================
-
+    // =========================================================    // Extra 기반 노드 변환
+    // =========================================================
+    // =========================================================    // --drop 헬퍼
+    // =========================================================
     pub const shouldDropNode = drop_mod.shouldDropNode;
     pub const isConsoleCall = drop_mod.isConsoleCall;
 
-    // ================================================================
-    // define 글로벌 치환
-    // ================================================================
-
+    // =========================================================    // define 글로벌 치환
+    // =========================================================
     const function_visit_mod = @import("transformer/functions.zig");
     pub const visitBodyWorkletAware = function_visit_mod.visitBodyWorkletAware;
     pub const visitWithRefreshSuppressed = function_visit_mod.visitWithRefreshSuppressed;
 
     pub const tryDefineReplace = define_mod.tryDefineReplace;
 
-    // ================================================================
-    // TS / Flow enum 변환 — transformer/enum.zig로 위임
-    // ================================================================
-    const enum_mod = @import("transformer/enum.zig");
+    // =========================================================    // TS / Flow enum 변환 — transformer/enum.zig로 위임
+    // =========================================================    const enum_mod = @import("transformer/enum.zig");
     pub const visitFlowEnumDeclaration = enum_mod.visitFlowEnumDeclaration;
     pub const visitEnumDeclaration = enum_mod.visitEnumDeclaration;
     pub const tryInlineConstEnumMember = enum_mod.tryInlineConstEnumMember;
 
-    // ================================================================
-    // TS namespace 변환
-    // ================================================================
-    pub const visitImportEqualsDeclaration = namespace_mod.visitImportEqualsDeclaration;
+    // =========================================================    // TS namespace 변환
+    // =========================================================    pub const visitImportEqualsDeclaration = namespace_mod.visitImportEqualsDeclaration;
     pub const visitExportAssignment = namespace_mod.visitExportAssignment;
     pub const visitNamespaceDeclaration = namespace_mod.visitNamespaceDeclaration;
     pub const namespaceExportAccess = namespace_mod.namespaceExportAccess;
 
-    // ================================================================
-    // JSX 노드 변환
-    // ================================================================
-
+    // =========================================================    // JSX 노드 변환
+    // =========================================================
     const jsx_visit_mod = @import("transformer/jsx.zig");
     pub const visitJSXElement = jsx_visit_mod.visitJSXElement;
     pub const visitJSXOpeningElement = jsx_visit_mod.visitJSXOpeningElement;
 
-    // ================================================================
-    // Extra 기반 노드 변환
-    // ================================================================
-
-    // ================================================================
-    // Declaration/function visitors — transformer/declarations.zig로 위임
-    // ================================================================
-    const declarations_mod = @import("transformer/declarations.zig");
+    // =========================================================    // Extra 기반 노드 변환
+    // =========================================================
+    // =========================================================    // Declaration/function visitors — transformer/declarations.zig로 위임
+    // =========================================================    const declarations_mod = @import("transformer/declarations.zig");
     pub const visitVariableDeclaration = declarations_mod.visitVariableDeclaration;
     pub const visitVariableDeclarator = declarations_mod.visitVariableDeclarator;
     pub const visitFunction = declarations_mod.visitFunction;
@@ -1351,10 +1329,8 @@ pub const Transformer = struct {
 
     pub const visitArrowFunction = function_visit_mod.visitArrowFunction;
 
-    // ================================================================
-    // Class + Decorator — transformer/class_decorator.zig로 위임
-    // ================================================================
-    const class_deco = @import("transformer/class_decorator.zig");
+    // =========================================================    // Class + Decorator — transformer/class_decorator.zig로 위임
+    // =========================================================    const class_deco = @import("transformer/class_decorator.zig");
 
     /// Stage 3 decorator lowering이 필요한 class면 실행해 결과 NodeIndex 반환, 아니면 null.
     /// `unsupported.class` 분기보다 먼저 호출해 ES5 target에서 decorator silent drop을 방지한다.
@@ -1426,19 +1402,15 @@ pub const Transformer = struct {
     const call_visit_mod = @import("transformer/calls.zig");
     pub const visitCallExpression = call_visit_mod.visitCallExpression;
 
-    // ================================================================
-    // Regex replacement 변환 — transformer/regex.zig로 위임
-    // ================================================================
-    const regex_mod = @import("transformer/regex.zig");
+    // =========================================================    // Regex replacement 변환 — transformer/regex.zig로 위임
+    // =========================================================    const regex_mod = @import("transformer/regex.zig");
     pub const tryRewriteReplaceNamedRefs = regex_mod.tryRewriteReplaceNamedRefs;
     pub const collectConstRegexDeclarators = regex_mod.collectConstRegexDeclarators;
 
     pub const visitNewExpression = call_visit_mod.visitNewExpression;
 
-    // ================================================================
-    // Class/object member visitors — transformer/members.zig로 위임
-    // ================================================================
-    const members_mod = @import("transformer/members.zig");
+    // =========================================================    // Class/object member visitors — transformer/members.zig로 위임
+    // =========================================================    const members_mod = @import("transformer/members.zig");
     pub const visitMethodDefinition = members_mod.visitMethodDefinition;
     pub const visitPropertyDefinition = members_mod.visitPropertyDefinition;
     pub const visitAccessorProperty = members_mod.visitAccessorProperty;
@@ -1448,26 +1420,20 @@ pub const Transformer = struct {
     pub const visitParameterNode = members_mod.visitParameterNode;
     pub const visitParameterList = members_mod.visitParameterList;
 
-    // ================================================================
-    // Import/export 변환 — transformer/import_export.zig로 위임
-    // ================================================================
-    const import_export_mod = @import("transformer/import_export.zig");
+    // =========================================================    // Import/export 변환 — transformer/import_export.zig로 위임
+    // =========================================================    const import_export_mod = @import("transformer/import_export.zig");
     pub const visitExportDefaultDeclaration = import_export_mod.visitExportDefaultDeclaration;
     pub const visitImportDeclaration = import_export_mod.visitImportDeclaration;
     pub const shouldElideImportSpecifier = import_export_mod.shouldElideImportSpecifier;
     pub const visitExportAllDeclaration = import_export_mod.visitExportAllDeclaration;
     pub const visitExportNamedDeclaration = import_export_mod.visitExportNamedDeclaration;
 
-    // ================================================================
-    // Comptime 헬퍼 — TS 타입 전용 노드 판별 (D042)
-    // ================================================================
-
+    // =========================================================    // Comptime 헬퍼 — TS 타입 전용 노드 판별 (D042)
+    // =========================================================
     pub const isTypeOnlyNode = type_only_mod.isTypeOnlyNode;
 
-    // ================================================================
-    // React Fast Refresh — transformer/refresh.zig로 위임
-    // ================================================================
-    const refresh = @import("transformer/refresh.zig");
+    // =========================================================    // React Fast Refresh — transformer/refresh.zig로 위임
+    // =========================================================    const refresh = @import("transformer/refresh.zig");
     pub const isComponentName = refresh.isComponentName;
     pub const getFunctionName = refresh.getFunctionName;
     pub const refreshEnabled = refresh.refreshEnabled;
@@ -1488,17 +1454,13 @@ pub const Transformer = struct {
     pub const maybeRegisterRefreshSignature = refresh.maybeRegisterRefreshSignature;
     pub const insertSigCallAtBodyStart = refresh.insertSigCallAtBodyStart;
 
-    // ================================================================
-    // Auto-workletization helpers — transformer/auto_worklet.zig로 위임
-    // ================================================================
-    const auto_worklet = @import("transformer/auto_worklet.zig");
+    // =========================================================    // Auto-workletization helpers — transformer/auto_worklet.zig로 위임
+    // =========================================================    const auto_worklet = @import("transformer/auto_worklet.zig");
     pub const matchAutoWorkletCallee = auto_worklet.matchAutoWorkletCallee;
     pub const visitCallArgsWithAutoWorklet = auto_worklet.visitCallArgsWithAutoWorklet;
 
-    // ================================================================
-    // Plugin dispatch helper
-    // ================================================================
-
+    // =========================================================    // Plugin dispatch helper
+    // =========================================================
     const plugin_dispatch_mod = @import("transformer/plugins.zig");
     pub const VisitorHookKind = plugin_dispatch_mod.VisitorHookKind;
     pub const dispatchVisitor = plugin_dispatch_mod.dispatchVisitor;

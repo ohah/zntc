@@ -134,6 +134,17 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     try self.write(" = /* @__PURE__ */ ");
     try writeIifeHead(self, param_name);
 
+    // The prelude is a canonical AST edge whose block aliases this actual
+    // ordinary IIFE body; emit its statements without adding a nested scope.
+    const prelude = self.ast.readExtraNode(e, ast_mod.EnumExtra.runtime_prelude);
+    if (!prelude.isNone()) {
+        const body = self.ast.getNode(prelude);
+        std.debug.assert(body.tag == .block_statement);
+        for (0..body.data.list.len) |index| {
+            try self.emitNode(self.ast.readExtraNode(body.data.list.start, @intCast(index)));
+        }
+    }
+
     // 2차 패스: 각 멤버 출력
     var auto_value: i64 = 0;
     for (member_indices) |raw_idx| {
