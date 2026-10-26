@@ -10158,6 +10158,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
     const has_mapped_import_split = opts.hasMappedImportToSplit(ast_ptr);
+    const selective_class_source = if (module.semantic) |*semantic|
+        @import("../../transformer/selective_class_certificate.zig").sourcePlan(arena_alloc, ast_ptr, semantic, opts) catch null
+    else
+        null;
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(
@@ -10204,7 +10208,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
-    transformer.record_explicit_global_references = has_complex_define_replacement or
+    if (can_keep_semantic_graph) transformer.selective_class_candidate = selective_class_source;
+    transformer.record_explicit_global_references = transformer.selective_class_candidate != null or has_complex_define_replacement or
         shouldRecordPrepassExplicitGlobals(
             flow_match_generated_globals.has_match,
             has_lowered_object_spread,
@@ -10233,7 +10238,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage) {
+    if (debug_symbol_coverage or transformer.selective_class_candidate != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -10550,6 +10555,28 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
     }
 
+    var retained_helper_demands = transformer.runtime_helpers;
+    if (can_keep_semantic_graph) {
+        if (selective_class_source) |source| {
+            const demand = if (module.semantic) |*semantic|
+                @import("../../transformer/selective_class_certificate.zig").validate(&transformer, semantic, source) catch null
+            else
+                null;
+            const exact = exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null;
+            if (debug_symbol_coverage and exact != null and !exact.?.isClean())
+                std.debug.print("zntc: selective-class-certificate-exact-rejected {s}: {any}\n", .{ module.path, exact.? });
+            if (demand) |verified| {
+                if (exact != null and exact.?.isClean()) {
+                    if (verified.extends) retained_helper_demands.extends = false;
+                    if (verified.call_super) retained_helper_demands.call_super = false;
+                    if (verified.derived_constructor) retained_helper_demands.derived_constructor = false;
+                } else can_keep_semantic_graph = false;
+            } else can_keep_semantic_graph = false;
+        } else if (transformer.selective_class_applications.items.len != 0) {
+            can_keep_semantic_graph = false;
+        }
+    }
+
     if (shouldRefreshRetainedModuleTopLevelAwait(
         can_keep_semantic_graph,
         retained_simple_console_drops,
@@ -10570,7 +10597,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // graph. JSX, decorators, and syntax lowering may add synthetic helper
     // imports, so refresh module graph metadata without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
-        transformer.runtime_helpers,
+        retained_helper_demands,
         allow_derived_class_helpers,
         allow_stage3_decorator_helpers,
         allow_legacy_decorator_helpers,
@@ -15231,4 +15258,51 @@ test "module map rejects duplicate default facade nodes in the same statement co
     const contexts = try collectMinifiedStatementContexts(allocator, &parser.ast, root);
     try std.testing.expectEqualDeep(contexts[@backingInt(first)], contexts[@backingInt(second)]);
     try std.testing.expectEqual(@as(?[]SemanticReference, null), try reindexMappedImportReferences(allocator, &parser.ast, root, &semantic));
+}
+
+test "selective class certificate source candidate keeps independent preflight" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "class P{} class D extends P{constructor(){var go=()=>super();go()}} console.log(new D() instanceof P);";
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    const options: TransformOptions = .{ .strip_types = true, .unsupported = @import("../../transformer/compat.zig").fromReactNativeVersion(0, 80) };
+    const certificate = @import("../../transformer/selective_class_certificate.zig");
+    try std.testing.expect((try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)) != null);
+    var module = Module.init(@fromBackingInt(0), "candidate.js");
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false };
+    var get = false;
+    var set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &get, &set, null));
+}
+
+test "selective class certificate validates applied factory and helper edges" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "class P{} class D extends P{constructor(){var go=()=>super();go()}} console.log(new D() instanceof P);";
+    var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    const options: TransformOptions = .{ .strip_types = true, .emit_runtime_helper_imports = true, .unsupported = @import("../../transformer/compat.zig").fromReactNativeVersion(0, 80) };
+    const certificate = @import("../../transformer/selective_class_certificate.zig");
+    const expected = (try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)).?;
+    var t = try Transformer.init(allocator, &fixture.ast, options);
+    try t.initSymbolIds(fixture.semantic.symbol_ids);
+    t.symbols = fixture.semantic.symbols.items;
+    t.references = fixture.semantic.references;
+    t.scopes = fixture.semantic.scopes;
+    t.scope_maps = fixture.semantic.scope_maps;
+    t.scope_owner_map = fixture.semantic.scope_owner_map;
+    t.node_scope_provenance = fixture.semantic.node_scope_provenance;
+    t.class_self_symbol_map = fixture.semantic.class_self_symbol_map;
+    t.helper_scope_map = fixture.semantic.helper_scope_map;
+    t.unresolved_references = &fixture.semantic.unresolved_references;
+    t.semantic_edit_enabled = true;
+    t.selective_class_candidate = expected;
+    _ = try t.transform();
+    if (try t.finishSemanticEdit()) |edited| fixture.semantic.applyEdit(edited);
+    try std.testing.expectEqual(@as(usize, 1), t.selective_class_applications.items.len);
+    try std.testing.expect((try certificate.validate(&t, &fixture.semantic, expected)) != null);
 }

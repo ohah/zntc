@@ -36,6 +36,11 @@ fn enclosingClass(scopes: []const @import("../semantic/scope.zig").Scope, child:
 }
 
 pub fn select(self: anytype, source: ast.NodeIndex, class: ast.Node) std.mem.Allocator.Error!?Plan {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    return selectInScopes(self, source, class, scopes);
+}
+
+pub fn selectInScopes(self: anytype, source: ast.NodeIndex, class: ast.Node, scopes: []const @import("../semantic/scope.zig").Scope) std.mem.Allocator.Error!?Plan {
     if (!self.semantic_edit_enabled or self.options.unsupported.class or !self.options.unsupported.arrow) return null;
     if (class.tag != .class_declaration and class.tag != .class_expression) return null;
     if (self.ast.readExtraNode(class.data.extra, ast.ClassExtra.super).isNone()) return null;
@@ -52,7 +57,6 @@ pub fn select(self: anytype, source: ast.NodeIndex, class: ast.Node) std.mem.All
     if (constructor.isNone()) return null;
     const scope = self.outputOwnedScope(constructor) orelse return null;
     const class_scope = self.outputOwnedScope(source) orelse return null;
-    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != .function or
         class_scope.isNone() or class_scope.toIndex() >= scopes.len or scopes[class_scope.toIndex()].kind != .class_body or class_scope == scope) return null;
     if (enclosingClass(scopes, scope) != class_scope) return null;
