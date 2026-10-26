@@ -614,6 +614,55 @@ fn droppedLabelBodiesPreserveDynamicEnvironment(
     return true;
 }
 
+/// Direct eval cannot inspect declarations that are retained outside a
+/// dropped console call. Keep that graph only when every deleted call subtree
+/// itself has no binding, scope owner, with statement, or eval expression.
+fn droppedConsoleCallsPreserveDynamicEnvironment(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return false;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return false;
+    defer allocator.free(reachable);
+
+    var found_drop = false;
+    for (reachable) |raw_statement| {
+        if (raw_statement >= ast.nodes.items.len) return false;
+        const statement = ast.nodes.items[raw_statement];
+        if (!drop_mod.isConsoleCallInAst(ast, statement)) continue;
+        found_drop = true;
+        if (simpleConsoleDropShape(ast, statement) == null) return false;
+
+        const statement_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement));
+        const body_nodes = ast_walk.collectReachableNodeIndicesFrom(
+            allocator,
+            ast,
+            statement_idx,
+        ) catch return false;
+        defer allocator.free(body_nodes);
+        for (body_nodes) |raw| {
+            if (raw >= ast.nodes.items.len or semantic.scope_owner_map.contains(raw)) return false;
+            const body_node = ast.nodes.items[raw];
+            switch (body_node.tag) {
+                .binding_identifier, .with_statement => return false,
+                .identifier_reference => if (Scanner.identifierNamesEqual(
+                    ast.identifierNameText(body_node),
+                    "eval",
+                )) return false,
+                else => {},
+            }
+        }
+    }
+    return found_drop;
+}
+
 fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
     for (ast.nodes.items) |node| {
         if (node.tag == .expression_statement and drop_mod.isConsoleCallInAst(ast, node)) return true;
@@ -7169,9 +7218,10 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
     // so it does not make the semantic graph preflight a graph-changing pass.
-    var found_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
-        retained_simple_console_drops or safe_styled_components or
+    var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or retained_simple_define or
+        safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
+    var found_transform = found_other_transform or retained_simple_console_drops;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
         if (scope.subtree_has_direct_eval) {
@@ -7187,24 +7237,40 @@ fn canKeepPrepassSemanticGraph(
         if (std.mem.startsWith(u8, tag_name, "flow_") and !is_flow_match_tag and
             !is_flow_enum_tag and !is_flow_component_wrapper and
             !isTypeErasureTag(node.tag)) return false;
-        if (isTypeErasureTag(node.tag)) found_transform = true;
+        if (isTypeErasureTag(node.tag)) {
+            found_transform = true;
+            found_other_transform = true;
+        }
         switch (node.tag) {
-            .flow_match_expression => found_transform = true,
+            .flow_match_expression => {
+                found_transform = true;
+                found_other_transform = true;
+            },
             // Flow enum bindings and member initializer references already
             // have exact parser identities; lowering preserves those edges.
-            .flow_enum_declaration => found_transform = true,
+            .flow_enum_declaration => {
+                found_transform = true;
+                found_other_transform = true;
+            },
             .flow_enum_member => {},
             // The forwardRef helper binding and its call reference are added
             // to the edited graph by the Flow component visitor.
-            .flow_component_wrapper => found_transform = true,
+            .flow_component_wrapper => {
+                found_transform = true;
+                found_other_transform = true;
+            },
             // `export =` lowers to `module.exports = ...`; parser and AST scans
             // both preserve that CommonJS graph signal before and after lowering.
-            .ts_export_assignment => found_transform = true,
+            .ts_export_assignment => {
+                found_transform = true;
+                found_other_transform = true;
+            },
             .ts_import_equals_declaration => {
                 const local_supported = isSupportedLocalImportEquals(ast, node);
                 const external_supported = isSupportedExternalRequireImportEquals(ast, node);
                 if (!local_supported and !external_supported) return false;
                 found_transform = true;
+                found_other_transform = true;
             },
             .export_all_declaration => {
                 const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(raw_node_idx))));
@@ -7214,6 +7280,7 @@ fn canKeepPrepassSemanticGraph(
                 const top_level_mask = if (top_level_statements) |*mask| mask else return false;
                 if (!isSupportedPlainExportAll(ast, node_idx, top_level_mask)) return false;
                 found_transform = true;
+                found_other_transform = true;
             },
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
@@ -7238,10 +7305,12 @@ fn canKeepPrepassSemanticGraph(
             .ts_enum_declaration => {
                 if (!isSupportedRuntimeTsEnum(ast, node)) return false;
                 found_transform = true;
+                found_other_transform = true;
             },
             .ts_module_declaration => {
                 if (node.data.binary.flags != 0) return false;
                 found_transform = true;
+                found_other_transform = true;
             },
             .for_of_statement => {
                 if (options.unsupported.for_of and !safe_graph_subset) return false;
@@ -7249,6 +7318,7 @@ fn canKeepPrepassSemanticGraph(
                 // edits its loop-head SymbolIds and records generated output
                 // bindings in their scopes. Preserve that exact graph.
                 found_transform = true;
+                found_other_transform = true;
             },
             .class_declaration, .class_expression => {
                 // The audited subset validates top-level and direct function-body
@@ -7262,6 +7332,7 @@ fn canKeepPrepassSemanticGraph(
                 // bounded methods/constructors followed by an accessor group; their
                 // helper, class reference, and scopes are tracked.
                 found_transform = true;
+                found_other_transform = true;
             },
             .identifier_reference => {
                 const raw_name = ast.identifierNameText(node);
@@ -7313,8 +7384,16 @@ fn canKeepPrepassSemanticGraph(
         semantic,
         options.drop_labels,
     );
+    const direct_eval_console_drop_is_safe = has_direct_eval and retained_simple_console_drops and
+        !found_other_transform and !has_dropped_labeled_statement and
+        !options.minify_syntax and
+        droppedConsoleCallsPreserveDynamicEnvironment(
+            self.allocator,
+            ast,
+            semantic,
+        );
     const safe_graph = if (has_direct_eval)
-        (!has_any_transform or direct_eval_label_drop_is_safe) and unchanged_graph_is_safe
+        (!has_any_transform or direct_eval_label_drop_is_safe or direct_eval_console_drop_is_safe) and unchanged_graph_is_safe
     else
         has_any_transform or unchanged_graph_is_safe;
     allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
@@ -9151,7 +9230,7 @@ fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
     );
 }
 
-fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
+fn canKeepDirectEvalPrepassForTest(source: []const u8, options: TransformOptions) !bool {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -9199,8 +9278,6 @@ fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
         .styled_components = false,
         .emotion = false,
     };
-    const labels = [_][]const u8{ "DEV", "TEST" };
-    const options: TransformOptions = .{ .strip_types = true, .drop_labels = &labels };
     var allow_super_get = false;
     var allow_super_set = false;
     return canKeepPrepassSemanticGraph(
@@ -9212,6 +9289,24 @@ fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
         &allow_super_set,
         null,
     );
+}
+
+fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
+    const labels = [_][]const u8{ "DEV", "TEST" };
+    const options: TransformOptions = .{ .strip_types = true, .drop_labels = &labels };
+    return canKeepDirectEvalPrepassForTest(source, options);
+}
+
+fn canRetainDirectEvalConsoleDropForTestWithOptions(
+    source: []const u8,
+    options: TransformOptions,
+) !bool {
+    return canKeepDirectEvalPrepassForTest(source, options);
+}
+
+fn canRetainDirectEvalConsoleDropForTest(source: []const u8) !bool {
+    const options: TransformOptions = .{ .strip_types = true, .drop_console = true };
+    return canRetainDirectEvalConsoleDropForTestWithOptions(source, options);
 }
 
 test "drop-label TLA retains the graph only for native TLA output" {
@@ -9239,6 +9334,48 @@ test "drop-label retention with direct eval requires an unchanged dynamic enviro
     for (cases) |case| {
         try std.testing.expectEqual(case.retain, try canRetainDroppedLabelWithEvalForTest(case.source));
     }
+}
+
+test "drop-console retention with direct eval requires unchanged dynamic scope" {
+    const Case = struct {
+        source: []const u8,
+        retain: bool,
+    };
+    const cases = [_]Case{
+        .{ .source = "function read(value) { console.log('gone'); return eval('value'); }", .retain = true },
+        .{ .source = "function read() { const hidden = 40; console.log('gone'); return eval('hidden'); }", .retain = true },
+        .{ .source = "function read() { console.log('gone'); console.warn('gone too'); return eval('40'); }", .retain = true },
+        .{ .source = "console.log(eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); }", .retain = false },
+        .{ .source = "console.log(\\u0065val('40')); function read() { return eval('42'); }", .retain = false },
+        .{ .source = "console.log(() => 40); function read() { return eval('42'); }", .retain = false },
+        .{ .source = "function read() { console.log('gone'); class Local {} return eval('40'); }", .retain = false },
+        .{ .source = "console.log('safe'); console.warn(eval('40')); function read() { return eval('42'); }", .retain = false },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.retain, try canRetainDirectEvalConsoleDropForTest(case.source));
+    }
+
+    const minify_syntax: TransformOptions = .{
+        .strip_types = true,
+        .drop_console = true,
+        .minify_syntax = true,
+    };
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "function read(value) { console.log('gone'); return eval('value'); }",
+        minify_syntax,
+    ));
+
+    const labels = [_][]const u8{"DEV"};
+    const drop_label_and_console: TransformOptions = .{
+        .strip_types = true,
+        .drop_console = true,
+        .drop_labels = &labels,
+    };
+    try std.testing.expect(!try canRetainDirectEvalConsoleDropForTestWithOptions(
+        "DEV: { console.log('gone'); } function read() { return eval('42'); }",
+        drop_label_and_console,
+    ));
 }
 
 test "TLA refresh is limited to retained edits that can remove module await" {

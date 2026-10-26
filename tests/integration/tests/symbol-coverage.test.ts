@@ -5235,6 +5235,99 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'ok',
       },
       {
+        name: 'direct eval retains graph across console-only removal',
+        source:
+          "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'direct eval still reads a surviving local after console removal',
+        source:
+          "function read() { const hidden = 40; console.log('gone'); return eval('hidden'); } process.stdout.write(String(read() + 2));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'all declaration-free console calls are checked before retaining direct eval graph',
+        source:
+          "console.log('gone'); console.warn('gone too'); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'eval side effect inside removed console argument stays on reanalysis',
+        source:
+          "console.log(eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'escaped eval inside removed console argument stays on reanalysis',
+        source:
+          "console.log(\\u0065val('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'removed function scope in console argument stays on reanalysis with direct eval',
+        source:
+          "console.log(() => 40); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'other class transform prevents direct eval console retention',
+        source:
+          "function read() { console.log('gone'); class Local {} return eval('40'); } process.stdout.write(String(read() + 2));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'a later console call containing eval forces reanalysis',
+        source:
+          "console.log('safe'); console.warn(eval('40')); function read() { return eval('42'); } process.stdout.write(String(read()));",
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'direct eval in a later argument of the same dropped call forces reanalysis',
+        source:
+          "console.log('safe', eval('globalThis.__removed_eval = 40')); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'direct eval nested in a removed template argument forces reanalysis',
+        source:
+          "console.log(`value=${eval('globalThis.__removed_eval = 40')}`); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'direct eval nested in a removed computed property forces reanalysis',
+        source:
+          "console.log({ [eval('globalThis.__removed_eval = 40')]: 1 }); function read() { return eval('typeof __removed_eval'); } process.stdout.write(read());",
+        graph: 'reanalyzed',
+        stdout: 'undefined',
+      },
+      {
+        name: 'minify syntax with direct eval keeps the analyzer fallback',
+        source:
+          "function read(value) { console.log('gone'); return eval('value'); } process.stdout.write(String(read(42)));",
+        args: ['--minify-syntax'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'drop labels plus console with direct eval keeps the analyzer fallback',
+        source:
+          "DEV: { console.log('gone'); } function read() { return eval('42'); } process.stdout.write(String(read()));",
+        args: ['--drop-labels=DEV'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'dropping the only top-level await retains the graph',
         source: "console.log(await Promise.resolve(42)); process.stdout.write('ok');",
         graph: 'retained',
@@ -5301,6 +5394,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             '--platform=node',
             `--format=${'format' in item ? item.format : 'cjs'}`,
             '--drop=console',
+            ...('args' in item ? item.args : []),
             '-o',
             output,
           ],
