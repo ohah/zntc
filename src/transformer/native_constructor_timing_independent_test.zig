@@ -338,3 +338,12 @@ test "independent native constructor simple formal eligibility boundaries" {
         try std.testing.expectEqual(@as(usize, 1), checked);
     }
 }
+
+test "independent native constructor escaped parameter property ordering" {
+    try checkTypedName(
+        "let saved,log=[];class P{}class D extends P{value=(log.push(this.arg),saved());constructor(public \\u0061rg:number){saved=()=>this;super();log.push(this.arg)}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.arg,log]));",
+        "let saved,log=[];class P{}class D extends P{value=(log.push(this.arg),saved());constructor(arg){saved=()=>this;super();this.arg=arg;log.push(this.arg)}}let d=new D(42);console.log(JSON.stringify([d.value===d,d.arg,log]));",
+        "input.cts",
+        123,
+    );
+}
