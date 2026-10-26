@@ -1567,6 +1567,10 @@ test "dynamic body wrapper native runtime and source arguments controls" {
         .{ .source = "function read({a=1,...rest},code){try{return typeof eval(code)}catch(e){return e.name}}", .call = "read({a:1},String.fromCharCode(95,98))" },
         .{ .source = "function read({a=1,...rest},code){return JSON.stringify(eval(code))}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9,10)" },
         .{ .source = "function read({a=1,...rest},code){var rest;return JSON.stringify(eval(code))}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9,10)" },
+        .{ .source = "function read({[rest]:a,...rest},code){eval('a');return a}function run(){try{return read({undefined:7},'a',9)}catch(e){return e.name}}", .call = "run()" },
+        .{ .source = "function read({a=rest,...rest},code){eval('a');return a}function run(){try{return read({},'a',9)}catch(e){return e.name}}", .call = "run()" },
+        .{ .source = "function read({a=()=>rest,...rest},code){var rest;return [a().b,JSON.stringify(eval(code))]}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9)" },
+        .{ .source = "function read({a=()=>rest,...rest},code){function rest(){return 9}return [a().b,eval(code)()]}", .call = "read({b:2},String.fromCharCode(114,101,115,116),9)" },
     }, 0..) |case, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1836,6 +1840,129 @@ test "dynamic body wrapper implicit arguments copy is born in actual scopes" {
         try std.testing.expect(directive.tag == .directive);
     }
     try std.testing.expectEqual(@as(usize, 1), actual_wrappers);
+}
+
+test "dynamic body wrapper lexical parameter shadow is exact before final walk" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer.zig").Transformer;
+    const scope_utils = @import("../output_scope_test_utils.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "function read({a=()=>rest,...rest},code){var arguments;var rest;return [a(),eval(code),arguments]}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var source_rest: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, symbol.nameText(parser.ast.source), "rest")) source_rest = @intCast(raw);
+    }
+    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = @import("../compat.zig").fromESTarget(.es2017), .emit_runtime_helper_imports = false });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
+    try t.buildBlockRenameMap();
+    const output = try t.visitNode(root);
+    try t.registerGeneratedFunctionScopes(output, t.programScope());
+    try lowerAllFunctionParams(&t, output);
+    const editor = &t.semantic_editor.?;
+    const live = try ast_walk.collectReachableNodeIndicesFrom(a, t.ast, output);
+    var parents = try scope_utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (live) |raw| if (t.outputOwnedScope(@fromBackingInt(raw))) |scope| {
+        try owners.put(a, raw, @backingInt(scope));
+    };
+    const source_id = source_rest.?;
+    const lexical_scope = editor.symbols.items[source_id].scope_id;
+    try std.testing.expect(editor.symbols.items[source_id].kind == .variable_let);
+    var source_declaration: NodeIndex = .none;
+    var declarations: usize = 0;
+    for (live) |raw| {
+        const node = t.ast.nodes.items[raw];
+        if (node.tag != .variable_declaration or t.ast.variableDeclarationKind(node) != .let) continue;
+        const start = t.ast.readExtra(node.data.extra, 1);
+        if (t.ast.readExtra(node.data.extra, 2) != 1) continue;
+        const decl = t.ast.getNode(t.ast.readExtraNode(start, 0));
+        const binding = t.ast.readExtraNode(decl.data.extra, 0);
+        if (t.getSymbolIdAt(binding) != source_id) continue;
+        declarations += 1;
+        source_declaration = @fromBackingInt(raw);
+        try std.testing.expect(!t.ast.readExtraNode(decl.data.extra, 2).isNone());
+        try std.testing.expectEqual(@as(?@import("../../semantic/scope.zig").ScopeId, lexical_scope), scope_utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(binding)));
+    }
+    try std.testing.expectEqual(@as(usize, 1), declarations);
+    var plan: es2015_params.NativeArgumentShadow = .{
+        .ast_owner = t.ast,
+        .function_owner = .none,
+        .body_scope = editor.scopes.items[lexical_scope.toIndex()].parent,
+        .scope = lexical_scope,
+        .source_symbol = source_id,
+        .source_declaration = source_declaration,
+    };
+    for (live) |raw| {
+        const idx: NodeIndex = @fromBackingInt(raw);
+        const node = t.ast.getNode(idx);
+        if (node.tag == .block_statement and t.outputOwnedScope(idx) == lexical_scope) plan.block = idx;
+        if (node.tag != .function_declaration or t.outputOwnedScope(idx) != plan.body_scope) continue;
+        plan.function_owner = idx;
+        const params = t.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params);
+        const list = t.ast.getNode(params).data.list;
+        const last = t.ast.getNode(t.ast.readExtraNode(list.start, list.len - 1));
+        try std.testing.expect(last.tag == .assignment_pattern);
+        plan.native_symbol = t.getSymbolIdAt(last.data.binary.left);
+    }
+    try std.testing.expect(validNativeArgumentShadow(&t, plan));
+    var wrong = plan;
+    wrong.source_symbol = plan.native_symbol.?;
+    try std.testing.expect(!validNativeArgumentShadow(&t, wrong));
+    wrong = plan;
+    wrong.native_symbol = plan.source_symbol;
+    try std.testing.expect(!validNativeArgumentShadow(&t, wrong));
+    wrong = plan;
+    wrong.scope = plan.body_scope;
+    try std.testing.expect(!validNativeArgumentShadow(&t, wrong));
+    wrong = plan;
+    wrong.function_owner = plan.block;
+    try std.testing.expect(!validNativeArgumentShadow(&t, wrong));
+    wrong = plan;
+    wrong.source_declaration = plan.block;
+    try std.testing.expect(!validNativeArgumentShadow(&t, wrong));
+    const saved_flags = editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval;
+    try std.testing.expect(saved_flags);
+    editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval = false;
+    try std.testing.expect(!validNativeArgumentShadow(&t, plan));
+    editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval = saved_flags;
+    const saved_parent = editor.scopes.items[lexical_scope.toIndex()].parent;
+    editor.scopes.items[lexical_scope.toIndex()].parent = t.programScope();
+    try std.testing.expect(!validNativeArgumentShadow(&t, plan));
+    editor.scopes.items[lexical_scope.toIndex()].parent = saved_parent;
+    try std.testing.expect(validNativeArgumentShadow(&t, plan));
+
+    var reads: usize = 0;
+    for (editor.references.items) |row| {
+        if (@backingInt(row.symbol_id) != source_id or !row.flags.read or row.node_index.isNone()) continue;
+        var reachable = false;
+        for (live) |raw| if (raw == @backingInt(row.node_index)) {
+            reachable = true;
+            break;
+        };
+        if (!reachable) continue;
+        reads += 1;
+        try std.testing.expectEqual(@as(?@import("../../semantic/scope.zig").ScopeId, row.scope_id), scope_utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(row.node_index)));
+    }
+    try std.testing.expect(reads > 0);
 }
 
 test "dynamic body wrapper shared function cells retain source identities before final walk" {
