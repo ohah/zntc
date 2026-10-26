@@ -115,7 +115,8 @@ pub fn build(self: anytype, call: ast.NodeIndex, scope: ScopeId, span: Span) !Dr
     const assign_throw = try helpers.makeAssignStmt(self, try ref(self, step.value, catch_scope, span, true), thrown, span, 0);
     const again = try self.ast.addNode(.{ .tag = .continue_statement, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
     self.ast.nodes.items[@backingInt(caught)].data.binary.left = error_binding;
-    self.ast.nodes.items[@backingInt(caught)].data.binary.right = try block(self, &.{ assign_throw, again }, span);
+    const catch_body = try block(self, &.{ assign_throw, again }, span);
+    self.ast.nodes.items[@backingInt(caught)].data.binary.right = catch_body;
     const attempt = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = try_body, .b = caught, .c = .none } } });
     const next = try invoke(self, iterator.value, scope, "next", &.{try ref(self, value.value, scope, span, false)}, span);
     const assign_next = try helpers.makeAssignStmt(self, try ref(self, step.value, scope, span, true), next, span, 0);
