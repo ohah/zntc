@@ -2436,12 +2436,12 @@ pub fn emitModule(
     // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
     // dev_mode 에선 skip — 병합은 출력 크기 최적화용이라 런타임 의미 불변. HMR 체감 우선.
     if (!options.dev_mode) {
-        @import("../transformer/minify.zig").mergeDecls(
-            transformer.ast,
-            root,
-            if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
-            arena_alloc,
-        );
+        const merge_skip = if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null;
+        if (module.semantic) |semantic| {
+            try @import("strict_function_context.zig").mergeOutputDeclarations(transformer.ast, semantic, root, merge_skip, arena_alloc);
+        } else {
+            @import("../transformer/minify.zig").mergeDecls(transformer.ast, root, merge_skip, arena_alloc);
+        }
     }
 
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)

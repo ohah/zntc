@@ -140,6 +140,18 @@ pub fn validateContext(ast: *const ast_mod.Ast, semantic: anytype, allocator: st
     for (context.functions) |role| try validate(ast, semantic, role, allocator);
 }
 
+/// Keep each validated factory declaration as the emitter's exact producer
+/// anchor. Ordinary declarations can still merge around these live boundaries.
+pub fn mergeOutputDeclarations(ast: *ast_mod.Ast, semantic: anytype, root: NodeIndex, skip_nodes: ?*const std.DynamicBitSet, allocator: std.mem.Allocator) !void {
+    var preserved: std.ArrayList(NodeIndex) = .empty;
+    defer preserved.deinit(allocator);
+    for (semantic.strict_output_context.functions) |role| {
+        if (role.kind == .factory) try preserved.append(allocator, role.declaration);
+    }
+    if (preserved.items.len != 0) try validateContext(ast, semantic, allocator);
+    @import("../transformer/minify.zig").mergeDeclsPreserving(ast, root, skip_nodes, preserved.items, allocator);
+}
+
 pub fn remapProgram(context: *OutputContext, previous: NodeIndex, next: NodeIndex) !void {
     if (context.program.isNone()) return;
     if (context.program != previous or next.isNone()) return error.InvalidStrictFunctionRole;
@@ -1019,5 +1031,59 @@ test "strict function census permits actual var redeclarations sharing a source 
         try std.testing.expectEqual(owner, module.semantic.?.owner_token);
         try std.testing.expectEqual(symbols, module.semantic.?.symbols.items.len);
         try expectStableReapplication(&module, allocator);
+    }
+}
+
+test "strict adjacent factories keep their actual declaration owners through emission merge" {
+    const sources = [_][]const u8{
+        "export function first(value=1){return this}export function second(value=2){return this}",
+        "export function first(value=1){return this}export function second(value=2){return this}export function third(value=3){return this}",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(allocator, source);
+        scanner.is_module = true;
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.is_module = true;
+        const root = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        var module = Module.init(@fromBackingInt(@as(u32, 0)), "strict.mjs");
+        module.ast = parser.ast;
+        module.source = source;
+        module.parse_arena = &arena;
+        module.wrap_kind = .esm;
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+        };
+        try lowerModule(&module);
+        const ast = &module.ast.?;
+        const owner = module.semantic.?.captureOwnerToken();
+        const current = module.semantic.?;
+        try validateContext(ast, current, allocator);
+        const roles = try allocator.dupe(Role, current.strict_output_context.functions);
+        try mergeOutputDeclarations(ast, current, root, null, allocator);
+        try mergeOutputDeclarations(ast, current, root, null, allocator);
+        try std.testing.expectEqualDeep(roles, current.strict_output_context.functions);
+        try std.testing.expectEqual(owner, module.semantic.?.captureOwnerToken());
+        for (roles) |role| {
+            const declaration = ast.getNode(role.declaration);
+            try std.testing.expectEqual(.variable_declaration, declaration.tag);
+            try std.testing.expectEqual(@as(u32, 1), ast.extra_data.items[declaration.data.extra + 2]);
+        }
+        try validateContext(ast, current, allocator);
     }
 }

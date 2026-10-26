@@ -1523,6 +1523,12 @@ pub fn convertConstToLetPreserving(ast: *Ast, preserved_declarations: []const u3
 /// `scratch_allocator`는 emit 단위 allocator를 사용한다. 캐시된 AST allocator에
 /// 방문 표를 할당하면 watch 재빌드마다 모듈 수명 동안 임시 메모리가 누적된다.
 pub fn mergeDecls(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBitSet, scratch_allocator: std.mem.Allocator) void {
+    mergeDeclsPreserving(ast, root, skip_nodes, &.{}, scratch_allocator);
+}
+
+/// Known declaration owners are merge boundaries, including when adjacent
+/// declarations are otherwise compatible. They remain live and keep their order.
+pub fn mergeDeclsPreserving(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBitSet, preserved_declarations: []const NodeIndex, scratch_allocator: std.mem.Allocator) void {
     var arena = std.heap.ArenaAllocator.init(scratch_allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1550,6 +1556,9 @@ pub fn mergeDecls(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBit
         }
         var children = ast_walk.children(ast, node);
         while (children.next()) |child| stack.append(scratch, child) catch return;
+    }
+    for (preserved_declarations) |declaration| {
+        if (!declaration.isNone() and @backingInt(declaration) < shared.capacity()) shared.set(@backingInt(declaration));
     }
     for (parents.items) |raw| mergeAdjacentDecls(ast, raw, ast.nodes.items[raw], skip_nodes, &shared);
 }
