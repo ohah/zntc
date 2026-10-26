@@ -87,7 +87,7 @@ fn checkBirth(source: []const u8) !void {
 fn checkBirthOwned(source: []const u8, require_owned_clones: bool) !void {
     var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
     unsupported.arrow = true;
-    return checkBirthWithOwnedOptions(source, ".cjs", unsupported, require_owned_clones);
+    return checkBirthWithOwnedOptions(source, ".cjs", unsupported, require_owned_clones, false);
 }
 
 fn checkBirthProfile(source: []const u8, unsupported: @TypeOf(@import("transformer.zig").TransformOptions.compat.fromESTarget(.es2015))) !void {
@@ -101,10 +101,10 @@ fn checkTypedBirth(source: []const u8, extension: []const u8) !void {
 }
 
 fn checkBirthWithOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures) !void {
-    return checkBirthWithOwnedOptions(source, extension, unsupported, false);
+    return checkBirthWithOwnedOptions(source, extension, unsupported, false, false);
 }
 
-fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures, require_owned_clones: bool) !void {
+fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsupported: @import("transformer.zig").TransformOptions.compat.UnsupportedFeatures, require_owned_clones: bool, require_engine_clones: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -132,6 +132,7 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
     t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     t.semantic_edit_enabled = true;
     t.record_explicit_global_references = true;
+    try t.buildBlockRenameMap();
     const output = try t.visitNode(root);
     const utils = @import("output_scope_test_utils.zig");
     var parents = try utils.buildParentMap(a, t.ast, output);
@@ -158,6 +159,28 @@ fn checkBirthWithOwnedOptions(source: []const u8, extension: []const u8, unsuppo
                     return error.UnprovenRuntimeExternal;
                 }
             }
+        }
+    }
+    if (require_engine_clones) {
+        try std.testing.expect(t.native_arguments_declaration_origins.count() >= 2);
+        var engines = t.native_arguments_declaration_origins.iterator();
+        var engine_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        while (engines.next()) |engine| {
+            const id = engine.key_ptr.*;
+            const scope = engine.value_ptr.*;
+            const symbol = t.semantic_editor.?.symbols.items[id];
+            try std.testing.expectEqual(scope, symbol.scope_id);
+            try std.testing.expect(symbol.synthetic_kind == .implicit_arguments);
+            const gop = try engine_scopes.getOrPut(a, @backingInt(scope));
+            try std.testing.expect(!gop.found_existing);
+            var declares: usize = 0;
+            for (t.semantic_editor.?.references.items) |row| {
+                if (@backingInt(row.symbol_id) != id or !row.flags.declare) continue;
+                declares += 1;
+                try std.testing.expectEqual(scope, row.scope_id);
+                try std.testing.expect(row.stmt_idx != @import("../semantic/symbol.zig").Reference.NO_STMT);
+            }
+            try std.testing.expectEqual(@as(usize, 1), declares);
         }
     }
     var checked: usize = 0;
@@ -501,6 +524,7 @@ const private_owned_clone_sources = [_][]const u8{
     "let saved;class P{}class D extends P{#value=()=>this;read(){return this.#value}constructor(flag){saved=()=>this;if(flag){let _this=11;super();this.argument=_this}else{let _this=22;super();this.argument=_this}}}const a=new D(true),b=new D(false);console.log(JSON.stringify([a.read().name,b.read().name,a.read()()===a,b.read()()===b,a.argument,b.argument]));",
     "let saved;class P{}class D extends P{#value=function named(parameter){let local=parameter;local++;return()=>[named,local,this]};read(){return this.#value}constructor(flag){saved=()=>this;if(flag){super()}else{super()}}}const a=new D(true),b=new D(false),f=a.read(),g=b.read();const x=f.call(a,7)(),y=g.call(b,11)();console.log(JSON.stringify([f.name,g.name,x[0]===f,y[0]===g,x[1],y[1],x[2]===a,y[2]===b]));",
     "let saved;class P{}class D extends P{#value=class Inner{read(){return Inner}};read(){return this.#value}constructor(flag){saved=()=>this;if(flag){super()}else{super()}}}const a=new D(true),b=new D(false),A=a.read(),B=b.read();console.log(JSON.stringify([A.name,B.name,new A().read()===A,new B().read()===B,A!==B]));",
+    "let saved;class P{}class D extends P{#value=function named(value){return()=>arguments[0]};read(){return this.#value}constructor(flag){saved=()=>this;if(flag){super()}else{super()}}}const a=new D(true),b=new D(false);console.log(JSON.stringify([a.read()(11)(),b.read()(22)()]));",
 };
 test "independent moved private owned clone native 0" {
     try checkName(private_owned_clone_sources[0], 300);
@@ -515,4 +539,14 @@ test "independent moved private owned clone native 2" {
 test "independent moved private multi super before output walker exact site tuples" {
     for ([_]usize{ 4, 6, 9 }) |index| try checkBirth(private_super_sources[index]);
     for (private_owned_clone_sources) |source| try checkBirthOwned(source, true);
+}
+
+test "independent moved private owned clone native 3" {
+    try checkName(private_owned_clone_sources[3], 303);
+}
+
+test "independent moved private actual engine clone before output walker" {
+    var unsupported = @import("transformer.zig").TransformOptions.compat.fromReactNativeVersion(0, 80);
+    unsupported.arrow = true;
+    try checkBirthWithOwnedOptions(private_owned_clone_sources[3], ".cjs", unsupported, true, true);
 }
