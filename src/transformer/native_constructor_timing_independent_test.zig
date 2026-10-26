@@ -152,3 +152,46 @@ test "independent native constructor timing before output walker exact birth tup
     try t.native_constructor_statement_handoffs.put(a, raw, publication);
     try edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
 }
+
+const moved_private_sources = [_][]const u8{
+    "let saved;class P{}class D extends P{#value=()=>this;read(){return this.#value}constructor(){saved=()=>this;super()}}let d=new D;console.log(JSON.stringify([d.read().name,d.read()()===d,saved()===d]));",
+    "let saved,log=[];class P{constructor(){log.push(\"base\")}}class D extends P{#value=(log.push(\"field\"),function(){});read(){return this.#value}constructor(){log.push(\"before\");saved=()=>this;super();log.push(\"after\")}}new D;console.log(JSON.stringify(log));",
+    "let saved;class P{}class D extends P{constructor(_this){saved=()=>this;super();this.argument=_this}#value=()=>this;read(){return this.#value}}let d=new D(42);console.log(JSON.stringify([d.read()()===d,saved()===d,d.argument]));",
+    "let saved;class P{}class D extends P{#a=()=>this;#b=()=>this;read(){return[this.#a.name,this.#b.name,this.#a()===this,this.#b()===this]}constructor(){saved=()=>this;super()}}console.log(JSON.stringify(new D().read()));",
+    "let saved;class P{}class D extends P{#value=()=>()=>this;read(){return this.#value()()}constructor(){saved=()=>this;super()}}let d=new D;console.log(JSON.stringify([d.read()===d,saved()===d]));",
+    "let saved;class P{}class D extends P{#value=()=>function(){return this};read(){return this.#value()}constructor(){saved=()=>this;super()}}let d=new D;let f=d.read();console.log(JSON.stringify([f()===undefined,f.call(42)===42,saved()===d]));",
+    "let saved;class P{get value(){return this.answer}}class D extends P{#value=()=>super.value;answer=42;read(){return this.#value()}constructor(){saved=()=>this;super()}}let d=new D;console.log(JSON.stringify([d.read(),saved()===d]));",
+    "let saved;function build(){return class extends Object{#value=()=>this;read(){return this.#value}constructor(){saved=()=>this;super()}}}let D=build(),a=new D,b=new D;console.log(JSON.stringify([a.read()()===a,b.read()()===b,a.read()!==b.read()]));",
+    "let saved;class Host{static build(){return class extends Object{#value=()=>this;read(){return this.#value}constructor(){saved=()=>this;super()}}}}let D=Host.build(),d=new D;console.log(JSON.stringify([d.read()()===d,saved()===d]));",
+    "let saved;class P{constructor(){return{answer:42}}}class D extends P{#value=()=>this;read(){return this.#value}constructor(){saved=()=>this;super();this.get=()=>this.#value}}let d=new D;console.log(JSON.stringify([d.get()()===d,saved()===d,d.answer]));",
+};
+test "independent moved private field native 0" {
+    try checkName(moved_private_sources[0], 100);
+}
+test "independent moved private field native 1" {
+    try checkName(moved_private_sources[1], 101);
+}
+test "independent moved private field native 2" {
+    try checkName(moved_private_sources[2], 102);
+}
+test "independent moved private field native 3" {
+    try checkName(moved_private_sources[3], 103);
+}
+test "independent moved private field native 4" {
+    try checkName(moved_private_sources[4], 104);
+}
+test "independent moved private field native 5" {
+    try checkName(moved_private_sources[5], 105);
+}
+test "independent moved private field native 6" {
+    try checkName(moved_private_sources[6], 106);
+}
+test "independent moved private field native 7" {
+    try checkName(moved_private_sources[7], 107);
+}
+test "independent moved private field native 8" {
+    try checkName(moved_private_sources[8], 108);
+}
+test "independent moved private field native 9" {
+    try checkName(moved_private_sources[9], 109);
+}

@@ -1117,6 +1117,28 @@ pub fn ES2022(comptime Transformer: type) type {
         fn visitInstanceFieldInitValue(self: *Transformer, init_idx: NodeIndex, source_scope: ScopeId) Transformer.Error!NodeIndex {
             try self.reparentGeneratedBodyScopes(source_scope, self.current_scope, init_idx);
             try @import("class_strict_context.zig").moveSourceReferences(self, init_idx, source_scope, source_scope, self.current_scope);
+            // The moved initializer executes in the actual constructor, but
+            // is built before visiting its method. Give its arrows their own
+            // creation-time field receiver factory rather than borrowing an
+            // absent (or enclosing method's) lexical capture frame.
+            const capture = if (!self.options.unsupported.class and self.options.unsupported.arrow)
+                es_helpers.pushCaptureFrame(self)
+            else
+                null;
+            defer if (capture) |saved| es_helpers.popCaptureFrame(self, saved);
+            const saved_field_frame = self.retained_field_initializer_frame;
+            const saved_field_static = self.retained_field_initializer_static;
+            const saved_field_plan = self.retained_field_this_plan;
+            if (capture != null) {
+                self.retained_field_initializer_frame = self.capture_frame;
+                self.retained_field_initializer_static = false;
+                self.retained_field_this_plan = null;
+            }
+            defer {
+                self.retained_field_initializer_frame = saved_field_frame;
+                self.retained_field_initializer_static = saved_field_static;
+                self.retained_field_this_plan = saved_field_plan;
+            }
             const saved_super_is_static = self.current_super_is_static;
             const saved_method_is_static = self.current_method_is_static;
             self.current_super_is_static = false;

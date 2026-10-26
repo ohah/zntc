@@ -546,7 +546,14 @@ pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts
         if (stmt.tag != .expression_statement) continue;
         const operand = stmt.data.unary.operand;
         if (operand.isNone()) continue;
-        const call = self.ast.getNode(operand);
+        // Native derived-this capture can already have wrapped this exact
+        // super call in an assignment. Its result still establishes the
+        // constructor receiver before instance initializers execute.
+        var call = self.ast.getNode(operand);
+        while (call.tag == .assignment_expression) {
+            if (call.data.binary.right.isNone()) break;
+            call = self.ast.getNode(call.data.binary.right);
+        }
         if (call.tag != .call_expression) continue;
         const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[call.data.extra]));
         const callee = self.ast.getNode(callee_idx);
