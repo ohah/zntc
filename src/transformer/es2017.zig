@@ -1074,12 +1074,12 @@ test "async generator kept parameter engines preserve ten native contexts" {
                 try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
                 try std.testing.expectEqualStrings(native.stdout, actual.stdout);
             }
-            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es2015);
+            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es2015, 1);
         }
     }
 }
 
-fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool) !void {
+fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool, expected_forwards: usize) !void {
     const symbol_mod = @import("../semantic/symbol.zig");
     const utils = @import("output_scope_test_utils.zig");
     var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
@@ -1123,6 +1123,9 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
         try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), symbol.synthetic_kind);
         try std.testing.expectEqual(@as(?ScopeId, symbol.scope_id), t.native_arguments_declaration_origins.get(id));
         try std.testing.expect(!t.explicit_global_reference_nodes.contains(@backingInt(argument)));
+        const creation = t.native_arguments_reference_origins.get(@backingInt(argument)) orelse return error.MissingNativeReferenceCreationOrigin;
+        try std.testing.expectEqual(@as(u32, id), @backingInt(creation.symbol_id));
+        try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
         const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(argument)) orelse return error.MissingActualArgumentsScope;
         try std.testing.expect(use_scope != symbol.scope_id);
         try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
@@ -1148,7 +1151,7 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
         if (check_negative) try checkNativeArgumentsPublicationNegatives(&t, argument, helper);
         forwards += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), forwards);
+    try std.testing.expectEqual(expected_forwards, forwards);
 }
 
 fn checkNativeArgumentsPublicationNegatives(t: *@import("transformer.zig").Transformer, argument: NodeIndex, sibling: @import("../semantic/symbol.zig").SymbolId) !void {
@@ -1201,5 +1204,30 @@ fn checkNativeArgumentsPublicationNegatives(t: *@import("transformer.zig").Trans
         try std.testing.expectEqual(original.scope, restored.scope);
         try std.testing.expectEqual(original.stmt, restored.stmt);
         try std.testing.expectEqual(original.scope_stmt, restored.scope_stmt);
+    }
+}
+
+test "async generator kept parameter engines survive private initializer clones" {
+    const source = "class P{}class C extends P{#read=async function*inner(value=7){yield value};constructor(flag){if(flag)super();else super()}read(){return this.#read()}}(async()=>console.log((await new C(true).read().next()).value,(await new C(false).read().next()).value))();";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]@import("compat.zig").ESTarget{ .es2015, .es2017 }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                .unsupported = @import("compat.zig").fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("cloned native parameter engine target={s} minify={} code={s} stderr={s}\n", .{ @tagName(target), minify, result.code, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+        try checkKeptParameterEngineBirth(a, source, target, false, 2);
     }
 }

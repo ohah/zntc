@@ -24,9 +24,21 @@ pub fn namedExpressionScope(self: anytype, index: ast.NodeIndex, from: ScopeId) 
         scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[scope.toIndex()].kind != .block or
         editor.scopes.items[body_scope.toIndex()].kind != .function or
-        editor.scopes.items[scope.toIndex()].parent != from or
-        editor.scopes.items[body_scope.toIndex()].parent != scope)
+        editor.scopes.items[scope.toIndex()].parent != from)
         return error.InvalidCloneOwnership;
+    if (editor.scopes.items[body_scope.toIndex()].parent != scope) {
+        // A kept non-simple parameter list is the one explicit intermediate
+        // environment. Its actual AST carrier and both parent edges must agree.
+        if (!self.ast.hasExtra(node.data.extra, ast.FunctionExtra.params)) return error.InvalidCloneOwnership;
+        const params = self.ast.readExtraNode(node.data.extra, ast.FunctionExtra.params);
+        if (params.isNone() or @backingInt(params) >= self.ast.nodes.items.len or
+            self.ast.getNode(params).tag != .formal_parameters) return error.InvalidCloneOwnership;
+        const parameter_scope = self.outputOwnedScope(params) orelse return error.InvalidCloneOwnership;
+        if (parameter_scope.isNone() or parameter_scope == body_scope or parameter_scope == scope or
+            parameter_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[parameter_scope.toIndex()].kind != .function or
+            editor.scopes.items[body_scope.toIndex()].parent != parameter_scope or
+            editor.scopes.items[parameter_scope.toIndex()].parent != scope) return error.InvalidCloneOwnership;
+    }
     return scope;
 }
 
