@@ -1030,6 +1030,36 @@ pub const TreeShaker = struct {
                     reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
                 }
 
+                // A direct eval can read any lexical binding visible from its
+                // scope, including bindings whose only use is inside the eval
+                // string. `with` also makes lookup depend on a runtime object.
+                // Keep every top-level declaration in a module with a dynamic
+                // root; declared symbols' writer edges retain split initializers
+                // and duplicate var/function declarations. Missing scope data
+                // cannot prove a narrower set, so preserve all statements.
+                const has_exact_root_scope = if (m.semantic) |semantic| semantic.scopes.len > 0 else false;
+                const has_dynamic_root_scope = if (m.semantic) |semantic|
+                    semantic.scopes.len == 0 or semantic.scopes[0].blocksMangling()
+                else
+                    true;
+                if (has_dynamic_root_scope) {
+                    for (infos.stmts, 0..) |stmt, si| {
+                        if (!has_exact_root_scope) {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                            continue;
+                        }
+                        for (stmt.declared_symbols) |symbol| {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                            // A dynamic read observes the value after preceding
+                            // assignments too, even though its identifier is
+                            // hidden in source text. Preserve exact writer rows.
+                            for (infos.writerStmts(symbol)) |writer_stmt| {
+                                try self.enqueue(@intCast(i), writer_stmt, reachable_stmts, &queue);
+                            }
+                        }
+                    }
+                }
+
                 // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
                 // side-effect statement와 entry export seed만 살리고, local-only pure statement는
                 // BFS dependency로 필요할 때만 도달시킨다.
