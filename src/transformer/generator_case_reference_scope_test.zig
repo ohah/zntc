@@ -32,6 +32,9 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
         unsupported.class = false;
         unsupported.object_extensions = false;
     }
+    const require_program_coordinate_handoffs = full_driver and std.mem.indexOf(u8, source, "RLong=(nLong,log)") != null;
+    var transform_options = @import("transformer.zig").TransformOptions{ .unsupported = unsupported };
+    if (require_program_coordinate_handoffs) transform_options.emit_runtime_helper_imports = true;
     const Original = struct { sid: u32, read: bool, write: bool, stmt: u32, scope_stmt: u32 };
     var original: std.AutoHashMapUnmanaged(u32, Original) = .empty;
     for (analyzer.references.items) |ref| if (!ref.node_index.isNone() and !ref.flags.declare) {
@@ -47,7 +50,7 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
             }
         }
     }
-    var t = try Transformer.init(a, &parser.ast, .{ .unsupported = unsupported });
+    var t = try Transformer.init(a, &parser.ast, transform_options);
     try t.initSymbolIds(analyzer.symbol_ids.items);
     t.symbols = analyzer.symbols.items;
     t.references = analyzer.references.items;
@@ -73,6 +76,7 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
     var collected_function_roots: usize = 0;
     var var_storage_checks: usize = 0;
     var published_coordinate_checks: usize = 0;
+    var program_coordinate_handoff_checks: usize = 0;
     while (stack.pop()) |work| {
         if (work.node.isNone()) continue;
         const raw = @backingInt(work.node);
@@ -131,6 +135,17 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
             while (try bindings.next()) |binding| try output_bindings.put(a, @backingInt(binding), {});
         }
         if (actual.contains(raw) and !output_bindings.contains(raw)) {
+            if (require_program_coordinate_handoffs and node.tag == .identifier_reference and
+                std.mem.eql(u8, t.ast.identifierNameText(node), "log"))
+            {
+                const publication = t.generator_function_coordinate_handoffs.get(raw) orelse return error.MissingProgramCoordinateHandoff;
+                const row = (try t.semantic_editor.?.referenceForNode(work.node)) orelse return error.MissingPublishedProgramCoordinateReference;
+                program_coordinate_handoff_checks += 1;
+                try std.testing.expectEqual(@backingInt(row.symbol_id), @backingInt(publication.symbol_id));
+                try std.testing.expectEqual(scope, publication.scope);
+                try std.testing.expectEqual(work.stmt, publication.stmt);
+                try std.testing.expectEqual(work.local_stmt, publication.scope_stmt);
+            }
             if (t.tracked_runtime_helper_ref_index.get(raw)) |index| {
                 tracked_helper_refs += 1;
                 const tracked = t.tracked_runtime_helper_refs.items[index];
@@ -223,9 +238,14 @@ fn checkModeWithDriver(source: []const u8, native_lexical: bool, full_driver: bo
         t.generator_function_coordinate_handoffs.getPtr(raw).?.scope_stmt += 1;
         try std.testing.expectError(error.InvalidNode, @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
         t.generator_function_coordinate_handoffs.getPtr(raw).?.* = publication;
+
+        t.generator_function_coordinate_handoffs.getPtr(raw).?.stmt += 1;
+        try std.testing.expectError(error.InvalidNode, @import("transformer/semantic_edit.zig").bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+        t.generator_function_coordinate_handoffs.getPtr(raw).?.* = publication;
     }
     if (source_function_scopes.count() > 1) try std.testing.expect(collected_function_roots > 0);
     if (std.mem.indexOf(u8, source, "let local=") != null) try std.testing.expect(var_storage_checks > 0);
+    if (require_program_coordinate_handoffs) try std.testing.expect(program_coordinate_handoff_checks > 0);
     try std.testing.expect(checked > 0);
     try std.testing.expect(known_coordinates > 0);
     if (std.mem.indexOf(u8, source, "yield*") != null) try std.testing.expect(tracked_helper_refs > 0);
@@ -373,6 +393,12 @@ test "generator Annex B alias timing and FDI copies use exact source roles acros
 
 test "generator FDI var storage exists in its actual wrapper before final output walk" {
     const source = "let change;async function* run(value=1,set=(change=()=>value++)){var value;function read(){return value}yield value;return read();}const it=run();change();";
+    try checkModeWithDriver(source, false, true);
+    try checkModeWithDriver(source, true, true);
+}
+
+test "program statement reindexing does not widen generator publication authority" {
+    const source = "const RLong=(nLong,log)=>({[Symbol.dispose](){log.push('d'+nLong);}});const log=[];(async()=>{async function* src(){yield RLong(1,log);yield RLong(2,log);}for await(using xLong of src()){await 0;log.push('b');}})();";
     try checkModeWithDriver(source, false, true);
     try checkModeWithDriver(source, true, true);
 }

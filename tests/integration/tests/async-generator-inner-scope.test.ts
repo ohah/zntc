@@ -2,10 +2,14 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZntcInDir } from './helpers';
+import { createFixture, runZntcInDir, ZNTC_BIN } from './helpers';
 
 const capturedForAwait = readFileSync(
   join(import.meta.dir, '../fixtures/downlevel-oracle/forof-in-forawait-yield-capture.mjs'),
+  'utf8',
+);
+const generatorUsingForAwait = readFileSync(
+  join(import.meta.dir, '../fixtures/downlevel-oracle/4730-using-30.mjs'),
   'utf8',
 );
 
@@ -99,4 +103,29 @@ describe('async generator inner function scope (#4819)', () => {
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);
   });
+
+  for (const [targetName, target] of [
+    ['ES5', '--target=es5'],
+    ['Hermes', '--platform=react-native'],
+  ] as const) {
+    for (const minify of [false, true]) {
+      test(`bundle reindexes program coordinates without widening generator storage authority (#6355, ${targetName}, ${minify ? 'minified' : 'plain'})`, async () => {
+        const fixture = await createFixture({
+          'input.mjs': generatorUsingForAwait,
+          'package.json': '{"type":"module"}',
+        });
+        try {
+          const output = join(fixture.dir, 'out.mjs');
+          const result = spawnSync(
+            ZNTC_BIN,
+            ['--bundle', 'input.mjs', target, ...(minify ? ['--minify'] : []), '-o', output],
+            { cwd: fixture.dir, encoding: 'utf8', stdio: 'pipe' },
+          );
+          expect(result.status, result.stderr).toBe(0);
+        } finally {
+          await fixture.cleanup();
+        }
+      });
+    }
+  }
 });

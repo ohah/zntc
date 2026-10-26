@@ -109,23 +109,23 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  'a8bf0c9036d7ff673cb7c05277071e8cf4fef9c79618e48daead32703cfbffb5';
+  '01d5d05021da3dcdc2ee83a26b91f795c66cbdd1d666be00979fe82bc652c637';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14142,
-  'exact.generated_references': 45690,
+  'exact.generated_bindings': 14148,
+  'exact.generated_references': 45708,
   'exact.generated_scope_owners_checked': 13347,
   'exact.external': 13641,
   'exact.declaration_anchors_checked': 46209,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 7050,
-  'strict.bound': 57447,
+  'coverage.new_user_idents': 7068,
+  'strict.bound': 57471,
   'strict.external': 2211,
-  'strict.marked_synthetic': 50625,
+  'strict.marked_synthetic': 50631,
   'post.bindings': 46904,
-  'post.references': 103376,
+  'post.references': 103388,
   'post.external': 13641,
-  'post.helpers': 7797,
+  'post.helpers': 7803,
   'post.preserved_transform_refs': 204,
 } as const;
 const LOOP_BINDING_MANIFEST = [
