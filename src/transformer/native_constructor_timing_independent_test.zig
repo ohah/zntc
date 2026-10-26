@@ -833,6 +833,11 @@ fn checkDeferredSuperBirthWithPlacement(source: []const u8, target: @import("com
             }
             const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
             try declarations.validateLoweredSuperSite(&t, @fromBackingInt(raw), marker, .{ .frame = frame.?, .scope = scope, .target = @fromBackingInt(id) }, use_scope);
+            var result_declarations: usize = 0;
+            for (t.semantic_editor.?.references.items) |row| {
+                if (row.symbol_id == marker.result_symbol.? and row.flags.declare) result_declarations += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), result_declarations);
             const parent = t.ast.nodes.items[parents.get(raw).?];
             try std.testing.expectEqual(ast.Node.Tag.sequence_expression, parent.tag);
             const list = t.ast.extra_data.items[parent.data.list.start .. parent.data.list.start + parent.data.list.len];
@@ -1009,7 +1014,51 @@ test "deferred ES5 marker rejects sibling frame scope and SID" {
     t.semantic_editor.?.references.items[row_index].flags = .{ .read = true };
     try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
     t.semantic_editor.?.references.items[row_index] = row;
+    bad = marker;
+    bad.result_assignment = foreign.result_assignment;
+    try std.testing.expectError(error.InvalidNode, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.result_symbol = foreign.result_symbol;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.result_symbol = null;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.pending_result_producer_id = 1;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.result_scope = foreign.result_scope;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.evaluation_sequence = foreign.evaluation_sequence;
+    try std.testing.expectError(error.InvalidNode, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    bad = marker;
+    bad.check_symbol = foreign.target_symbol;
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, bad, owner, use_scope));
+    const evaluation = t.ast.getNode(marker.evaluation_sequence).data.list;
+    std.mem.swap(u32, &t.ast.extra_data.items[evaluation.start], &t.ast.extra_data.items[evaluation.start + 1]);
+    try std.testing.expectError(error.InvalidNode, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
+    std.mem.swap(u32, &t.ast.extra_data.items[evaluation.start], &t.ast.extra_data.items[evaluation.start + 1]);
+    const result_write = t.ast.getNode(marker.result_assignment).data.binary.left;
+    const result_row_index = t.semantic_editor.?.reference_index.get(@backingInt(result_write)).?;
+    const result_row = t.semantic_editor.?.references.items[result_row_index];
+    t.semantic_editor.?.references.items[result_row_index].flags = .{ .read = true };
+    try std.testing.expectError(error.InvalidSymbol, validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope));
+    t.semantic_editor.?.references.items[result_row_index] = result_row;
     try validation.validateLoweredSuperSite(&t, index, marker, owner, use_scope);
+    // This fragment owns AST, but its constructor cells and temp storage are
+    // external bindings. Copy only the exact producer handles and references.
+    var cloned = try @import("initializer_clone.zig").clone(&t, &.{marker.evaluation_sequence}, use_scope, use_scope);
+    defer cloned.deinit(a);
+    const cloned_index = cloned.nodes.get(raw).?;
+    const cloned_marker = t.generated_super_call_assignments.get(@backingInt(cloned_index)).?;
+    try std.testing.expect(cloned_index != index);
+    try std.testing.expect(cloned_marker.result_assignment != marker.result_assignment);
+    try std.testing.expect(cloned_marker.evaluation_sequence != marker.evaluation_sequence);
+    try std.testing.expectEqual(marker.target_symbol, cloned_marker.target_symbol);
+    try std.testing.expectEqual(marker.result_symbol, cloned_marker.result_symbol);
+    try std.testing.expectEqual(marker.check_symbol, cloned_marker.check_symbol);
+    try validation.validateLoweredSuperSite(&t, cloned_index, cloned_marker, owner, use_scope);
 }
 
 const deferred_sibling_sources = [_][]const u8{
@@ -1064,4 +1113,64 @@ test "deferred default producer leaves native parameters owned" {
     const source = "const value=7;class P{}class D extends P{x=42;constructor(go=()=>super(),read=()=>value){var value=9;go();this.out=[read(),value]}}console.log(JSON.stringify(new D().out));";
     try checkDeferredDefaultRuntime(source, .es2015);
     try checkDeferredSuperBirthWithPlacement(source, .es2015, false);
+}
+
+test "lowered repeated super producer 0" {
+    const source = "let calls=0,args=0,fields=0;class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){const go=()=>super(++args);go();try{go()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,args,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 1" {
+    const source = "let calls=0,fields=0;class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){super();try{super()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 2" {
+    const source = "let calls=0,fields=0;class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){const outer=()=>()=>super();outer()();try{outer()()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 3" {
+    const source = "let calls=0,fields=0;class P{constructor(){if(++calls===2)throw Error('second')}}class D extends P{x=++fields;constructor(){const go=()=>super();go();try{go()}catch(e){this.error=e.message}}}const d=new D;console.log(JSON.stringify([calls,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 4" {
+    const source = "let calls=0,args=0,fields=0;function arg(){if(++args===2)throw Error('arg');return args}class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){const go=()=>super(arg());go();try{go()}catch(e){this.error=e.message}}}const d=new D;console.log(JSON.stringify([calls,args,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 5" {
+    const source = "let calls=0,fields=0;class P{constructor(){return{n:++calls}}}class D extends P{x=++fields;constructor(){const go=()=>super();go();try{go()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,fields,d.n,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 6" {
+    const source = "let calls=0,fields=0,sets=0;const out={set value(v){sets++;}};class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){const go=()=>out.value=super();go();try{go()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,fields,sets,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 7" {
+    const source = "let again,calls=0,fields=0;class P{constructor(){if(++calls===1)again()}}class D extends P{x=++fields;constructor(){const go=()=>super();again=go;try{go()}catch(e){this.error=e instanceof ReferenceError}}}const d=new D;console.log(JSON.stringify([calls,fields,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 8" {
+    const source = "let calls=0,fields=0;class P{constructor(){calls++}}class D extends P{x=++fields;constructor(){const go=()=>super();return{go}}}const h=new D;const d=h.go();let error;try{h.go()}catch(e){error=e instanceof ReferenceError}console.log(JSON.stringify([calls,fields,d.x,error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
+}
+
+test "lowered repeated super producer 9" {
+    const source = "let calls=0,fields=0;class P{constructor(){calls++}}class D extends P{x=(fields++,this);constructor(){const go=()=>super();const first=go();try{go()}catch(e){this.error=e instanceof ReferenceError}this.same=first===this&&this.x===this}}const d=new D;console.log(JSON.stringify([calls,fields,d.same,d.error]));";
+    try checkDeferredDefaultRuntime(source, .es5);
+    try checkDeferredSuperBirth(source, .es5);
 }

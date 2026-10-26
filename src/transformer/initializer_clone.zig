@@ -162,6 +162,23 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
                 try self.native_arguments_reference_origins.put(self.allocator, raw, origin);
             }
         }
+        if (self.generated_super_call_assignments.get(original)) |source| {
+            if (!source.native and source.pending_result_producer_id != 0)
+                @panic("cloned super result has no published producer identity");
+            var copied = source;
+            copied.constructor_scope = result.scope(source.constructor_scope);
+            copied.use_scope = result.scope(source.use_scope);
+            if (source.target_symbol) |id| copied.target_symbol = result.sid(id);
+            if (source.callee_symbol) |id| copied.callee_symbol = result.sid(id);
+            if (source.check_symbol) |id| copied.check_symbol = result.sid(id);
+            if (source.result_symbol) |id| copied.result_symbol = result.sid(id);
+            copied.result_scope = result.scope(source.result_scope);
+            if (!source.result_assignment.isNone())
+                copied.result_assignment = result.nodes.get(@backingInt(source.result_assignment)) orelse @panic("cloned super binding lost its result producer");
+            if (!source.evaluation_sequence.isNone())
+                copied.evaluation_sequence = result.nodes.get(@backingInt(source.evaluation_sequence)) orelse @panic("cloned super binding lost its evaluation producer");
+            try self.generated_super_call_assignments.put(self.allocator, raw, copied);
+        }
         if (self.synthetic_idents) |*set| if (set.contains(original)) try set.put(self.allocator, raw, {});
         if (self.runtime_helper_ref_index.contains(original)) {
             try self.helper_ref_nodes.append(self.allocator, raw);

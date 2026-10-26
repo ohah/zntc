@@ -174,6 +174,10 @@ pub fn SuperProps(comptime Transformer: type) type {
             });
 
             const call = try es_helpers.makeCallExpr(self, callee, &.{ parent_ref, args_array, new_target_ref }, span);
+            // Construct first, then inspect the live constructor binding. A
+            // parent constructor may re-enter the same deferred super closure.
+            const result = try es_helpers.captureToTrackedTemp(self, call, span);
+            const result_read = try es_helpers.makeCapturedTempRef(self, result, span, .{ .read = true });
 
             // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
@@ -182,7 +186,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
+                .data = .{ .binary = .{ .left = this_ref, .right = result_read, .flags = 0 } },
             });
             const marker: Transformer.GeneratedSuperCall = if (self.active_derived_constructor_new_target) |owner| .{
                 .constructor_frame = self.capture_frame,
@@ -190,22 +194,29 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .use_scope = self.current_scope,
                 .target_symbol = owner.this_symbol_id,
                 .callee_symbol = if (self.getSymbolIdAt(callee)) |id| @fromBackingInt(id) else null,
+                .result_assignment = result.paren_assign,
+                .result_symbol = result.symbol_id,
+                .pending_result_producer_id = if (result.symbol_id == null) result.temp_producer_id orelse 0 else 0,
+                .result_scope = if (result.symbol_id) |id| self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id else .none,
                 .native = false,
             } else legacy: {
                 if (self.semantic_edit_enabled) @panic("lowered super lost its constructor owner");
-                break :legacy .{ .constructor_frame = 0, .constructor_scope = .none, .use_scope = .none, .target_symbol = null, .native = false };
+                break :legacy .{ .constructor_frame = 0, .constructor_scope = .none, .use_scope = .none, .target_symbol = null, .result_assignment = result.paren_assign, .native = false };
             };
-            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), marker);
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
             const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);
 
-            const seq_list = try self.ast.addNodeList(&.{ assert_call, raw_assign });
+            const seq_list = try self.ast.addNodeList(&.{ result.paren_assign, assert_call, raw_assign });
             const seq = try self.ast.addNode(.{
                 .tag = .sequence_expression,
                 .span = span,
                 .data = .{ .list = seq_list },
             });
+            var published = marker;
+            published.evaluation_sequence = seq;
+            published.check_symbol = if (self.getSymbolIdAt(assert_uninit)) |id| @fromBackingInt(id) else null;
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), published);
 
             self.super_call_this_alias = true;
             self.runtime_helpers.call_super = true;

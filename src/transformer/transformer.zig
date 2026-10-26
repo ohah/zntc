@@ -188,6 +188,12 @@ pub const Transformer = struct {
         use_scope: ScopeId,
         target_symbol: ?SymbolId,
         callee_symbol: ?SymbolId = null,
+        result_assignment: NodeIndex = .none,
+        result_symbol: ?SymbolId = null,
+        pending_result_producer_id: u64 = 0,
+        result_scope: ScopeId = .none,
+        evaluation_sequence: NodeIndex = .none,
+        check_symbol: ?SymbolId = null,
         flags: ReferenceFlags = .{ .write = true },
         native: bool,
     };

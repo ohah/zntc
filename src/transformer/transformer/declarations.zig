@@ -614,13 +614,50 @@ pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Tr
     if (marker.constructor_frame != owner.frame or marker.constructor_scope != owner.scope or marker.use_scope != use_scope) return error.InvalidScope;
     if (marker.target_symbol != owner.target or !std.meta.eql(marker.flags, ReferenceFlags{ .write = true })) return error.InvalidSymbol;
     const node = self.ast.getNode(index);
-    if (node.tag != .assignment_expression or node.data.binary.right.isNone() or self.ast.getNode(node.data.binary.right).tag != .call_expression) return error.InvalidNode;
+    if (node.tag != .assignment_expression or node.data.binary.right.isNone() or
+        marker.result_assignment.isNone() or @backingInt(marker.result_assignment) >= self.ast.nodes.items.len) return error.InvalidNode;
+    const result_assignment = self.ast.getNode(marker.result_assignment);
+    if (result_assignment.tag != .assignment_expression or result_assignment.data.binary.right.isNone()) return error.InvalidNode;
+    const call = self.ast.getNode(result_assignment.data.binary.right);
+    if (call.tag != .call_expression) return error.InvalidNode;
+    if (marker.evaluation_sequence.isNone() or @backingInt(marker.evaluation_sequence) >= self.ast.nodes.items.len) return error.InvalidNode;
+    const evaluation = self.ast.getNode(marker.evaluation_sequence);
+    if (evaluation.tag != .sequence_expression or evaluation.data.list.len != 3 or
+        self.ast.readExtraNode(evaluation.data.list.start, 0) != marker.result_assignment) return error.InvalidNode;
+    const binding_site = self.ast.readExtraNode(evaluation.data.list.start, 2);
+    if (binding_site != index) {
+        const placed = self.ast.getNode(binding_site);
+        if (placed.tag != .sequence_expression or placed.data.list.len < 3 or
+            self.ast.readExtraNode(placed.data.list.start, 0) != index) return error.InvalidNode;
+    }
+    const check = self.ast.getNode(self.ast.readExtraNode(evaluation.data.list.start, 1));
+    if (check.tag != .call_expression or self.ast.readExtra(check.data.extra, 2) != 1) return error.InvalidNode;
     if (!self.semantic_edit_enabled) return;
+    if (marker.pending_result_producer_id != 0) return error.InvalidSymbol;
     const editor = if (self.semantic_editor) |*value| value else return error.InvalidNode;
     if (owner.scope.isNone() or use_scope.isNone() or owner.scope.toIndex() >= editor.scopes.items.len or use_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[owner.scope.toIndex()].kind != .function) return error.InvalidScope;
     const target = self.getSymbolIdAt(node.data.binary.left) orelse return error.InvalidSymbol;
     if (target >= editor.symbols.items.len or editor.symbols.items[target].scope_id != owner.scope or editor.symbols.items[target].kind != .variable_var) return error.InvalidSymbol;
-    const callee = self.ast.readExtraNode(self.ast.getNode(node.data.binary.right).data.extra, 0);
+    const result_id = marker.result_symbol orelse return error.InvalidSymbol;
+    if (@backingInt(result_id) >= editor.symbols.items.len or marker.result_scope.isNone() or
+        marker.result_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[marker.result_scope.toIndex()].kind != .function or
+        editor.symbols.items[@backingInt(result_id)].scope_id != marker.result_scope or
+        editor.symbols.items[@backingInt(result_id)].kind != .variable_var) return error.InvalidSymbol;
+    if (self.getSymbolIdAt(result_assignment.data.binary.left) != @backingInt(result_id) or
+        self.getSymbolIdAt(node.data.binary.right) != @backingInt(result_id)) return error.InvalidSymbol;
+    for ([_]struct { node: NodeIndex, flags: ReferenceFlags }{
+        .{ .node = result_assignment.data.binary.left, .flags = .{ .write = true } },
+        .{ .node = node.data.binary.right, .flags = .{ .read = true } },
+    }) |use| {
+        const result_row = (editor.referenceForNode(use.node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        }) orelse return error.InvalidNode;
+        if (result_row.scope_id != use_scope) return error.InvalidScope;
+        if (result_row.symbol_id != result_id or !std.meta.eql(result_row.flags, use.flags)) return error.InvalidSymbol;
+    }
+    const callee = self.ast.readExtraNode(call.data.extra, 0);
     const callee_id = self.getSymbolIdAt(callee) orelse return error.InvalidSymbol;
     if (marker.target_symbol != @as(SymbolId, @fromBackingInt(target)) or marker.callee_symbol != @as(SymbolId, @fromBackingInt(callee_id))) return error.InvalidSymbol;
     const row = (editor.referenceForNode(node.data.binary.left) catch |err| switch (err) {
@@ -635,6 +672,21 @@ pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Tr
     }) orelse return error.InvalidNode;
     if (call_row.scope_id != use_scope) return error.InvalidScope;
     if (call_row.symbol_id != marker.callee_symbol.? or !call_row.flags.read) return error.InvalidSymbol;
+    const check_callee = self.ast.readExtraNode(check.data.extra, 0);
+    const live_this = self.ast.readExtraNode(self.ast.readExtra(check.data.extra, 1), 0);
+    for ([_]struct { node: NodeIndex, id: ?SymbolId }{
+        .{ .node = check_callee, .id = marker.check_symbol },
+        .{ .node = live_this, .id = marker.target_symbol },
+    }) |use| {
+        const expected = use.id orelse return error.InvalidSymbol;
+        if (self.getSymbolIdAt(use.node) != @backingInt(expected)) return error.InvalidSymbol;
+        const check_row = (editor.referenceForNode(use.node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        }) orelse return error.InvalidNode;
+        if (check_row.scope_id != use_scope) return error.InvalidScope;
+        if (check_row.symbol_id != expected or !std.meta.eql(check_row.flags, ReferenceFlags{ .read = true })) return error.InvalidSymbol;
+    }
 }
 
 /// Only creator-recorded lowered calls belonging to this constructor frame
@@ -654,8 +706,42 @@ pub fn insertLoweredSuperInitializers(self: *Transformer, body: NodeIndex, state
         if (work.node.isNone()) continue;
         const node = self.ast.getNode(work.node);
         const scope = self.outputOwnedScope(work.node) orelse work.scope;
-        if (self.generated_super_call_assignments.get(@backingInt(work.node))) |marker| {
+        if (self.generated_super_call_assignments.get(@backingInt(work.node))) |source_marker| {
+            var marker = source_marker;
             if (!marker.native and (marker.constructor_frame == owner.capture_frame or marker.constructor_scope == owner.owner_scope)) {
+                if (marker.result_symbol == null and self.semantic_edit_enabled) {
+                    // A parameter initializer may have deferred its temp owner.
+                    // This actual constructor assembly now owns its placement;
+                    // the allocator handle, never its spelling, selects storage.
+                    if (marker.constructor_frame != owner.capture_frame or marker.constructor_scope != owner.owner_scope or
+                        marker.use_scope != scope or marker.pending_result_producer_id == 0 or marker.result_assignment.isNone())
+                        @panic("lowered super result lost its deferred producer");
+                    const result_assignment = self.ast.getNode(marker.result_assignment);
+                    if (result_assignment.tag != .assignment_expression or node.tag != .assignment_expression)
+                        @panic("lowered super result lost its assignment anchors");
+                    const result_lhs = result_assignment.data.binary.left;
+                    const name_span = self.ast.getNode(result_lhs).data.string_ref;
+                    const id = try self.reserveSyntheticTempSymbolForProducerInScope(marker.pending_result_producer_id, name_span, node.span, scope) orelse
+                        @panic("lowered super result has no actual owner");
+                    for ([_]struct { node: NodeIndex, flags: ReferenceFlags }{
+                        .{ .node = result_lhs, .flags = .{ .write = true } },
+                        .{ .node = node.data.binary.right, .flags = .{ .read = true } },
+                    }) |use| {
+                        if (self.getSymbolIdAt(use.node)) |existing| {
+                            const row = (self.semantic_editor.?.referenceForNode(use.node) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => @panic("lowered super temp has an invalid existing reference"),
+                            }) orelse
+                                @panic("lowered super temp has no existing reference");
+                            if (existing != @backingInt(id) or row.symbol_id != id or row.scope_id != scope or !std.meta.eql(row.flags, use.flags))
+                                @panic("lowered super temp changed its producer reference");
+                        } else try self.addSyntheticRefInScope(use.node, id, scope, use.flags);
+                    }
+                    marker.result_symbol = id;
+                    marker.pending_result_producer_id = 0;
+                    marker.result_scope = self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id;
+                    try self.generated_super_call_assignments.put(self.allocator, @backingInt(work.node), marker);
+                }
                 validateLoweredSuperSite(self, work.node, marker, .{ .frame = owner.capture_frame, .scope = owner.owner_scope, .target = owner.this_symbol_id }, scope) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => std.debug.panic("lowered super changed its creator contract: {s}", .{@errorName(err)}),

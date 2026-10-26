@@ -2737,7 +2737,7 @@ test "ES2015: derived constructor return 값이 super를 먼저 평가" {
 test "ES2015: derived constructor return comma expression super 평가 순서" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){return (super(),undefined);}}", .es5);
     defer r.deinit();
-    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn((__assertThisUninitialized") orelse return error.TestExpectedEqual;
+    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn((") orelse return error.TestExpectedEqual;
     const this_pos = std.mem.indexOfPos(u8, r.output, helper_pos, "),_this)") orelse return error.TestExpectedEqual;
     try std.testing.expect(helper_pos < this_pos);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,((__assertThisUninitialized") == null);
@@ -2750,10 +2750,13 @@ test "ES2015: derived constructor return primitive도 super 후 검사" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,value(") == null);
 }
 
-test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
+test "ES2015: derived constructor super 중복 호출은 생성 후 할당 전 검사" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super();}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    const call_pos = std.mem.indexOf(u8, r.output, "=__callSuper(") orelse return error.TestExpectedEqual;
+    const check_pos = std.mem.indexOfPos(u8, r.output, call_pos, "__assertThisUninitialized(_this)") orelse return error.TestExpectedEqual;
+    const bind_pos = std.mem.indexOfPos(u8, r.output, check_pos, ",_this=") orelse return error.TestExpectedEqual;
+    try std.testing.expect(call_pos < check_pos and check_pos < bind_pos);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this,_this=") == null);
 }
 
@@ -2764,7 +2767,9 @@ test "ES2015: derived constructor arrow this capture waits for super" {
         .es5,
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    const call_pos = std.mem.indexOf(u8, r.output, "=__callSuper(") orelse return error.TestExpectedEqual;
+    const check_pos = std.mem.indexOfPos(u8, r.output, call_pos, "__assertThisUninitialized(_this)") orelse return error.TestExpectedEqual;
+    try std.testing.expect(std.mem.indexOfPos(u8, r.output, check_pos, ",_this=") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function(event){__assertThisInitialized(_this).seen=event.value;}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") == null);
 }
