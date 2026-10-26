@@ -466,6 +466,135 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     graph: 'retained',
   },
   {
+    name: 'ambient-namespace-type-import-named',
+    source:
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; } console.log(42);",
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-default',
+    source:
+      "declare namespace Types { import type Shape from './shape'; export const value: Shape; } console.log(42);",
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-namespace',
+    source:
+      "declare namespace Types { import type * as Shapes from './shape'; export const value: Shapes.Shape; } console.log(42);",
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-multiple',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape';",
+      "import type { Color } from './color'; export const value: Shape & Color; }",
+      'console.log(42);',
+    ].join('\n'),
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-property-names-only',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'console.log(({ Shape: 42 }).Shape);',
+    ].join('\n'),
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-escaped-name-property-only',
+    source: [
+      "declare namespace Types { import type { Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; }",
+      'console.log(({ Shape: 43 }).Shape);',
+    ].join('\n'),
+    graph: 'retained',
+  },
+  {
+    name: 'ambient-namespace-type-import-surviving-typeof-reference',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'console.log(typeof Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-surviving-bare-reference',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'console.log(Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-surviving-assignment-target',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'Shape = 44;',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-surviving-closure-reference',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'function get() { return () => Shape; } console.log(typeof get());',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-shadowed-by-parameter',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      'function read(Shape) { return Shape; } console.log(read(1));',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-shadowed-by-block-binding',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+      '{ const Shape = 48; console.log(Shape); }',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-type-import-escaped-name-surviving-reference',
+    source: [
+      "declare namespace Types { import type { Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; }",
+      'console.log(typeof Shape);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-inline-type-import-specifier',
+    source:
+      "declare namespace Types { import { type Shape } from './shape'; export const value: Shape; } console.log(45);",
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-value-import',
+    source:
+      "declare namespace Types { import { Shape } from './shape'; export const value: Shape; } console.log(46);",
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-mixed-type-and-value-imports',
+    source: [
+      "declare namespace Types { import type { Shape } from './shape';",
+      "import { Color } from './color'; export const value: Shape & Color; }",
+      'console.log(47);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-duplicate-type-import-local',
+    source: [
+      "declare namespace Types { import type { Shape as Alias } from './shape';",
+      "import type { Color as Alias } from './color'; export const value: Alias; }",
+      'console.log(48);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
     name: 'ambient-string-module',
     source:
       'declare module "ambient" { export const value: number; } const result = 42; console.log(result);',
@@ -2550,6 +2679,42 @@ describe('symbol identity coverage gate (#4819)', () => {
           transpileGraphModeProblems(result.stderr, true, probe.graph),
           `${probe.name}: ${result.stderr}`,
         ).toEqual([]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('erased lenient declaration-level type imports retain only with exact output erasure proof', () => {
+    const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
+      (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
+    );
+    expect(cases).toHaveLength(17);
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
+    try {
+      for (const probe of cases) {
+        const input = join(dir, `${probe.name}.unknown`);
+        writeFileSync(input, probe.source);
+        const result = runCoverage(input, TARGETS[0], dir, true);
+        expect(result.exitCode, `${probe.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), `${probe.name}: ${result.stderr}`).toEqual(
+          [],
+        );
+        expect(
+          transpileGraphModeProblems(result.stderr, true, probe.graph),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        if (probe.graph === 'retained') {
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${probe.name}: runtime output changed`).toBe(
+            probe.name.includes('escaped-name') ? '43\n' : '42\n',
+          );
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
