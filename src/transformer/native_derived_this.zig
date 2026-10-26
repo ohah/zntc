@@ -9,8 +9,11 @@ pub fn needsCell(self: anytype, owner: NodeIndex, method: ast.Node) !bool {
 }
 
 pub fn needsCellInScope(self: anytype, owner: NodeIndex, method: ast.Node, constructor_scope: @import("../semantic/scope.zig").ScopeId, allow_native_fields: bool) !bool {
-    if (!self.semantic_edit_enabled or self.isClassLowered() or !self.options.unsupported.arrow) return false;
+    if (!self.semantic_edit_enabled or self.options.unsupported.class or !self.options.unsupported.arrow) return false;
     const class_idx = helpers.classConstructorOwner(self, owner, method) orelse return false;
+    if (self.active_lowered_class) |lowered| {
+        if (lowered.node == class_idx) return false;
+    }
     const class = self.ast.getNode(class_idx);
     if (self.ast.readExtraNode(class.data.extra, ast.ClassExtra.super).isNone()) return false;
     // The editor is lazy: direct source visitors still own the initial scopes.

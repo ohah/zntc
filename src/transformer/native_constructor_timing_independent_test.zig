@@ -1232,3 +1232,16 @@ test "RN deferred class producer supports an independently supported private fea
     try checkDeferredProfileRuntime(source, unsupported);
     try checkDeferredSuperBirthWithFeatures(source, unsupported, true, true);
 }
+
+test "RN deferred class producer preserves native child timing eligibility" {
+    const controls = [_][]const u8{
+        "class P{}class D extends P{constructor(){const go=()=>super();go();class E extends P{x=42;constructor(){let saved=()=>this;super();this.saved=saved}}this.E=E}}const d=new D;const e=new d.E;console.log(JSON.stringify([e.x,e.saved()===e]));",
+        "let saved;class P{}class D extends P{constructor(){const go=()=>super();go();class E extends P{x=saved();constructor(){saved=()=>this;super();this.saved=saved}}this.E=E}}const d=new D;const e=new d.E;console.log(JSON.stringify([e.x===e,e.saved()===e]));",
+    };
+    const unsupported = @import("compat.zig").fromReactNativeVersion(0, 80);
+    for (controls, 0..) |source, case| {
+        std.debug.print("RN CHILD START case={d}\n", .{case});
+        try checkDeferredProfileRuntime(source, unsupported);
+        try checkDeferredSuperBirthWithFeatures(source, unsupported, true, true);
+    }
+}
