@@ -2675,9 +2675,9 @@ pub const SemanticAnalyzer = struct {
         //   예: const foo = () => bar();  // bar가 아직 스코프에 없어도
         //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
         // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
-        try self.predeclareTopLevelBindings(node.data.list);
+        try self.predeclareTopLevelBindings(node.data.list, true);
         try self.predeclareNamespaceMembers(node.data.list);
-        try self.predeclareNestedTopLevelVarDecls(node.data.list);
+        try self.predeclareNestedTopLevelVarDecls(node.data.list, true);
         self.predeclared_scope = self.current_scope;
 
         // StmtInfo 사전 수집: statement 개수만 기록. declared/referenced 둘 다 references 배열에서
@@ -2752,7 +2752,7 @@ pub const SemanticAnalyzer = struct {
         return if (decl.tag == .variable_declaration) decl else null;
     }
 
-    fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+    fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList, program_statements: bool) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
 
@@ -2765,7 +2765,7 @@ pub const SemanticAnalyzer = struct {
         }
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) {
-                self.current_top_stmt_idx = @intCast(i);
+                if (program_statements) self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
             const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
@@ -2971,7 +2971,7 @@ pub const SemanticAnalyzer = struct {
     /// top-level `{ var x; }` / `if (...) var x` 도 module/global var scope 에 hoist 되어야
     /// 한다. Direct top-level declarations 는 `predeclareTopLevelBindings` 가 이미 처리하므로
     /// 여기서는 중복 등록하지 않는다.
-    fn predeclareNestedTopLevelVarDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+    fn predeclareNestedTopLevelVarDecls(self: *SemanticAnalyzer, list: NodeList, program_statements: bool) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
 
@@ -2985,7 +2985,7 @@ pub const SemanticAnalyzer = struct {
 
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) {
-                self.current_top_stmt_idx = @intCast(i);
+                if (program_statements) self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
             const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
@@ -3640,9 +3640,9 @@ pub const SemanticAnalyzer = struct {
             const saved_predeclared = self.predeclared_scope;
             self.predeclared_scope = self.current_scope;
             defer self.predeclared_scope = saved_predeclared;
-            try self.predeclareTopLevelBindings(body.data.list);
+            try self.predeclareTopLevelBindings(body.data.list, false);
             try self.predeclareNamespaceMembers(body.data.list);
-            try self.predeclareNestedTopLevelVarDecls(body.data.list);
+            try self.predeclareNestedTopLevelVarDecls(body.data.list, false);
             try self.visitStmtList(body.data.list);
         } else {
             try self.visitNode(body_idx);

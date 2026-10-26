@@ -253,6 +253,8 @@ fn expectMapBodies(is_typescript: bool, bodies: []const []const u8, iife: bool) 
         if (before_contexts) |actual| for (original.references, actual) |row, context| {
             if (row.stmt_idx != context.stmt_idx or row.scope_stmt_idx != context.scope_stmt_idx)
                 std.debug.print("pre-prefix Map producer coordinate debt case={d} sid={d} scope={d} row={d}/{d} actual={d}/{d}\n", .{ index, @backingInt(row.symbol_id), @backingInt(row.scope_id), row.stmt_idx, row.scope_stmt_idx, context.stmt_idx, context.scope_stmt_idx });
+            try std.testing.expectEqual(context.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(context.scope_stmt_idx, row.scope_stmt_idx);
         };
         try std.testing.expectEqual(@as(usize, if (iife) 1 else if (index == 1 or index == 5) 2 else if (index == 9) 3 else 1), bindings.len);
         if (iife) {
