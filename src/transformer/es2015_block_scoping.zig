@@ -872,7 +872,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 });
             }
 
-            if (!is_generator and self.semantic_edit_enabled) {
+            // Deferred state-machine callsites have no assembled callback
+            // owner yet. Their existing producer binds them with that callback.
+            if (!is_generator and self.semantic_edit_enabled and !call_scope.isNone()) {
                 const function_scope = self.outputOwnedScope(func_expr) orelse try self.addGeneratedFunctionScope(call_scope, func_expr);
                 try self.reparentGeneratedBodyScopes(call_scope, function_scope, transformed_body);
             }
@@ -895,7 +897,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 );
             }
 
-            if (self.semantic_edit_enabled) {
+            if (self.semantic_edit_enabled and !call_scope.isNone()) {
                 const function_scope = self.outputOwnedScope(func_expr) orelse @panic("extracted body has no exact function owner");
                 try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
             }
