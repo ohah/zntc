@@ -5605,6 +5605,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer function_body_class_declarations.deinit(ast.allocator);
     var direct_var_class_expressions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer direct_var_class_expressions.deinit(ast.allocator);
+    const constructor_certificate_source = if (options.unsupported.class)
+        @import("../../transformer/selective_class_certificate.zig").sourcePlan(allocator, ast, semantic, options) catch null
+    else
+        null;
     if (options.unsupported.class) {
         if (!collectDirectFunctionBodyClassDeclarations(ast, reachable_nodes, &function_body_class_declarations) or
             !collectDirectVarClassExpressions(ast, reachable_nodes, &direct_var_class_expressions)) return false;
@@ -5624,6 +5628,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     @intCast(raw_idx),
                     "Object",
                 );
+            }
+            if (constructor_certificate_source) |candidate| {
+                if (@backingInt(candidate.plan.class_node) == raw_idx and top_level_statements.isSet(raw_idx)) {
+                    // A provisional source owner, not the old simple-class
+                    // permission. The completed factory certificate and exact
+                    // output audit are mandatory before retaining this graph.
+                    continue;
+                }
             }
             if (!isRetainableGraphClass(
                 allocator,
@@ -6106,7 +6118,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
-                    if (!retained_simple_class_nodes.contains(raw_idx)) return false;
+                    const provisional_constructor = if (constructor_certificate_source) |candidate|
+                        @backingInt(candidate.plan.class_node) == raw_idx and top_level_statements.isSet(raw_idx)
+                    else
+                        false;
+                    if (!retained_simple_class_nodes.contains(raw_idx) and !provisional_constructor) return false;
                     found_lowered_simple_class = true;
                 } else {
                     found_native_class = true;
@@ -15441,14 +15457,28 @@ test "selective class certificate source candidate keeps independent preflight" 
 }
 
 test "selective class certificate validates applied factory and helper edges" {
+    try checkAppliedClassCertificateForTest("class P{} class D extends P{constructor(){var go=()=>super();go()}} console.log(new D() instanceof P);", .{ .strip_types = true, .emit_runtime_helper_imports = true, .unsupported = @import("../../transformer/compat.zig").fromReactNativeVersion(0, 80) });
+}
+
+test "selective class certificate public ES5 constructor application" {
+    try checkAppliedClassCertificateForTest("function P(){} class D extends P{constructor(){var go=()=>super();go()}} console.log(new D() instanceof P);", .{ .strip_types = true, .emit_runtime_helper_imports = true, .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) });
+}
+
+fn checkAppliedClassCertificateForTest(source: []const u8, options: TransformOptions) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "class P{} class D extends P{constructor(){var go=()=>super();go()}} console.log(new D() instanceof P);";
     var fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
-    const options: TransformOptions = .{ .strip_types = true, .emit_runtime_helper_imports = true, .unsupported = @import("../../transformer/compat.zig").fromReactNativeVersion(0, 80) };
     const certificate = @import("../../transformer/selective_class_certificate.zig");
     const expected = (try certificate.sourcePlan(allocator, &fixture.ast, &fixture.semantic, options)).?;
+    var module = Module.init(@fromBackingInt(0), "candidate.js");
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false };
+    var get = false;
+    var set = false;
+    try std.testing.expect(canKeepPrepassSemanticGraph(&context, &module, options, context.plugins, &get, &set, null));
     var t = try Transformer.init(allocator, &fixture.ast, options);
     try t.initSymbolIds(fixture.semantic.symbol_ids);
     t.symbols = fixture.semantic.symbols.items;

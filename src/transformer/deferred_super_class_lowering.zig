@@ -42,6 +42,13 @@ pub fn select(self: anytype, source: ast.NodeIndex, class: ast.Node) std.mem.All
 
 pub fn selectInScopes(self: anytype, source: ast.NodeIndex, class: ast.Node, scopes: []const @import("../semantic/scope.zig").Scope) std.mem.Allocator.Error!?Plan {
     if (!self.semantic_edit_enabled or self.options.unsupported.class or !self.options.unsupported.arrow) return null;
+    return inspectConstructor(self, source, class, scopes);
+}
+
+/// Structural source ownership shared by native selective lowering and the
+/// bounded ES5 retained candidate. This does not decide a target's lowering.
+pub fn inspectConstructor(self: anytype, source: ast.NodeIndex, class: ast.Node, scopes: []const @import("../semantic/scope.zig").Scope) std.mem.Allocator.Error!?Plan {
+    if (!self.semantic_edit_enabled) return null;
     if (class.tag != .class_declaration and class.tag != .class_expression) return null;
     if (self.ast.readExtraNode(class.data.extra, ast.ClassExtra.super).isNone()) return null;
     const body = self.ast.getNode(self.ast.readExtraNode(class.data.extra, ast.ClassExtra.body));
