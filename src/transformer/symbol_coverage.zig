@@ -1248,7 +1248,7 @@ fn exactExecutionUnit(scopes: []const Scope, start: ScopeId) ?u32 {
         if (!exactValidScope(scopes, current)) return null;
         const scope = scopes[current.toIndex()];
         switch (scope.kind) {
-            .global, .module, .function, .class_body => return current.toIndex(),
+            .global, .module, .function, .class_body, .class_static_block => return current.toIndex(),
             .block, .switch_block, .catch_clause => {},
         }
         current = scope.parent;
@@ -1667,13 +1667,14 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         .program => kind == .global or kind == .module,
         // Function and catch bodies reuse their owner block node for the
         // enclosing execution scope in the source analyzer.
-        .block_statement => kind == .block or kind == .function or kind == .catch_clause,
+        .block_statement => kind == .block or kind == .function or kind == .catch_clause or kind == .class_static_block,
         // A lowered for-await loop reuses its lexical loop scope on the
         // generated while node (remapCopiedScopeOwner in semantic_edit.zig).
         .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement => kind == .block,
         .switch_statement => kind == .switch_block,
         .catch_clause => kind == .catch_clause or kind == .block,
         .class_declaration, .class_expression => kind == .class_body,
+        .static_block => kind == .class_static_block,
         .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .formal_parameters, .formal_parameter, .assignment_pattern, .assignment_expression, .assignment_target_with_default, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target, .parenthesized_expression, .sequence_expression => kind == .function,
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
@@ -1692,6 +1693,13 @@ fn isNamespaceBodyBlock(
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
+}
+
+fn staticBlockBodyOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
+    const owner = parents.get(block) orelse return null;
+    if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
+    const node = ast.nodes.items[owner];
+    return if (node.tag == .static_block and @backingInt(node.data.unary.operand) == block) owner else null;
 }
 
 fn enumPreludeOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
@@ -3136,6 +3144,9 @@ fn checkExactImpl(
         if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
             if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .function) continue;
         }
+        if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .class_static_block) continue;
+        }
         const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
         if (first_owner.found_existing) {
             if (first_owner.value_ptr.* != raw) {
@@ -3301,6 +3312,8 @@ fn checkExactImpl(
         };
         const strictness_issue: ?[]const u8 = if (scope.kind == .class_body and !scope.is_strict)
             "class-body-must-be-strict"
+        else if (scope.kind == .class_static_block and !scope.is_strict)
+            "class-static-block-must-be-strict"
         else if (scope.kind == .module and !scope.is_strict)
             "module-must-be-strict"
         else if (!scope.parent.isNone() and exactValidScope(scopes, scope.parent) and
@@ -3537,6 +3550,7 @@ fn checkExactImpl(
             // same owner node; the latter may be the recorded owner.
             .catch_clause => null,
             .class_declaration, .class_expression => .class_body,
+            .static_block => .class_static_block,
             .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .flow_component_wrapper => .function,
             else => continue,
         };
@@ -3546,6 +3560,17 @@ fn checkExactImpl(
             // visits this block's statement list directly. The block is a
             // syntax container, not a second lexical ScopeId owner.
             if (isNamespaceBodyBlock(ast, &parent_by_node, raw)) continue;
+            if (parent_raw) |parent| {
+                const owner = ast.nodes.items[parent];
+                if (owner.tag == .static_block and @backingInt(owner.data.unary.operand) == raw) {
+                    const primary_scope = scope_owner_map.get(parent);
+                    const body_scope = scope_owner_map.get(raw);
+                    if (primary_scope == null or body_scope == null or primary_scope.? != body_scope.? or
+                        body_scope.? >= scopes.len or scopes[body_scope.?].kind != .class_static_block)
+                        recordScopeOwnerMismatch(&report, raw, tag, "static-body-owner", body_scope, .class_static_block, if (body_scope != null and body_scope.? < scopes.len) scopes[body_scope.?].kind else null);
+                    continue;
+                }
+            }
             if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
                 const enum_scope = scope_owner_map.get(owner);
                 const body_scope = scope_owner_map.get(raw);
@@ -3620,6 +3645,9 @@ fn checkExactImpl(
         const owner_scope = scopes[scope_raw];
         if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
             if (scope_owner_map.get(owner) == scope_raw and owner_scope.kind == .function) continue;
+        }
+        if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_raw and owner_scope.kind == .class_static_block) continue;
         }
         if (raw == @backingInt(root)) {
             // A non-Program root can be a fragment nested inside an implicit

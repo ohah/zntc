@@ -6977,7 +6977,7 @@ fn hasTopLevelAwaitInRetainedGraph(
             if (current_scope >= scopes.len) return null;
             const scope = scopes[current_scope];
             switch (scope.kind) {
-                .function => break,
+                .function, .class_static_block => break,
                 .global, .module => return true,
                 .block, .switch_block, .catch_clause, .class_body => {
                     if (scope.parent.isNone()) return null;

@@ -122,7 +122,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // that real output scope before registering their exact identities.
         if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
             (classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false) or
-                (self.options.unsupported.class_static_block and classBodyHasStaticBlockComputedKey(self, _anon_body_idx))))
+                (self.options.unsupported.class_static_block and classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))))
         {
             prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
         }

@@ -999,6 +999,69 @@ test "enum outer binding codec24 retains lexical source identity and rejects cod
         enums += 1;
     }
     try testing.expectEqual(@as(usize, 1), enums);
-    std.mem.writeInt(u32, bytes.items[4..8], 23, .little);
-    try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
+    for ([_]u32{ 23, 24 }) |legacy_version| {
+        std.mem.writeInt(u32, bytes.items[4..8], legacy_version, .little);
+        try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
+    }
+}
+
+test "static block environment codec25 restores exact var owners with matching cached AST" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "class C{static{var value=3;this.a=()=>value}static{var value=9;this.b=()=>value}}");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var ana = SemanticAnalyzer.init(a, &parser.ast);
+    ana.enable_exact_declaration_anchors = true;
+    try ana.analyze();
+    const sem = ModuleSemanticData{
+        .symbols = ana.symbols,
+        .scopes = ana.scopes.items,
+        .scope_maps = ana.scope_maps.items,
+        .scope_owner_map = ana.scope_owner_map,
+        .class_self_symbol_map = ana.class_self_symbol_map,
+        .exported_names = ana.exported_names,
+        .symbol_ids = ana.symbol_ids.items,
+        .unresolved_references = ana.unresolved_references,
+        .references = ana.references.items,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    var restored = try codec.deserialize(bytes.items, a);
+    var ast_bytes: std.ArrayList(u8) = .empty;
+    const ast_codec = @import("../parser/ast_codec.zig");
+    try ast_codec.serialize(&parser.ast, &ast_bytes, a);
+    var restored_ast = try ast_codec.deserialize(ast_bytes.items, a);
+    var ids: std.ArrayList(u32) = .empty;
+    for (restored_ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, restored_ast.getText(node.span), "value")) continue;
+        const sid = restored.symbol_ids[raw].?;
+        try testing.expectEqual(.class_static_block, restored.scopes[restored.symbols.items[sid].scope_id.toIndex()].kind);
+        try testing.expectEqual(ana.symbol_ids.items[raw], restored.symbol_ids[raw]);
+        try ids.append(a, sid);
+    }
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expect(ids.items[0] != ids.items[1]);
+    var t = try @import("../transformer/transformer.zig").Transformer.init(a, &restored_ast, .{ .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIdsOwned(&restored_ast, restored.symbol_ids);
+    t.symbols = restored.symbols.items;
+    t.scopes = restored.scopes;
+    t.scope_maps = restored.scope_maps;
+    t.references = restored.references;
+    t.scope_owner_map = restored.scope_owner_map;
+    t.class_self_symbol_map = restored.class_self_symbol_map;
+    t.unresolved_references = &restored.unresolved_references;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    _ = try t.visitNode(root);
+    for (ids.items) |id| {
+        const storage = t.semantic_editor.?.symbols.items[id].scope_id;
+        try testing.expectEqual(.function, t.semantic_editor.?.scopes.items[storage.toIndex()].kind);
+        try testing.expect(storage.toIndex() >= restored.scopes.len);
+    }
+    for ([_]u32{ 23, 24 }) |version| {
+        std.mem.writeInt(u32, bytes.items[4..8], version, .little);
+        try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
+    }
 }

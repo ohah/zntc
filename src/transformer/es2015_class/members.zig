@@ -173,6 +173,11 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.static_elements.items) |elem| {
                 switch (elem) {
                     .raw_stmt => |raw| {
+                        if (self.ast.getNode(raw).tag == .static_block) {
+                            const lowered = try @import("../static_block_environment.zig").lower(self, raw, output_scope, class_name_span);
+                            try new_elements.append(self.allocator, .{ .stmt = lowered });
+                            continue;
+                        }
                         // Stage 3 creates this exact metadata binding in its
                         // static block. Flattening emits the declaration in
                         // the class IIFE, so transfer its SID before visiting
@@ -512,6 +517,16 @@ pub fn Members(comptime Transformer: type) type {
                     }
                 } else if (member.tag == .static_block) {
                     const sb_body_idx = member.data.unary.operand;
+                    // Only an actual source static-block environment owns this
+                    // storage. Synthetic Stage3 metadata keeps its flattening
+                    // protocol and is not disguised as a source environment.
+                    const source_owner = self.outputOwnedScope(@fromBackingInt(raw_idx));
+                    const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                    const owns_environment = if (source_owner) |owner| source_scopes[owner.toIndex()].kind == .class_static_block else !self.semantic_edit_enabled and raw_idx < self.parser_node_count;
+                    if (owns_environment) {
+                        try cm.static_elements.append(self.allocator, .{ .raw_stmt = @fromBackingInt(raw_idx) });
+                        continue;
+                    }
                     if (!sb_body_idx.isNone()) {
                         const sb_body = self.ast.getNode(sb_body_idx);
                         if (sb_body.tag == .block_statement) {

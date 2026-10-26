@@ -551,7 +551,7 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[parent.toIndex()].is_strict
         else
             false;
-        const intrinsically_strict = kind == .module or kind == .class_body;
+        const intrinsically_strict = kind == .module or kind == .class_body or kind == .class_static_block;
         const new_id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
         try self.scopes.append(self.allocator, .{
             .parent = parent,
@@ -2142,8 +2142,14 @@ pub const SemanticAnalyzer = struct {
             .static_block => {
                 // static block은 함수와 같은 경계 — label은 넘지 못함
                 const saved_labels = self.saveLabelLen();
-                try self.visitNode(node.data.unary.operand);
-                self.restoreLabelLen(saved_labels);
+                defer self.restoreLabelLen(saved_labels);
+                const saved_scope = try self.enterScope(.class_static_block, true);
+                defer self.current_scope = saved_scope;
+                const body = node.data.unary.operand;
+                if (!body.isNone() and self.ast.getNode(body).tag == .block_statement) {
+                    try self.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(self.current_scope));
+                    try self.visitFunctionBodyInner(body);
+                } else try self.visitNode(body);
             },
 
             // ---- 식별자 참조 추적 ----
@@ -5964,9 +5970,11 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             // 재귀 대상: block/if/for/while/switch/try/labeled 등
-            .block_statement, .static_block => {
+            .block_statement => {
                 try self.predeclareVarDeclsInLexicalRegion(&.{node.data.list});
             },
+            // Class static initialization owns a separate var environment.
+            .static_block => {},
             .if_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
                 try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);

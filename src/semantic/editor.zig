@@ -632,7 +632,7 @@ pub const SemanticEditor = struct {
         if (!parent.isNone() and !self.validScope(parent)) return error.InvalidScope;
         if (parent.isNone() and self.scopes.items.len != 0) return error.InvalidScope;
         if (!owner.isNone() and @backingInt(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
-        const intrinsically_strict = kind == .module or kind == .class_body;
+        const intrinsically_strict = kind == .module or kind == .class_body or kind == .class_static_block;
         const strict = is_strict or intrinsically_strict or
             (if (parent.isNone()) false else self.scopes.items[parent.toIndex()].is_strict);
         const id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));

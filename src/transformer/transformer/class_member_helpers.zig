@@ -226,7 +226,7 @@ pub fn classifyClassMember(
     // ES2022 다운레벨링: static block → IIFE (target < es2022)
     if (member.tag == .static_block and ctx.static_block_iifes != null) {
         const Self = @TypeOf(self.*);
-        const iife = try es2022.ES2022(Self).buildStaticBlockIIFE(self, member, ctx.class_name_span);
+        const iife = try es2022.ES2022(Self).buildStaticBlockIIFE(self, member_idx, ctx.class_name_span);
         if (ctx.static_block_field_counts) |counts| {
             const before: u32 = if (ctx.static_field_assignments) |sfa| @intCast(sfa.items.len) else 0;
             try counts.append(self.allocator, before);

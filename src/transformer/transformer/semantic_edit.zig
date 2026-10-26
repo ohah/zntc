@@ -5806,3 +5806,51 @@ test "hostile SymbolId 6029 rejects import creation scope healing" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("invalid-import-creation-scope", "InvalidScope");
 }
+
+/// A real generated function consumes a source static-block var environment.
+/// Preserve its IDs and declaration anchors; do not relabel the source Scope.
+pub fn transferStaticBlockStorage(self: *Transformer, source: NodeIndex, function_scope: ScopeId, body: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    const source_scope = self.outputOwnedScope(source) orelse @panic("static block lost its source environment");
+    const environment = editor.scopes.items[source_scope.toIndex()];
+    if (self.ast.getNode(source).tag != .static_block or environment.kind != .class_static_block or
+        editor.scopes.items[function_scope.toIndex()].kind != .function)
+        @panic("static block storage transfer has the wrong owner role");
+    editor.scopes.items[function_scope.toIndex()].is_strict = true;
+    editor.scopes.items[function_scope.toIndex()].subtree_has_direct_eval = environment.subtree_has_direct_eval;
+    editor.scopes.items[function_scope.toIndex()].subtree_has_with = environment.subtree_has_with;
+    for (0..editor.symbols.items.len) |sid| {
+        if (editor.symbols.items[sid].scope_id != source_scope) continue;
+        editor.relocateSymbol(@fromBackingInt(@intCast(sid)), function_scope) catch |err| return editError(err);
+    }
+    try @import("../class_strict_context.zig").moveSourceReferences(self, body, source_scope, source_scope, function_scope);
+    try reparentGeneratedBodyScopes(self, source_scope, function_scope, body);
+    // This exact body was a source environment alias, and is now the actual
+    // generated function body. No unrelated block receives that owner.
+    if (self.ast.getNode(source).data.unary.operand != body or self.outputOwnedScope(body) != source_scope)
+        @panic("static block body lost its canonical source owner");
+    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(function_scope));
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(function_scope));
+}
+
+/// Source static bodies carry an alias because the static node owns their
+/// special environment. An ordinary function body instead uses its function
+/// owner directly. Retire only the exact alias used during body visitation.
+pub fn completeStaticBlockBody(self: *Transformer, source_body: NodeIndex, output_body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (self.ast.getNode(source_body).tag != .block_statement or self.ast.getNode(output_body).tag != .block_statement or
+        self.outputOwnedScope(source_body) != scope or self.outputOwnedScope(output_body) != scope or
+        editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("static block output body lost its actual function environment");
+    const source_origin = self.scope_owner_origins.get(@backingInt(source_body)) orelse @backingInt(source_body);
+    const output_origin = self.scope_owner_origins.get(@backingInt(output_body)) orelse @backingInt(source_body);
+    if (output_origin != source_origin) @panic("static body alias has a foreign source origin");
+    _ = self.scope_owner_remaps.remove(source_origin);
+    for ([_]NodeIndex{ source_body, output_body }) |body| {
+        _ = editor.scope_owner_map.remove(@backingInt(body));
+        _ = self.transformed_scope_owner_map.remove(@backingInt(body));
+        _ = self.scope_owner_origins.remove(@backingInt(body));
+    }
+}

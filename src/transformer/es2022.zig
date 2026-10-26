@@ -207,7 +207,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (member.tag == .static_block) {
                     // static block → IIFE로 변환
-                    const iife = try buildStaticBlockIIFE(self, member, class_name_span);
+                    const iife = try buildStaticBlockIIFE(self, @fromBackingInt(raw_idx), class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
                 } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
                     const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, lookupKeyMemo(static_key_memos.items, raw_idx));
@@ -1166,7 +1166,21 @@ pub fn ES2022(comptime Transformer: type) type {
         /// class_name_span이 있으면 body 안의 this → 클래스 이름으로 치환.
         /// 치환은 transformer의 static_block_class_name / this_depth 필드를 통해
         /// visitNode(.this_expression) 단계에서 수행된다.
-        pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node, class_name_span: ?Span) Transformer.Error!NodeIndex {
+        pub fn buildStaticBlockIIFE(self: *Transformer, source_idx: NodeIndex, class_name_span: ?Span) Transformer.Error!NodeIndex {
+            const static_block_node = self.ast.getNode(source_idx);
+            const source_environment = self.outputOwnedScope(source_idx);
+            const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const source_owned = if (source_environment) |scope| source_scopes[scope.toIndex()].kind == .class_static_block else !self.semantic_edit_enabled and @backingInt(source_idx) < self.parser_node_count;
+            if (source_owned) {
+                const static_context = try es_helpers.enterStaticInitContext(self, class_name_span);
+                defer es_helpers.leaveStaticInitContext(self, static_context);
+                const parent = if (self.semantic_edit_enabled) self.outputScopeParent(self.current_scope) else ScopeId.none;
+                return @import("static_block_environment.zig").lower(self, source_idx, parent, class_name_span orelse @panic("source static block lowering has no exact class value"));
+            }
+            if (self.semantic_edit_enabled and @backingInt(source_idx) < self.parser_node_count)
+                @panic("source static block has no exact var environment");
+            // Synthetic metadata blocks retain their separate flattening and
+            // binding protocol; they are not source static environments.
             // static block body 는 IIFE 로 빠져 클래스 밖에서 평가된다 — this·super 를 클래스 기준으로
             // (VSB fix: spec 상 static block 의 super 는 class.[[Prototype]]).
             const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);

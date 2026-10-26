@@ -136,3 +136,7 @@ test {
     _ = @import("native_constructor_function_cells.zig");
     _ = @import("native_constructor_guard.zig");
 }
+
+test {
+    _ = @import("static_block_environment_test.zig");
+}
