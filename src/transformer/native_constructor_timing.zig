@@ -10,6 +10,66 @@ pub const Plan = struct {
     named_value: bool,
 };
 
+pub fn publication(self: anytype, raw: u32) ?@import("transformer.zig").StatementPublication {
+    const native = self.native_constructor_statement_handoffs.get(raw);
+    const generator = self.generator_function_coordinate_handoffs.get(raw);
+    if (native != null and generator != null and !std.meta.eql(native.?, generator.?))
+        @panic("constructor and generator statement publications disagree");
+    return native orelse generator;
+}
+
+/// Publish placement after actual owner assembly. Never infer binding identity.
+pub fn projectCoordinates(self: anytype, root: ast.NodeIndex) !void {
+    if (!self.semantic_edit_enabled or self.semantic_editor == null or
+        (self.native_constructor_timing_plans.count() == 0 and self.native_constructor_reference_origins.count() == 0)) return;
+    const coordinates = @import("../semantic/statement_coordinates.zig").collect(self.allocator, self.ast, root) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => std.debug.panic("native constructor statement ownership is invalid: {s}", .{@errorName(err)}),
+    };
+    defer self.allocator.free(coordinates);
+    const editor = &self.semantic_editor.?;
+    var program_shifted = false;
+    if (self.parser_node_count != 0) {
+        const original = self.ast.getNode(@fromBackingInt(@as(u32, @intCast(self.parser_node_count - 1))));
+        const output = self.ast.getNode(root);
+        program_shifted = original.tag == .program and output.tag == .program and original.data.list.len != output.data.list.len;
+    }
+    var generated = self.native_constructor_reference_origins.iterator();
+    while (generated.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= coordinates.len or coordinates[raw] == null) continue;
+        const row = (editor.referenceForNode(@fromBackingInt(raw)) catch @panic("native constructor reference index is invalid")) orelse @panic("native constructor producer reference is missing");
+        const known = entry.value_ptr.*;
+        if (row.symbol_id != known.symbol_id or row.scope_id != known.scope or !std.meta.eql(row.flags, known.flags))
+            @panic("native constructor reference changed its creation identity");
+    }
+    for (editor.references.items) |*row| {
+        var selected = !row.node_index.isNone() and self.native_constructor_reference_origins.contains(@backingInt(row.node_index));
+        var scope = row.scope_id;
+        var hops: usize = 0;
+        while (!selected and !scope.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
+            if (scope.toIndex() >= editor.scopes.items.len) @panic("native constructor coordinate row has an invalid scope");
+            if (self.native_constructor_timing_plans.contains(@backingInt(scope))) {
+                selected = true;
+                break;
+            }
+            scope = editor.scopes.items[scope.toIndex()].parent;
+        }
+        // A helper-import prefix can shift other existing rows too. Reindex
+        // their coordinates without granting constructor publication rights.
+        if (!selected and !program_shifted) continue;
+        const node = if (row.node_index.isNone()) row.declaration_node_index else row.node_index;
+        if (node.isNone() or @backingInt(node) >= coordinates.len) continue;
+        const actual = coordinates[@backingInt(node)] orelse continue;
+        row.stmt_idx = actual.stmt_idx;
+        row.scope_stmt_idx = actual.scope_stmt_idx;
+        if (selected and !row.flags.declare) {
+            try self.native_constructor_statement_nodes.put(self.allocator, @backingInt(node), {});
+            try self.native_constructor_statement_handoffs.put(self.allocator, @backingInt(node), .{ .symbol_id = row.symbol_id, .scope = row.scope_id, .stmt = actual.stmt_idx, .scope_stmt = actual.scope_stmt_idx });
+        }
+    }
+}
+
 fn anonymousValue(self: anytype, value: ast.NodeIndex) bool {
     if (value.isNone()) return false;
     const node = self.ast.getNode(value);
@@ -103,7 +163,9 @@ pub fn fieldValue(self: anytype, source: ast.NodeIndex, key: ast.NodeIndex, valu
         const property_key = if (key_identity) |identity| blk: {
             var use = identity;
             use.reference_scope = self.current_scope;
-            break :blk try helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+            const ref = try helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+            try guard.recordReference(self, ref, identity.symbol_id.?, self.current_scope, .{ .read = true });
+            break :blk ref;
         } else try helpers.buildDefinePropertyKeyArg(self, key);
         const computed = try self.ast.addNode(.{ .tag = .computed_property_key, .span = span, .data = .{ .unary = .{ .operand = property_key, .flags = 0 } } });
         const property = try self.ast.addNode(.{ .tag = .object_property, .span = span, .data = .{ .binary = .{ .left = computed, .right = result, .flags = 0 } } });
@@ -111,11 +173,13 @@ pub fn fieldValue(self: anytype, source: ast.NodeIndex, key: ast.NodeIndex, valu
         const read_key = if (key_identity) |identity| blk: {
             var use = identity;
             use.reference_scope = self.current_scope;
-            break :blk try helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+            const ref = try helpers.makeTempRefFromIdentity(self, use, span, .{ .read = true });
+            try guard.recordReference(self, ref, identity.symbol_id.?, self.current_scope, .{ .read = true });
+            break :blk ref;
         } else try helpers.buildDefinePropertyKeyArg(self, key);
         result = try helpers.makeComputedMember(self, object, read_key, span);
     }
     if (result.isNone()) result = try helpers.makeVoidZero(self, span);
-    const publication = try guard.publish(self, self.current_scope, span);
-    return self.ast.addNode(.{ .tag = .sequence_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ publication, result }) } });
+    const publish_receiver = try guard.publish(self, self.current_scope, span);
+    return self.ast.addNode(.{ .tag = .sequence_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ publish_receiver, result }) } });
 }

@@ -302,6 +302,9 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     const old_i = @backingInt(old_idx);
     const new_i = @backingInt(new_idx);
 
+    if (self.native_constructor_reference_origins.get(old_i)) |origin|
+        try self.native_constructor_reference_origins.put(self.allocator, new_i, origin);
+
     // The visitor intentionally replaced this user reference with a fresh
     // lexical-capture use. Its symbol is bound from the capture declaration,
     // never inherited from the replaced source identifier.

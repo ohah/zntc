@@ -1174,6 +1174,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             }
         }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
+            if (self.native_constructor_statement_nodes.contains(raw) and !self.native_constructor_statement_handoffs.contains(raw)) return error.InvalidNode;
             if (self.deferred_generator_for_in_body_ref_scopes.contains(raw))
                 std.debug.panic("live generator for-in body reference reached output binding without a reserved ScopeId", .{});
             if (self.tracked_runtime_helper_ref_index.get(raw)) |tracked_index| {
@@ -1182,7 +1183,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 // reference scope from this final AST walk.
                 if (scope.isNone() or tracked_index >= self.tracked_runtime_helper_refs.items.len)
                     std.debug.panic("runtime helper reference has no exact output scope", .{});
-                const publication = self.generator_function_coordinate_handoffs.get(raw);
+                const publication = @import("../native_constructor_timing.zig").publication(self, raw);
                 if (publication == null and self.generator_function_statement_value_nodes.contains(raw) and try generatorStatementScopeParticipates(self, scope)) return error.InvalidNode;
                 const produced = editor.referenceForNode(work.node) catch |err| return editError(err);
                 if (publication) |known| {
@@ -1341,7 +1342,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
             const symbol: SymbolId = @fromBackingInt(@intCast(reference.raw_id));
             const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
-            const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+            const publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
             if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
                 std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
                 return error.InvalidNode;
@@ -1418,7 +1419,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         // explicit producer split. Placement never creates or adopts an ID.
         const resolved_id = reference.raw_id;
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
-        const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+        const publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
         if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
             std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
             return error.InvalidNode;

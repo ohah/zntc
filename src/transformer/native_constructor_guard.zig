@@ -7,6 +7,15 @@ const ast = @import("../parser/ast.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Span = @import("../lexer/token.zig").Span;
 const helpers = @import("es_helpers.zig");
+pub const ReferenceOrigin = struct {
+    symbol_id: @import("../semantic/symbol.zig").SymbolId,
+    scope: ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
+};
+
+pub fn recordReference(self: anytype, node: ast.NodeIndex, id: @import("../semantic/symbol.zig").SymbolId, scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags) !void {
+    try self.native_constructor_reference_origins.put(self.allocator, @backingInt(node), .{ .symbol_id = id, .scope = scope, .flags = flags });
+}
 
 fn block(self: anytype, statements: []const ast.NodeIndex, span: Span) !ast.NodeIndex {
     return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(statements) } });
@@ -19,6 +28,7 @@ fn reference(self: anytype, identity: helpers.TempIdentityCapture, scope: ScopeI
     use.reference_scope = scope;
     const node = try helpers.makeTempRefFromIdentity(self, use, span, if (write) .{ .write = true } else .{ .read = true });
     if (write) self.ast.nodes.items[@backingInt(node)].tag = .assignment_target_identifier;
+    try recordReference(self, node, identity.symbol_id.?, scope, if (write) .{ .write = true } else .{ .read = true });
     return node;
 }
 
@@ -36,6 +46,7 @@ fn operation(self: anytype, code: u32, value: ast.NodeIndex, scope: ScopeId, spa
     defer self.current_scope = saved;
     self.runtime_helpers.derived_constructor = true;
     const callee = try helpers.makeRuntimeHelperRef(self, "__nativeCtorThis");
+    try recordReference(self, callee, @fromBackingInt(self.getSymbolIdAt(callee) orelse @panic("native constructor runtime call has no exact SID")), scope, .{ .read = true });
     const number = try helpers.makeNumericLiteral(self, code);
     return helpers.makeCallExpr(self, callee, &.{ number, value }, span);
 }

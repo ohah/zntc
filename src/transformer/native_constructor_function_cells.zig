@@ -121,10 +121,12 @@ pub fn prepare(self: anytype, body: ast.NodeIndex, formals: ast.NodeIndex, const
         try self.remapCopiedScopeOwner(entry.source, expression);
         self.runtime_helpers.keep_names = true;
         const callee = try helpers.makeRuntimeHelperRef(self, "__name");
+        try @import("native_constructor_guard.zig").recordReference(self, callee, @fromBackingInt(self.getSymbolIdAt(callee) orelse @panic("constructor function name helper has no SID")), try_scope, .{ .read = true });
         const name = try helpers.buildQuotedKeyLiteral(self, entry.source_name);
         const value = try helpers.makeCallExpr(self, callee, &.{ expression, name }, source.span);
         const target = try self.makeSyntheticRefForSymbol(@fromBackingInt(entry.id), try_scope, .{ .write = true });
         self.ast.nodes.items[@backingInt(target)].tag = .assignment_target_identifier;
+        try @import("native_constructor_guard.zig").recordReference(self, target, @fromBackingInt(entry.id), try_scope, .{ .write = true });
         try initializers.append(self.allocator, try helpers.makeAssignStmt(self, target, value, source.span, 0));
     }
     return .{

@@ -124,4 +124,31 @@ test "independent native constructor timing before output walker exact birth tup
     }
     try std.testing.expect(checked > 5);
     try std.testing.expectEqual(@as(usize, 0), mismatches);
+    var origins = t.native_constructor_reference_origins.iterator();
+    var selected: ?u32 = null;
+    while (origins.next()) |entry| {
+        if (parents.contains(entry.key_ptr.*) and t.tracked_runtime_helper_ref_index.contains(entry.key_ptr.*)) {
+            selected = entry.key_ptr.*;
+            break;
+        }
+    }
+    const raw = selected orelse return error.NoConstructorHelperBirthTuple;
+    const publication = t.native_constructor_statement_handoffs.get(raw).?;
+    const edit = @import("transformer/semantic_edit.zig");
+    t.native_constructor_statement_handoffs.getPtr(raw).?.symbol_id = @fromBackingInt(@backingInt(publication.symbol_id) ^ 1);
+    try std.testing.expectError(error.InvalidSymbol, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+    t.native_constructor_statement_handoffs.getPtr(raw).?.* = publication;
+    t.native_constructor_statement_handoffs.getPtr(raw).?.scope = t.programScope();
+    try std.testing.expectError(error.InvalidScope, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+    t.native_constructor_statement_handoffs.getPtr(raw).?.* = publication;
+    t.native_constructor_statement_handoffs.getPtr(raw).?.stmt = publication.stmt ^ 1;
+    try std.testing.expectError(error.InvalidNode, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+    t.native_constructor_statement_handoffs.getPtr(raw).?.* = publication;
+    t.native_constructor_statement_handoffs.getPtr(raw).?.scope_stmt = publication.scope_stmt ^ 1;
+    try std.testing.expectError(error.InvalidNode, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+    t.native_constructor_statement_handoffs.getPtr(raw).?.* = publication;
+    _ = t.native_constructor_statement_handoffs.remove(raw);
+    try std.testing.expectError(error.InvalidNode, edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope()));
+    try t.native_constructor_statement_handoffs.put(a, raw, publication);
+    try edit.bindOutputScopesAndReferencesChecked(&t, output, t.programScope());
 }

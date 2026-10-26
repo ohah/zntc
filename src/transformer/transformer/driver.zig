@@ -190,6 +190,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     if (self.semantic_edit_enabled) {
         try self.completeGeneratedStateSymbols(root, self.programScope());
         try @import("../es2015_generator.zig").ES2015Generator(@TypeOf(self.*)).projectFunctionStorageCoordinates(self, root);
+        try @import("../native_constructor_timing.zig").projectCoordinates(self, root);
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 

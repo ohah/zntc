@@ -52,6 +52,12 @@ pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
+pub const StatementPublication = struct {
+    symbol_id: @import("../semantic/symbol.zig").SymbolId,
+    scope: ScopeId,
+    stmt: u32,
+    scope_stmt: u32,
+};
 /// Field visits and the source constructor share one actual storage identity
 /// even when traversal opens different capture frames for them.
 pub const NativeFieldCapturePlan = struct {
@@ -404,6 +410,9 @@ pub const Transformer = struct {
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
     native_constructor_timing_plans: std.AutoHashMapUnmanaged(u32, @import("native_constructor_timing.zig").Plan) = .empty,
     native_constructor_timing_fields: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
+    native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
+    native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     retained_loop_key_cells: std.AutoHashMapUnmanaged(u32, []@import("retained_class_keys.zig").Cell) = .empty,
     retained_class_key_plan: ?*@import("retained_class_keys.zig").Plan = null,
     retained_field_name_cell: ?@import("retained_class_keys.zig").Cell = null,
@@ -460,12 +469,7 @@ pub const Transformer = struct {
     generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     generator_function_coordinate_program_changed: bool = false,
     generator_function_statement_value_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
-    generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, struct {
-        symbol_id: @import("../semantic/symbol.zig").SymbolId,
-        scope: ScopeId,
-        stmt: u32,
-        scope_stmt: u32,
-    }) = .empty,
+    generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     /// Exact pending uses for generated callback temps; these do not use the
     /// temp-name reference chain.
     generator_state_temp_refs: std.ArrayListUnmanaged(GeneratedTempReference) = .empty,
@@ -1050,6 +1054,8 @@ pub const Transformer = struct {
         if (owner_scope) |scope_id| self.current_scope = @fromBackingInt(@intCast(scope_id));
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
+        if (self.ast.getNode(idx).tag == .program)
+            try @import("native_constructor_timing.zig").projectCoordinates(self, new_idx);
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
         // A later visit may copy a generated capture declaration while
         // building an outer async/generator state machine. Pass 2 must see
