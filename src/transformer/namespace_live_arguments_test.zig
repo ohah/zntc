@@ -131,6 +131,20 @@ test "namespace live arguments identities exist before the output walker" {
         while (live_owners.next()) |raw| {
             if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| try output_owners.put(a, raw.*, @backingInt(scope));
         }
+        live_owners = parents.keyIterator();
+        while (live_owners.next()) |raw| {
+            if (t.ast.nodes.items[raw.*].tag != .ts_module_declaration) continue;
+            const actual_owner = t.outputOwnedScope(@fromBackingInt(raw.*)) orelse return error.MissingActualIifeOwner;
+            const actual_parent = utils.expectedScope(t.ast, output, &parents, &output_owners, raw.*) orelse return error.MissingActualIifeParent;
+            try std.testing.expectEqual(actual_parent, editor.scopes.items[actual_owner.toIndex()].parent);
+            var parameters: usize = 0;
+            for (editor.symbols.items) |symbol| {
+                if (symbol.scope_id != actual_owner or symbol.synthetic_kind != .namespace_iife_parameter) continue;
+                try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, symbol.kind);
+                parameters += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), parameters);
+        }
         var cells = t.live_arguments_cells.iterator();
         var checked: usize = 0;
         while (cells.next()) |entry| {
