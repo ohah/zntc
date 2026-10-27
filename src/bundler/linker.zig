@@ -4557,14 +4557,19 @@ pub const Linker = struct {
 
     /// Only the live-import producer builds this expression from its actual
     /// namespace holder and export key; consumers do not infer roles from text.
-    pub fn putConsumerImportMember(self: *Linker, module_index: u32, export_name: []const u8, namespace_name: []const u8, property_name: []const u8) !void {
+    /// property_value is an ECMAScript StringValue, never an identifier or
+    /// quoted-literal spelling. Backslashes and quote characters stay data.
+    pub fn putConsumerImportMember(self: *Linker, module_index: u32, export_name: []const u8, namespace_name: []const u8, property_value: []const u8) !void {
         const names = @import("linker/identifier_name.zig");
         if (!try names.isBindingName(self.allocator, namespace_name, isReservedName) or
-            !std.unicode.utf8ValidateSlice(property_name)) return error.InvalidConsumerImportMember;
-        const access = if (names.isIdentifierName(property_name))
-            try std.fmt.allocPrint(self.allocator, ".{s}", .{property_name})
-        else
-            try @import("linker/preamble_writer.zig").allocMemberAccess(self.allocator, property_name);
+            !std.unicode.utf8ValidateSlice(property_value)) return error.InvalidConsumerImportMember;
+        const access = if (std.mem.indexOfScalar(u8, property_value, '\\') == null and names.isIdentifierName(property_value))
+            try std.fmt.allocPrint(self.allocator, ".{s}", .{property_value})
+        else blk: {
+            const quoted_value = try std.json.Stringify.valueAlloc(self.allocator, property_value, .{});
+            defer self.allocator.free(quoted_value);
+            break :blk try std.fmt.allocPrint(self.allocator, "[{s}]", .{quoted_value});
+        };
         defer self.allocator.free(access);
         const expression = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ namespace_name, access });
         defer self.allocator.free(expression);

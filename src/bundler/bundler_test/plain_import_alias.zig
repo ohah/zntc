@@ -73,3 +73,8 @@ test "PM plain import alias ASCII same-name and shadow controls" {
     for (fixtures.controls) |case| for ([_]Profile{ .{}, .{ .minify = true }, .{ .preserve = false }, .{ .preserve = false, .split = true, .format = .esm } }) |profile| try run(case, profile);
     std.debug.print("PM plain import alias native-controls=4 profiles=4 total=16\n", .{});
 }
+
+test "PM plain import alias escaped binding and Unicode live import controls" {
+    for (fixtures.property_source_controls) |case| for ([_]Profile{ .{}, .{ .minify = true } }) |profile| try run(case, profile);
+    std.debug.print("PM plain import alias escaped/live source-controls=2 profiles=2 native=4\n", .{});
+}
