@@ -5434,6 +5434,154 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'this type annotation keeps the value-import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: this = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'this type nested in an object signature keeps the value-import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: { self: this; read(): this } = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'this type inside a function type keeps the value-import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: (self: this) => this = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'this type in a union keeps the value-import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: this | object = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'type predicate parameter shadows an outer value import exactly',
+        source: [
+          "import { value } from './values';",
+          "function isText(value: unknown): value is string { return typeof value === 'string'; }",
+          'process.stdout.write(`${isText(value)}:${value}`);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: 'false:42',
+      },
+      {
+        name: 'type predicate erases a type-only imported module edge',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          "function isShape(input: unknown): input is Shape { return typeof input === 'object' && input !== null; }",
+          "process.stdout.write(`${isShape({ value })}:${value}:${globalThis.__predicateShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__predicateShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: 'true:42:elided',
+      },
+      {
+        name: 'asserts type predicate erases its type-only imported module edge',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          "function assertShape(input: unknown): asserts input is Shape { if (!input) throw new Error('missing'); }",
+          'assertShape({ value });',
+          "process.stdout.write(`${value}:${globalThis.__assertShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__assertShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'class implements keeps its conservative reanalysis boundary',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'class Box implements Shape { value: number; constructor(input: number) { this.value = input; } }',
+          "process.stdout.write(`${new Box(value).value}:${globalThis.__implementsShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42:elided',
+      },
+      {
+        name: 'multiple class implements imports keep the class path on reanalysis',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          "import { Marker } from './marker';",
+          'class Box implements Shape, Marker { value: number; constructor(input: number) { this.value = input; } }',
+          "process.stdout.write(`${new Box(value).value}:${globalThis.__implementsShapeRan ? 'shape' : ''}${globalThis.__implementsMarkerRan ? 'marker' : ''}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
+          'marker.ts': 'globalThis.__implementsMarkerRan = true; export interface Marker {}\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42:',
+      },
+      {
+        name: 'generic class implements keeps the class path on reanalysis',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'class Box<T> implements Shape<T> { value: T; constructor(input: T) { this.value = input; } }',
+          "process.stdout.write(`${new Box<number>(value).value}:${globalThis.__genericImplementsRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__genericImplementsRan = true; export interface Shape<T> { value: T }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42:elided',
+      },
+      {
         name: 'conditional type keeps value-import identities',
         source: [
           "import { value } from './values';",
