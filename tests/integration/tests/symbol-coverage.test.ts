@@ -5238,6 +5238,18 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'named tuple members keep value-import identities',
+        source: [
+          "import { value } from './values';",
+          'const pair: [first: number, second?: string, ...rest: boolean[]] = [value];',
+          'process.stdout.write(`${pair[0]}:${pair.length}`);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42:1',
+      },
+      {
         name: 'intersection of primitive types keeps value-import identities',
         source: [
           "import { value } from './values';",
@@ -5465,7 +5477,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'named tuple member keeps reanalysis',
+        name: 'named tuple labels do not replace value-import identities',
         source: [
           "import { value } from './values';",
           'const pair: [value: number] = [value];',
@@ -5473,7 +5485,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {

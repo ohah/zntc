@@ -699,6 +699,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_intrinsic_keyword,
             .ts_array_type,
             .ts_tuple_type,
+            .ts_named_tuple_member,
             .ts_union_type,
             .ts_intersection_type,
             .ts_optional_type,
