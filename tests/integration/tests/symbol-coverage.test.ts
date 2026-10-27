@@ -1392,7 +1392,11 @@ function strictSchemaProblems(report: string): string[] {
     }
     if (!expectedFields.has(field)) problems.push(`unexpected strict report field ${field}`);
     const valuePattern = field === 'strict_status_fingerprint' ? /^[0-9a-fA-F]{1,16}$/ : /^\d+$/;
-    if (!valuePattern.test(value)) problems.push(`malformed strict report value ${field}=${value}`);
+    if (!valuePattern.test(value)) {
+      problems.push(`malformed strict report value ${field}=${value}`);
+    } else if (field !== 'strict_status_fingerprint' && !Number.isSafeInteger(Number(value))) {
+      problems.push(`strict report value ${field}=${value} is not a safe integer`);
+    }
   }
 
   const declaredStatusCount = values.get('strict_status_count');
@@ -2869,6 +2873,20 @@ describe('symbol identity coverage gate (#4819)', () => {
     const report = `zntc: synthetic-coverage fixture.mjs: ${complete}`;
 
     expect(strictSchemaProblems(report)).toEqual([]);
+    for (const field of STRICT_REPORT_FIELDS) {
+      if (field === 'strict_status_fingerprint') continue;
+      const unsafeReport = report.replace(
+        new RegExp(` ${field}=\\d+`),
+        ` ${field}=9007199254740992`,
+      );
+      expect(unsafeReport, `${field} unsafe-integer mutation was not applied`).not.toBe(report);
+      expect(strictSchemaProblems(unsafeReport), `${field} unsafe-integer mutation`).toContain(
+        `strict report value ${field}=9007199254740992 is not a safe integer`,
+      );
+    }
+    expect(
+      strictSchemaProblems(report.replace('scope_mismatch=1', 'scope_mismatch=9007199254740991')),
+    ).toEqual([]);
     expect(
       strictSchemaProblems(
         report.replace(
