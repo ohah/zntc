@@ -755,6 +755,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_symbol_keyword,
             .ts_object_keyword,
             .ts_bigint_keyword,
+            .ts_this_type,
             .ts_intrinsic_keyword,
             .ts_array_type,
             .ts_tuple_type,
@@ -776,6 +777,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_infer_type,
             .ts_type_parameter,
             .ts_type_parameter_declaration,
+            .ts_type_predicate,
             .ts_indexed_access_type,
             .ts_optional_type,
             .ts_rest_type,
@@ -803,7 +805,7 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
     const Case = struct {
         name: []const u8,
         source: []const u8,
-        required_tag: NodeTag,
+        required_tag: ?NodeTag,
         expected: bool,
     };
     const cases = [_]Case{
@@ -821,7 +823,12 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
         .{ .name = "infer type", .source = "const value: number extends infer Result ? Result : never = 1;", .required_tag = .ts_infer_type, .expected = true },
         .{ .name = "mapped type parameter", .source = "const value: { [Key in 'value']: number } = 1;", .required_tag = .ts_type_parameter, .expected = true },
         .{ .name = "function type parameter declaration", .source = "const value: <T>(arg: T) => T = 1;", .required_tag = .ts_type_parameter_declaration, .expected = true },
+        .{ .name = "this type", .source = "const value: this = 1;", .required_tag = .ts_this_type, .expected = true },
+        .{ .name = "type predicate", .source = "function isString(value: unknown): value is string { return true; }", .required_tag = .ts_type_predicate, .expected = true },
         .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = false },
+        .{ .name = "interface declaration", .source = "interface Shape {} const value: Shape = {};", .required_tag = .ts_interface_declaration, .expected = false },
+        .{ .name = "no type erasure", .source = "const value = 1;", .required_tag = null, .expected = false },
+        .{ .name = "import type without attributes", .source = "const value: import('./types').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
         .{ .name = "import type attributes", .source = "const value: import('./types', { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
         .{ .name = "import type attributes after a comment", .source = "const value: import('./types' /* attributes follow */, { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
         .{ .name = "comma inside import path", .source = "const value: import('./types,extra').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
@@ -839,15 +846,17 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
         _ = try parser.parse();
         try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
-        var found_tag = false;
-        for (parser.ast.nodes.items) |node| {
-            if (node.tag == case.required_tag) {
-                found_tag = true;
-                break;
+        if (case.required_tag) |required_tag| {
+            var found_tag = false;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag == required_tag) {
+                    found_tag = true;
+                    break;
+                }
             }
+            if (!found_tag) std.debug.print("required syntax tag missing in case: {s}\n", .{case.name});
+            try std.testing.expect(found_tag);
         }
-        if (!found_tag) std.debug.print("required syntax tag missing in case: {s}\n", .{case.name});
-        try std.testing.expect(found_tag);
         try std.testing.expectEqual(case.expected, canRetainTypeErasuresWithExactReferenceEdits(&parser.ast));
     }
 }
