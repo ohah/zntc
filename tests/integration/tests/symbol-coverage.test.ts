@@ -5334,10 +5334,49 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'conditional type keeps reanalysis',
+        name: 'conditional type keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: number extends string ? number : string = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'nested conditional type keeps value-import identities',
+        source: [
+          "import { value } from './values';",
+          'const answer: number extends number ? string extends string ? number : never : never = value;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'conditional type-only import elides the runtime dependency',
+        source: [
+          "import { Shape } from './shape';",
+          'const answer: Shape extends number ? number : never = 42;',
+          "process.stdout.write(globalThis.__conditionalTypeImportRan ? 'loaded' : String(answer));",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__conditionalTypeImportRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'conditional type with infer keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          'const answer: number extends infer Result ? Result : never = value;',
           'process.stdout.write(String(value));',
           '',
         ].join('\n'),
