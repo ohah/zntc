@@ -5896,10 +5896,15 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
             }
             const actual_binding = helper_binding.?;
             const saved_binding = actual_binding.*;
+            var sibling_span = saved_binding.local_span;
+            for (mutable_entry.import_bindings) |candidate| {
+                if (candidate.is_helper and std.mem.eql(u8, candidate.imported_name, "__extends")) sibling_span = candidate.local_span;
+            }
+            try std.testing.expect(!std.meta.eql(sibling_span, saved_binding.local_span));
             const saved_wrapper = mutable_entry.wrap_kind;
             const saved_local_kind = mutable_entry.semantic.?.symbols.items[local].kind;
             const saved_source_scope = mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id;
-            for (0..10) |hostile| {
+            for (0..12) |hostile| {
                 switch (hostile) {
                     0 => actual_binding.is_helper = false,
                     1 => actual_binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(provider.index, local),
@@ -5911,6 +5916,8 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
                     7 => mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id = @fromBackingInt(1),
                     8 => mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = local,
                     9 => {},
+                    10 => actual_binding.local_span = sibling_span,
+                    11 => mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = @intCast(mutable_entry.semantic.?.symbols.items.len),
                     else => unreachable,
                 }
                 try std.testing.expect(!result.linker.preserveRuntimeHelperImportIsShadowed(
