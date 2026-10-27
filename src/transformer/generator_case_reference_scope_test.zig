@@ -6,6 +6,7 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const output_scope = @import("output_scope_test_utils.zig");
 
 fn check(source: []const u8) !void {
     for ([_]bool{ false, true }) |native_lexical| try checkMode(source, native_lexical);
@@ -451,6 +452,7 @@ fn checkAliasStoragePublication(source: []const u8) !void {
     t.unresolved_references = &analyzer.unresolved_references;
     t.semantic_edit_enabled = true;
     const output = try t.transform();
+    const output_parents = try output_scope.buildParentMap(a, t.ast, output);
     const Pair = struct { read: ast.NodeIndex, write: ast.NodeIndex, lexical_binding: ast.NodeIndex, variable_binding: ast.NodeIndex };
     var pairs: std.ArrayList(Pair) = .empty;
     var stack: std.ArrayList(ast.NodeIndex) = .empty;
@@ -470,6 +472,22 @@ fn checkAliasStoragePublication(source: []const u8) !void {
                         try std.testing.expectEqual(role.lexical, read.symbol_id);
                         try std.testing.expectEqual(role.variable, write.symbol_id);
                         try std.testing.expectEqual(read.scope_id, write.scope_id);
+                        const expected_read_scope = output_scope.expectedScope(
+                            t.ast,
+                            output,
+                            &output_parents,
+                            &editor.scope_owner_map,
+                            @backingInt(right),
+                        ) orelse return error.MissingAliasReadPhysicalScope;
+                        const expected_write_scope = output_scope.expectedScope(
+                            t.ast,
+                            output,
+                            &output_parents,
+                            &editor.scope_owner_map,
+                            @backingInt(left),
+                        ) orelse return error.MissingAliasWritePhysicalScope;
+                        try std.testing.expectEqual(expected_read_scope, read.scope_id);
+                        try std.testing.expectEqual(expected_write_scope, write.scope_id);
                         try std.testing.expect(read.flags.read and write.flags.write);
                         var lexical_binding: ast.NodeIndex = .none;
                         var variable_binding: ast.NodeIndex = .none;
@@ -518,6 +536,22 @@ fn checkAliasStoragePublication(source: []const u8) !void {
         }
         try std.testing.expect(read_scope != null and write_scope != null);
         try std.testing.expectEqual(read_scope, write_scope);
+        const expected_read_scope = output_scope.expectedScope(
+            t.ast,
+            output,
+            &output_parents,
+            &fresh.scope_owner_map,
+            @backingInt(pair.read),
+        ) orelse return error.MissingFreshAliasReadPhysicalScope;
+        const expected_write_scope = output_scope.expectedScope(
+            t.ast,
+            output,
+            &output_parents,
+            &fresh.scope_owner_map,
+            @backingInt(pair.write),
+        ) orelse return error.MissingFreshAliasWritePhysicalScope;
+        try std.testing.expectEqual(expected_read_scope, read_scope.?);
+        try std.testing.expectEqual(expected_write_scope, write_scope.?);
     }
 }
 
