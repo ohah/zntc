@@ -192,45 +192,145 @@ function tagExpressionEnd(source, start) {
   return source.length;
 }
 
+function conditionalOffsets(source) {
+  const offsets = new Uint8Array(source.length);
+
+  // Mark assignments written in brace-less control-flow branches, including
+  // condition expressions split across lines.
+  const inlineControl = /\b(?:if|else|while|for|switch|catch)\b[^{};]*;?/g;
+  for (const control of source.matchAll(inlineControl)) {
+    offsets.fill(1, control.index, control.index + control[0].length);
+  }
+
+  const blocks = [];
+  let conditionalDepth = 0;
+  let statementStart = 0;
+  for (let i = 0; i < source.length; i++) {
+    if (conditionalDepth > 0) offsets[i] = 1;
+    switch (source[i]) {
+      case '{': {
+        const header = source.slice(statementStart, i);
+        const conditional =
+          /\b(?:if|else|while|for|switch|catch)\b/.test(header) || /=>\s*$/.test(header);
+        blocks.push(conditional);
+        if (conditional) conditionalDepth++;
+        statementStart = i + 1;
+        break;
+      }
+      case '}': {
+        const conditional = blocks.pop() ?? false;
+        if (conditional) conditionalDepth--;
+        statementStart = i + 1;
+        break;
+      }
+      case ';':
+        statementStart = i + 1;
+        break;
+    }
+  }
+
+  return offsets;
+}
+
 function identifierTagAliases(segmentSource, segment, lineStarts) {
   const aliases = new Map();
   const bindings = new Map();
-  const declarations = /\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b[^=;\n]*=/g;
+  const declarationPattern = /\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b[^=;\n]*=/g;
   const identifierTag = new RegExp(`\\.(${IDENTIFIER_TAGS.join('|')})\\b`);
-  for (const declaration of segmentSource.matchAll(declarations)) {
+  const declarationHeaders = [];
+  const events = [];
+  const conditional = conditionalOffsets(segmentSource);
+
+  for (const declaration of segmentSource.matchAll(declarationPattern)) {
     const name = declaration[1];
     const initializerStart = declaration.index + declaration[0].length;
     const initializerEnd = tagExpressionEnd(segmentSource, initializerStart);
-    const initializer = segmentSource.slice(initializerStart, initializerEnd).trim();
     const line = lineAtOffset(lineStarts, declaration.index);
     const fn = enclosingFn(segment.lines, line);
     const key = `${fn}::${name}`;
     const bindingRows = bindings.get(key) ?? [];
     bindingRows.push({ offset: declaration.index });
     bindings.set(key, bindingRows);
+    declarationHeaders.push({ start: declaration.index, end: initializerStart });
+    events.push({
+      name,
+      fn,
+      offset: declaration.index,
+      bindingOffset: declaration.index,
+      initializerStart,
+      initializerEnd,
+    });
+  }
+
+  const assignmentPattern = /(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*=(?![=>])/g;
+  for (const assignment of segmentSource.matchAll(assignmentPattern)) {
+    const offset = assignment.index;
+    if (segmentSource.slice(0, offset).trimEnd().endsWith('.')) continue;
+    if (declarationHeaders.some((header) => offset >= header.start && offset < header.end))
+      continue;
+    const initializerStart = offset + assignment[0].length;
+    events.push({
+      name: assignment[1],
+      fn: enclosingFn(segment.lines, lineAtOffset(lineStarts, offset)),
+      offset,
+      bindingOffset: undefined,
+      initializerStart,
+      initializerEnd: tagExpressionEnd(segmentSource, initializerStart),
+    });
+  }
+
+  events.sort((left, right) => left.offset - right.offset);
+
+  const bindingBefore = (name, fn, before) => {
+    const localKey = `${fn}::${name}`;
+    const local =
+      bindings.get(localKey)?.findLast((binding) => binding.offset < before) ?? undefined;
+    if (local !== undefined) return { key: localKey, offset: local.offset };
+    if (fn === '<top>') return undefined;
+    const globalKey = `<top>::${name}`;
+    const global =
+      bindings.get(globalKey)?.findLast((binding) => binding.offset < before) ?? undefined;
+    return global === undefined ? undefined : { key: globalKey, offset: global.offset };
+  };
+
+  const aliasBefore = (binding, before) =>
+    (aliases.get(binding.key) ?? []).reduce((state, alias) => {
+      if (alias.offset !== binding.offset || alias.at >= before) return state;
+      if (alias.conditional) {
+        return alias.tag === undefined ? state : alias.tag;
+      }
+      return alias.tag;
+    }, undefined);
+
+  for (const event of events) {
+    const targetBinding =
+      event.bindingOffset === undefined
+        ? bindingBefore(event.name, event.fn, event.offset)
+        : { key: `${event.fn}::${event.name}`, offset: event.bindingOffset };
+    if (targetBinding === undefined) continue;
+
+    const initializer = segmentSource.slice(event.initializerStart, event.initializerEnd).trim();
     const directTag = initializer.match(identifierTag)?.[1];
     const sourceAlias = initializer.match(/^([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
-    const sourceKey = sourceAlias === undefined ? undefined : `${fn}::${sourceAlias}`;
     const sourceBinding =
-      sourceKey === undefined
-        ? undefined
-        : (bindings.get(sourceKey)?.findLast((binding) => binding.offset < declaration.index) ??
-          bindings.get(`<top>::${sourceAlias}`)?.at(-1));
-    const aliasTag =
-      directTag ??
-      (sourceKey === undefined || sourceBinding === undefined
-        ? undefined
-        : (aliases.get(sourceKey)?.findLast((alias) => alias.offset === sourceBinding.offset)
-            ?.tag ??
-          aliases
-            .get(`<top>::${sourceAlias}`)
-            ?.findLast((alias) => alias.offset === sourceBinding.offset)?.tag));
-    if (aliasTag === undefined) continue;
-    const entries = aliases.get(key) ?? [];
-    entries.push({ tag: aliasTag, offset: declaration.index });
-    aliases.set(key, entries);
+      sourceAlias === undefined ? undefined : bindingBefore(sourceAlias, event.fn, event.offset);
+    const sourceTag =
+      sourceBinding === undefined ? undefined : aliasBefore(sourceBinding, event.offset);
+    const assignedTag = directTag ?? sourceTag;
+    const previousTag = aliasBefore(targetBinding, event.offset);
+    if (assignedTag === undefined && previousTag === undefined) continue;
+
+    const entries = aliases.get(targetBinding.key) ?? [];
+    entries.push({
+      tag: assignedTag,
+      offset: targetBinding.offset,
+      at: event.offset,
+      conditional: conditional[event.offset] === 1,
+    });
+    aliases.set(targetBinding.key, entries);
   }
-  return { aliases, bindings };
+
+  return { aliases, bindings, bindingBefore, aliasBefore };
 }
 
 function sourceSegments(source) {
@@ -323,24 +423,17 @@ export function scanIdentifierConstructors(
         if (aliasName !== undefined) {
           const line = lineAtOffset(lineStarts, assignment.index);
           const fn = enclosingFn(segment.lines, line);
-          const localKey = `${fn}::${aliasName}`;
-          const localBinding = identifierTagAliasesByScope.bindings
-            .get(localKey)
-            ?.findLast((entry) => entry.offset < assignment.index);
-          const globalBinding =
-            localBinding === undefined
-              ? identifierTagAliasesByScope.bindings.get(`<top>::${aliasName}`)?.at(-1)
-              : undefined;
-          const binding = localBinding ?? globalBinding;
-          const aliasKey = localBinding === undefined ? `<top>::${aliasName}` : localKey;
-          const alias =
+          const binding = identifierTagAliasesByScope.bindingBefore(
+            aliasName,
+            fn,
+            assignment.index,
+          );
+          const tag =
             binding === undefined
               ? undefined
-              : identifierTagAliasesByScope.aliases
-                  .get(aliasKey)
-                  ?.findLast((entry) => entry.offset === binding.offset);
-          if (alias !== undefined) {
-            record(segment, lineStarts, expressionStart, `${alias.tag} 간접 식별자 태그 직접 생성`);
+              : identifierTagAliasesByScope.aliasBefore(binding, assignment.index);
+          if (tag !== undefined) {
+            record(segment, lineStarts, expressionStart, `${tag} 간접 식별자 태그 직접 생성`);
           }
         }
       }
