@@ -3166,8 +3166,8 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
-      expect(successful).toBe(288);
-      expect(retained).toBe(288);
+      expect(successful).toBe(289);
+      expect(retained).toBe(289);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
       for (const probe of LENIENT_UNKNOWN_GATE_PROBES) {
