@@ -8830,7 +8830,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'optional-chain-left',
-        graph: 'reanalyzed',
+        // The optional-member result and outer nullish temp now complete the
+        // creator-owned ledger and the independent exact graph audit.
+        graph: 'retained',
         source: [
           'function choose(box) { return box?.value ?? 7; }',
           'globalThis.result = choose(null);',
