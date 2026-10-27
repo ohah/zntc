@@ -7765,6 +7765,7 @@ fn canKeepPrepassSemanticGraphPrepared(
         if (@import("../../transformer/sideeffect_entry_graph.zig").preparedMatches(prepared, module)) prepared else null
     else
         null;
+    const has_entry_authority = entry_source != null;
     const uses_define = define_mod.astUsesDefine(ast, options.define);
     const retained_define_references = uses_define and canRetainGraphForDefineReferences(
         self.allocator,
@@ -7795,7 +7796,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // producer; metadata rescan supplies the new source edges without replacing
     // the module-local semantic owner.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null and entry_source == null) or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null and !has_entry_authority) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast) and
@@ -8053,7 +8054,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // parser's graph is already the exact graph for this module. Retaining it
     // avoids an otherwise unnecessary semantic rescan for ordinary JavaScript
     // (including identifier-only minification, which happens after this pass).
-    const unchanged_graph_is_safe = (!options.unsupported.hasAny() or native_noop_source != null or entry_source != null) and
+    const unchanged_graph_is_safe = (!options.unsupported.hasAny() or native_noop_source != null or has_entry_authority) and
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
@@ -11636,11 +11637,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             return;
         };
         // Only the post-rescan proof authorizes publishing retained entry audits.
-        const entry_metadata_completed = if (entry_certificate_required)
-            @import("../../transformer/sideeffect_entry_graph.zig").afterMetadata(&transformer, module, root) catch false
+        const entry_metadata_published = if (entry_certificate_required)
+            @import("../../transformer/sideeffect_entry_graph.zig").publishMetadataCompletion(&transformer, module, root) catch false
         else
             true;
-        if (!entry_metadata_completed) {
+        // Missing execution cannot be mistaken for a successful read-only check.
+        const entry_metadata_completed = !entry_certificate_required or
+            (@import("../../transformer/sideeffect_entry_graph.zig").metadataRequirementSatisfied(&transformer, module, root) catch false);
+        if (!entry_metadata_published or !entry_metadata_completed) {
             if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
                 auditPrepassExactIfEnabled(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, debug_symbol_coverage, false);
             }
@@ -16433,4 +16437,13 @@ pub fn nativeNoopPreparedAdmissionForTest(m: *const Module, options: TransformOp
     var get = false;
     var set = false;
     return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, prepared, null);
+}
+
+/// Entry fault controls call the actual prepared production core.
+pub fn sideeffectEntryPreparedAdmissionForTest(m: *const Module, options: TransformOptions, prepared: ?*const @import("../../transformer/sideeffect_entry_graph.zig").Source) bool {
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = std.testing.allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false, .minify_identifiers = true };
+    var get = false;
+    var set = false;
+    return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, null, prepared);
 }

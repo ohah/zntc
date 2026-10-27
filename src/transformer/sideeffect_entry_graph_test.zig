@@ -118,6 +118,9 @@ const Fixture = struct {
         var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(a, .{ .platform = .node });
         var graph = @import("../bundler/graph.zig").ModuleGraph.init(a, &cache);
         try @import("../bundler/graph/transform_prepass.zig").resyncModuleGraphMetadataAfterAstMutation(&graph, m, a);
+        try std.testing.expect(!try Entry.metadataRequirementSatisfied(&t, m, root));
+        try std.testing.expect(try Entry.publishMetadataCompletion(&t, m, root));
+        try std.testing.expect(try Entry.metadataRequirementSatisfied(&t, m, root));
         return .{ .t = t, .m = m, .prepared = prepared, .root = root };
     }
 };
@@ -164,6 +167,8 @@ test "side effect entry graph rejects foreign domains and incomplete import meta
             19 => f.t.entry_graph_before_binder = false,
             else => unreachable,
         }
+        // This direct assertion independently checks the required-install guard.
+        if (mutation == 0) try std.testing.expect(!Entry.requirementSatisfied(&f.t, &f.prepared));
         // The validator must not manufacture an installation or repair rows.
         const accepted = Entry.requirementSatisfied(&f.t, &f.prepared) and (try Entry.afterMetadata(&f.t, f.m, f.root));
         try std.testing.expect(!accepted);
@@ -291,4 +296,78 @@ test "side effect entry graph indexes source literal identities once for a hundr
         f.m.exports_kind = before_kind;
     }
     try std.testing.expect(try Entry.afterMetadata(&f.t, f.m, f.root));
+}
+
+test "side effect entry graph requires actual second stage execution and atomically rejects stale seals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a);
+    const foreign = try Fixture.init(a);
+    const original = f.t.entry_graph_metadata_seal.?;
+    f.t.entry_graph_metadata_seal = null;
+    // A read-only successful validator did not execute the publication phase.
+    try std.testing.expect(try Entry.afterMetadata(&f.t, f.m, f.root));
+    try std.testing.expect(!try Entry.metadataRequirementSatisfied(&f.t, f.m, f.root));
+    try std.testing.expect(try Entry.publishMetadataCompletion(&f.t, f.m, f.root));
+    try expectSameSeal(original, f.t.entry_graph_metadata_seal.?);
+    const before_ids = try a.dupe(?u32, f.m.semantic.?.symbol_ids);
+    const before_scope = f.m.semantic.?.scopes[0];
+    for (0..6) |mutation| {
+        switch (mutation) {
+            0 => f.t.entry_graph_metadata_seal.?.module_pointer = foreign.m,
+            1 => f.t.entry_graph_metadata_seal.?.source_view = foreign.t.entry_graph_source.?.view,
+            2 => f.t.entry_graph_metadata_seal.?.output_domain = foreign.t.ast,
+            3 => f.t.entry_graph_metadata_seal.?.input_domain = foreign.t.semantic_source_ast.?,
+            4 => f.t.entry_graph_metadata_seal.?.owner = foreign.m.semantic.?.owner_token,
+            5 => f.t.entry_graph_metadata_seal.?.root = f.t.entry_graph_imports.items[0].output,
+            else => unreachable,
+        }
+        try std.testing.expect(!try Entry.metadataRequirementSatisfied(&f.t, f.m, f.root));
+        f.t.entry_graph_metadata_seal = original;
+        try std.testing.expect(try Entry.metadataRequirementSatisfied(&f.t, f.m, f.root));
+    }
+    const record_before = f.m.import_records[0];
+    f.m.import_records[0].specifier = "./stale-metadata.mjs";
+    const stale_before = f.m.import_records[0];
+    try std.testing.expect(!try Entry.publishMetadataCompletion(&f.t, f.m, f.root));
+    try expectSameSeal(original, f.t.entry_graph_metadata_seal.?);
+    try std.testing.expectEqualDeep(stale_before, f.m.import_records[0]);
+    try std.testing.expect(!try Entry.metadataRequirementSatisfied(&f.t, f.m, f.root));
+    try std.testing.expectEqualSlices(?u32, before_ids, f.m.semantic.?.symbol_ids);
+    try std.testing.expectEqualDeep(before_scope, f.m.semantic.?.scopes[0]);
+    f.m.import_records[0] = record_before;
+    try std.testing.expect(try Entry.publishMetadataCompletion(&f.t, f.m, f.root));
+    try std.testing.expect(try Entry.metadataRequirementSatisfied(&f.t, f.m, f.root));
+}
+
+test "side effect entry graph allocation failure cannot supply a prepared admission alternative" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try Fixture.init(a);
+    const prepass = @import("../bundler/graph/transform_prepass.zig");
+    // This fresh capture is from the actual current Module payload, rather than
+    // reusing the original pre-publication input header as a late source.
+    const valid = (try Entry.forModule(a, f.m, f.t.options)) orelse return error.MissingFreshEntrySource;
+    try std.testing.expect(prepass.sideeffectEntryPreparedAdmissionForTest(f.m, f.t.options, &valid));
+    try std.testing.expect(!prepass.sideeffectEntryPreparedAdmissionForTest(f.m, f.t.options, null));
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const unavailable: ?Entry.Source = Entry.forModule(failing.allocator(), f.m, f.t.options) catch |err| blk: {
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        break :blk null;
+    };
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expect(unavailable == null);
+    try std.testing.expect(!prepass.sideeffectEntryPreparedAdmissionForTest(f.m, f.t.options, if (unavailable) |*source| source else null));
+}
+
+fn expectSameSeal(wanted: Entry.MetadataSeal, actual: Entry.MetadataSeal) !void {
+    try std.testing.expect(wanted.source_view == actual.source_view);
+    try std.testing.expect(wanted.input_domain == actual.input_domain);
+    try std.testing.expect(wanted.output_domain == actual.output_domain);
+    try std.testing.expect(wanted.module_pointer == actual.module_pointer);
+    try std.testing.expectEqual(wanted.module_index, actual.module_index);
+    try std.testing.expectEqual(wanted.root, actual.root);
+    try std.testing.expectEqual(wanted.owner, actual.owner);
 }
