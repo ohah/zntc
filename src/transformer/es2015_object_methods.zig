@@ -147,6 +147,10 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
         /// function_expression은 async/generator 플래그를 보존하므로, 상위 visitNode가
         /// async_await/generator unsupported일 경우 자동으로 추가 lowering을 수행한다.
         pub fn lowerObjectMethods(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerObjectMethodsWithAccessorOrigins(self, node, null);
+        }
+
+        pub fn lowerObjectMethodsWithAccessorOrigins(self: *Transformer, node: Node, origins: ?*@import("object_builtin_reference.zig").AccessorOrigins) Transformer.Error!NodeIndex {
             const span = node.span;
             const members_start = node.data.list.start;
             const members_len = node.data.list.len;
@@ -158,7 +162,14 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             var i: u32 = 0;
             while (i < members_len) : (i += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i];
-                const new_m = try lowerObjectMember(self, @fromBackingInt(@intCast(raw_idx)));
+                const source_member: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                const before = self.ast.getNode(source_member);
+                const is_accessor = before.tag == .method_definition and
+                    self.ast.extra_data.items[before.data.extra + ast_mod.MethodExtra.flags] & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0;
+                const new_m = try lowerObjectMember(self, source_member);
+                if (origins) |batch| {
+                    if (is_accessor and !new_m.isNone()) batch.record(self, source_member, new_m) catch |err| return @import("object_builtin_reference.zig").productionFailure(err);
+                }
                 if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
             }
 

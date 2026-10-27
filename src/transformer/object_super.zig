@@ -959,7 +959,9 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
 
 /// `Object.getPrototypeOf(<home>)` — 호출 시점의 home object 프로토타입.
 pub fn buildHomeProto(self: *Transformer, home: ObjectSuperHomeIdentity, span: Span) Transformer.Error!NodeIndex {
-    const object_ref = try es_helpers.makeGlobalRef(self, "Object");
+    const builtin = @import("object_builtin_reference.zig");
+    const context = builtin.captureHome(self, home) catch |err| return builtin.productionFailure(err);
+    const object_ref = builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
     const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
     const home_ref = try es_helpers.makeTempVarRef(self, home.span, home.span);

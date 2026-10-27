@@ -182,3 +182,7 @@ test {
 test {
     _ = @import("virtual_helper_provider_semantic_test.zig");
 }
+
+test {
+    _ = @import("object_builtin_reference_test.zig");
+}

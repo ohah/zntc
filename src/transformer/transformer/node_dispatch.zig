@@ -1341,18 +1341,31 @@ fn visitObjectExpressionLowering(self: *Transformer, idx: NodeIndex, node: ast_m
     if (self.options.unsupported.needsObjectMethodDownlevel() and
         es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node))
     {
-        const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
+        const builtin = @import("../object_builtin_reference.zig");
+        var origins: ?builtin.AccessorOrigins = null;
+        if (self.options.unsupported.object_extensions) {
+            var members = self.ast.iterateExtraList(node.data.list);
+            while (members.next()) |member_idx| {
+                const member = self.ast.getNode(member_idx);
+                if (member.tag == .method_definition and self.ast.extra_data.items[member.data.extra + ast_mod.MethodExtra.flags] & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0) {
+                    origins = builtin.AccessorOrigins.init(self, idx) catch |err| return builtin.productionFailure(err);
+                    break;
+                }
+            }
+        }
+        defer if (origins) |*batch| batch.deinit(self.allocator);
+        const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethodsWithAccessorOrigins(self, node, if (origins) |*batch| batch else null);
         const lowered_node = self.ast.getNode(lowered);
         if (self.options.unsupported.object_extensions) {
             if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, lowered_node)) {
-                return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, lowered_node);
+                return es2015_computed.ES2015Computed(Transformer).lowerComputedPropertiesWithSource(self, idx, lowered_node, if (origins) |*batch| batch else null);
             }
         }
         return lowered;
     }
     if (self.options.unsupported.object_extensions) {
         if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {
-            return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
+            return es2015_computed.ES2015Computed(Transformer).lowerComputedPropertiesWithSource(self, idx, node, null);
         }
     }
     return self.visitListNode(idx);
