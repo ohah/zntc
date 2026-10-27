@@ -1909,6 +1909,21 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
 /// slice 영역). collectExportsRecursive 가 NsExportPair.owned=true 를 emit 하는
 /// case (e.g. namespace inline literal 의 안전한 식별자) 시 ownership 을 caller
 /// 로 이전 — LinkingMetadata.deinit 시 free.
+pub fn selectedFinalImportLocal(self: *const Linker, module_index: u32, pair: NsExportPair) !?[]const u8 {
+    const handle = pair.canonical_import orelse return null;
+    if (handle.canonical.synthetic_member != null) return null;
+    const canonical = self.resolveExportChain(@fromBackingInt(@intCast(module_index)), pair.exported, 0) orelse return null;
+    if (canonical.module_index != handle.canonical.module_index or
+        !std.mem.eql(u8, canonical.export_name, handle.canonical.export_name) or
+        canonical.synthetic_member != null or
+        !self.isCrossChunkConsumer(module_index, canonical.module_index.toU32())) return null;
+    const actual = self.ordinaryCanonicalImportTarget(canonical) orelse return null;
+    if (!@import("../symbol.zig").SymbolRef.eql(actual.provider_symbol, handle.provider_symbol)) return null;
+    const target = self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name) orelse return null;
+    if (target.role != .binding or !try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) return null;
+    return target.text;
+}
+
 pub fn buildFinalExports(
     self: *const Linker,
     is_entry: bool,
@@ -1999,28 +2014,9 @@ pub fn buildFinalExports(
                 continue;
             }
         }
-        if (p.canonical_import) |handle| {
-            // Only the current export's actual resolved ordinary provider may
-            // consume this chunk's already-selected lexical import local.
-            const current = self.resolveExportChain(@fromBackingInt(@intCast(module_index)), p.exported, 0);
-            if (current) |canonical| {
-                if (canonical.module_index == handle.canonical.module_index and
-                    std.mem.eql(u8, canonical.export_name, handle.canonical.export_name) and
-                    canonical.synthetic_member == null and
-                    self.isCrossChunkConsumer(module_index, canonical.module_index.toU32()))
-                {
-                    if (self.ordinaryCanonicalImportTarget(canonical)) |actual| {
-                        if (@import("../symbol.zig").SymbolRef.eql(actual.provider_symbol, handle.provider_symbol)) {
-                            if (self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name)) |target| {
-                                if (target.role == .binding and try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) {
-                                    entries.appendAssumeCapacity(.{ .local = target.text, .exported = p.exported });
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        if (try self.selectedFinalImportLocal(module_index, p.*)) |local| {
+            entries.appendAssumeCapacity(.{ .local = local, .exported = p.exported });
+            continue;
         }
         if (p.owned) {
             try owned_strings.append(self.allocator, p.local);

@@ -5094,6 +5094,7 @@ pub const Linker = struct {
     pub const buildMetadataForAst = metadata_mod.buildMetadataForAst;
     pub const buildRequireRewrites = metadata_mod.buildRequireRewrites;
     pub const buildFinalExports = metadata_mod.buildFinalExports;
+    pub const selectedFinalImportLocal = metadata_mod.selectedFinalImportLocal;
     pub const ConstValuesProfile = metadata_mod.ConstValuesProfile;
     pub const ConstProviderCollector = metadata_mod.ConstProviderCollector;
     pub const buildCrossModuleConstValues = metadata_mod.buildCrossModuleConstValues;
@@ -6241,7 +6242,7 @@ pub const Linker = struct {
         const provider = self.graph.getModule(canonical.module_index) orelse return null;
         if (provider.wrap_kind == .cjs) return null;
         const binding = provider.findExportBinding(canonical.export_name) orelse return null;
-        if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null) return null;
+        if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null or binding.hasSyntheticDefault(provider.semanticSymbols())) return null;
         return .{ .canonical = canonical, .provider_symbol = binding.symbol };
     }
 
@@ -6352,17 +6353,7 @@ pub const Linker = struct {
                 break :blk eb_local;
             } else blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, ns_imports.get(eb_local));
-                if (ns_target_mod == null) {
-                    // A local export of an import uses its exact source SID.
-                    // Synthetic default storage is not the imported binding.
-                    for (m.import_bindings) |binding| {
-                        if (binding.kind == .namespace or !bundler_symbol.SymbolRef.eql(binding.local_symbol, eb.symbol)) continue;
-                        const resolved = self.getResolvedBinding(mod_i, binding.local_span) orelse continue;
-                        canonical_import = self.ordinaryCanonicalImportTarget(resolved.canonical);
-                        break;
-                    }
-                    break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
-                }
+                if (ns_target_mod == null) break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
                 break :blk eb_local;
             };
 

@@ -5432,4 +5432,145 @@ test "PM barrel import target actual source canonical selected export tuple" {
     defer std.testing.allocator.free(output);
     std.debug.print("PM barrel tuple sourceModule={d} sourceSID={d} sourceAnchor={?d} physical={d}/{s} canonical={d}/{s} providerSID={d} barrelSourceImports={d} barrelExportSID={?d} selected={s} role={s} finalLocal={s} output={s}\n", .{ em.index.toU32(), sid, if (source.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, physical.toU32(), source.imported_name, canonical.module_index.toU32(), canonical.export_name, provider_sid, barrel.import_bindings.len, barrel.export_bindings[0].symbol.semanticIndex(), selected, @tagName(target.role), entries[0].local, output });
     try std.testing.expectEqualStrings(selected, entries[0].local);
+    const valid_handle = linker.ordinaryCanonicalImportTarget(canonical) orelse return error.MissingBarrelOrdinaryHandle;
+    const valid_pair = Linker.NsExportPair{ .exported = "default", .local = "unused-fallback", .canonical_import = valid_handle };
+    try std.testing.expectEqualStrings(selected, (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
+    var corrupt = valid_pair;
+    corrupt.canonical_import.?.provider_symbol = source.local_symbol;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.canonical_import.?.canonical.module_index = barrel.index;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.canonical_import.?.canonical.export_name = "missing";
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.canonical_import.?.canonical.synthetic_member = "member";
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.canonical_import = null;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.canonical_import.?.provider_symbol = .invalid;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(provider.index.toU32(), valid_pair));
+    corrupt = valid_pair;
+    corrupt.exported = "missing";
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    try linker.putConsumerImportMember(sym.canonical_module, sym.name, "holder", "read");
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
+    try linker.putConsumerImportLocal(sym.canonical_module, sym.name, "invalid.member");
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
+    try linker.putConsumerImportLocal(sym.canonical_module, sym.name, selected);
+    try std.testing.expectEqualStrings(selected, (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
+    std.debug.print("PM barrel target hostile=10 restored=1 sourceSID={d} providerSID={d}\n", .{ sid, provider_sid });
+}
+
+test "PM barrel import target normalized reexport preserves source record provider roles" {
+    const helper = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helper.writeFile(tmp.dir, "entry.mjs", "import Value,{Other}from'./dep.mjs';export{Value as default};export const own=3;");
+    try helper.writeFile(tmp.dir, "dep.mjs", "export default class Provider{};export class Other{}");
+    const path = try helper.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    var it = graph.modulesIterator();
+    var entry: ?*const Module = null;
+    while (it.next()) |m| if (std.mem.eql(u8, m.path, path)) {
+        entry = m;
+        break;
+    };
+    const m = entry orelse return error.MissingLocalBarrel;
+    const actual = m.findExportBinding("default") orelse return error.MissingLocalBarrelExport;
+    std.debug.print("PM local setup kind={s} tag={s} module={d} sid={?d} node={?d} imports={d} sourceKind={s}\n", .{ @tagName(actual.kind), @tagName(std.meta.activeTag(actual.symbol)), actual.symbol.moduleIndex().toU32(), m.exportBindingSemanticIndex(actual.*), if (actual.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, m.import_bindings.len, if (m.exportBindingSemanticIndex(actual.*)) |id| @tagName(m.semantic.?.symbols.items[id].kind) else "none" });
+    for (m.import_bindings) |ib| std.debug.print("PM local import tag={s} module={d} sid={?d} node={?d}\n", .{ @tagName(std.meta.activeTag(ib.local_symbol)), ib.local_symbol.moduleIndex().toU32(), ib.local_symbol.semanticIndex(), if (ib.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null });
+    try std.testing.expect(actual.kind == .re_export);
+    const record_sid = m.exportBindingSemanticIndex(actual.*) orelse return error.MissingBarrelRecordSID;
+    try std.testing.expect(m.semantic.?.symbols.items[record_sid].kind != .import_binding);
+    try std.testing.expectEqual(@as(usize, 2), m.import_bindings.len);
+    for (m.import_bindings) |binding| {
+        const source_sid = binding.local_symbol.semanticIndex() orelse return error.MissingBarrelImportSID;
+        try std.testing.expect(source_sid != record_sid);
+        try std.testing.expect(binding.local_symbol.moduleIndex() == m.index);
+        try std.testing.expect(m.semantic.?.symbols.items[source_sid].kind == .import_binding);
+        const source_anchor = binding.local_symbol_node orelse return error.MissingBarrelImportAnchor;
+        try std.testing.expectEqual(@as(?u32, source_sid), m.semantic.?.symbol_ids[@backingInt(source_anchor)]);
+    }
+    var pairs: std.ArrayList(Linker.NsExportPair) = .empty;
+    defer {
+        for (pairs.items) |pair| if (pair.owned) std.testing.allocator.free(pair.local);
+        pairs.deinit(std.testing.allocator);
+    }
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(std.testing.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(std.testing.allocator);
+    try linker.collectExportsRecursive(&pairs, &seen, &visited, m.index, 0);
+    var forwarded = false;
+    var local_unchanged = false;
+    for (pairs.items) |pair| {
+        if (std.mem.eql(u8, pair.exported, "default")) {
+            const handle = pair.canonical_import orelse return error.MissingNormalizedBarrelHandle;
+            try std.testing.expect(handle.provider_symbol.moduleIndex() != m.index);
+            try std.testing.expect(handle.provider_symbol.semanticIndex() != null);
+            try std.testing.expect(@import("../symbol.zig").SymbolRef.eql(handle.provider_symbol, pair.binding_symbol));
+            forwarded = true;
+        }
+        if (std.mem.eql(u8, pair.exported, "own")) {
+            try std.testing.expect(pair.canonical_import == null);
+            try std.testing.expect(@import("../symbol.zig").SymbolRef.eql(pair.binding_symbol, m.findExportBinding("own").?.symbol));
+            local_unchanged = true;
+        }
+    }
+    try std.testing.expect(forwarded and local_unchanged);
+    std.debug.print("PM barrel source imports=2 normalized-records=1 ordinary-provider=1 local-unchanged=1\n", .{});
+}
+
+test "PM barrel import target excludes synthetic default namespace and CJS storage" {
+    const helper = @import("../test_helpers.zig");
+    const sources = [_]struct { source: []const u8, extension: []const u8, key: []const u8, ordinary: bool }{
+        .{ .source = "export default function Named(){return 7}", .extension = "mjs", .key = "default", .ordinary = true },
+        .{ .source = "export default function(){return 7}", .extension = "mjs", .key = "default", .ordinary = false },
+        .{ .source = "const value=()=>7;export default value;", .extension = "mjs", .key = "default", .ordinary = false },
+        .{ .source = "export*as ns from'./dep.mjs';", .extension = "mjs", .key = "ns", .ordinary = false },
+        .{ .source = "module.exports=function(){return 7}", .extension = "cjs", .key = "default", .ordinary = false },
+    };
+    for (sources) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const filename = try std.fmt.allocPrint(std.testing.allocator, "entry.{s}", .{case.extension});
+        defer std.testing.allocator.free(filename);
+        try helper.writeFile(tmp.dir, filename, case.source);
+        try helper.writeFile(tmp.dir, "dep.mjs", "export const read=7;");
+        const path = try helper.absPath(&tmp, filename);
+        defer std.testing.allocator.free(path);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{path});
+        var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+        defer linker.deinit();
+        try linker.link();
+        var it = graph.modulesIterator();
+        var entry: ?*const Module = null;
+        while (it.next()) |m| if (std.mem.eql(u8, m.path, path)) {
+            entry = m;
+            break;
+        };
+        const m = entry orelse return error.MissingBarrelStorageControl;
+        const actual = linker.ordinaryCanonicalImportTarget(.{ .module_index = m.index, .export_name = case.key });
+        try std.testing.expectEqual(case.ordinary, actual != null);
+    }
+    std.debug.print("PM barrel ordinary storage controls=5 syntheticDefaultNamespaceCJSExcluded=true\n", .{});
 }
