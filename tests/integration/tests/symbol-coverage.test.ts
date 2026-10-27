@@ -109,22 +109,22 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '01d5d05021da3dcdc2ee83a26b91f795c66cbdd1d666be00979fe82bc652c637';
+  '5ced8f8aa311d7576c2741dc1b554cfbc3592efdc0c43dd71dbac632176f10a6';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14148,
-  'exact.generated_references': 45708,
-  'exact.generated_scope_owners_checked': 13347,
-  'exact.external': 13641,
-  'exact.declaration_anchors_checked': 46209,
+  'exact.generated_bindings': 14823,
+  'exact.generated_references': 45879,
+  'exact.generated_scope_owners_checked': 13071,
+  'exact.external': 13203,
+  'exact.declaration_anchors_checked': 46281,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 7068,
-  'strict.bound': 57471,
-  'strict.external': 2211,
-  'strict.marked_synthetic': 50631,
-  'post.bindings': 46904,
-  'post.references': 103388,
-  'post.external': 13641,
+  'coverage.new_user_idents': 7710,
+  'strict.bound': 58665,
+  'strict.external': 1869,
+  'strict.marked_synthetic': 51177,
+  'post.bindings': 47700,
+  'post.references': 103524,
+  'post.external': 13203,
   'post.helpers': 7803,
   'post.preserved_transform_refs': 204,
 } as const;
@@ -221,10 +221,12 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     file: '4819-namespace-iife-params.ts',
     target: TARGETS[0],
     expectedStdout: '[109,102]\n',
+    // Namespace IIFEs reuse their original scopes. Observe their actual
+    // parameter identities and declaration anchors instead of fresh scopes.
     observations: [
-      { report: 'exact', field: 'namespace_iife_params', minimum: 1 },
-      { report: 'exact', field: 'generated_references', minimum: 1 },
-      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 2 },
+      { report: 'exact', field: 'namespace_iife_params', minimum: 3 },
+      { report: 'exact', field: 'generated_references', minimum: 6 },
+      { report: 'exact', field: 'declaration_anchors_checked', minimum: 13 },
     ],
   },
   {
@@ -329,6 +331,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       'console.log(read().Status);',
     ].join('\n'),
     graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-surviving-dynamic-member',
@@ -395,7 +398,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof outer());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'function\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-block-binding',
@@ -406,7 +410,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-unused-binding',
@@ -418,7 +423,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '42\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-catch-binding',
@@ -430,7 +436,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: '43\n',
   },
   {
     name: 'nested-const-enum-shadowed-by-method-parameter',
@@ -441,7 +448,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof make());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'function\n',
   },
   {
     name: 'nested-const-enum-escaped-name-surviving-reference',
@@ -2070,7 +2078,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=5,strict.marked_synthetic>=1',
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
-      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1,exact.generated_scope_owners_checked>=2',
+      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=3,exact.generated_references>=6,exact.declaration_anchors_checked>=13',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
       '4819-native-parameter-arrow-cells.mjs:es2015:exact.generated_bindings>=2,exact.generated_references>=5,exact.declaration_anchors_checked>=5,strict.marked_synthetic>=1',
     ]);
@@ -2963,7 +2971,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
   });
 
-  test('nested lenient const-enum gate rejects every surviving same-name edge', () => {
+  test('nested lenient const-enum gate distinguishes exact shadows from surviving enum edges', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter((probe) =>
       probe.name.startsWith('nested-const-enum-'),
     );
@@ -2986,6 +2994,56 @@ describe('symbol identity coverage gate (#4819)', () => {
           transpileGraphModeProblems(result.stderr, true, probe.graph),
           `${probe.name}: ${result.stderr}`,
         ).toEqual([]);
+        if ('runtimeOutput' in probe) {
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${probe.name}: distinct shadow runtime changed`).toBe(
+            probe.runtimeOutput,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reanalyzed enum erasure audits the actual codegen graph across escaped and outer bindings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-enum-codegen-graph-'));
+    try {
+      for (const name of ['Status', '\\u0053tatus']) {
+        for (const prefix of [
+          '',
+          'globalThis.Status = { Ready: 77 };',
+          'let Status = { Ready: 78 };',
+        ]) {
+          const input = join(dir, 'entry.unknown');
+          const native = join(dir, 'native.js');
+          writeFileSync(
+            input,
+            `${prefix}function read(){const enum ${name}{Ready=42}return typeof Status}console.log(read());`,
+          );
+          writeFileSync(
+            native,
+            `${prefix}function read(){return typeof Status}console.log(read());`,
+          );
+          const expected = runNode([native]);
+          expect(expected.status, expected.stderr).toBe(0);
+          const result = runCoverage(input, TARGETS[0], dir, true);
+          expect(result.exitCode, result.stderr).toBe(0);
+          expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+          expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+          expect(
+            transpileGraphModeProblems(result.stderr, true, 'reanalyzed'),
+            result.stderr,
+          ).toEqual([]);
+          const post = result.stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
+          expect(post, result.stderr).toContain('preserved_transform_refs=0');
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(expected.stdout);
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -3127,7 +3185,9 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
       const expectedSuccessful = fixtures.length - expectedParseFailures.size;
+      expect(expectedSuccessful).toBe(289);
       expect(successful).toBe(expectedSuccessful);
+      expect(retained).toBe(289);
       expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 

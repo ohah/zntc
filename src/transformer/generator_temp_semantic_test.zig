@@ -672,47 +672,33 @@ test "#4819 callback temp reference binds through its exact producer node" {
     transformer.state_machine_depth = 1;
     defer transformer.state_machine_depth = 0;
 
-    const return_statement = try transformer.ast.addNode(.{
-        .tag = .return_statement,
-        .span = .EMPTY,
-        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
-    });
-    var flow = BlockScoping.FlowResult{ .has_return = true };
-    defer flow.labels.deinit(allocator);
-    const loop = try BlockScoping.buildLoopClosureWithFlow(
-        &transformer,
-        return_statement,
-        &.{},
-        &flow,
-        null,
-        .EMPTY,
-        false,
-        false,
-        false,
-        null,
-        &.{},
-        &.{},
-        &.{},
-        .none,
-        .none,
-    );
+    // The callback does not exist yet. Exercise its supported binding-node
+    // handoff directly; ordinary loop callers already have an exact call Scope.
+    const ret_name_span = try transformer.ast.addString("_ret");
+    const binding = try es_helpers.makeExactSyntheticBinding(&transformer, "_ret");
+    try transformer.bindHoistedTemp(binding, ret_name_span, .EMPTY, .none);
+    const declaration = try es_helpers.makeVarDeclaration(&transformer, &.{try es_helpers.makeDeclarator(&transformer, binding, try es_helpers.makeVoidZero(&transformer, .EMPTY), .EMPTY)}, .@"var", .EMPTY);
+    const first = try es_helpers.makeExactSyntheticRef(&transformer, "_ret");
+    const second = try es_helpers.makeExactSyntheticRef(&transformer, "_ret");
+    try transformer.trackGeneratedCallbackTempReference(binding, first, owner_scope, .{ .read = true });
+    try transformer.trackGeneratedCallbackTempReference(binding, second, owner_scope, .{ .read = true });
     try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_temp_refs.items.len);
-    const binding = transformer.generator_state_temp_refs.items[0].binding;
-    try std.testing.expectEqual(binding, loop.ret_temp_binding orelse return error.MissingExactLoopRetBinding);
-    const ret_name_span = loop.ret_temp_span orelse return error.MissingExactLoopRetName;
-    try std.testing.expectEqual(
-        transformer.ast.getText(ret_name_span),
-        transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref),
-    );
-    try std.testing.expectEqual(binding, transformer.generator_state_temp_refs.items[1].binding);
+    try std.testing.expect(transformer.getSymbolIdAt(binding) == null);
+    try std.testing.expect(transformer.getSymbolIdAt(first) == null);
+    try std.testing.expect(transformer.getSymbolIdAt(second) == null);
     for (transformer.generator_state_temp_refs.items) |pending| {
         try std.testing.expectEqual(binding, pending.binding);
         for (transformer.pending_temp_refs.items) |by_name| {
             try std.testing.expect(by_name.node != pending.reference);
         }
     }
-
-    const callback_body_list = try transformer.ast.addNodeList(&.{ loop.loop_fn, loop.call_and_check });
+    const first_statement = try es_helpers.makeExprStmt(&transformer, first, .EMPTY);
+    const second_statement = try transformer.ast.addNode(.{
+        .tag = .return_statement,
+        .span = .EMPTY,
+        .data = .{ .unary = .{ .operand = second, .flags = 0 } },
+    });
+    const callback_body_list = try transformer.ast.addNodeList(&.{ declaration, first_statement, second_statement });
     const callback_body = try transformer.ast.addNode(.{
         .tag = .block_statement,
         .span = .EMPTY,
@@ -736,13 +722,23 @@ test "#4819 callback temp reference binds through its exact producer node" {
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(id_raw));
     const callback_scope_raw = editor.scope_owner_map.get(@backingInt(callback)).?;
+    try std.testing.expectEqual(callback_scope_raw, @backingInt(editor.symbols.items[id_raw].scope_id));
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, callback);
+    defer output_parents.deinit(allocator);
     for (transformer.generator_state_temp_refs.items) |pending| {
         try std.testing.expectEqual(@as(?u32, id_raw), transformer.getSymbolIdAt(pending.reference));
         const reference_record = (try editor.referenceForNode(pending.reference)) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(id, reference_record.symbol_id);
-        try std.testing.expectEqual(callback_scope_raw, @backingInt(reference_record.scope_id));
+        const actual_scope = output_scope.expectedScope(transformer.ast, callback, &output_parents, &editor.scope_owner_map, @backingInt(pending.reference)) orelse return error.MissingActualCallbackReferenceScope;
+        try std.testing.expectEqual(actual_scope, reference_record.scope_id);
+        var ancestor = actual_scope;
+        for (0..editor.scopes.items.len) |_| {
+            if (@backingInt(ancestor) == callback_scope_raw or ancestor.isNone()) break;
+            ancestor = editor.scopes.items[ancestor.toIndex()].parent;
+        }
+        try std.testing.expectEqual(callback_scope_raw, @backingInt(ancestor));
     }
-    try std.testing.expectEqual(@as(usize, source_symbol_count + 3), editor.symbols.items.len);
+    try std.testing.expectEqual(@as(usize, source_symbol_count + 2), editor.symbols.items.len);
 
     var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer live.deinit(allocator);

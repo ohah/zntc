@@ -49,11 +49,13 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
         .span = field.span,
         .data = .{ .binary = .{ .left = member, .right = try namedFieldValue(self, field, reference_scope), .flags = 0 } },
     });
-    return self.ast.addNode(.{
+    const statement = try self.ast.addNode(.{
         .tag = .expression_statement,
         .span = field.span,
         .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
     });
+    try @import("../legacy_assignment_field_certificate.zig").record(self, field.source_field, statement, cls_ref, field.key, self.ast.getNode(assign).data.binary.right, reference_scope);
+    return statement;
 }
 
 /// define 의미론(`useDefineForClassFields=true`)으로 public field 를 낮출 때 쓰는 문장:
@@ -72,6 +74,12 @@ fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, r
     const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, field.key);
     try es_helpers.trackKnownHoistedComputedKeyRef(self, key_arg, reference_scope);
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+    // Only an explicitly registered constructor-placement producer grants
+    // this origin; static field/block helpers keep their existing contract.
+    if (self.semantic_edit_enabled and self.native_constructor_placement_scopes.contains(@backingInt(reference_scope))) {
+        const id = self.getSymbolIdAt(callee) orelse @panic("public field callee has no exact helper identity");
+        try @import("../native_constructor_guard.zig").recordReference(self, callee, @fromBackingInt(id), reference_scope, .{ .read = true });
+    }
     const value = try namedFieldValue(self, field, reference_scope);
     const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, value }, field.span);
     return es_helpers.makeExprStmt(self, call, field.span);
@@ -91,7 +99,7 @@ fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Spa
 
 /// `static { this.key = init; }` for an assign-semantics static field kept in
 /// the class: native static blocks run in source order with it (tsc, #5713).
-fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Error!NodeIndex {
+fn buildStaticFieldBlock(self: anytype, source_class: NodeIndex, source_field: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Error!NodeIndex {
     const class_scope = self.current_scope;
     const new_key = try self.visitNode(key_idx);
     const pe = @import("../parameter_environment.zig");
@@ -99,12 +107,24 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
     // The block body exists before its statement so the statement's
     // references and the initializer's scopes can live in the block scope.
     const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
-    const block_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(class_scope, body, .block) else class_scope;
+    const block = try @import("../generated_static_block.zig").create(self, class_scope, body, span);
+    const block_scope = block.scope;
+    const publication = @import("../class_initializer_publication.zig").begin(self, source_class, source_field, init_idx, class_scope, block.node, body, block_scope) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => @panic("invalid class initializer creation"),
+    };
+    if (self.semantic_edit_enabled) {
+        const initializer = @import("../class_strict_context.zig");
+        try initializer.moveInitializerScopes(self, init_idx, class_scope, class_scope, block_scope);
+        try initializer.moveSourceReferences(self, init_idx, class_scope, class_scope, block_scope);
+    }
+    // New references must be born in the block that will execute the value.
+    // Moving existing direct uses does not move nested bindings or their IDs.
+    self.current_scope = block_scope;
+    defer self.current_scope = class_scope;
     const visited_init = try self.visitNode(init_idx);
     if (self.semantic_edit_enabled)
         try self.reparentMovedStaticInitializerScopes(visited_init, class_scope, block_scope);
-    self.current_scope = block_scope;
-    defer self.current_scope = class_scope;
     const new_init = try pe.finishRuntimeKeyClass(self, bound, init_idx, visited_init, false, block_scope, span);
     const key_node = self.ast.getNode(key_idx);
     const is_computed = key_node.tag == .computed_property_key;
@@ -117,15 +137,58 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
         .name_by_key = try pe.needsRuntimeKeyName(self, key_idx, init_idx),
     });
     self.ast.nodes.items[@backingInt(body)].data = .{ .list = try self.ast.addNodeList(&.{stmt}) };
-    return self.ast.addNode(.{ .tag = .static_block, .span = span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } });
+    if (publication) |pending| @import("../class_initializer_publication.zig").seal(self, pending, new_key, new_init, stmt) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => @panic("invalid class initializer assembly"),
+    };
+    return block.node;
 }
 
-/// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.
-/// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
-/// - method_definition: constructor면 기록, 일반 메서드면 class_members에
-/// - 기타: class_members에 그대로 추가
-/// visitClassWithAssignSemantics에서 멤버 분류에 사용되는 컨텍스트.
-/// 6개 포인터 파라미터를 하나로 묶어 함수 시그니처를 단순화.
+/// Public assign/define lowering must not change private-brand installation.
+/// Mixed classes retain their existing producer until its ordering contract is
+/// separately implemented; no dummy private carrier or guessed scope is used.
+pub fn canKeepNativePrivateInitializers(self: anytype, body: NodeIndex) bool {
+    if (self.options.unsupported.privateLoweringPlan().fields) return false;
+    const node = self.ast.getNode(body);
+    if (node.tag != .class_body) return false;
+    const list = node.data.list;
+    const lower_public = !self.options.use_define_for_class_fields or self.options.unsupported.class_field;
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const member = self.ast.nodes.items[raw];
+        if (member.tag == .method_definition) {
+            const key = self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
+            if (es_helpers.isConstructorKey(self, key)) {
+                const params = self.ast.functionParamsList(member);
+                for (self.ast.extra_data.items[params.start .. params.start + params.len]) |parameter_raw| {
+                    const parameter = self.ast.nodes.items[parameter_raw];
+                    // TS parameter properties generate additional constructor
+                    // assignments. Preserve that mixed producer unchanged.
+                    if (parameter.tag == .formal_parameter and self.ast.readExtra(parameter.data.extra, ast_mod.FormalParameterExtra.flags) != 0) return false;
+                }
+            }
+            continue;
+        }
+        if (member.tag == .static_block or member.tag == .empty_statement) continue;
+        // Auto-accessors and unknown runtime member producers can add instance
+        // initialization work of their own; they have no permission here.
+        if (member.tag != .property_definition) return false;
+        const flags = self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags);
+        if (flags & (ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare | ast_mod.PropertyFlags.flow_variance) != 0) {
+            if (self.options.strip_types) continue;
+            return false;
+        }
+        const key = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key);
+        if (self.ast.getNode(key).tag == .private_identifier) {
+            if (self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.deco_len) != 0) return false;
+            continue;
+        }
+        if (flags & ast_mod.PropertyFlags.is_static != 0) continue;
+        const value = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.init);
+        if (lower_public and (!value.isNone() or self.options.use_define_for_class_fields)) return false;
+    }
+    return true;
+}
+
 pub const FieldInitializerPlan = struct {
     scope: ScopeId = .none,
     constructor_shell: NodeIndex = .none,
@@ -137,6 +200,7 @@ pub const FieldInitializerPlan = struct {
 pub fn prepareFieldInitializerPlan(self: anytype, body: NodeIndex, class_scope: ScopeId) Error!FieldInitializerPlan {
     if (!self.semantic_edit_enabled or (self.options.use_define_for_class_fields and !self.options.unsupported.class_field)) return .{};
     const list = self.ast.getNode(body).data.list;
+    const keep_native_private = canKeepNativePrivateInitializers(self, body);
     var needs_constructor = false;
     var constructor: NodeIndex = .none;
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
@@ -150,6 +214,7 @@ pub fn prepareFieldInitializerPlan(self: anytype, body: NodeIndex, class_scope: 
             if (self.options.strip_types and flags & ast_mod.PropertyFlags.flow_variance != 0) continue;
             const key = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key);
             const init = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.init);
+            if (keep_native_private and self.ast.getNode(key).tag == .private_identifier) continue;
             if (!init.isNone() or (self.options.use_define_for_class_fields and self.ast.getNode(key).tag != .private_identifier)) needs_constructor = true;
         }
     }
@@ -167,7 +232,15 @@ pub fn prepareFieldInitializerPlan(self: anytype, body: NodeIndex, class_scope: 
     return .{ .constructor_shell = shell, .scope = try self.addGeneratedFunctionScope(class_scope, shell) };
 }
 
+/// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.
+/// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
+/// - method_definition: constructor면 기록, 일반 메서드면 class_members에
+/// - 기타: class_members에 그대로 추가
+/// visitClassWithAssignSemantics에서 멤버 분류에 사용되는 컨텍스트.
+/// 6개 포인터 파라미터를 하나로 묶어 함수 시그니처를 단순화.
 pub const ClassMemberContext = struct {
+    source_class: NodeIndex = .none,
+    keep_native_private_initializers: bool = false,
     field_initializer_plan: FieldInitializerPlan = .{},
     class_members: *std.ArrayList(NodeIndex),
     field_assignments: *std.ArrayList(FieldAssignment),
@@ -220,7 +293,7 @@ pub fn classifyClassMember(
     // ES2022 다운레벨링: static block → IIFE (target < es2022)
     if (member.tag == .static_block and ctx.static_block_iifes != null) {
         const Self = @TypeOf(self.*);
-        const iife = try es2022.ES2022(Self).buildStaticBlockIIFE(self, member, ctx.class_name_span);
+        const iife = try es2022.ES2022(Self).buildStaticBlockIIFE(self, member_idx, ctx.class_name_span);
         if (ctx.static_block_field_counts) |counts| {
             const before: u32 = if (ctx.static_field_assignments) |sfa| @intCast(sfa.items.len) else 0;
             try counts.append(self.allocator, before);
@@ -273,6 +346,13 @@ pub fn classifyPropertyDefinition(
             const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
             try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty, @fromBackingInt(@intCast(raw_idx)));
         }
+    }
+
+    const actual_key = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
+    if (ctx.keep_native_private_initializers and self.ast.getNode(actual_key).tag == .private_identifier) {
+        const kept = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+        if (!kept.isNone()) try class_members.append(self.allocator, kept);
+        return;
     }
 
     // 낮추는 조건 둘: (a) useDefineForClassFields=false — 옵션이 assign 의미론을 요구,
@@ -328,6 +408,7 @@ pub fn classifyPropertyDefinition(
             if (is_computed and !self.options.use_define_for_class_fields)
                 try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
             try field_assignments.append(self.allocator, .{
+                .source_field = @fromBackingInt(@intCast(raw_idx)),
                 .key = new_key,
                 .value = new_init,
                 .is_computed = is_computed,
@@ -405,7 +486,7 @@ pub fn classifyPropertyDefinition(
             return;
         }
         if (ctx.static_fields_as_blocks) {
-            try ctx.class_members.append(self.allocator, try buildStaticFieldBlock(self, key_idx, init_idx, member.span));
+            try ctx.class_members.append(self.allocator, try buildStaticFieldBlock(self, ctx.source_class, @fromBackingInt(raw_idx), key_idx, init_idx, member.span));
             return;
         }
         // 초기값 있음 → class 밖 할당문으로 이동 (Foo.z = 2)
@@ -420,6 +501,7 @@ pub fn classifyPropertyDefinition(
             const new_init = try pe.finishRuntimeKeyClass(self, bound, init_idx, visited_init, false, self.current_scope, member.span);
             const key_node = self.ast.getNode(key_idx);
             try sfa.append(self.allocator, .{
+                .source_field = @fromBackingInt(@intCast(raw_idx)),
                 .key = new_key,
                 .value = new_init,
                 .is_computed = (key_node.tag == .computed_property_key),
@@ -544,6 +626,7 @@ pub fn applyFieldAssignments(
 
 /// useDefineForClassFields=false: instance field → constructor this.x = value 정보
 pub const FieldAssignment = struct {
+    source_field: NodeIndex = .none,
     key: NodeIndex,
     value: NodeIndex,
     is_computed: bool,
@@ -668,6 +751,11 @@ pub fn appendParamDecorators(
             const param_deco = try self.buildDecorateParamCall(param_i, dec_expr, zero_span);
             try list.append(self.allocator, param_deco);
         }
+        // The exact expressions now belong to the emitted __decorateParam
+        // calls. Remove their old parameter-metadata edges before visiting
+        // or copying the method; a later analyzer must not visit both sites.
+        self.ast.extra_data.items[pe + ast_mod.FormalParameterExtra.deco_start] = 0;
+        self.ast.extra_data.items[pe + ast_mod.FormalParameterExtra.deco_len] = 0;
     }
 }
 
@@ -721,7 +809,11 @@ pub fn insertFieldAssignmentsIntoConstructor(
     if (body_idx.isNone()) return ctor_idx;
     if (self.ast.getNode(body_idx).tag != .block_statement) return ctor_idx;
 
-    const insert_pos: u32 = if (has_super) (findSuperCallInsertPos(self, body_idx) orelse 0) else 0;
+    if (self.semantic_edit_enabled) {
+        const owner = self.outputOwnedScope(ctor_idx) orelse @panic("public initializer constructor has no actual owner");
+        if (owner != self.current_scope) @panic("public initializer lost its selected constructor scope");
+        try @import("../native_constructor_timing.zig").registerPlacementOwner(self, owner);
+    }
 
     // field assignments 를 먼저 빌드 (buildThisAssignment 가 AST 변형 — splice 전에 완료).
     const prefix: usize = if (capture_declaration.isNone()) 0 else 1;
@@ -730,7 +822,13 @@ pub fn insertFieldAssignmentsIntoConstructor(
     if (prefix != 0) field_stmts[0] = capture_declaration;
     for (fields, 0..) |field, i| field_stmts[i + prefix] = try buildThisAssignment(self, field);
 
-    const new_body = try spliceBlockStmtsAt(self, body_idx, insert_pos, field_stmts);
+    // The initializer plan already selected this exact constructor scope.
+    // Share the native super-site producer rather than guessing a top-level
+    // statement position (which prepended before a deferred arrow call).
+    const new_body = if (has_super)
+        try self.insertStatementsAfterSuper(body_idx, field_stmts)
+    else
+        try spliceBlockStmtsAt(self, body_idx, 0, field_stmts);
 
     // constructor method_definition을 새 body로 재생성
     // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
@@ -1032,9 +1130,11 @@ pub fn buildThisAssignment(self: anytype, field: FieldAssignment) Error!NodeInde
         .span = field.span,
         .data = .{ .binary = .{ .left = member, .right = try namedFieldValue(self, field, self.current_scope), .flags = 0 } },
     });
-    return self.ast.addNode(.{
+    const statement = try self.ast.addNode(.{
         .tag = .expression_statement,
         .span = field.span,
         .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
     });
+    try @import("../legacy_assignment_field_certificate.zig").record(self, field.source_field, statement, this_node, field.key, self.ast.getNode(assign).data.binary.right, self.current_scope);
+    return statement;
 }

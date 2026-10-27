@@ -848,6 +848,13 @@ fn bindWrappedHomeParameter(
             }
         }
 
+        // This wrapper is the actual producer moving the already-created
+        // computed-object call under its new function scope. Hand off only
+        // the recorded callee, using the existing exact helper relocation API;
+        // final graph inspection must never infer this move from a late row.
+        if (@import("computed_object_helper_authority.zig").contains(self, work.node))
+            try self.relocateRuntimeHelperRef(work.node, scope);
+
         if (work.node == write_ref or home_refs.fetchRemove(raw) != null) {
             const flags: ReferenceFlags = if (work.node == write_ref) .{ .write = true } else .{ .read = true };
             try self.addSyntheticRefInScope(work.node, id, scope, flags);
@@ -857,7 +864,10 @@ fn bindWrappedHomeParameter(
             try self.addSyntheticRefInScope(work.node, arguments_symbol, scope, .{ .read = true });
         }
         var it = ast_walk.children(self.ast, node);
-        while (it.next()) |child| try worklist.append(self.allocator, .{ .node = child, .scope = scope });
+        while (it.next()) |child| {
+            const child_scope = if (@import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, raw, @backingInt(child))) work.scope else scope;
+            try worklist.append(self.allocator, .{ .node = child, .scope = child_scope });
+        }
     }
     forgetObjectSuperHomeReferences(self, identity);
 }

@@ -1,5 +1,6 @@
 //! Class/object member visitor helpers for Transformer.
 
+const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -24,6 +25,17 @@ fn methodComputedKeyScope(self: *Transformer, source_owner: NodeIndex, fallback:
     }
     if (self.outputOwnedScope(source_owner)) |method_scope| return self.outputScopeParent(method_scope);
     return fallback;
+}
+
+fn visitMethodComputedKey(self: *Transformer, key: NodeIndex, scope: ScopeId) Error!NodeIndex {
+    if (key.isNone() or self.ast.getNode(key).tag != .computed_property_key) return key;
+    const saved_scope = self.current_scope;
+    if (self.semantic_edit_enabled) {
+        if (scope.isNone()) @panic("computed method key has no actual environment");
+        self.current_scope = scope;
+    }
+    defer self.current_scope = saved_scope;
+    return self.visitNode(key);
 }
 
 fn trackKnownMethodComputedKey(self: *Transformer, key: NodeIndex, scope: ScopeId) Error!void {
@@ -99,7 +111,7 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
 
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
-    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
+    const new_key = try visitMethodComputedKey(self, key, key_scope);
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 객체 리터럴이 이 메서드에 home 임시 변수를 배정했으면 본문의 `super` 를 그 기준으로
     // 낮춘다 (#4729). 계산된 키는 바깥 문맥이라 키 방문 **뒤에** 켠다.
@@ -184,7 +196,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
     const key_scope = methodComputedKeyScope(self, source_owner, self.current_scope);
     const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
-    const new_key = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) try self.visitNode(key) else key;
+    const new_key = try visitMethodComputedKey(self, key, key_scope);
     try trackKnownMethodComputedKey(self, new_key, key_scope);
     // 메서드(객체 리터럴 메서드·getter 포함)는 자기 `this` 를 가진다 — static 초기값·static 블록
     // 안에서도 클래스 이름으로 치환하면 안 된다. 계산된 키는 바깥 `this` 라 키 방문 **뒤에** 올린다 (#4801).
@@ -305,7 +317,8 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     var derived_capture: @import("../transformer.zig").NativeFieldCapturePlan = .{};
     const saved_native_capture = self.native_field_capture_plan;
     defer self.native_field_capture_plan = saved_native_capture;
-    const owns_derived_capture = try @import("../native_derived_this.zig").needsCell(self, source_owner, node);
+    const timing_plan = self.native_constructor_timing_plans.get(@backingInt(self.capture_scope));
+    const owns_derived_capture = timing_plan != null or try @import("../native_derived_this.zig").needsCell(self, source_owner, node);
     if (owns_derived_capture) {
         const plan = if (saved_native_capture) |existing| if (existing.scope == self.capture_scope) existing else &derived_capture else &derived_capture;
         plan.scope = self.capture_scope;
@@ -315,7 +328,28 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         try @import("semantic_edit.zig").ensureNativeConstructorCaptureBinding(self, plan, node.span);
     }
 
-    var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 2));
+    var new_body = blk: {
+        const source_body = self.readNodeIdx(e, 2);
+        if (timing_plan == null) break :blk try self.visitBodyWorkletAware(source_body);
+        const scope = self.capture_scope;
+        const body_scope = try @import("../native_constructor_body_scope.zig").prepare(self, source_body, scope);
+        const cells = try @import("../native_constructor_function_cells.zig").prepare(self, source_body, params_idx_old, scope, body_scope);
+        var statements: std.ArrayList(NodeIndex) = .empty;
+        defer statements.deinit(self.allocator);
+        for (0..cells.entry_initializers.len) |i| try statements.append(self.allocator, self.ast.readExtraNode(cells.entry_initializers.start, @intCast(i)));
+        for (0..cells.remaining_body.len) |i| try statements.append(self.allocator, self.ast.readExtraNode(cells.remaining_body.start, @intCast(i)));
+        self.ast.nodes.items[@backingInt(source_body)].data.list = try self.ast.addNodeList(statements.items);
+        const visited = try self.visitBodyWorkletAware(source_body);
+        const capture = self.native_field_capture_plan.?;
+        const declaration = self.ast.getNode(capture.this_declaration);
+        const declarators = self.readU32(declaration.data.extra, 1);
+        const actual_declarator: NodeIndex = @fromBackingInt(self.ast.extra_data.items[declarators]);
+        const binding = self.readNodeIdx(self.ast.getNode(actual_declarator).data.extra, 0);
+        const alias: es_helpers.TempIdentityCapture = .{ .span = self.ast.getNode(binding).data.string_ref, .symbol_id = @fromBackingInt(capture.symbol_id.?), .owner_scope = scope };
+        const guards = @import("../native_constructor_guard.zig");
+        try guards.instrumentSourceTries(self, visited, alias);
+        break :blk try guards.wrap(self, visited, cells.storage_declarations, alias, scope, node.span);
+    };
 
     if (owns_derived_capture and self.native_field_capture_plan.? == &derived_capture)
         new_body = try self.prependStatementsToBody(new_body, &.{derived_capture.this_declaration});
@@ -396,6 +430,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         self.readU32(e, 3),   new_decos.start,              new_decos.len,
     });
 
+    // A plugin can consume this method and create an ordinary function.
+    // Publish its existing exact owner before handing the result to it.
+    try self.remapCopiedScopeOwner(source_owner, result);
+
     // Plugin dispatch: worklet 등 AST 플러그인 적용
     // method_definition은 object/class 내부에 있으므로 IIFE 교체는 불가.
     // 대신 워크릿 플러그인이 method body 기반으로 function_expression을 생성하여
@@ -433,15 +471,41 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
 // abstract 프로퍼티 (flags bit5=0x20) 및 declare 필드 (flags bit6=0x40)는
 // 런타임에 존재하면 안 되므로 완전히 제거.
 // declare 필드가 남으면 undefined로 초기화되어 의미가 바뀜.
-pub fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitPropertyDefinition(self: *Transformer, source_owner: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, 2);
     // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용이므로 완전히 스트리핑
     if (self.options.strip_types and (flags & 0xE0) != 0) return NodeIndex.none;
-    const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    const name_cell = @import("../retained_class_keys.zig").cellFor(self, self.readNodeIdx(e, 0));
+    var new_key = try self.visitNode(self.readNodeIdx(e, 0));
+    if (name_cell) |cell| new_key = try @import("../retained_class_keys.zig").memoize(self, cell, new_key, node.span);
     if (self.semantic_edit_enabled)
         try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
-    var new_value = try self.visitNode(self.readNodeIdx(e, 1));
+    var new_value = blk: {
+        const env = if (self.options.unsupported.arrow and !self.options.unsupported.class) es_helpers.pushArrowEnv(self) else null;
+        defer if (env) |saved| es_helpers.popArrowEnv(self, saved);
+        const saved_name_cell = self.retained_field_name_cell;
+        self.retained_field_name_cell = name_cell;
+        defer self.retained_field_name_cell = saved_name_cell;
+        const saved_frame = self.retained_field_initializer_frame;
+        const saved_static = self.retained_field_initializer_static;
+        const saved_plan = self.retained_field_this_plan;
+        const saved_target = self.new_target_ctx;
+        defer {
+            self.retained_field_initializer_frame = saved_frame;
+            self.retained_field_initializer_static = saved_static;
+            self.retained_field_this_plan = saved_plan;
+            self.new_target_ctx = saved_target;
+        }
+        if (env != null) {
+            self.retained_field_initializer_frame = self.capture_frame;
+            self.retained_field_initializer_static = flags & ast_mod.PropertyFlags.is_static != 0;
+            self.retained_field_this_plan = null;
+            self.new_target_ctx = .field_initializer;
+        }
+        break :blk try self.visitNode(self.readNodeIdx(e, 1));
+    };
+    new_value = try @import("../native_constructor_timing.zig").fieldValue(self, source_owner, new_key, new_value, if (name_cell) |cell| cell.capture else null, node.span);
     // styled-components: `class { static Child = styled.div\`\` }` 의 value 가 styled
     // tagged template 이면 field key 를 displayName 으로 사용해 wrap. 인스턴스 필드도
     // 동일하게 처리 (드물지만 가능). objectProperty 패턴 재사용.
@@ -456,10 +520,12 @@ pub fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         NodeList{ .start = 0, .len = 0 }
     else
         try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
-    return self.addExtraNode(.property_definition, node.span, &.{
+    const result = try self.addExtraNode(.property_definition, node.span, &.{
         @backingInt(new_key), @backingInt(new_value), self.readU32(e, 2),
         new_decos.start,      new_decos.len,
     });
+    try @import("../native_private_field_certificate.zig").record(self, .field_copy, source_owner, result);
+    return result;
 }
 
 // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]

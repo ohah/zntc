@@ -2820,7 +2820,7 @@ fn transpileWithCallbackInternal(
     const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
     var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
-        transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
+        transformer.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items) catch return error.TransformError;
         transformer.symbols = analyzer.symbols.items;
         transformer.references = analyzer.references.items;
         transformer.scopes = analyzer.scopes.items;
@@ -2911,6 +2911,7 @@ fn transpileWithCallbackInternal(
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisInitialized", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisUninitialized", options.minify_whitespace);
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__possibleConstructorReturn", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__nativeCtorThis", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.legacy_decorator) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__decorateClass", options.minify_whitespace);
@@ -3151,28 +3152,37 @@ fn transpileWithCallbackInternal(
     // final SymbolId-to-name map. Audit after both decisions so syntax-only,
     // identifier-only, and combined minification all pass through this gate.
     if (symbol_coverage_env.enabled() and (options.minify_syntax or options.minify_identifiers)) {
-        const source_analyzer = &(analyzer_storage.?);
+        // Audit the exact graph whose node-to-SymbolId map codegen consumes.
+        // Reanalysis owns a new identity space; transform IDs and helper roles
+        // cannot be paired with that graph's symbols or binding resolution.
+        const audit_uses_reanalyzed_graph = mangle_result != null and !mangle_uses_transform_semantic;
+        const audit_graph = if (audit_uses_reanalyzed_graph) mangle_analyzer.? else &(analyzer_storage.?);
+        const audit_symbol_ids = if (audit_uses_reanalyzed_graph) audit_graph.symbol_ids.items else transformer.symbol_ids.items;
+        const audit_helper_nodes = if (audit_uses_reanalyzed_graph) audit_graph.helper_ref_nodes else transformer.helper_ref_nodes.items;
+        const audit_class_self = if (audit_uses_reanalyzed_graph) &audit_graph.class_self_symbol_map else &transformer.class_self_symbol_map;
         const post_minify_coverage = @import("transformer/symbol_coverage.zig");
         var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);
         post_minify_analyzer.is_strict_mode = parser.is_strict_mode;
         post_minify_analyzer.is_module = parser.is_module;
         post_minify_analyzer.collect_unresolved_reference_nodes = true;
         post_minify_analyzer.analyze() catch return error.SemanticError;
-        const post_minify_report = try post_minify_coverage.checkPostMinify(
+        const post_minify_report = try post_minify_coverage.checkPostMinifyWithNativeOwners(
             arena_alloc,
             transformer.ast,
             root,
-            transformer.symbol_ids.items,
+            audit_symbol_ids,
             post_minify_analyzer.symbol_ids.items,
-            source_analyzer.symbols.items,
+            audit_graph.symbols.items,
             post_minify_analyzer.symbols.items,
-            source_analyzer.references.items,
-            transformer.helper_ref_nodes.items,
-            &source_analyzer.helper_scope_map,
+            audit_graph.references.items,
+            audit_helper_nodes,
+            &audit_graph.helper_scope_map,
             &post_minify_analyzer.unresolved_reference_nodes,
             &transformer.explicit_global_reference_nodes,
-            &transformer.class_self_symbol_map,
+            audit_class_self,
             &post_minify_analyzer.class_self_symbol_map,
+            .{ .scopes = audit_graph.scopes.items, .scope_owner_map = &audit_graph.scope_owner_map },
+            .{ .scopes = post_minify_analyzer.scopes.items, .scope_owner_map = &post_minify_analyzer.scope_owner_map },
         );
         post_minify_coverage.printPostMinify(file_path, post_minify_report);
     }
@@ -3283,6 +3293,7 @@ fn transpileWithCallbackInternal(
             local_names.assert_this_initialized = try helper_name_resolver.resolve("__assertThisInitialized", options.minify_whitespace);
             local_names.assert_this_uninitialized = try helper_name_resolver.resolve("__assertThisUninitialized", options.minify_whitespace);
             local_names.possible_constructor_return = try helper_name_resolver.resolve("__possibleConstructorReturn", options.minify_whitespace);
+            local_names.native_ctor_this = try helper_name_resolver.resolve("__nativeCtorThis", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
@@ -5070,11 +5081,17 @@ test "#6193 erased nested const enum may lack source identity when its output na
         break;
     }
     const enum_binding_raw = enum_binding orelse return error.MissingNestedConstEnumBinding;
-    try std.testing.expect(transformer.symbol_ids.items[enum_binding_raw] == null);
-
+    const source_id = transformer.symbol_ids.items[enum_binding_raw] orelse return error.MissingInitialNestedEnumIdentity;
     const output_root = try transformer.visitNode(source_root);
     try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
     try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    // Initial analysis now supplies this identity. Preserve the erased-input
+    // proof's older missing-ID boundary without depending on that binder bug.
+    transformer.symbol_ids.items[enum_binding_raw] = null;
+    try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    transformer.symbol_ids.items[enum_binding_raw] = source_id;
 }
 
 test "#6193 extensionless ambient global namespace retains the graph only after exact erasure proof" {
@@ -7320,7 +7337,8 @@ test "TS auto type-only export: declaration merging preserves value binding" {
         \\export { E };
         \\
     ,
-        \\var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});
+        \\var E;
+        \\E = /* @__PURE__ */ (function(E) {"use strict";E[E["A"]=0]="A";return E;})(E || {});
         \\export { E };
         \\
     ,
@@ -9728,4 +9746,275 @@ test "standalone keepNames candidate helper keeps its exact producer slot" {
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__name", false),
     );
+}
+
+test "define ordinary callbacks preserve own arguments under outer parameter shadow" {
+    const source = "function outer(arguments){return TOKEN(23)}console.log(outer([42]));";
+    const cases = [_]struct { replacement: []const u8, expected: []const u8 }{
+        .{ .replacement = "function(){return arguments[0];}", .expected = "23\n" },
+        .{ .replacement = "()=>arguments[0]", .expected = "42\n" },
+    };
+    for (cases) |case| {
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+                defer arena.deinit();
+                const a = arena.allocator();
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = case.replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, case.expected, actual.stdout))
+                    std.debug.print("define arguments target={s} minify={} replacement={s} stdout={s} stderr={s} code={s}\n", .{ @tagName(target), minify, case.replacement, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(case.expected, actual.stdout);
+            }
+        }
+    }
+}
+
+test "define callback environments preserve ten native and lexical contexts" {
+    const source = "function outer(arguments){const captured=13;return[TOKEN(23),arguments[0]]}console.log(JSON.stringify(outer([42])));";
+    const replacements = [_][]const u8{
+        "function(){return arguments[0];}",
+        "()=>arguments[0]",
+        "function(){return (()=>arguments[0])();}",
+        "()=>(function(){return arguments[0];})(31)",
+        "function(){return (arguments=[9])[0];}",
+        "function(){return arguments+=1;}",
+        "function(){return {arguments}.arguments[0];}",
+        "function(){return arg\\u0075ments[0];}",
+        "function(){return captured+arguments[0];}",
+        "[function(){return arguments[0];},()=>arguments[0]][1]",
+    };
+    for (replacements, 0..) |replacement, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const expression = try std.fmt.allocPrint(a, "({s})", .{replacement});
+        const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
+        const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, oracle.stdout, actual.stdout))
+                    std.debug.print("define callback case={d} target={s} minify={} oracle={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, oracle.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+            }
+            try checkDefineCallbackBirth(a, source, replacement, target, if (index == 1) 0 else 1);
+        }
+    }
+}
+
+fn checkDefineCallbackBirth(a: std.mem.Allocator, source: []const u8, replacement: []const u8, target: TransformOptions.compat.ESTarget, expected_native_reads: usize) !void {
+    const ScopeId = @import("semantic/scope.zig").ScopeId;
+    const utils = @import("transformer/output_scope_test_utils.zig");
+    const symbol_mod = @import("semantic/symbol.zig");
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+    var t = try Transformer.init(a, &parser.ast, .{ .define = &.{.{ .key = "TOKEN", .value = replacement }}, .unsupported = TransformOptions.compat.fromESTarget(target), .emit_runtime_helper_imports = false });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const output = try t.transform();
+    try std.testing.expect(t.define_native_arguments_owner == null);
+    var parents = try utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var live = parents.keyIterator();
+    while (live.next()) |raw| if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| {
+        try owners.put(a, raw.*, @backingInt(scope));
+    };
+    const editor = &t.semantic_editor.?;
+    var origins = t.native_arguments_reference_origins.iterator();
+    var count: usize = 0;
+    while (origins.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        const origin = entry.value_ptr.*;
+        try std.testing.expect(parents.contains(raw));
+        const id = @backingInt(origin.symbol_id);
+        try std.testing.expect(id >= source_symbol_count);
+        var ancestor = parents.get(raw).?;
+        while (t.ast.nodes.items[ancestor].tag != .function_expression) ancestor = parents.get(ancestor).?;
+        try std.testing.expect(ancestor >= t.parser_node_count);
+        try std.testing.expectEqual(@as(?ScopeId, origin.owner_scope), t.outputOwnedScope(@fromBackingInt(ancestor)));
+        const enclosing_scope = utils.expectedScope(t.ast, output, &parents, &owners, parents.get(ancestor).?).?;
+        try std.testing.expectEqual(enclosing_scope, editor.scopes.items[origin.owner_scope.toIndex()].parent);
+        const actual_scope = utils.expectedScope(t.ast, output, &parents, &owners, raw).?;
+        try std.testing.expectEqual(actual_scope, origin.scope);
+        const row = (try editor.referenceForNode(@fromBackingInt(raw))).?;
+        const coordinate = utils.expectedStatementCoordinates(t.ast, &parents, raw).?;
+        try std.testing.expectEqual(coordinate.stmt_idx, row.stmt_idx);
+        try std.testing.expectEqual(coordinate.scope_stmt_idx, row.scope_stmt_idx);
+        const node = t.ast.nodes.items[raw];
+        const expected_flags: symbol_mod.ReferenceFlags = if (node.tag == .assignment_target_identifier) blk: {
+            const assignment = t.ast.nodes.items[parents.get(raw).?];
+            try std.testing.expectEqual(ast_mod.Node.Tag.assignment_expression, assignment.tag);
+            break :blk .{ .read = assignment.data.binary.flags != @backingInt(@import("lexer/token.zig").Kind.eq), .write = true };
+        } else .{ .read = true };
+        try std.testing.expectEqualDeep(expected_flags, row.flags);
+        try std.testing.expectEqualDeep(expected_flags, origin.flags);
+        try std.testing.expectEqual(origin.symbol_id, row.symbol_id);
+        try std.testing.expectEqual(actual_scope, row.scope_id);
+        try std.testing.expectEqual(@as(?u32, id), t.getSymbolIdAt(@fromBackingInt(raw)));
+        try std.testing.expectEqual(symbol_mod.SymbolKind.parameter, editor.symbols.items[id].kind);
+        try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), editor.symbols.items[id].synthetic_kind);
+        try std.testing.expectEqual(origin.owner_scope, editor.symbols.items[id].scope_id);
+        try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[origin.owner_scope.toIndex()].get("arguments"));
+        try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[id].reference_count);
+        try std.testing.expectEqual(@as(u32, @intFromBool(expected_flags.write)), editor.symbols.items[id].write_count);
+        try std.testing.expect(!t.explicit_global_reference_nodes.contains(raw));
+        const declaration_coordinate = utils.expectedStatementCoordinates(t.ast, &parents, ancestor).?;
+        var declarations: usize = 0;
+        for (editor.references.items) |declaration| {
+            if (declaration.symbol_id != origin.symbol_id or !declaration.flags.declare) continue;
+            try std.testing.expect(declaration.node_index.isNone() and declaration.declaration_node_index.isNone());
+            try std.testing.expectEqualDeep(@as(symbol_mod.ReferenceFlags, .{ .declare = true }), declaration.flags);
+            try std.testing.expectEqual(origin.owner_scope, declaration.scope_id);
+            try std.testing.expectEqual(declaration_coordinate.stmt_idx, declaration.stmt_idx);
+            try std.testing.expectEqual(declaration_coordinate.scope_stmt_idx, declaration.scope_stmt_idx);
+            declarations += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        count += 1;
+    }
+    try std.testing.expectEqual(expected_native_reads, count);
+}
+
+test "define callback arguments preserve private initializer branch instances" {
+    const source = "class P{}class C extends P{#read=TOKEN;constructor(flag){if(flag)super();else super()}read(){return this.#read(23)}}console.log(new C(true).read(),new C(false).read());";
+    for ([_][]const u8{ "function(){return arguments[0];}", "function(){return arguments[0]=31;}" }) |replacement| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const expression = try std.fmt.allocPrint(a, "({s})", .{replacement});
+        const oracle_source = try std.mem.replaceOwned(u8, a, source, "TOKEN", expression);
+        const oracle = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", oracle_source } });
+        try std.testing.expect(oracle.term == .exited and oracle.term.exited == 0);
+        for ([_]TransformOptions.compat.ESTarget{ .es5, .es2017, .esnext }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try transpile(a, source, "input.cjs", .{
+                    .define = &.{.{ .key = "TOKEN", .value = replacement }},
+                    .unsupported = TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, oracle.stdout, actual.stdout))
+                    std.debug.print("private define target={s} minify={} oracle={s} actual={s} stderr={s} code={s}\n", .{ @tagName(target), minify, oracle.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(oracle.stdout, actual.stdout);
+            }
+        }
+    }
+}
+
+test "#6193 nested erased enum proof preserves distinct source shadow identities before output walk" {
+    const sources = [_][]const u8{
+        "function outer() {\n  const enum Status { Ready = 42 }\n  return function read(Status) { return Status; };\n}\nconsole.log(typeof outer());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  { const Status = { Ready: 43 }; return Status.Ready; }\n}\nconsole.log(read());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  { const Status = {}; }\n  return 42;\n}\nconsole.log(read());",
+        "function read() {\n  const enum Status { Ready = 42 }\n  try { throw { Ready: 43 }; }\n  catch (Status) { return Status.Ready; }\n}\nconsole.log(read());",
+        "function make() {\n  const enum Status { Ready = 42 }\n  return class { read(Status) { return Status.Ready; } };\n}\nconsole.log(typeof make());",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const minify: TranspileOptions = .{ .minify_identifiers = true };
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".unknown");
+        const source_root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expect(parser.source_mode == .js_lenient);
+
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        try analyzer.analyze();
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{});
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.node_scope_provenance = analyzer.node_scope_provenance;
+        transformer.helper_scope_map = analyzer.helper_scope_map;
+        transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+        transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+        transformer.semantic_edit_enabled = true;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+
+        var enum_binding: ast_mod.NodeIndex = .none;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag == .ts_enum_declaration) enum_binding = parser.ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+        }
+        try std.testing.expect(!enum_binding.isNone());
+        const enum_id = transformer.symbol_ids.items[@backingInt(enum_binding)] orelse return error.MissingSourceEnumIdentity;
+        var shadow_binding: ast_mod.NodeIndex = .none;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and raw != @backingInt(enum_binding) and std.mem.eql(u8, parser.ast.getText(node.span), "Status")) shadow_binding = @fromBackingInt(@as(u32, @intCast(raw)));
+        }
+        try std.testing.expect(!shadow_binding.isNone());
+        const shadow_id = transformer.symbol_ids.items[@backingInt(shadow_binding)] orelse return error.MissingSourceShadowIdentity;
+        const shadow_scope = analyzer.symbols.items[shadow_id].scope_id;
+        try std.testing.expect(enum_id != shadow_id);
+        try std.testing.expect(analyzer.symbols.items[enum_id].scope_id != shadow_scope);
+        const output_root = try transformer.visitNode(source_root);
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+        var surviving_shadows: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.getNode(@fromBackingInt(raw));
+            if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.span), "Status")) continue;
+            try std.testing.expectEqual(@as(?u32, shadow_id), transformer.symbol_ids.items[raw]);
+            surviving_shadows += 1;
+        }
+        try std.testing.expect(surviving_shadows > 0);
+        const output_symbols = if (transformer.semantic_editor) |editor| editor.symbols.items else transformer.symbols;
+        try std.testing.expectEqual(shadow_scope, output_symbols[shadow_id].scope_id);
+        try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = null;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = shadow_id;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(enum_binding)] = enum_id;
+        transformer.symbol_ids.items[@backingInt(shadow_binding)] = enum_id;
+        try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        transformer.symbol_ids.items[@backingInt(shadow_binding)] = shadow_id;
+        try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+        try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    }
 }

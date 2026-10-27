@@ -1953,6 +1953,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
             .assert_this_initialized = "__assertThisInitialized2",
             .assert_this_uninitialized = "__assertThisUninitialized2",
             .possible_constructor_return = "__possibleConstructorReturn2",
+            .native_ctor_this = "__nativeCtorThis2",
         },
     );
     try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __assertThisInitialized2 = function(self)"));
@@ -1962,6 +1963,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisInitialized = function") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisUninitialized = function") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __possibleConstructorReturn = function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __nativeCtorThis2 = (function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __nativeCtorThis =") == null);
 
     var minified: std.ArrayList(u8) = .empty;
     defer minified.deinit(std.testing.allocator);
@@ -1975,6 +1978,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
             .assert_this_initialized = "$aT2",
             .assert_this_uninitialized = "$aU2",
             .possible_constructor_return = "$pR2",
+            .native_ctor_this = "$nC2",
         },
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aT2=function(self)"));
@@ -1984,6 +1988,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aT=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aU=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pR=function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $nC2=(function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $nC=") == null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits selected legacy-decorator helper names and internal references" {
@@ -3938,4 +3944,134 @@ test "retained private capture keeps absent source spans absent on existing warn
         found_warning = true;
     }
     try std.testing.expect(found_warning);
+}
+
+test "emitter: Unicode symbol renames keep their selected binding names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ids = [_]?u32{0};
+    var metadata: @import("linker.zig").LinkingMetadata = .{
+        .allocator = a,
+        .skip_nodes = try std.DynamicBitSet.initEmpty(a, 0),
+        .final_exports = null,
+        .symbol_ids = &ids,
+    };
+    for ([_][]const u8{ "plain$1", "__ns.read", "이름$1", "é$1", "𐐀$1" }) |selected| {
+        try metadata.renames.put(a, 0, selected);
+        try std.testing.expectEqualStrings(selected, emitter.resolveNodeName(&metadata, 0, "source"));
+    }
+}
+
+test "emitter: Unicode rename handling preserves malformed-start rejection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ids = [_]?u32{0};
+    var metadata: @import("linker.zig").LinkingMetadata = .{
+        .allocator = a,
+        .skip_nodes = try std.DynamicBitSet.initEmpty(a, 0),
+        .final_exports = null,
+        .symbol_ids = &ids,
+    };
+    for ([_][]const u8{ "", "\x00", "\xAA", "\xEC\x9D", "\xC0\xAF", "\xED\xA0\x80", "😀$1" }) |invalid| {
+        try metadata.renames.put(a, 0, invalid);
+        try std.testing.expectEqualStrings("source", emitter.resolveNodeName(&metadata, 0, "source"));
+    }
+    try std.testing.expectEqualStrings("source", emitter.resolveNodeName(null, 0, "source"));
+    try std.testing.expectEqualStrings("source", emitter.resolveNodeName(&metadata, 2, "source"));
+}
+
+test "emitter: Unicode hoisted bindings execute across lazy module collisions" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    const Mode = struct { syntax: bool = false, identifiers: bool = false, whitespace: bool = false };
+    const modes = [_]Mode{ .{}, .{ .syntax = true }, .{ .identifiers = true }, .{ .whitespace = true }, .{ .syntax = true, .identifiers = true, .whitespace = true } };
+    const BindingKind = enum { class, variable, function };
+    for ([_][]const u8{ "이름", "é", "𐐀", "이\\uB984" }) |name| {
+        for ([_]BindingKind{ .class, .variable, .function }) |kind| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const first = switch (kind) {
+                .class => try std.fmt.allocPrint(a, "export class {s} {{value(){{return 1}}}}", .{name}),
+                .variable => try std.fmt.allocPrint(a, "export let {s}=1;", .{name}),
+                .function => try std.fmt.allocPrint(a, "export function {s}(){{return 1}}", .{name}),
+            };
+            const second = switch (kind) {
+                .class => try std.fmt.allocPrint(a, "export class {s} {{value(){{return 2}}}}", .{name}),
+                .variable => try std.fmt.allocPrint(a, "export let {s}=2;", .{name}),
+                .function => try std.fmt.allocPrint(a, "export function {s}(){{return 2}}", .{name}),
+            };
+            const entry_source = switch (kind) {
+                .class => try std.fmt.allocPrint(a, "const a=await import('./a.mjs');const b=await import('./b.mjs');console.log(new a.{s}().value(),new b.{s}().value());", .{ name, name }),
+                .variable => try std.fmt.allocPrint(a, "const a=await import('./a.mjs');const b=await import('./b.mjs');console.log(a.{s},b.{s});", .{ name, name }),
+                .function => try std.fmt.allocPrint(a, "const a=await import('./a.mjs');const b=await import('./b.mjs');console.log(a.{s}(),b.{s}());", .{ name, name }),
+            };
+            try writeFile(tmp.dir, "a.mjs", first);
+            try writeFile(tmp.dir, "b.mjs", second);
+            try writeFile(tmp.dir, "entry.mjs", entry_source);
+            const entry = try helpers.absPath(&tmp, "entry.mjs");
+            defer std.testing.allocator.free(entry);
+            const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+            try std.testing.expect(native.term == .exited and native.term.exited == 0);
+            try std.testing.expectEqualStrings("1 2\n", native.stdout);
+            for (modes) |mode| {
+                var bundler = Bundler.init(std.testing.allocator, .{
+                    .entry_points = &.{entry},
+                    .platform = .node,
+                    .format = .esm,
+                    .minify_syntax = mode.syntax,
+                    .minify_identifiers = mode.identifiers,
+                    .minify_whitespace = mode.whitespace,
+                });
+                defer bundler.deinit();
+                const result = try bundler.bundle(std.testing.io);
+                defer result.deinit(std.testing.allocator);
+                try std.testing.expect(!result.hasErrors());
+                try writeFile(tmp.dir, "out.mjs", result.output);
+                const output = try helpers.absPath(&tmp, "out.mjs");
+                defer std.testing.allocator.free(output);
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("Unicode hoist name={s} kind={s} mode={any}: {s}\n", .{ name, @tagName(kind), mode, actual.stderr });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+        }
+    }
+}
+
+test "emitter: Unicode scope aliases yield one candidate per exact symbol" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import {이름} from './dep.mjs';console.log(이름);");
+    try writeFile(tmp.dir, "dep.mjs", "export let 이\\uB984=1;");
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.minify_identifiers = true;
+    try graph.build(std.testing.io, &.{entry_path});
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.computeRenames();
+    var input = try linker.collectUnifiedInput(null, &.{});
+    defer input.deinit();
+    var seen: std.AutoHashMapUnmanaged(@import("../codegen/unified_mangler.zig").ModuleSymKey, void) = .empty;
+    defer seen.deinit(std.testing.allocator);
+    for (input.top_level_candidates) |candidate| {
+        const key = @import("../codegen/unified_mangler.zig").ModuleSymKey{
+            .module_index = candidate.module_index,
+            .symbol_id = candidate.symbol_id,
+        };
+        const entry = try seen.getOrPut(std.testing.allocator, key);
+        if (entry.found_existing) std.debug.print("duplicate Unicode candidate module={d} sid={d} name={s}\n", .{ candidate.module_index, candidate.symbol_id, candidate.name });
+        try std.testing.expect(!entry.found_existing);
+    }
 }

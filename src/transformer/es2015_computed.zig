@@ -43,7 +43,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const key_idx = memberKeyIdx(self, member);
                 if (key_idx.isNone()) continue;
                 const key = self.ast.getNode(key_idx);
-                if (key.tag == .computed_property_key) return true;
+                if (key.tag == .computed_property_key or isProtoShorthand(self, member)) return true;
             }
             return false;
         }
@@ -73,7 +73,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     const key_idx = memberKeyIdx(self, member);
                     if (key_idx.isNone()) continue;
                     const key = self.ast.getNode(key_idx);
-                    if (key.tag == .computed_property_key) {
+                    if (key.tag == .computed_property_key or isProtoShorthand(self, member)) {
                         first_computed = idx;
                         break;
                     }
@@ -172,9 +172,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // Object-literal properties create own data properties;
                     // assignment would invoke an inherited setter. The key
                     // temp is already ToPropertyKey-converted before the value.
-                    self.runtime_helpers.public_field = true;
-                    const public_field = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
-                    const define = try es_helpers.makeCallExpr(self, public_field, &.{ obj_ref, captured.key, value }, span);
+                    const define = try makeOwnDataProperty(self, temp_capture, obj_ref, captured.key, value, span);
                     try self.scratch.append(self.allocator, define);
                     continue;
                 }
@@ -192,9 +190,21 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                         property_key = try es_helpers.makeCallExpr(self, to_property_key, &.{property_key}, span);
                     }
                     const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
-                    self.runtime_helpers.public_field = true;
-                    const public_field = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
-                    const define = try es_helpers.makeCallExpr(self, public_field, &.{ obj_ref, property_key, new_val }, span);
+                    const define = try makeOwnDataProperty(self, temp_capture, obj_ref, property_key, new_val, span);
+                    try self.scratch.append(self.allocator, define);
+                    continue;
+                }
+
+                // Every ordinary literal property creates an own data
+                // property, including static names after the first computed key.
+                // Only the source colon-form __proto__ has setter semantics.
+                const direct_name = try self.ast.directStaticKeyName(self.allocator, key_idx);
+                defer if (direct_name) |name| self.allocator.free(name);
+                const prototype_setter = !val_idx.isNone() and direct_name != null and std.mem.eql(u8, direct_name.?, "__proto__");
+                if (!prototype_setter) {
+                    const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
+                    const property_key = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+                    const define = try makeOwnDataProperty(self, temp_capture, obj_ref, property_key, new_val, span);
                     try self.scratch.append(self.allocator, define);
                     continue;
                 }
@@ -229,6 +239,23 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .data = .{ .list = seq_list },
             });
             return seq;
+        }
+
+        fn isProtoShorthand(self: *const Transformer, member: Node) bool {
+            if (member.tag != .object_property or !member.data.binary.right.isNone()) return false;
+            const key = member.data.binary.left;
+            if (key.isNone() or @backingInt(key) >= self.ast.nodes.items.len) return false;
+            const node = self.ast.getNode(key);
+            var decoded: [9]u8 = undefined;
+            return node.tag == .identifier_reference and @import("../lexer/scanner.zig").Scanner.identifierTextEqualsAscii(self.ast.identifierNameText(node), "__proto__", &decoded);
+        }
+
+        fn makeOwnDataProperty(self: *Transformer, capture: es_helpers.TempIdentityCapture, object: NodeIndex, key: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            self.runtime_helpers.public_field = true;
+            const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
+            const call = try es_helpers.makeCallExpr(self, callee, &.{ object, key, value }, span);
+            try @import("computed_object_helper_authority.zig").record(self, call, callee, .{ object, key, value }, capture);
+            return call;
         }
 
         /// member의 key NodeIndex를 반환. object_property는 binary.left, method_definition은 extra[0].

@@ -12,6 +12,68 @@ const Binding = @import("binding_scanner.zig").ImportBinding;
 const Builder = @import("runtime_callsite_builder.zig").Builder;
 const walk = @import("../parser/ast_walk.zig");
 
+test "guarded statement projection preserves native arguments identity and actual entry coordinates" {
+    const sources = [_][]const u8{
+        "function read(value=1){return arguments[0]}",
+        "function outer(){const first=0;const second=1;function read(value=1){return arguments[0]}return read()}",
+    };
+    for (sources, 0..) |source, source_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".mjs");
+        const root = try parser.parse();
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var editor = try @import("../semantic/editor.zig").SemanticEditor.init(
+            a,
+            &parser.ast,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.symbol_ids.items,
+            analyzer.helper_scope_map,
+        );
+        defer editor.deinit();
+        const originals = try a.dupe(Reference, editor.references.items);
+        const list = parser.ast.getNode(root).data.list;
+        try std.testing.expectEqual(@as(u32, 1), list.len);
+        const original_statement = parser.ast.readExtraNode(list.start, 0);
+        const prefix = try parser.ast.addNode(.{ .tag = .empty_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .none = 0 } });
+        parser.ast.nodes.items[@backingInt(root)].data.list = try parser.ast.addNodeList(&.{ prefix, original_statement });
+        try projectStatementOwners(&editor, root, &analyzer.class_self_symbol_map, a);
+        var checked: usize = 0;
+        for (originals, editor.references.items) |before, after| {
+            try std.testing.expectEqual(before.symbol_id, after.symbol_id);
+            try std.testing.expectEqual(before.scope_id, after.scope_id);
+            try std.testing.expectEqual(before.flags, after.flags);
+            try std.testing.expectEqual(before.node_index, after.node_index);
+            try std.testing.expectEqual(before.declaration_node_index, after.declaration_node_index);
+            if (!before.flags.declare or !before.declaration_node_index.isNone() or
+                editor.symbols.items[@backingInt(before.symbol_id)].synthetic_kind != .implicit_arguments) continue;
+            var owners = editor.scope_owner_map.iterator();
+            while (owners.next()) |entry| {
+                if (entry.value_ptr.* != @backingInt(before.scope_id) or
+                    parser.ast.nodes.items[entry.key_ptr.*].tag != .formal_parameters) continue;
+                // The exact source form places read at program index 0 or at
+                // outer body index 2. Only the new program prefix shifts it.
+                try std.testing.expectEqual(@as(u32, 1), after.stmt_idx);
+                try std.testing.expectEqual(@as(u32, if (source_index == 0) 1 else 2), after.scope_stmt_idx);
+                checked += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), checked);
+    }
+}
+
 const Initializers = struct { direct: SymbolID, value: SymbolID };
 const Call = struct { node: NodeIndex, callee: NodeIndex, symbol: SymbolId, scope: ScopeId, direct_call: bool, shorthand_property: ?NodeIndex };
 const Plan = struct { binding: usize, calls: []const Call, targets: Initializers };
@@ -229,6 +291,17 @@ fn eagerHelpers(graph: anytype, linker: anytype, module: *const Module, root: No
 }
 
 fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: anytype, a: std.mem.Allocator) !void {
+    const statement_contexts = try @import("statement_owner_projection.zig").collect(a, editor.ast, root);
+    var entry_contexts = (try @import("implicit_arguments_statement_owner.zig").collect(
+        a,
+        editor.ast,
+        statement_contexts,
+        editor.symbols.items,
+        editor.scopes.items,
+        &editor.scope_owner_map,
+        editor.references.items,
+    )) orelse return error.InvalidGuardedImplicitArguments;
+    defer entry_contexts.deinit(a);
     var wanted: std.AutoHashMapUnmanaged(NodeIndex, void) = .empty;
     for (editor.references.items) |reference| {
         const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
@@ -288,6 +361,13 @@ fn projectStatementOwners(editor: anytype, root: NodeIndex, class_self_symbols: 
     }
     for (editor.references.items) |*reference| {
         const anchor = if (!reference.node_index.isNone()) reference.node_index else reference.declaration_node_index;
+        if (anchor.isNone() and reference.flags.declare) {
+            if (entry_contexts.get(@backingInt(reference.symbol_id))) |context| {
+                reference.stmt_idx = context.stmt_idx;
+                reference.scope_stmt_idx = context.scope_stmt_idx;
+                continue;
+            }
+        }
         reference.stmt_idx = owners.get(anchor) orelse Reference.NO_STMT;
         if (anchor.isNone() and reference.flags.declare) {
             if (default_contexts.get(@backingInt(reference.symbol_id))) |context| {
@@ -1127,5 +1207,85 @@ test "mixed record planning rejects foreign dangling and unsupported alias prove
         try std.testing.expectEqual(import_count, module.import_bindings.len);
         try std.testing.expectEqual(module_count, graph.moduleCount());
         for (module.import_bindings) |original| try std.testing.expect(!original.guarded_eager_init_lowered and !original.guarded_lazy_calls_lowered and original.callsite_target == null);
+    }
+}
+
+test "guarded namespace enum calls project actual IIFE parameter and engine coordinates" {
+    const Bundler = @import("bundler.zig").Bundler;
+    const helpers = @import("test_helpers.zig");
+    for ([_][]const u8{
+        "namespace First{export const answer=value()+arguments.length;}",
+        "enum First{Answer=value()+arguments.length}",
+        "namespace First{export const answer=value();}",
+        "enum First{Answer=value()}",
+    }) |body| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = try std.fmt.allocPrint(std.testing.allocator, "import{{value}}from'./dep.mjs';{s}", .{body});
+        defer std.testing.allocator.free(source);
+        try helpers.writeFile(tmp.dir, "entry.ts", source);
+        try helpers.writeFile(tmp.dir, "dep.mjs", "export function value(){return 42}");
+        const entry = try helpers.absPath(&tmp, "entry.ts");
+        defer std.testing.allocator.free(entry);
+        const options: @import("bundler.zig").BundleOptions = .{ .entry_points = &.{entry}, .platform = .react_native, .format = .cjs, .code_splitting = true, .preserve_modules = true, .entry_error_guard = true };
+        var cache = Bundler.initResolveCacheFromOptions(std.testing.allocator, options);
+        defer cache.deinit();
+        var graph = @import("graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.code_splitting = true;
+        graph.preserve_modules = true;
+        try graph.build(std.testing.io, &.{entry});
+        try std.testing.expectEqual(@as(usize, 0), graph.diagnostics.items.len);
+        var linker = @import("linker.zig").Linker.init(std.testing.allocator, &graph, .cjs);
+        defer linker.deinit();
+        linker.setEmitFormat(.cjs, .{ .inline_requires = true, .entry_error_guard = true });
+        try linker.link();
+        linker.populateImportSymbols();
+        try @import("runtime_entry_guard_calls.zig").prepareProvider(&graph, std.testing.io);
+        const module_index = graph.path_to_module.get(entry).?;
+        const module = graph.getModule(module_index).?;
+        const originals = try std.testing.allocator.dupe(Reference, module.semantic.?.references);
+        defer std.testing.allocator.free(originals);
+        const original_binding = module.import_bindings[0];
+        try lower(&graph, &linker, null);
+        const lowered = graph.getModule(module_index).?;
+        try std.testing.expect(lowered.import_bindings[0].guarded_lazy_calls_lowered);
+        try std.testing.expect(original_binding.local_symbol.eql(lowered.import_bindings[0].local_symbol));
+        const sem = &lowered.semantic.?;
+        const ast = &lowered.ast.?;
+        const root = ast.transformed_root.?;
+        const contexts = try @import("../semantic/statement_coordinates.zig").collect(lowered.parse_arena.?.allocator(), ast, root);
+        var checked: usize = 0;
+        for (originals) |before| {
+            if (!before.flags.declare or !before.declaration_node_index.isNone()) continue;
+            const symbol = sem.symbols.items[@backingInt(before.symbol_id)];
+            if (symbol.synthetic_kind != .implicit_arguments and symbol.synthetic_kind != .namespace_iife_parameter and symbol.synthetic_kind != .enum_iife_parameter) continue;
+            var current_row: ?Reference = null;
+            for (sem.references) |after| {
+                if (after.symbol_id != before.symbol_id or !after.flags.declare) continue;
+                try std.testing.expect(current_row == null);
+                current_row = after;
+            }
+            const after = current_row orelse return error.MissingIifeEntryDeclaration;
+            try std.testing.expectEqual(before.scope_id, after.scope_id);
+            try std.testing.expectEqual(before.flags, after.flags);
+            try std.testing.expectEqual(before.node_index, after.node_index);
+            try std.testing.expectEqual(before.declaration_node_index, after.declaration_node_index);
+            var actual_owners = sem.scope_owner_map.iterator();
+            var primary_count: usize = 0;
+            while (actual_owners.next()) |owner| {
+                if (owner.value_ptr.* != @backingInt(before.scope_id)) continue;
+                const tag = ast.nodes.items[owner.key_ptr.*].tag;
+                if (tag != .ts_module_declaration and tag != .ts_enum_declaration) continue;
+                const expected = contexts[owner.key_ptr.*] orelse continue;
+                try std.testing.expectEqual(expected.stmt_idx, after.stmt_idx);
+                try std.testing.expectEqual(expected.scope_stmt_idx, after.scope_stmt_idx);
+                primary_count += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), primary_count);
+            checked += 1;
+        }
+        // Every case has its implicit parameter even without an arguments read.
+        try std.testing.expect(checked >= 1);
     }
 }

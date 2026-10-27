@@ -388,6 +388,27 @@ pub const TransformOptions = struct {
                 .for_await_of_statement => if (u.needsForAwaitOfDownlevel() or u.top_level_await) return true,
                 .spread_element => if (u.spread) return true,
                 .object_expression => {
+                    if (u.object_extensions) {
+                        // Lowering a method/shorthand named __proto__ needs
+                        // an own-data-property helper, even without a source
+                        // computed key. Register that provider before linking.
+                        var properties = ast.iterateExtraList(node.data.list);
+                        while (properties.next()) |property| {
+                            const member = ast.getNode(property);
+                            const key = switch (member.tag) {
+                                .object_property => if (member.data.binary.right.isNone()) member.data.binary.left else continue,
+                                .method_definition => blk: {
+                                    const flags = ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags);
+                                    if (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) != 0) continue;
+                                    break :blk ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
+                                },
+                                else => continue,
+                            };
+                            const name = ast.directStaticKeyName(ast.allocator, key) catch return true;
+                            defer if (name) |value| ast.allocator.free(value);
+                            if (name != null and std.mem.eql(u8, name.?, "__proto__")) return true;
+                        }
+                    }
                     if (u.object_spread) {
                         // Object spread lowers to a generated Object.assign
                         // global reference; reserve it before linking so a

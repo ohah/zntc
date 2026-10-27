@@ -13,6 +13,7 @@
 //! 참고:
 //! - SWC: crates/swc_ecma_compat_es2015/src/shorthand_property.rs (~41줄)
 
+const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const es_helpers = @import("es_helpers.zig");
 const Node = ast_mod.Node;
@@ -33,7 +34,17 @@ pub fn ES2015Shorthand(comptime Transformer: type) type {
             // key: 원본 이름 그대로. property name 이라 rename·인라인 대상이 아니다 —
             // 심볼을 물려주면 minify 가 key 를 참조로 보고 상수로 바꿨다
             // (`const x = 1; ({x})` → `{1: x}`, #5668).
-            const new_key = try es_helpers.makePropertyNameAt(self, original_left.data.string_ref, original_left.span);
+            var new_key = try es_helpers.makePropertyNameAt(self, original_left.data.string_ref, original_left.span);
+            const name = try self.ast.directStaticKeyName(self.allocator, left_idx);
+            defer if (name) |value| self.allocator.free(value);
+            if (name != null and std.mem.eql(u8, name.?, "__proto__")) {
+                const key = try es_helpers.buildStringNode(self, "\"__proto__\"", node.span);
+                new_key = try self.ast.addNode(.{
+                    .tag = .computed_property_key,
+                    .span = original_left.span,
+                    .data = .{ .unary = .{ .operand = key, .flags = 0 } },
+                });
+            }
 
             // value: visitNode 가 block_rename / scope hoist 를 적용.
             const new_value = try self.visitNode(left_idx);

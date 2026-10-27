@@ -28,7 +28,9 @@ pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: Trans
     // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
     ast_ptr.transform_boundary = @intCast(ast_ptr.nodes.items.len);
 
-    return finishInit(allocator, ast_ptr, opts, .owned);
+    var result = try finishInit(allocator, ast_ptr, opts, .owned);
+    result.semantic_source_ast = source_ast;
+    return result;
 }
 
 /// 이미 transform 된 ast 를 borrow — `cloneForTransformer` skip (#1961 PR 1d).
@@ -90,6 +92,7 @@ fn finishInit(
     };
     var self: Transformer = .{
         .ast = ast_ptr,
+        .semantic_source_ast = ast_ptr,
         .parser_node_count = parser_count,
         .options = opts,
         .refresh_enabled_cached = @import("refresh.zig").computeRefreshEnabled(opts),
@@ -133,11 +136,15 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.reference_origin_map.deinit(self.allocator);
+    self.static_class_reference_origins.deinit(self.allocator);
     self.lowered_anonymous_class_export_bindings.deinit(self.allocator);
     self.explicit_global_reference_nodes.deinit(self.allocator);
     self.runtime_helper_ref_index.deinit(self.allocator);
     self.scope_owner_remaps.deinit(self.allocator);
     self.scope_owner_removed.deinit(self.allocator);
+    var retained_cells = self.retained_loop_key_cells.valueIterator();
+    while (retained_cells.next()) |cells| self.allocator.free(cells.*);
+    self.retained_loop_key_cells.deinit(self.allocator);
     self.scope_owner_origins.deinit(self.allocator);
     self.generated_class_without_source_anchor.deinit(self.allocator);
     self.generated_class_self_relocated_to_wrapper.deinit(self.allocator);
@@ -148,6 +155,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.pending_exact_symbol_refs.deinit(self.allocator);
     self.static_class_contexts.deinit(self.allocator);
     self.static_class_captures.deinit(self.allocator);
+    self.completed_static_class_captures.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.lexical_capture_uses.deinit(self.allocator);
     self.capture_refs.deinit(self.allocator);
@@ -158,13 +166,23 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generated_super_call_assignments.deinit(self.allocator);
     self.class_key_super_contexts.deinit(self.allocator);
     self.capture_binding_ids.deinit(self.allocator);
+    self.native_constructor_timing_plans.deinit(self.allocator);
+    self.native_constructor_timing_fields.deinit(self.allocator);
+    self.native_constructor_placement_scopes.deinit(self.allocator);
+    self.native_arguments_declaration_origins.deinit(self.allocator);
+    self.native_arguments_reference_origins.deinit(self.allocator);
+    self.native_arguments_parameter_handoffs.deinit(self.allocator);
+    self.native_constructor_reference_origins.deinit(self.allocator);
+    self.native_constructor_statement_handoffs.deinit(self.allocator);
+    self.native_constructor_statement_nodes.deinit(self.allocator);
+    self.live_arguments_cells.deinit(self.allocator);
     self.bound_temp_symbols.deinit(self.allocator);
     self.stage3_metadata_binding_ids.deinit(self.allocator);
     self.generator_state_bindings.deinit(self.allocator);
     self.generator_collected_function_roots.deinit(self.allocator);
     self.generator_collected_function_declarations.deinit(self.allocator);
     self.generator_annex_b_var_bindings.deinit(self.allocator);
-    self.annex_b_loop_setters.deinit(self.allocator);
+    self.loop_annex_b_setters.deinit(self.allocator);
     self.generator_function_storage_scopes.deinit(self.allocator);
     self.generator_function_statement_value_nodes.deinit(self.allocator);
     self.generator_function_coordinate_handoffs.deinit(self.allocator);
@@ -177,6 +195,11 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.tracked_runtime_helper_refs.deinit(self.allocator);
     self.tracked_runtime_helper_ref_index.deinit(self.allocator);
     self.runtime_helper_import_bindings.deinit(self.allocator);
+    self.selective_class_applications.deinit(self.allocator);
+    self.native_private_field_applications.deinit(self.allocator);
+    self.class_initializer_frames.deinit(self.allocator);
+    self.legacy_assignment_field_applications.deinit(self.allocator);
+    self.computed_object_helper_applications.deinit(self.allocator);
     self.runtime_helper_symbol_ids.deinit(self.allocator);
     self.parameter_capture_statements.deinit(self.allocator);
     self.parameter_body_var_copies.deinit(self.allocator);
@@ -186,6 +209,11 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.namespace_export_frames.deinit(self.allocator);
     self.namespace_temp_bindings.deinit(self.allocator);
     self.plugins.worklet.class_factory_display_names.deinit(self.allocator);
+    self.plugins.worklet.class_factories.deinit(self.allocator);
+    self.plugins.worklet.class_reference_nodes.deinit(self.allocator);
+    self.plugins.worklet.class_reference_origins.deinit(self.allocator);
+    self.plugins.worklet.class_reference_replacements.deinit(self.allocator);
+    self.plugins.worklet.class_publications.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
     self.plugins.refresh.signatures.deinit(self.allocator);
@@ -247,6 +275,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
         self.allocator.free(decl.members);
     }
     self.enum_values.deinit(self.allocator);
+    self.enum_outer_storage_bindings.deinit(self.allocator);
+    self.enum_outer_source_ids.deinit(self.allocator);
+    self.enum_outer_exported_ids.deinit(self.allocator);
     {
         var it = self.regex_var_map.iterator();
         while (it.next()) |entry| self.allocator.free(entry.value_ptr.*);
@@ -256,8 +287,31 @@ pub fn deinitExceptAst(self: *Transformer) void {
 
 /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
 /// 파서 노드 영역(0..parser_node_count-1)에 symbol_id를 채운다.
+/// Legacy callers guarantee a same-input graph. New owner-aware callers can
+/// additionally reject a foreign AST even when its numeric node IDs coincide.
 pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
+    try importSourceSymbolIds(self, analyzer_symbol_ids);
+}
+
+pub fn initSymbolIdsOwned(self: *Transformer, owner: *const Ast, analyzer_symbol_ids: []const ?u32) (Error || error{ InvalidSourceOwner, InvalidSourceLayout })!void {
+    if (owner != (self.semantic_source_ast orelse self.ast)) return error.InvalidSourceOwner;
+    if (analyzer_symbol_ids.len != owner.nodes.items.len) return error.InvalidSourceLayout;
+    try importSourceSymbolIds(self, analyzer_symbol_ids);
+}
+
+fn importSourceSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
     try self.symbol_ids.appendSlice(self.allocator, analyzer_symbol_ids);
+    // Consume canonical source enum anchors. No name/span lookup selects an
+    // identity, and a namespace preceding its merged enum sees this exact SID.
+    for (self.ast.nodes.items[0..self.parser_node_count]) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = self.ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+        if (name.isNone() or @backingInt(name) >= analyzer_symbol_ids.len) continue;
+        if (analyzer_symbol_ids[@backingInt(name)]) |id| {
+            const entry = try self.enum_outer_source_ids.getOrPut(self.allocator, id);
+            if (!entry.found_existing) entry.value_ptr.* = name;
+        }
+    }
 }
 
 /// #2869 helper marker 등록. caller 는 새로 만든 NodeIndex 를 넘긴다.

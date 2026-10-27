@@ -96,6 +96,7 @@ const BIT_DEFS = [_]BitDef{
         "__assertThisInitialized",
         "__assertThisUninitialized",
         "__possibleConstructorReturn",
+        "__nativeCtorThis",
     } },
     .{ .bit = .tagged_template_literal, .bases = &.{"__taggedTemplateLiteral"} },
     .{ .bit = .using_ctx, .bases = &.{ "__using", "__callDispose" } },

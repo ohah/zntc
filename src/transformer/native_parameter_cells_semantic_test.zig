@@ -601,27 +601,29 @@ test "common private lowering plan reaches both native class producers" {
     }
 }
 
-test "native private initializer parameter cells exist before class visitation" {
+test "native private initializer mixed assignment parameter cells exist before class visitation" {
     const options: Options = .{ .use_define_for_class_fields = false };
-    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", options);
-    try checkCellsForOptions("class Box{#field=7;#read(){return this.#field}constructor(value=this.#read()){this.saved=value}}", options);
-    try checkCellsForOptions("class Box{#field=7;get #read(){return this.#field}constructor(value=this.#read){this.saved=value}}", options);
-    try checkCellsForOptions("class Box{#field=7;constructor(get=()=>value,value=this.#field){this.get=get}}", options);
-    try checkCellsForOptions("class Box{#field=7;constructor(first=(()=>value)(),value=this.#field){}}", options);
-    try checkCellsForOptions("class Box{#field=7;constructor(first=(()=>{value=9})(),value=this.#field){}}", options);
-    try checkCellsForOptions("class Box{#field=7;constructor(get=()=>value,value=this.#field){var value=9;this.get=get}}", options);
-    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .use_define_for_class_fields = false, .experimental_decorators = true });
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;#read(){return this.#field}constructor(value=this.#read()){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;get #read(){return this.#field}constructor(value=this.#read){this.saved=value}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(get=()=>value,value=this.#field){this.get=get}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(first=(()=>value)(),value=this.#field){}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(first=(()=>{value=9})(),value=this.#field){}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(get=()=>value,value=this.#field){var value=9;this.get=get}}", options);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .use_define_for_class_fields = false, .experimental_decorators = true });
     // Transformer.init normalizes legacy decorators to assign semantics even
     // when the caller requested define semantics. Classify the actual options.
-    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .experimental_decorators = true });
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .experimental_decorators = true });
     try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true } });
-    try checkCellsForOptions("class Box{#field=7;static publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true } });
-    try checkCellsForOptions("class Box{#field=7;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true }, .experimental_decorators = true });
+    try checkClassSelectionWithOptions("class Box{#field=7;static publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true } }, 0, false);
+    try checkCellsForOptions("class Box{#field=7;publicField=1;constructor(value=this.#field){this.saved=value}}", .{ .unsupported = .{ .class_field = true }, .experimental_decorators = true });
     try checkCellsForOptions("class Box{accessor field=7;constructor(value=this.field){this.saved=value}}", .{ .unsupported = .{ .decorator_auto_accessor = true }, .use_define_for_class_fields = false });
 }
 
 test "native private initializer parameter cells require actual instance movement" {
     const options: Options = .{ .use_define_for_class_fields = false };
+    try checkClassSelectionWithOptions("class Box{#field=7;constructor(value=this.#field){}}", options, 0, false);
+    try checkClassSelectionWithOptions("class Box{#field=7;constructor(get=()=>value,value=this.#field){}}", .{ .experimental_decorators = true }, 0, false);
     try checkClassSelectionWithOptions("class Box{#field;constructor(value=this.#field){}}", options, 0, false);
     try checkClassSelectionWithOptions("class Box{static #field=7;constructor(value=1){}}", options, 0, false);
     try checkClassSelectionWithOptions("class Box{#read(){return 7}constructor(value=this.#read()){}}", options, 0, false);

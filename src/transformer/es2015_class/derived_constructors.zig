@@ -13,8 +13,15 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
     return struct {
         fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeSyntheticRef(self, "_this");
-            if (self.semantic_edit_enabled and self.capture_frame != 0)
+            if (self.semantic_edit_enabled and self.capture_frame != 0) {
                 try self.trackLexicalCaptureRef(ref, .none, .this_value);
+                if (self.active_derived_constructor_new_target) |owner| {
+                    if (owner.capture_frame == self.capture_frame) {
+                        const id = owner.this_symbol_id orelse @panic("derived initializer has no reserved this SID");
+                        if (self.getSymbolIdAt(ref) != @as(u32, @backingInt(id))) @panic("reserved derived capture lost its exact SID");
+                    }
+                }
+            }
             return ref;
         }
 
@@ -36,6 +43,11 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         /// 중첩 함수/클래스의 return은 별도 this 바인딩이므로 건드리지 않는다.
         pub fn transformDerivedConstructorReturns(self: *Transformer, idx: NodeIndex) Transformer.Error!void {
             if (idx.isNone()) return;
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.outputOwnedScope(idx)) |scope| self.current_scope = scope;
+            }
+            defer self.current_scope = saved_scope;
             const node = self.ast.getNode(idx);
 
             switch (node.tag) {
@@ -108,6 +120,14 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         pub fn postProcessDerivedConstructorBody(self: *Transformer, body: NodeIndex, param_stmts: []const NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const body_node = self.ast.getNode(body);
             if (body_node.tag != .block_statement) return body;
+            // The caller can pass a slice of scratch; field rebuilding and body
+            // assembly both grow it. Keep the authoritative fragment stable.
+            const stable_fields = try self.allocator.dupe(NodeIndex, instance_fields);
+            defer self.allocator.free(stable_fields);
+            var use_exact_sites = self.semantic_edit_enabled;
+            for (stable_fields) |field| {
+                if (self.ast.getNode(field).tag != .expression_statement) use_exact_sites = false;
+            }
 
             const stmts_list = body_node.data.list;
             // extra_data.items slice를 먼저 캡처하면, buildVarDecl 등이 extra_data를
@@ -138,8 +158,10 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, new_target_decl);
 
             // var _this; (초기화 없는 선언) — extra_data grow 가능
-            const this_capture = try self.buildVarDecl("_this", .none, span);
-            try self.bindLexicalCapture(this_capture, .this_value);
+            const this_capture = if (!new_target.this_declaration.isNone()) new_target.this_declaration else legacy: {
+                if (self.semantic_edit_enabled) @panic("derived constructor this declaration was not reserved");
+                break :legacy try self.buildVarDecl("_this", .none, span);
+            };
             try self.scratch.append(self.allocator, this_capture);
 
             // `arguments` captured by an arrow in a parameter default must
@@ -153,8 +175,8 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }
 
             for (param_stmts) |stmt| {
-                if (containsSuperCallAssignment(self, stmt)) {
-                    try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt, instance_fields, span));
+                if (!use_exact_sites and containsSuperCallAssignment(self, stmt)) {
+                    try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt, stable_fields, span));
                 } else {
                     try self.scratch.append(self.allocator, stmt);
                 }
@@ -164,8 +186,8 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             var stmts_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
             while (stmts_iter.next()) |stmt_idx| {
                 if (self.parameter_capture_statements.contains(@backingInt(stmt_idx))) continue;
-                if (containsSuperCallAssignment(self, stmt_idx)) {
-                    try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, instance_fields, span));
+                if (!use_exact_sites and containsSuperCallAssignment(self, stmt_idx)) {
+                    try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, stable_fields, span));
                 } else {
                     try self.scratch.append(self.allocator, stmt_idx);
                 }
@@ -179,11 +201,16 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }));
 
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            return self.ast.addNode(.{
+            const assembled = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = new_list },
             });
+            if (!use_exact_sites) return assembled;
+            const fields = try self.allocator.alloc(NodeIndex, stable_fields.len);
+            defer self.allocator.free(fields);
+            for (stable_fields, fields) |field, *normalized| normalized.* = try replaceThisWithThisAlias(self, field, span);
+            return self.insertLoweredSuperInitializers(assembled, fields);
         }
 
         fn appendInstanceFields(self: *Transformer, instance_fields: []const NodeIndex, span: Span) Transformer.Error!void {
@@ -588,7 +615,12 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, function_scope);
-            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            const args_ref = try self.makeNativeArgumentsRef(function_scope, function_scope, span);
+            if (self.semantic_edit_enabled) {
+                const id = self.getSymbolIdAt(args_ref) orelse @panic("default constructor arguments have no engine SID");
+                try @import("../native_constructor_guard.zig").recordReference(self, args_ref, @fromBackingInt(id), function_scope, .{ .read = true });
+                try @import("../native_constructor_timing.zig").registerPlacementOwner(self, function_scope);
+            }
             const new_target_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target_name_span);
             try self.addSyntheticRefInScope(new_target_ref, new_target_symbol, function_scope, .{ .read = true });
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);

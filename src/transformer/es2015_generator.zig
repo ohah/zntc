@@ -1018,7 +1018,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try extractClassHeaderYields(self, stmt_idx, ops, next_label)
                     else
                         stmt_idx;
-                    try appendVisitedStatement(self, target, ops, next_label);
+                    try appendVisitedStatement(self, try registeredClassAssignment(self, target, self.generator_operation_scope), ops, next_label);
                 },
                 else => try appendVisitedStatement(self, stmt_idx, ops, next_label),
             }
@@ -1108,11 +1108,38 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return node.tag == .variable_declaration and self.ast.variableDeclarationKind(node) == .@"var";
         }
 
+        /// The wrapper already owns this exact outer declaration binding.
+        /// Keep the class expression's separate inner self binding on its SID.
+        fn registeredClassAssignment(self: *Transformer, index: NodeIndex, inherited: ScopeId) Transformer.Error!NodeIndex {
+            const node = self.ast.getNode(index);
+            if (node.tag != .class_declaration or self.options.unsupported.class) return index;
+            const name = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.name);
+            if (name.isNone()) return index;
+            if (!isRegisteredGeneratorBinding(self, name)) try registerStateMachineBindings(self, &.{name});
+            if (!isRegisteredGeneratorBinding(self, name)) return index;
+            const class_scope = self.outputOwnedScope(index) orelse return index;
+            const origin = self.scope_owner_origins.get(@backingInt(index)) orelse @backingInt(index);
+            const self_id = self.class_self_symbol_map.get(@backingInt(index)) orelse self.class_self_symbol_map.get(origin) orelse std.debug.panic("collected class has no exact self SID", .{});
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            const inner_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbols[self_id].name);
+            _ = try self.bindClassSelfStorage(index, inner_binding, class_scope);
+            var slots: [8]u32 = undefined;
+            for (0..slots.len) |i| slots[i] = self.ast.extra_data.items[node.data.extra + i];
+            slots[ast_mod.ClassExtra.name] = @backingInt(inner_binding);
+            const expression = try self.ast.addNode(.{ .tag = .class_expression, .span = node.span, .data = .{ .extra = try self.ast.addExtras(&slots) } });
+            try self.remapCopiedScopeOwner(index, expression);
+            try self.class_self_symbol_map.put(self.allocator, @backingInt(expression), self_id);
+            const scope = if (inherited.isNone()) self.generator_state_machine_scope else inherited;
+            const target = try nativeAssignmentPattern(self, name, nativeWriteScope(self, scope), false);
+            return es_helpers.makeAssignStmt(self, target, expression, node.span, 0);
+        }
+
         fn rewriteNativeStateVars(self: *Transformer, index: NodeIndex, inherited: ScopeId) Transformer.Error!NodeIndex {
             if (index.isNone()) return index;
             var node = self.ast.getNode(index);
             const scope = self.outputOwnedScope(index) orelse inherited;
             switch (node.tag) {
+                .class_declaration => return registeredClassAssignment(self, index, inherited),
                 .variable_declaration => {
                     if (!isNativeSourceVar(self, index)) return index;
                     const expression = try nativeDeclarationExpression(self, index, nativeWriteScope(self, scope));
@@ -1369,6 +1396,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var_bindings.items,
                 call_scope,
                 generator_parent_scope,
+                false,
             );
             // `_loop` is an assignment inside the callback being built, but
             // that callback has no NodeIndex/ScopeId yet. Keep its exact owner
@@ -3473,7 +3501,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return null;
         }
 
-        fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
+        pub fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
             try self.ensureAnnexBVariableStorage(variable, true);
         }
 
@@ -3505,34 +3533,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// Implicit V belongs to its initial function environment, even when L
         /// was collected inside a nested loop helper. Bind once at that actual
         /// live function owner; never put V in each block/callback's storage.
-        fn appendStorageDeclarationToOwner(
-            self: *Transformer,
-            root: NodeIndex,
-            owners: std.AutoHashMapUnmanaged(u32, NodeIndex),
-            owner_scope: ScopeId,
-            declaration: NodeIndex,
-        ) Transformer.Error!void {
-            if (owner_scope == self.programScope()) {
-                const program = self.ast.getNode(root);
-                if (program.tag != .program) @panic("program Annex B storage has no live program owner");
-                const replacement = try self.appendStatementsToBody(root, &.{declaration});
-                // Preserve the root's stable NodeIndex: the caller keeps that
-                // index through the remaining transform/finalize passes.
-                self.ast.nodes.items[@backingInt(root)] = self.ast.getNode(replacement);
-                return;
-            }
-
-            const function = owners.get(@backingInt(owner_scope)) orelse @panic("Annex B storage lost its owning function");
-            const node = self.ast.getNode(function);
-            const body_slot: u32 = if (node.tag == .arrow_function_expression) 1 else 2;
-            const body = self.readNodeIdx(node.data.extra, body_slot);
-            const body_node = self.ast.getNode(body);
-            if (body_node.tag != .block_statement and body_node.tag != .function_body)
-                @panic("Annex B storage has no actual function body");
-            const replacement = try self.appendStatementsToBody(body, &.{declaration});
-            self.ast.extra_data.items[node.data.extra + body_slot] = @backingInt(replacement);
-        }
-
         pub fn appendAnnexBVariableStorage(self: *Transformer, root: NodeIndex) Transformer.Error!void {
             if (!self.semantic_edit_enabled or self.semantic_editor == null) return;
             const editor = &self.semantic_editor.?;
@@ -3541,7 +3541,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 has_fdi = true;
                 break;
             };
-            if (!has_fdi and self.generator_annex_b_var_bindings.count() == 0 and self.annex_b_loop_setters.count() == 0) return;
+            if (!has_fdi and self.generator_annex_b_var_bindings.count() == 0 and self.loop_annex_b_setters.count() == 0) return;
             var owners: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
             defer owners.deinit(self.allocator);
             var parameter_owners: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
@@ -3558,6 +3558,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const node = self.ast.getNode(index);
                 const scope = self.outputOwnedScope(index) orelse work.scope;
                 switch (node.tag) {
+                    .program => {
+                        if (scope != self.programScope()) @panic("Annex B program storage changed owner");
+                        try owners.put(self.allocator, @backingInt(scope), index);
+                    },
                     .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {
                         const slot = try owners.getOrPut(self.allocator, @backingInt(scope));
                         if (slot.found_existing and slot.value_ptr.* != index) @panic("entry storage has ambiguous live function owner");
@@ -3631,24 +3635,57 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var bindings = self.generator_annex_b_var_bindings.iterator();
             while (bindings.next()) |entry| {
                 const symbol = editor.symbols.items[entry.key_ptr.*];
-                const owner_node = if (symbol.scope_id == self.programScope()) self.ast.getNode(root) else self.ast.getNode(
-                    owners.get(@backingInt(symbol.scope_id)) orelse @panic("entry var lost its owning function"),
-                );
-                const declarator = try es_helpers.makeDeclarator(self, entry.value_ptr.*, .none, owner_node.span);
-                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", owner_node.span);
-                try appendStorageDeclarationToOwner(self, root, owners, symbol.scope_id, declaration);
+                const function = owners.get(@backingInt(symbol.scope_id)) orelse @panic("entry var lost its owning function");
+                const node = self.ast.getNode(function);
+                const declarator = try es_helpers.makeDeclarator(self, entry.value_ptr.*, .none, node.span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                try prependAnnexBStorage(self, function, declaration);
             }
-            var setters = self.annex_b_loop_setters.iterator();
+            self.generator_annex_b_var_bindings.clearRetainingCapacity();
+            var setters = self.loop_annex_b_setters.iterator();
             while (setters.next()) |entry| {
-                const symbol = editor.symbols.items[entry.key_ptr.*];
-                try appendStorageDeclarationToOwner(self, root, owners, symbol.scope_id, entry.value_ptr.*);
+                const setter = entry.value_ptr.*;
+                const variable = entry.key_ptr.*;
+                if (variable >= editor.symbols.items.len or @backingInt(setter.symbol) >= editor.symbols.items.len or
+                    editor.symbols.items[variable].scope_id != setter.owner or
+                    editor.symbols.items[@backingInt(setter.symbol)].scope_id != setter.owner or
+                    self.getSymbolIdAt(setter.binding) != @as(?u32, @backingInt(setter.symbol)) or
+                    self.ast.getNode(setter.value).tag != .function_expression) @panic("Annex B setter lost its actual owner or identity");
+                const function_scope = self.outputOwnedScope(setter.value) orelse @panic("Annex B setter has no actual function owner");
+                if (editor.scopes.items[function_scope.toIndex()].parent != setter.owner) @panic("Annex B setter moved into a foreign frame");
+                const owner = owners.get(@backingInt(setter.owner)) orelse @panic("Annex B setter lost its live outer owner");
+                const declarator = try es_helpers.makeDeclarator(self, setter.binding, setter.value, self.ast.getNode(owner).span);
+                const declaration = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", self.ast.getNode(owner).span);
+                try prependAnnexBStorage(self, owner, declaration);
+            }
+            self.loop_annex_b_setters.clearRetainingCapacity();
+        }
+
+        fn prependAnnexBStorage(self: *Transformer, owner: NodeIndex, declaration: NodeIndex) Transformer.Error!void {
+            const node = self.ast.getNode(owner);
+            if (node.tag == .program) {
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.allocator);
+                try statements.append(self.allocator, declaration);
+                for (self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len]) |raw|
+                    try statements.append(self.allocator, @fromBackingInt(raw));
+                const list = try self.ast.addNodeList(statements.items);
+                self.ast.nodes.items[@backingInt(owner)].data.list = list;
+                self.generator_function_coordinate_program_changed = true;
+            } else {
+                const body_slot: u32 = if (node.tag == .arrow_function_expression) 1 else 2;
+                const body = self.readNodeIdx(node.data.extra, body_slot);
+                const body_node = self.ast.getNode(body);
+                if (body_node.tag != .block_statement and body_node.tag != .function_body) @panic("entry var has no actual function body");
+                const replacement = try self.prependStatementsToBody(body, &.{declaration});
+                self.ast.extra_data.items[node.data.extra + body_slot] = @backingInt(replacement);
             }
         }
 
         /// Close the rewritten statement lists before the generic output
         /// validator runs. Identity and scope fields are never repaired here.
         pub fn projectFunctionStorageCoordinates(self: *Transformer, root: NodeIndex) Transformer.Error!void {
-            if ((!self.generator_function_storage_changed and self.generator_annex_b_var_bindings.count() == 0 and self.annex_b_loop_setters.count() == 0) or self.semantic_editor == null) return;
+            if (!self.generator_function_storage_changed or self.semantic_editor == null) return;
             const editor = &self.semantic_editor.?;
             // A program prefix/removal can shift statement coordinates for
             // references nested anywhere under a top-level statement. Keep
@@ -3658,24 +3695,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const original_root: NodeIndex = @fromBackingInt(@as(u32, @intCast(self.parser_node_count - 1)));
             const original = self.ast.getNode(original_root);
             const output = self.ast.getNode(root);
-            if (original.tag == .program and output.tag == .program) {
-                // This pass can add V and setter declarations at the end of a
-                // script program. Those append-only anchors do not shift any
-                // existing statement coordinate, so exclude them before
-                // deciding whether a broader program reindex is necessary.
-                var appended_program_storage: u32 = 0;
-                var annex_bindings = self.generator_annex_b_var_bindings.iterator();
-                while (annex_bindings.next()) |entry| if (editor.symbols.items[entry.key_ptr.*].scope_id == self.programScope()) {
-                    appended_program_storage += 1;
-                };
-                var annex_setters = self.annex_b_loop_setters.iterator();
-                while (annex_setters.next()) |entry| if (editor.symbols.items[entry.key_ptr.*].scope_id == self.programScope()) {
-                    appended_program_storage += 1;
-                };
-                if (output.data.list.len < appended_program_storage) @panic("program storage append count exceeds output statements");
-                if (original.data.list.len != output.data.list.len - appended_program_storage)
-                    self.generator_function_coordinate_program_changed = true;
-            }
+            if (original.tag == .program and output.tag == .program and original.data.list.len != output.data.list.len)
+                self.generator_function_coordinate_program_changed = true;
             // Public import/export/property spellings are not runtime reads,
             // even when their nodes carry the associated local SID.
             const value_nodes = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, root);
@@ -3685,43 +3706,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
                 @panic("generator storage has ambiguous statement containment");
             };
-            // Implicit Annex B V bindings are appended at the owning function
-            // body's end, so they do not shift existing statement rows. Their
-            // new declaration anchors still need their exact final coordinates.
-            var annex_bindings = self.generator_annex_b_var_bindings.iterator();
-            while (annex_bindings.next()) |entry| {
-                const binding_raw = @backingInt(entry.value_ptr.*);
-                if (binding_raw >= contexts.len or contexts[binding_raw] == null)
-                    @panic("implicit Annex B var storage has no final statement coordinates");
-                const context = contexts[binding_raw].?;
-                var found = false;
-                for (editor.references.items) |*reference| {
-                    if (@backingInt(reference.symbol_id) != entry.key_ptr.* or !reference.flags.declare or
-                        reference.declaration_node_index != entry.value_ptr.*) continue;
-                    reference.stmt_idx = context.stmt_idx;
-                    reference.scope_stmt_idx = context.scope_stmt_idx;
-                    found = true;
-                }
-                if (!found) @panic("implicit Annex B var storage lost its exact declaration row");
-            }
-            var setters = self.annex_b_loop_setters.iterator();
-            while (setters.next()) |entry| {
-                const declaration = entry.value_ptr.*;
-                const binding = self.readNodeIdx(self.ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
-                const symbol: SymbolId = @fromBackingInt(@intCast(self.getSymbolIdAt(binding) orelse @panic("ordinary loop Annex B setter lost its exact binding SymbolId")));
-                const binding_raw = @backingInt(binding);
-                if (binding_raw >= contexts.len or contexts[binding_raw] == null)
-                    @panic("ordinary loop Annex B setter has no final statement coordinates");
-                const context = contexts[binding_raw].?;
-                var found = false;
-                for (editor.references.items) |*reference| {
-                    if (reference.symbol_id != symbol or !reference.flags.declare or reference.declaration_node_index != binding) continue;
-                    reference.stmt_idx = context.stmt_idx;
-                    reference.scope_stmt_idx = context.scope_stmt_idx;
-                    found = true;
-                }
-                if (!found) @panic("ordinary loop Annex B setter lost its exact declaration row");
-            }
             var classes: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer classes.deinit(self.allocator);
             var class_ids = self.class_self_symbol_map.valueIterator();
@@ -3778,8 +3762,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     slot.value_ptr.* = value;
                 }
             }
-            self.generator_annex_b_var_bindings.clearRetainingCapacity();
-            self.annex_b_loop_setters.clearRetainingCapacity();
         }
 
         fn collectFunctionInitializers(self: *Transformer, list: NodeList, ops: *std.ArrayList(Operation)) Transformer.Error!bool {

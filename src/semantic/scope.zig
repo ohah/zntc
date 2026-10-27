@@ -43,11 +43,14 @@ pub const ScopeKind = enum(u8) {
     catch_clause,
     /// class body 스코프
     class_body,
+    /// A class static initialization block has its own var environment,
+    /// but no ordinary-function arguments/new.target binding.
+    class_static_block,
 
     /// var 호이스팅 경계인지 (var 선언이 이 스코프까지 끌어올려짐)
     pub fn isVarScope(self: ScopeKind) bool {
         return switch (self) {
-            .global, .function, .module => true,
+            .global, .function, .module, .class_static_block => true,
             .block, .switch_block, .catch_clause, .class_body => false,
         };
     }
@@ -107,7 +110,7 @@ pub fn enclosingExecUnit(scopes: []const Scope, start: ScopeId) ?u32 {
         if (idx >= scopes.len) return null;
         const sc = scopes[idx];
         switch (sc.kind) {
-            .global, .module, .function, .class_body => return idx,
+            .global, .module, .function, .class_body, .class_static_block => return idx,
             .block, .switch_block, .catch_clause => {},
         }
         if (sc.parent.isNone()) return idx; // 루트 도달 — 방어적으로 자기 자신을 단위로.

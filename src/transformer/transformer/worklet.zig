@@ -176,6 +176,16 @@ pub fn collectClosureVars(
     params: ast_mod.NodeList,
     func_name: ?[]const u8,
 ) Error![]const ClosureVar {
+    return collectClosureVarsAtOwner(self, body_idx, params, func_name, .none);
+}
+
+pub fn collectClosureVarsAtOwner(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    params: ast_mod.NodeList,
+    func_name: ?[]const u8,
+    function_owner: NodeIndex,
+) Error![]const ClosureVar {
     var locals: std.StringHashMapUnmanaged(void) = .empty;
     defer locals.deinit(self.allocator);
     var refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
@@ -202,9 +212,9 @@ pub fn collectClosureVars(
     //      동시에 `new X()` 형태의 callee identifier를 new_classes에 수집
     //      (disable_worklet_classes 옵션이면 수집 안 함).
     if (self.options.disable_worklet_classes) {
-        try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs);
+        try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, function_owner);
     } else {
-        try walkBodyForClosureAnalysisWithNew(self, body_idx, &locals, &refs, &new_classes);
+        try walkBodyForClosureAnalysisWithNew(self, body_idx, &locals, &refs, &new_classes, function_owner);
     }
 
     // 4. refs - locals - globals = closure vars
@@ -324,6 +334,7 @@ fn walkScopedBody(
     param_nodes: []const u32,
     outer_locals: *std.StringHashMapUnmanaged(void),
     outer_refs: *std.StringHashMapUnmanaged(NodeIndex),
+    function_owner: NodeIndex,
 ) Error!void {
     var inner_locals: std.StringHashMapUnmanaged(void) = .empty;
     defer inner_locals.deinit(self.allocator);
@@ -334,7 +345,7 @@ fn walkScopedBody(
 
     var inner_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
     defer inner_refs.deinit(self.allocator);
-    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs);
+    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, function_owner);
 
     var iter = inner_refs.iterator();
     while (iter.next()) |entry| {
@@ -386,9 +397,10 @@ fn walkBodyForClosureAnalysisWithNew(
     locals: *std.StringHashMapUnmanaged(void),
     refs: *std.StringHashMapUnmanaged(NodeIndex),
     new_classes: *std.StringHashMapUnmanaged(NodeIndex),
+    function_owner: NodeIndex,
 ) Error!void {
-    try collectNewExpressionCallees(self, idx, new_classes);
-    try walkBodyForClosureAnalysis(self, idx, locals, refs);
+    try collectNewExpressionCallees(self, idx, new_classes, function_owner);
+    try walkBodyForClosureAnalysis(self, idx, locals, refs, function_owner);
 }
 
 /// AST를 순회하며 `new <Identifier>(...)` 형태의 callee identifier를 수집.
@@ -397,6 +409,7 @@ fn collectNewExpressionCallees(
     self: *Transformer,
     idx: NodeIndex,
     new_classes: *std.StringHashMapUnmanaged(NodeIndex),
+    function_owner: NodeIndex,
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
@@ -414,6 +427,7 @@ fn collectNewExpressionCallees(
                 if (!callee_idx.isNone()) {
                     const callee = self.ast.getNode(callee_idx);
                     if (callee.tag == .identifier_reference) {
+                        if (@import("../worklet_class_clone.zig").ownsClosureClassReference(self, function_owner, callee_idx)) continue;
                         const name = self.ast.getText(callee.data.string_ref);
                         if (name.len > 0) {
                             new_classes.put(self.allocator, name, callee_idx) catch return error.OutOfMemory;
@@ -438,6 +452,7 @@ fn walkBodyForClosureAnalysis(
     idx: NodeIndex,
     locals: *std.StringHashMapUnmanaged(void),
     refs: *std.StringHashMapUnmanaged(NodeIndex),
+    function_owner: NodeIndex,
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
@@ -454,6 +469,7 @@ fn walkBodyForClosureAnalysis(
         switch (tag) {
             // 식별자 참조 수집
             .identifier_reference => {
+                if (@import("../worklet_class_clone.zig").ownsClosureClassReference(self, function_owner, cur)) continue;
                 const name = self.ast.getText(node.data.string_ref);
                 if (name.len > 0) {
                     refs.put(self.allocator, name, cur) catch return error.OutOfMemory;
@@ -486,7 +502,7 @@ fn walkBodyForClosureAnalysis(
                 }
                 var fn_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
                 defer fn_refs.deinit(self.allocator);
-                try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs);
+                try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, function_owner);
                 var fr_iter = fn_refs.iterator();
                 while (fr_iter.next()) |entry| {
                     if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
@@ -500,7 +516,7 @@ fn walkBodyForClosureAnalysis(
                 if (!self.ast.hasExtra(e, 2)) continue;
                 const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
                 if (body_idx.isNone()) continue;
-                try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs);
+                try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs, function_owner);
                 continue;
             },
             .method_definition => {
@@ -512,7 +528,7 @@ fn walkBodyForClosureAnalysis(
                 const p_start = plist.start;
                 const p_len = plist.len;
                 if (p_start + p_len <= self.ast.extra_data.items.len) {
-                    try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs);
+                    try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs, function_owner);
                 }
                 continue;
             },
@@ -679,6 +695,14 @@ pub fn buildWorkletPropertyAssignments(
     /// codegen의 scope hoisting rename이 자동 적용된다.
     func_node_idx: NodeIndex,
 ) Error![5]NodeIndex {
+    // Every emitted metadata expression belongs to this explicitly supplied
+    // output scope, including closure values and the function-binding reads.
+    // The visitor may still be inside the function whose declaration owns
+    // the metadata, so its current scope is not the expression's use scope.
+    const saved_scope = self.current_scope;
+    self.current_scope = metadata_scope;
+    defer self.current_scope = saved_scope;
+
     // 원본 함수의 binding_identifier span 사용 (scope hoisting rename 호환)
     const func_name_span = blk: {
         if (!func_node_idx.isNone()) {

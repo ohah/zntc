@@ -196,7 +196,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 defer children.deinit(self.allocator);
                 collectChildIndices(self, node, &children) catch return true;
                 for (children.items) |child_idx| {
-                    stack.append(self.allocator, .{ .idx = child_idx, .in_closure = in_closure }) catch return true;
+                    const outer = @import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(entry.idx), @backingInt(child_idx));
+                    const field_initializer = (node.tag == .property_definition or node.tag == .accessor_property) and
+                        self.ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init) == child_idx;
+                    stack.append(self.allocator, .{ .idx = child_idx, .in_closure = if (outer) entry.in_closure else in_closure or field_initializer }) catch return true;
                 }
             }
             return false;
@@ -315,6 +318,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 switch (node.tag) {
                     .variable_declaration => {
                         if (ctx.self.ast.hasExtra(node.data.extra, 3) and ctx.self.ast.variableDeclarationKind(node).isLexical()) ctx.pushDeclarators(node);
+                        return .descend;
+                    },
+                    .ts_enum_declaration => {
+                        // A runtime enum has source lexical storage even before
+                        // its actual outer declaration is spliced into the list.
+                        if ((ctx.self.readU32(node.data.extra, ast_mod.EnumExtra.flags) & 2) == 0) {
+                            const name = ctx.self.readNodeIdx(node.data.extra, ast_mod.EnumExtra.name);
+                            if (!name.isNone() and ctx.self.ast.getNode(name).tag == .binding_identifier) ctx.push(name);
+                        }
                         return .descend;
                     },
                     .class_declaration => {
@@ -549,11 +561,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 있으면 합성된 `_loop` 함수도 async 로 emit + 호출부 `await _loop(x)` wrap
         /// 필요 — `_loop` 가 새 function scope 라 enclosing async-ness 가 끊기기 때문.
         pub fn hasAwaitExpression(self: *Transformer, body_idx: NodeIndex) bool {
-            return anyMatchInsideClosure(self, body_idx, {}, struct {
-                fn visit(_: void, node: Node, in_closure: bool) bool {
-                    return !in_closure and node.tag == .await_expression;
-                }
-            }.visit);
+            return @import("loop_await_driver.zig").hasSuspension(self, body_idx, .await_expression) catch true;
         }
 
         /// loop body 를 `_loop` 함수로 추출할 때 원래 body 의 lexical `this` /
@@ -561,46 +569,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// `this` 를 가지므로 경계에서 멈추고, arrow function 은 outer `this` 를
         /// 캡처하므로 계속 탐색한다.
         pub fn hasLexicalThisReference(self: *Transformer, body_idx: NodeIndex) bool {
-            if (body_idx.isNone()) return false;
-            // 트랜스포머가 만든 노드도 본다(#4722). 예전엔 파서 노드만 봤는데, 바깥 루프 추출이
-            // 본문을 재작성하면 안쪽 루프가 새 노드가 되어 캡처를 못 보는 false negative 가
-            // 났다(가드 도입 당시 TODO 로 남아 있던 문제). 레이아웃은 comptime 표로 검증된다.
-            const max_node: usize = self.ast.nodes.items.len;
-
-            var stack: std.ArrayList(NodeIndex) = .empty;
-            defer stack.deinit(self.allocator);
-            stack.append(self.allocator, body_idx) catch return true;
-
-            while (stack.items.len > 0) {
-                const idx = stack.pop() orelse break;
-                if (idx.isNone()) continue;
-                if (@backingInt(idx) >= max_node) continue;
-                const node = self.ast.getNode(idx);
-
-                switch (node.tag) {
-                    .this_expression,
-                    .super_expression,
-                    => return true,
-
-                    .function_expression,
-                    .function_declaration,
-                    .function,
-                    .method_definition,
-                    .class_expression,
-                    .class_declaration,
-                    => continue,
-
-                    else => {},
-                }
-
-                var children: std.ArrayList(NodeIndex) = .empty;
-                defer children.deinit(self.allocator);
-                collectChildIndices(self, node, &children) catch return true;
-                for (children.items) |child_idx| {
-                    stack.append(self.allocator, child_idx) catch return true;
-                }
-            }
-            return false;
+            const captures = @import("es2015_arrow.zig").ES2015Arrow(Transformer).lexicalCaptures(self, body_idx) catch return true;
+            return captures.this_value or captures.super_value;
         }
 
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
@@ -650,6 +620,51 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 반환: { .loop_fn_decl, .call_stmt } — 호출부에서 조립.
         // Only the actual extracted body moves here. The source loop header and
         // its callsite retain their original owner outside the new function.
+        /// Transfer actual body var storage when its implementation function
+        /// is created. Source vars intentionally shared outside were removed by
+        /// hoistVarsOutOfBody; nested functions/classes own their declarations.
+        fn bindExtractedBodyVarStorage(self: *Transformer, body: NodeIndex, owner: ScopeId) Transformer.Error!void {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, body);
+            while (stack.pop()) |idx| {
+                if (idx.isNone()) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                    .variable_declaration => {
+                        if (self.ast.variableDeclarationKind(node) == .@"var") {
+                            var declared: std.ArrayList(NodeIndex) = .empty;
+                            defer declared.deinit(self.allocator);
+                            const start = self.readU32(node.data.extra, 1);
+                            const len = self.readU32(node.data.extra, 2);
+                            for (0..len) |i| {
+                                const declarator = self.ast.getNode(@fromBackingInt(self.ast.extra_data.items[start + i]));
+                                try collectBindingNodes(self, self.ast.readExtraNode(declarator.data.extra, 0), &declared);
+                            }
+                            for (declared.items) |binding| {
+                                const id = self.getSymbolIdAt(binding) orelse std.debug.panic("extracted body var has no producer SID: node={d} name={s}", .{ @backingInt(binding), self.ast.getText(self.ast.getNode(binding).span) });
+                                const existing = self.semantic_editor.?.symbols.items[id];
+                                if (existing.annex_b_alias.state != .lowered or existing.annex_b_alias.variable.isNone() or existing.scope_id != owner)
+                                    try self.relocateOutputSymbolAs(id, owner, binding);
+                                const symbol = &self.semantic_editor.?.symbols.items[id];
+                                symbol.kind = .variable_var;
+                                symbol.decl_flags = symbol.kind.declFlags();
+                                var planned = self.retained_loop_key_cells.valueIterator();
+                                while (planned.next()) |cells| for (cells.*) |*cell| {
+                                    if (cell.capture.symbol_id != null and @backingInt(cell.capture.symbol_id.?) == id)
+                                        cell.capture.owner_scope = owner;
+                                };
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+        }
+
         fn prepareExtractedGeneratorBody(self: *Transformer, body: NodeIndex, source: ScopeId, target: ScopeId, headers: []const u32, parameters: []const u32) Transformer.Error!void {
             try self.reparentGeneratedBodyScopes(source, target, body);
             var stack: std.ArrayList(NodeIndex) = .empty;
@@ -688,342 +703,395 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
         }
 
-        const LoopAnnexBDeclaration = struct {
-            node: NodeIndex,
-            lexical: SymbolId,
-            variable: SymbolId,
-            source_assignment_count: u32,
-        };
-
-        /// Ordinary loop extraction creates a function boundary that native
-        /// Annex B did not have. Keep each block function's exact lexical L
-        /// identity and materialize its exact outer var V assignment.
-        fn collectLoopAnnexBDeclarations(
-            self: *Transformer,
-            root: NodeIndex,
-            out: *std.ArrayList(LoopAnnexBDeclaration),
-        ) Transformer.Error!void {
-            if (!self.semantic_edit_enabled or root.isNone()) return;
-            const annex = @import("../semantic/annex_b_function.zig");
-            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-            var stack: std.ArrayList(NodeIndex) = .empty;
-            defer stack.deinit(self.allocator);
-            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            defer seen.deinit(self.allocator);
-            try stack.append(self.allocator, root);
-            while (stack.pop()) |index| {
-                if (index.isNone() or @backingInt(index) >= self.ast.nodes.items.len) continue;
-                if (seen.contains(@backingInt(index))) continue;
-                try seen.put(self.allocator, @backingInt(index), {});
-                const node = self.ast.getNode(index);
-                if (node.tag == .function_declaration) {
-                    const name = self.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.name);
-                    if (!name.isNone()) if (self.getSymbolIdAt(name)) |raw| {
-                        const lexical: SymbolId = @fromBackingInt(raw);
-                        const role = (annex.forSymbol(symbols, lexical) catch
-                            @panic("ordinary loop function has invalid initial Annex B identity")) orelse {
-                            continue;
+        fn replaceAnnexBlockEdge(self: *Transformer, parent: NodeIndex, old: NodeIndex, next: NodeIndex) void {
+            const node = self.ast.getNode(parent);
+            var matches: usize = 0;
+            switch (Tag.dataKind(node.tag)) {
+                .leaf => {},
+                .unary => if (node.data.unary.operand == old) {
+                    self.ast.nodes.items[@backingInt(parent)].data.unary.operand = next;
+                    matches += 1;
+                },
+                .binary => {
+                    if (node.data.binary.left == old) {
+                        self.ast.nodes.items[@backingInt(parent)].data.binary.left = next;
+                        matches += 1;
+                    }
+                    if (node.data.binary.right == old) {
+                        self.ast.nodes.items[@backingInt(parent)].data.binary.right = next;
+                        matches += 1;
+                    }
+                },
+                .ternary => {
+                    if (node.data.ternary.a == old) {
+                        self.ast.nodes.items[@backingInt(parent)].data.ternary.a = next;
+                        matches += 1;
+                    }
+                    if (node.data.ternary.b == old) {
+                        self.ast.nodes.items[@backingInt(parent)].data.ternary.b = next;
+                        matches += 1;
+                    }
+                    if (node.data.ternary.c == old) {
+                        self.ast.nodes.items[@backingInt(parent)].data.ternary.c = next;
+                        matches += 1;
+                    }
+                },
+                .list => for (node.data.list.start..node.data.list.start + node.data.list.len) |slot| {
+                    if (self.ast.extra_data.items[slot] == @backingInt(old)) {
+                        self.ast.extra_data.items[slot] = @backingInt(next);
+                        matches += 1;
+                    }
+                },
+                .extra => {
+                    for (Tag.extraChildOffsets(node.tag)) |off| {
+                        const slot = node.data.extra + off;
+                        if (self.ast.extra_data.items[slot] == @backingInt(old)) {
+                            self.ast.extra_data.items[slot] = @backingInt(next);
+                            matches += 1;
+                        }
+                    }
+                    for (Tag.extraListOffsets(node.tag)) |offsets| {
+                        const start = self.ast.extra_data.items[node.data.extra + offsets[0]];
+                        const len = self.ast.extra_data.items[node.data.extra + offsets[1]];
+                        for (start..start + len) |slot| if (self.ast.extra_data.items[slot] == @backingInt(old)) {
+                            self.ast.extra_data.items[slot] = @backingInt(next);
+                            matches += 1;
                         };
-                        if (role.state != .native) @panic("ordinary loop encountered an already-lowered Annex B declaration");
-                        try out.append(self.allocator, .{
-                            .node = index,
-                            .lexical = role.lexical,
-                            .variable = role.variable,
-                            .source_assignment_count = role.source_assignment_count,
-                        });
-                    };
-                    // The function body has its own declaration environment.
+                    }
+                },
+            }
+            if (matches != 1) @panic("Annex B carrier has no unique actual parent edge");
+        }
+
+        fn annexEmptyCompletion(self: *Transformer, value: NodeIndex, owner: ScopeId, span: Span) Transformer.Error!NodeIndex {
+            const name = try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex_done", &self.block_rename_counter, owner);
+            const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+            _ = try self.declareSyntheticInScope(binding, span, .variable_var, owner);
+            const declarator = try es_helpers.makeDeclarator(self, binding, value, span);
+            return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
+        }
+
+        fn annexSetter(self: *Transformer, variable: SymbolId, span: Span) Transformer.Error!SymbolId {
+            if (self.loop_annex_b_setters.get(@backingInt(variable))) |known| return known.symbol;
+            const original = self.semantic_editor.?.symbols.items[@backingInt(variable)];
+            const owner = original.scope_id;
+            const name = try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex_set", &self.block_rename_counter, owner);
+            const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+            const id = (try self.declareSyntheticInScope(binding, span, .variable_var, owner)).?;
+            const parameter_name = try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex_value", &self.block_rename_counter, owner);
+            const parameter = try es_helpers.makeExactSyntheticBinding(self, parameter_name);
+            const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{parameter}), span);
+            const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const function = try self.addExtraNode(.function_expression, span, &.{ @backingInt(NodeIndex.none), @backingInt(params), @backingInt(body), 0, @backingInt(NodeIndex.none) });
+            const scope = try self.addGeneratedFunctionScope(owner, function);
+            const value_id = (try self.declareSyntheticInScope(parameter, span, .parameter, scope)).?;
+            const target = try self.makeSyntheticRefForSymbol(variable, scope, .{ .write = true });
+            self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(if (original.synthetic_name.len > 0) original.synthetic_name else self.ast.getText(original.name));
+            const value = try es_helpers.makeIdentifierRefFromSpan(self, try self.ast.addString(parameter_name));
+            try self.addSyntheticRefInScope(value, value_id, scope, .{ .read = true });
+            try self.trackExactOutputReference(target, @backingInt(variable));
+            try self.trackExactOutputRead(value, @backingInt(value_id));
+            const assignment = try es_helpers.makeAssignStmt(self, target, value, span, 0);
+            const statements = try self.ast.addNodeList(&.{assignment});
+            self.ast.nodes.items[@backingInt(body)].data.list = statements;
+            try self.loop_annex_b_setters.put(self.allocator, @backingInt(variable), .{ .binding = binding, .value = function, .symbol = id, .owner = owner });
+            self.generator_function_storage_changed = true;
+            try self.generator_function_storage_scopes.put(self.allocator, @backingInt(owner), {});
+            return id;
+        }
+
+        const AnnexCatch = struct { wrapper: NodeIndex, handler: NodeIndex, entry_parent: NodeIndex, scope: ScopeId, binding: NodeIndex };
+        fn annexCatch(self: *Transformer, block: NodeIndex, lexical_scope: ScopeId, lexical: SymbolId, name: []const u8, callback: ScopeId) Transformer.Error!AnnexCatch {
+            const span = self.ast.getNode(block).span;
+            const parent = self.semantic_editor.?.scopes.items[lexical_scope.toIndex()].parent;
+            const wrapper = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const outer = try self.addGeneratedScope(parent, wrapper, .block);
+            const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+            const is_switch = self.ast.getNode(block).tag == .switch_statement;
+            const handler_body = if (is_switch) try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{block}) } }) else block;
+            const handler = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = binding, .right = handler_body, .flags = 0 } } });
+            const scope = try self.addGeneratedScope(outer, handler, .catch_clause);
+            const handler_body_scope = if (is_switch) try self.addGeneratedScope(scope, handler_body, .block) else scope;
+            var discriminant_declaration: NodeIndex = .none;
+            if (is_switch) {
+                // Discriminant evaluation belongs outside the fresh lexical
+                // function environment, before switch declaration instantiation.
+                const extra = self.ast.getNode(block).data.extra;
+                const discriminant = self.ast.readExtraNode(extra, 0);
+                try prepareExtractedGeneratorBody(self, discriminant, parent, outer, &.{}, &.{});
+                const temp_name = try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex_switch", &self.block_rename_counter, outer);
+                const temp_binding = try es_helpers.makeExactSyntheticBinding(self, temp_name);
+                const temp_id = (try self.declareSyntheticInScope(temp_binding, span, .variable_var, callback)).?;
+                discriminant_declaration = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, temp_binding, discriminant, span)}, .@"var", span);
+                const read = try self.makeSyntheticRefForSymbol(temp_id, handler_body_scope, .{ .read = true });
+                self.ast.nodes.items[@backingInt(read)].data.string_ref = try self.ast.addString(temp_name);
+                try self.trackExactOutputRead(read, @backingInt(temp_id));
+                self.ast.extra_data.items[extra] = @backingInt(read);
+            }
+            const nil = try es_helpers.makeNullLiteral(self);
+            const thrown = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = nil, .flags = 0 } } });
+            const try_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{thrown}) } });
+            _ = try self.addGeneratedScope(outer, try_body, .block);
+            const statement = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = try_body, .b = handler, .c = .none } } });
+            const list = try self.ast.addNodeList(if (discriminant_declaration.isNone()) &.{statement} else &.{ discriminant_declaration, statement });
+            self.ast.nodes.items[@backingInt(wrapper)].data.list = list;
+            const editor = &self.semantic_editor.?;
+            editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval;
+            editor.scopes.items[scope.toIndex()].subtree_has_with = editor.scopes.items[lexical_scope.toIndex()].subtree_has_with;
+            editor.reparentScope(lexical_scope, handler_body_scope) catch @panic("Annex B source block lost its exact catch parent");
+            editor.relocateSymbolAsPreservingAnchors(lexical, scope, binding) catch @panic("Annex B catch binding changed identity");
+            editor.symbols.items[@backingInt(lexical)].kind = .catch_binding;
+            editor.symbols.items[@backingInt(lexical)].decl_flags = @import("../semantic/symbol.zig").SymbolKind.catch_binding.declFlags();
+            editor.symbols.items[@backingInt(lexical)].annex_b_alias.state = .lowered_catch;
+            editor.ensureDeclarationAtNode(lexical, scope, binding) catch @panic("Annex B catch declaration birth failed");
+            if (self.symbol_ids.items.len <= @backingInt(binding)) try self.symbol_ids.appendNTimes(self.allocator, null, @backingInt(binding) + 1 - self.symbol_ids.items.len);
+            self.symbol_ids.items[@backingInt(binding)] = @backingInt(lexical);
+            return .{ .wrapper = wrapper, .handler = handler, .entry_parent = if (is_switch) handler_body else handler, .scope = scope, .binding = binding };
+        }
+
+        // Called after the actual ordinary extraction callback owns
+        // its ScopeId, before bindExtractedBodyVarStorage. No name chooses an ID.
+        fn lowerExtractedNativeAnnexB(self: *Transformer, body: NodeIndex, source_scope: ScopeId, callback: ScopeId) Transformer.Error!NodeIndex {
+            if (!self.semantic_edit_enabled or self.semantic_editor == null) return body;
+            var output_body = body;
+            const annex = @import("../semantic/annex_b_function.zig");
+            const Group = struct {
+                lexical: SymbolId,
+                variable: SymbolId,
+                block: NodeIndex,
+                parent: NodeIndex,
+                lexical_scope: ScopeId,
+                declarations: std.ArrayList(NodeIndex) = .empty,
+                output_name: []const u8 = "",
+            };
+            const Work = struct { node: NodeIndex, parent: NodeIndex, scope: ScopeId, block: NodeIndex, block_parent: NodeIndex };
+            var groups: std.ArrayList(Group) = .empty;
+            defer {
+                for (groups.items) |*group| group.declarations.deinit(self.allocator);
+                groups.deinit(self.allocator);
+            }
+            var declaration_parents: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
+            defer declaration_parents.deinit(self.allocator);
+            var by_symbol: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+            defer by_symbol.deinit(self.allocator);
+            var stack: std.ArrayList(Work) = .empty;
+            defer stack.deinit(self.allocator);
+            try stack.append(self.allocator, .{ .node = body, .parent = .none, .scope = callback, .block = .none, .block_parent = .none });
+            while (stack.pop()) |work| {
+                if (work.node.isNone()) continue;
+                const node = self.ast.getNode(work.node);
+                if (node.tag == .function_declaration) {
+                    const role = (annex.forDeclaration(self.ast, self.symbol_ids.items, self.semantic_editor.?.symbols.items, work.node) catch
+                        @panic("extracted block function lost its typed Annex B pair")) orelse continue;
+                    if (role.state != .native) continue;
+                    const lexical_scope = self.semantic_editor.?.symbols.items[@backingInt(role.lexical)].scope_id;
+                    if (work.block.isNone() or lexical_scope != work.scope)
+                        @panic("extracted Annex B declaration has no exact lexical entry owner");
+                    const slot = try by_symbol.getOrPut(self.allocator, @backingInt(role.lexical));
+                    if (!slot.found_existing) {
+                        slot.value_ptr.* = groups.items.len;
+                        try groups.append(self.allocator, .{ .lexical = role.lexical, .variable = role.variable, .block = work.block, .parent = work.block_parent, .lexical_scope = lexical_scope });
+                    }
+                    const group = &groups.items[slot.value_ptr.*];
+                    if (group.variable != role.variable or group.block != work.block or group.lexical_scope != lexical_scope)
+                        @panic("extracted Annex B group changed its source owner");
+                    try declaration_parents.put(self.allocator, @backingInt(work.node), work.parent);
+                    try group.declarations.append(self.allocator, work.node);
                     continue;
                 }
-                if (isFunctionBoundary(node.tag)) continue;
-                var children = ast_walk.children(self.ast, node);
-                while (children.next()) |child| try stack.append(self.allocator, child);
-            }
-        }
-
-        fn loopAnnexBDeclarationForNode(
-            declarations: []const LoopAnnexBDeclaration,
-            node: NodeIndex,
-        ) ?LoopAnnexBDeclaration {
-            for (declarations) |declaration| if (declaration.node == node) return declaration;
-            return null;
-        }
-
-        fn directLoopAnnexBFunction(self: *Transformer, statement: NodeIndex) ?NodeIndex {
-            var current = statement;
-            while (!current.isNone()) {
-                const node = self.ast.getNode(current);
-                if (node.tag == .function_declaration) return current;
-                if (node.tag != .labeled_statement) return null;
-                current = node.data.binary.right;
-            }
-            return null;
-        }
-
-        fn ensureLoopAnnexBSetter(self: *Transformer, variable: SymbolId, span: Span) Transformer.Error!void {
-            if (self.annex_b_loop_setters.contains(@backingInt(variable))) return;
-            const editor = if (self.semantic_editor) |*existing| existing else @panic("ordinary loop Annex B setter has no semantic editor");
-            if (@backingInt(variable) >= editor.symbols.items.len)
-                @panic("ordinary loop Annex B setter has an invalid V identity");
-            const value = editor.symbols.items[@backingInt(variable)];
-            const owner_scope = value.scope_id;
-            if (owner_scope.isNone() or (value.kind != .variable_var and value.kind != .function_decl))
-                @panic("ordinary loop Annex B setter has no exact var owner");
-
-            const setter_name = try self.buildUniqueNameAvoidingDynamicEval(
-                "__zntc_annexb_set",
-                &self.annex_b_setter_counter,
-                owner_scope,
-            );
-            const setter_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, try self.ast.addString(setter_name));
-            _ = try self.declareSyntheticInScope(setter_binding, span, .function_decl, owner_scope) orelse
-                @panic("ordinary loop Annex B setter lost its exact SymbolId");
-
-            const param_name = try self.buildUniqueNameAvoidingDynamicEval(
-                "__zntc_annexb_value",
-                &self.annex_b_setter_param_counter,
-                owner_scope,
-            );
-            const param_name_span = try self.ast.addString(param_name);
-            const param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, param_name_span);
-            const none = @backingInt(NodeIndex.none);
-            const formal = try self.ast.addNode(.{
-                .tag = .formal_parameter,
-                .span = param_name_span,
-                .data = .{ .extra = try self.ast.addExtras(&.{
-                    @backingInt(param_binding), none, none, 0, 0, 0,
-                }) },
-            });
-            const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{formal}), span);
-            const function_scope = try self.reserveGeneratedFunctionScope(owner_scope);
-            const target = try es_helpers.makeExactUserWriteTargetAtScope(
-                self,
-                variable,
-                function_scope,
-                span,
-            );
-            const param_ref = try es_helpers.makeIdentifierRefFromSpan(self, param_name_span);
-            const assignment = try es_helpers.makeAssignStmt(self, target, param_ref, span, 0);
-            const body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = try self.ast.addNodeList(&.{assignment}) },
-            });
-            const declaration = try self.addExtraNode(.function_declaration, span, &.{
-                @backingInt(setter_binding), @backingInt(params), @backingInt(body), 0, none,
-            });
-            try self.bindReservedFunctionOwner(function_scope, declaration);
-            const param_symbol = try self.declareSyntheticInScope(param_binding, span, .parameter, function_scope) orelse
-                @panic("ordinary loop Annex B setter parameter lost its exact SymbolId");
-            try self.addSyntheticRefInScope(param_ref, param_symbol, function_scope, .{ .read = true });
-            try self.annex_b_loop_setters.put(self.allocator, @backingInt(variable), declaration);
-            try self.generator_function_storage_scopes.put(self.allocator, @backingInt(function_scope), {});
-            self.generator_function_storage_changed = true;
-        }
-
-        fn makeLoopAnnexBAlias(self: *Transformer, declaration: LoopAnnexBDeclaration) Transformer.Error!NodeIndex {
-            const editor = if (self.semantic_editor) |*existing| existing else @panic("ordinary loop Annex B alias has no semantic editor");
-            const role = (@import("../semantic/annex_b_function.zig").forSymbol(
-                editor.symbols.items,
-                declaration.lexical,
-            ) catch @panic("ordinary loop Annex B role became invalid")) orelse
-                @panic("ordinary loop Annex B role disappeared");
-            if (role.variable != declaration.variable or role.state != .lowered)
-                @panic("ordinary loop Annex B alias changed exact identity");
-            const lexical = editor.symbols.items[@backingInt(role.lexical)];
-            const scope = lexical.scope_id;
-            if (scope.isNone()) @panic("ordinary loop Annex B alias has no lexical output scope");
-            const setter = self.annex_b_loop_setters.get(@backingInt(role.variable)) orelse
-                @panic("ordinary loop Annex B declaration has no V setter");
-            const setter_name = self.readNodeIdx(self.ast.getNode(setter).data.extra, ast_mod.FunctionExtra.name);
-            if (setter_name.isNone()) @panic("ordinary loop Annex B setter has no binding");
-            const setter_symbol = self.getSymbolIdAt(setter_name) orelse @panic("ordinary loop Annex B setter lost its SymbolId");
-            const lexical_name = try self.ast.addString(if (lexical.synthetic_name.len > 0) lexical.synthetic_name else self.ast.getText(lexical.name));
-            const span = self.ast.getNode(declaration.node).span;
-            const setter_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, self.ast.getNode(setter_name).data.string_ref);
-            const value = try es_helpers.makeIdentifierRefFromSpan(self, lexical_name);
-            try self.addSyntheticRefInScope(setter_ref, @fromBackingInt(@intCast(setter_symbol)), scope, .{ .read = true });
-            try self.addSyntheticRefInScope(value, role.lexical, scope, .{ .read = true });
-            try self.trackExactOutputRead(setter_ref, setter_symbol);
-            try self.trackExactOutputRead(value, @backingInt(role.lexical));
-            return es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, setter_ref, &.{value}, span), span);
-        }
-
-        fn appendLoopAnnexBAlias(
-            self: *Transformer,
-            out: *std.ArrayList(NodeIndex),
-            declarations: []const LoopAnnexBDeclaration,
-            function: NodeIndex,
-            inserted: *u32,
-        ) Transformer.Error!void {
-            const declaration = loopAnnexBDeclarationForNode(declarations, function) orelse return;
-            try out.append(self.allocator, try makeLoopAnnexBAlias(self, declaration));
-            inserted.* += 1;
-        }
-
-        fn rewriteLoopAnnexBChild(
-            self: *Transformer,
-            child: NodeIndex,
-            declarations: []const LoopAnnexBDeclaration,
-            inserted: *u32,
-        ) Transformer.Error!NodeIndex {
-            const direct = directLoopAnnexBFunction(self, child);
-            const rewritten = try rewriteLoopAnnexBStatement(self, child, declarations, inserted);
-            if (direct) |function| {
-                if (loopAnnexBDeclarationForNode(declarations, function)) |declaration| {
-                    const alias = try makeLoopAnnexBAlias(self, declaration);
-                    inserted.* += 1;
-                    return self.ast.addNode(.{
-                        .tag = .block_statement,
-                        .span = self.ast.getNode(child).span,
-                        .data = .{ .list = try self.ast.addNodeList(&.{ rewritten, alias }) },
-                    });
+                if (isFunctionBoundary(node.tag) or node.tag == .class_declaration or node.tag == .class_expression) continue;
+                const scope = self.outputOwnedScope(work.node) orelse work.scope;
+                const is_block = node.tag == .block_statement or node.tag == .function_body or node.tag == .switch_statement;
+                const block = if (is_block) work.node else work.block;
+                const block_parent = if (is_block) work.parent else work.block_parent;
+                // Reverse the child push, preserving source-order declaration
+                // instantiation (including duplicate last-declaration semantics).
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                var it = ast_walk.children(self.ast, node);
+                while (it.next()) |child| try children.append(self.allocator, child);
+                var i = children.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try stack.append(self.allocator, .{ .node = children.items[i], .parent = work.node, .scope = scope, .block = block, .block_parent = block_parent });
                 }
             }
-            return rewritten;
-        }
-
-        fn rewriteLoopAnnexBAliases(
-            self: *Transformer,
-            root: NodeIndex,
-            declarations: []const LoopAnnexBDeclaration,
-        ) Transformer.Error!NodeIndex {
-            if (declarations.len == 0) return root;
-            var inserted: u32 = 0;
-            const rewritten = try rewriteLoopAnnexBStatement(self, root, declarations, &inserted);
-            if (inserted != declarations.len)
-                @panic("ordinary loop Annex B declaration was not paired with an emitted V=L assignment");
-            return rewritten;
-        }
-
-        fn rewriteLoopAnnexBStatement(
-            self: *Transformer,
-            index: NodeIndex,
-            declarations: []const LoopAnnexBDeclaration,
-            inserted: *u32,
-        ) Transformer.Error!NodeIndex {
-            if (index.isNone()) return index;
-            const node = self.ast.getNode(index);
-            if (isFunctionBoundary(node.tag)) return index;
-            switch (node.tag) {
-                .block_statement, .function_body => {
-                    var statements: std.ArrayList(NodeIndex) = .empty;
-                    defer statements.deinit(self.allocator);
-                    var changed = false;
-                    for (0..node.data.list.len) |i| {
-                        const statement: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.list.start + i]));
-                        const function = directLoopAnnexBFunction(self, statement);
-                        const rewritten = try rewriteLoopAnnexBStatement(self, statement, declarations, inserted);
-                        try statements.append(self.allocator, rewritten);
-                        if (rewritten != statement) changed = true;
-                        if (function) |decl| if (loopAnnexBDeclarationForNode(declarations, decl) != null) {
-                            try appendLoopAnnexBAlias(self, &statements, declarations, decl, inserted);
-                            changed = true;
-                        };
+            var source_anchors = false;
+            for (self.semantic_editor.?.references.items) |reference| {
+                if (reference.flags.declare and !reference.declaration_node_index.isNone() and
+                    @backingInt(reference.declaration_node_index) < self.parser_node_count) source_anchors = true;
+            }
+            if (groups.items.len > 0) {
+                // Known extraction dataflow: outer-evaluated generated reads
+                // in this actual body now execute in the new callback frame.
+                // Nested source functions already own their separate scopes.
+                try prepareExtractedGeneratorBody(self, body, source_scope, callback, &.{}, &.{});
+                self.generator_function_storage_changed = true;
+                try self.generator_function_storage_scopes.put(self.allocator, @backingInt(callback), {});
+            }
+            // Validate all complete groups before moving any binding storage.
+            for (groups.items) |group| {
+                const role = (annex.forSymbol(self.semantic_editor.?.symbols.items, group.lexical) catch
+                    @panic("invalid extracted Annex B group")) orelse @panic("missing extracted Annex B group");
+                if (role.source_assignment_count != group.declarations.items.len)
+                    @panic("extracted Annex B declaration group is incomplete");
+                for (group.declarations.items) |declaration| {
+                    const binding = self.ast.readExtraNode(self.ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
+                    var anchors: usize = 0;
+                    for (self.semantic_editor.?.references.items) |reference| {
+                        if (!reference.flags.declare or reference.declaration_node_index != binding) continue;
+                        if (reference.symbol_id != group.lexical or reference.scope_id != group.lexical_scope)
+                            @panic("extracted Annex B declaration changed identity or storage");
+                        anchors += 1;
                     }
-                    if (!changed) return index;
-                    const result = try self.ast.addNode(.{
-                        .tag = node.tag,
-                        .span = node.span,
-                        .data = .{ .list = try self.ast.addNodeList(statements.items) },
+                    if (anchors > 1 or (source_anchors and anchors != 1)) @panic("extracted Annex B declaration has no unique exact anchor");
+                }
+            }
+            var block_parents: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty;
+            defer block_parents.deinit(self.allocator);
+            for (groups.items) |*group| {
+                _ = annex.markLowered(self.semantic_editor.?.symbols.items, group.lexical, @intCast(group.declarations.items.len)) catch
+                    @panic("extracted Annex B implicit operation count changed");
+                try @import("es2015_generator.zig").ES2015Generator(Transformer).ensureAnnexBVariableStorage(self, @backingInt(group.variable));
+                const saved_scope = self.current_scope;
+                self.current_scope = group.lexical_scope;
+                defer self.current_scope = saved_scope;
+                const original = self.semantic_editor.?.symbols.items[@backingInt(group.lexical)];
+                const source_name = try self.decodedName(self.ast.getText(original.name));
+                // Storage spelling is chosen for a known ID, never used to
+                // recover the lexical or outer variable identity.
+                const switch_entry = self.ast.getNode(group.block).tag == .switch_statement;
+                const dynamic = switch_entry or self.semantic_editor.?.scopes.items[group.lexical_scope.toIndex()].blocksMangling();
+                group.output_name = if (dynamic) source_name else try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex", &self.block_rename_counter, callback);
+                var setter: ?SymbolId = null;
+                if (dynamic) {
+                    setter = try annexSetter(self, group.variable, self.ast.getNode(group.block).span);
+                    if (source_anchors) for (group.declarations.items) |declaration| {
+                        const old_binding = self.ast.readExtraNode(self.ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
+                        _ = self.semantic_editor.?.removeDeclarationAtNode(old_binding, group.lexical) catch @panic("Annex B catch lost its source declaration row");
+                    };
+                    const carrier = try annexCatch(self, group.block, group.lexical_scope, group.lexical, group.output_name, callback);
+                    const parent = block_parents.get(@backingInt(group.block)) orelse group.parent;
+                    if (parent.isNone()) {
+                        if (output_body != group.block) @panic("Annex B root block changed its owner edge");
+                        output_body = carrier.wrapper;
+                    } else replaceAnnexBlockEdge(self, parent, group.block, carrier.wrapper);
+                    try block_parents.put(self.allocator, @backingInt(group.block), carrier.entry_parent);
+                }
+                if (self.block_rename_map == null) self.block_rename_map = .empty;
+                try self.block_rename_map.?.put(self.allocator, @backingInt(group.lexical), group.output_name);
+                var prefix: std.ArrayList(NodeIndex) = .empty;
+                defer prefix.deinit(self.allocator);
+                // Each source function value is instantiated at lexical entry.
+                // All keep their own AST/scopes; the last assignment wins.
+                for (group.declarations.items) |declaration| {
+                    const source = self.ast.getNode(declaration);
+                    const old_binding = self.ast.readExtraNode(source.data.extra, ast_mod.FunctionExtra.name);
+                    const expr = try self.addExtraNode(.function_expression, source.span, &.{
+                        @backingInt(NodeIndex.none),                                                        @backingInt(self.ast.readExtraNode(source.data.extra, ast_mod.FunctionExtra.params)),
+                        @backingInt(self.ast.readExtraNode(source.data.extra, ast_mod.FunctionExtra.body)), self.readU32(source.data.extra, 3),
+                        self.readU32(source.data.extra, 4),
                     });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                .if_statement => {
-                    const ternary = node.data.ternary;
-                    const consequent = try rewriteLoopAnnexBChild(self, ternary.b, declarations, inserted);
-                    const alternate = try rewriteLoopAnnexBChild(self, ternary.c, declarations, inserted);
-                    if (consequent == ternary.b and alternate == ternary.c) return index;
-                    return self.ast.addNode(.{ .tag = .if_statement, .span = node.span, .data = .{ .ternary = .{ .a = ternary.a, .b = consequent, .c = alternate } } });
-                },
-                .while_statement, .do_while_statement, .labeled_statement, .with_statement => {
-                    const body = try rewriteLoopAnnexBStatement(self, node.data.binary.right, declarations, inserted);
-                    if (body == node.data.binary.right) return index;
-                    const result = try self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .binary = .{ .left = node.data.binary.left, .right = body, .flags = node.data.binary.flags } } });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                .for_statement => {
-                    const extra = node.data.extra;
-                    const old_body = self.readNodeIdx(extra, 3);
-                    const body = try rewriteLoopAnnexBChild(self, old_body, declarations, inserted);
-                    if (body == old_body) return index;
-                    const result = try self.addExtraNode(.for_statement, node.span, &.{
-                        @backingInt(self.readNodeIdx(extra, 0)), @backingInt(self.readNodeIdx(extra, 1)),
-                        @backingInt(self.readNodeIdx(extra, 2)), @backingInt(body),
-                    });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                .for_in_statement, .for_of_statement, .for_await_of_statement => {
-                    const ternary = node.data.ternary;
-                    const body = try rewriteLoopAnnexBChild(self, ternary.c, declarations, inserted);
-                    if (body == ternary.c) return index;
-                    const result = try self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .ternary = .{ .a = ternary.a, .b = ternary.b, .c = body } } });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                .try_statement => {
-                    const ternary = node.data.ternary;
-                    const body = try rewriteLoopAnnexBStatement(self, ternary.a, declarations, inserted);
-                    const handler = try rewriteLoopAnnexBStatement(self, ternary.b, declarations, inserted);
-                    const finalizer = try rewriteLoopAnnexBStatement(self, ternary.c, declarations, inserted);
-                    if (body == ternary.a and handler == ternary.b and finalizer == ternary.c) return index;
-                    return self.ast.addNode(.{ .tag = .try_statement, .span = node.span, .data = .{ .ternary = .{ .a = body, .b = handler, .c = finalizer } } });
-                },
-                .catch_clause => {
-                    const body = try rewriteLoopAnnexBStatement(self, node.data.binary.right, declarations, inserted);
-                    if (body == node.data.binary.right) return index;
-                    const result = try self.ast.addNode(.{ .tag = .catch_clause, .span = node.span, .data = .{ .binary = .{ .left = node.data.binary.left, .right = body, .flags = node.data.binary.flags } } });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                .switch_statement => {
-                    const extra = node.data.extra;
-                    const start = self.readU32(extra, 1);
-                    const count = self.readU32(extra, 2);
+                    try self.remapCopiedScopeOwner(declaration, expr);
+                    try self.removeInPlaceScopeOwner(declaration);
+                    // Existing name restoration gives the anonymous value its
+                    // source name without adding a named-expression self SID.
+                    self.runtime_helpers.keep_names = true;
+                    const name_helper = try es_helpers.makeRuntimeHelperRef(self, "__name");
+                    const name_literal = try es_helpers.buildQuotedKeyLiteral(self, try self.ast.addString(source_name));
+                    const value = try es_helpers.makeCallExpr(self, name_helper, &.{ expr, name_literal }, source.span);
+                    if (dynamic) {
+                        const target = try self.makeSyntheticRefForSymbol(group.lexical, group.lexical_scope, .{ .write = true });
+                        self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(group.output_name);
+                        try self.trackExactOutputReference(target, @backingInt(group.lexical));
+                        const assignment = try es_helpers.makeAssignExpr(self, target, value, source.span, 0);
+                        try prefix.append(self.allocator, if (switch_entry) assignment else try annexEmptyCompletion(self, assignment, callback, source.span));
+                    } else {
+                        const binding = try es_helpers.makeExactSyntheticBinding(self, group.output_name);
+                        const editor = &self.semantic_editor.?;
+                        editor.relocateSymbolAsPreservingAnchors(group.lexical, callback, binding) catch @panic("extracted Annex B storage collision");
+                        if (self.symbol_ids.items.len <= @backingInt(binding)) try self.symbol_ids.appendNTimes(self.allocator, null, @backingInt(binding) + 1 - self.symbol_ids.items.len);
+                        self.symbol_ids.items[@backingInt(binding)] = @backingInt(group.lexical);
+                        if (source_anchors) {
+                            _ = editor.reanchorDeclarationFromNode(self.ast, old_binding, binding, group.lexical) catch @panic("extracted Annex B exact declaration handoff failed");
+                        } else {
+                            try editor.references.append(self.allocator, .{ .node_index = .none, .declaration_node_index = binding, .scope_id = callback, .symbol_id = group.lexical, .flags = .{ .declare = true } });
+                        }
+                        for (editor.references.items) |*reference| if (reference.flags.declare and reference.symbol_id == group.lexical) {
+                            reference.scope_id = callback;
+                        };
+                        editor.symbols.items[@backingInt(group.lexical)].kind = .variable_var;
+                        editor.symbols.items[@backingInt(group.lexical)].decl_flags = @import("../semantic/symbol.zig").SymbolKind.variable_var.declFlags();
+                        const declarator = try es_helpers.makeDeclarator(self, binding, value, source.span);
+                        try prefix.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", source.span));
+                    }
+                    const editor = &self.semantic_editor.?;
+                    const read = try es_helpers.makeIdentifierRefFromSpan(self, try self.ast.addString(group.output_name));
+                    try self.addSyntheticRefInScope(read, group.lexical, group.lexical_scope, .{ .read = true });
+                    try self.trackExactOutputRead(read, @backingInt(group.lexical));
+                    const operation = if (setter) |id| blk: {
+                        // The setter owns the V write in its actual outer environment.
+                        const known = editor.symbols.items[@backingInt(id)];
+                        const callee = try es_helpers.makeIdentifierRefFromSpan(self, try self.ast.addString(known.synthetic_name));
+                        try self.addSyntheticRefInScope(callee, id, group.lexical_scope, .{ .read = true });
+                        try self.trackExactOutputRead(callee, @backingInt(id));
+                        break :blk try es_helpers.makeCallExpr(self, callee, &.{read}, source.span);
+                    } else blk: {
+                        const outer = editor.symbols.items[@backingInt(group.variable)];
+                        const outer_name = if (outer.synthetic_name.len > 0) outer.synthetic_name else self.ast.getText(outer.name);
+                        const target = try self.makeSyntheticRefForSymbol(group.variable, group.lexical_scope, .{ .write = true });
+                        self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(outer_name);
+                        try self.trackExactOutputReference(target, @backingInt(group.variable));
+                        break :blk try es_helpers.makeAssignExpr(self, target, read, source.span, 0);
+                    };
+                    const assignment = try annexEmptyCompletion(self, operation, callback, source.span);
+                    const parent = declaration_parents.get(@backingInt(declaration)) orelse @panic("Annex B function lost its actual source position");
+                    replaceAnnexBlockEdge(self, parent, declaration, assignment);
+                }
+                if (switch_entry) {
+                    // The fresh object cannot equal the already evaluated
+                    // discriminant. Its selector performs FDI before all source
+                    // selectors without adding a matching/fallthrough clause.
+                    const never_matches = try self.ast.addNode(.{ .tag = .object_expression, .span = self.ast.getNode(group.block).span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+                    try prefix.append(self.allocator, never_matches);
+                    const test_node = try self.ast.addNode(.{ .tag = .sequence_expression, .span = self.ast.getNode(group.block).span, .data = .{ .list = try self.ast.addNodeList(prefix.items) } });
+                    const new_case = try self.addExtraNode(.switch_case, self.ast.getNode(group.block).span, &.{ @backingInt(test_node), 0, 0 });
+                    const extra = self.ast.getNode(group.block).data.extra;
+                    const start = self.ast.extra_data.items[extra + 1];
+                    const len = self.ast.extra_data.items[extra + 2];
                     var cases: std.ArrayList(NodeIndex) = .empty;
                     defer cases.deinit(self.allocator);
-                    var changed = false;
-                    for (0..count) |case_i| {
-                        const case_index: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[start + case_i]));
-                        const case_node = self.ast.getNode(case_index);
-                        const case_extra = case_node.data.extra;
-                        const statements_start = self.readU32(case_extra, 1);
-                        const statements_count = self.readU32(case_extra, 2);
-                        var statements: std.ArrayList(NodeIndex) = .empty;
-                        defer statements.deinit(self.allocator);
-                        var case_changed = false;
-                        for (0..statements_count) |statement_i| {
-                            const statement: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[statements_start + statement_i]));
-                            const function = directLoopAnnexBFunction(self, statement);
-                            const rewritten = try rewriteLoopAnnexBStatement(self, statement, declarations, inserted);
-                            try statements.append(self.allocator, rewritten);
-                            if (rewritten != statement) case_changed = true;
-                            if (function) |decl| if (loopAnnexBDeclarationForNode(declarations, decl) != null) {
-                                try appendLoopAnnexBAlias(self, &statements, declarations, decl, inserted);
-                                case_changed = true;
-                            };
-                        }
-                        if (!case_changed) {
-                            try cases.append(self.allocator, case_index);
-                            continue;
-                        }
-                        changed = true;
-                        const list = try self.ast.addNodeList(statements.items);
-                        try cases.append(self.allocator, try self.addExtraNode(.switch_case, case_node.span, &.{
-                            @backingInt(self.readNodeIdx(case_extra, 0)), list.start, list.len,
-                        }));
-                    }
-                    if (!changed) return index;
-                    const list = try self.ast.addNodeList(cases.items);
-                    const result = try self.addExtraNode(.switch_statement, node.span, &.{ @backingInt(self.readNodeIdx(extra, 0)), list.start, list.len });
-                    try self.remapCopiedScopeOwner(index, result);
-                    return result;
-                },
-                else => return index,
+                    try cases.append(self.allocator, new_case);
+                    for (self.ast.extra_data.items[start .. start + len]) |raw| try cases.append(self.allocator, @fromBackingInt(raw));
+                    const replacement = try self.ast.addNodeList(cases.items);
+                    self.ast.extra_data.items[extra + 1] = replacement.start;
+                    self.ast.extra_data.items[extra + 2] = replacement.len;
+                    continue;
+                }
+                const block_node = self.ast.getNode(group.block);
+                const list = block_node.data.list;
+                var statements: std.ArrayList(NodeIndex) = .empty;
+                defer statements.deinit(self.allocator);
+                try statements.appendSlice(self.allocator, prefix.items);
+                for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| try statements.append(self.allocator, @fromBackingInt(raw));
+                const replacement = try self.ast.addNodeList(statements.items);
+                self.ast.nodes.items[@backingInt(group.block)].data.list = replacement;
             }
+            // Publish renamed actual value leaves by exact source SID. ES5
+            // shorthand was already expanded during the original body visit.
+            if (groups.items.len > 0) {
+                const nodes = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, body);
+                defer self.allocator.free(nodes);
+                for (nodes) |raw| {
+                    const node = self.ast.getNode(@fromBackingInt(raw));
+                    if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+                    const sid = self.getSymbolIdAt(@fromBackingInt(raw)) orelse continue;
+                    const index = by_symbol.get(sid) orelse continue;
+                    const name = try self.ast.addString(groups.items[index].output_name);
+                    self.ast.nodes.items[raw].data.string_ref = name;
+                }
+            }
+            return output_body;
         }
 
         pub fn buildLoopClosureWithFlow(
@@ -1039,7 +1107,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             /// 본문에 `yield`/`await` 이 있어 평범한 함수로는 추출할 수 없을 때 쓴다 —
             /// 상태 기계가 `[5, __values(_loop(x))]` 위임으로 접고, `yield*` 의 값이
             /// `_loop` 의 return 값이라 break/continue/return 신호도 그대로 실려 온다.
-            is_generator: bool,
+            delegates_yield: bool,
             /// 호출자가 본문을 visit 하기 **직전**의 `temp_var_counter`. 그 뒤에 생긴 임시
             /// 변수는 본문 안에서만 쓰이므로 `_loop` 안에 선언한다 — 바깥 함수에 두면 모든
             /// 반복이 한 변수를 공유해, 반복마다 만든 클로저가 마지막 값을 보게 된다 (#4729:
@@ -1058,7 +1126,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             call_scope: @import("../semantic/scope.zig").ScopeId,
             /// 추출된 generator 함수의 실제 삽입 부모. 비-generator 호출은 `.none`.
             generator_parent_scope: @import("../semantic/scope.zig").ScopeId,
+            await_driver: bool,
         ) Transformer.Error!LoopClosureResult {
+            const is_generator = delegates_yield or await_driver;
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
@@ -1081,44 +1151,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 transformed_body = try transformControlFlow(self, visited_body, flow);
             }
 
-            var annex_b_declarations: std.ArrayList(LoopAnnexBDeclaration) = .empty;
-            defer annex_b_declarations.deinit(self.allocator);
-            if (!is_generator) {
-                try collectLoopAnnexBDeclarations(self, transformed_body, &annex_b_declarations);
-                if (annex_b_declarations.items.len > 0) {
-                    const annex = @import("../semantic/annex_b_function.zig");
-                    for (annex_b_declarations.items, 0..) |declaration, declaration_i| {
-                        var seen = false;
-                        for (annex_b_declarations.items[0..declaration_i]) |previous| {
-                            if (previous.lexical == declaration.lexical) {
-                                seen = true;
-                                break;
-                            }
-                        }
-                        if (seen) continue;
-                        var declaration_count: u32 = 0;
-                        for (annex_b_declarations.items) |candidate| {
-                            if (candidate.lexical == declaration.lexical) declaration_count += 1;
-                        }
-                        if (declaration_count != declaration.source_assignment_count)
-                            @panic("ordinary loop Annex B declaration census lost a source assignment");
-                        // Initialize the lazy editor and create the exact
-                        // binding only when this V has no source producer.
-                        try self.ensureAnnexBVariableStorage(@backingInt(declaration.variable), false);
-                        try ensureLoopAnnexBSetter(self, declaration.variable, self.ast.getNode(declaration.node).span);
-                        const editor = if (self.semantic_editor) |*existing| existing else @panic("ordinary loop Annex B lowering failed to initialize its semantic editor");
-                        const lowered = annex.markLowered(
-                            editor.symbols.items,
-                            declaration.lexical,
-                            declaration_count,
-                        ) catch @panic("ordinary loop Annex B source counters do not match its exact role");
-                        if (lowered.variable != declaration.variable)
-                            @panic("ordinary loop Annex B variable identity changed during lowering");
-                    }
-                    transformed_body = try rewriteLoopAnnexBAliases(self, transformed_body, annex_b_declarations.items);
-                }
-            }
-
             // #1807: FunctionExpression.body 는 spec 상 BlockStatement 여야 하므로
             // braces 없는 단일 statement body (e.g. `for (..) if (..)`) 는 감싸야
             // codegen 이 `function(x) { if (..) }` 로 emit 한다.
@@ -1135,6 +1167,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
 
             transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars, call_scope);
+            if (await_driver) try @import("loop_await_driver.zig").awaitToYield(self, transformed_body);
 
             var body_temp_bindings: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
             defer body_temp_bindings.deinit(self.allocator);
@@ -1180,7 +1213,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
-            const func_flags: u32 = (if (is_async) ast_mod.FunctionFlags.is_async else 0) |
+            const func_flags: u32 = (if (is_async and !await_driver) ast_mod.FunctionFlags.is_async else 0) |
                 (if (is_generator) ast_mod.FunctionFlags.is_generator else 0);
             const func_extra = try self.ast.addExtras(&.{
                 none,                          @backingInt(params_node),
@@ -1194,13 +1227,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             });
 
             var generator_function_scope: ?ScopeId = null;
-            var extracted_function_scope: ?ScopeId = null;
             if (is_generator and self.semantic_edit_enabled) {
-                if (generator_parent_scope.isNone() or call_scope.isNone())
+                if ((!await_driver and generator_parent_scope.isNone()) or call_scope.isNone())
                     std.debug.panic("extracted generator loop has no exact insertion scope", .{});
-                const function_scope = try self.addGeneratedFunctionScope(generator_parent_scope, func_expr);
+                const function_scope = try self.addGeneratedFunctionScope(if (await_driver) call_scope else generator_parent_scope, func_expr);
                 generator_function_scope = function_scope;
-                extracted_function_scope = function_scope;
                 var header_symbol_ids: std.ArrayList(u32) = .empty;
                 defer header_symbol_ids.deinit(self.allocator);
                 var parameter_symbol_ids: std.ArrayList(u32) = .empty;
@@ -1233,7 +1264,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     );
                 }
                 try prepareExtractedGeneratorBody(self, transformed_body, call_scope, function_scope, header_symbol_ids.items, parameter_symbol_ids.items);
-                try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
+                if (!await_driver and self.options.unsupported.generator) try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,
                     .enclosing_function_scope = self.current_scope,
@@ -1243,16 +1274,24 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 });
             }
 
+            // Deferred state-machine callsites have no assembled callback
+            // owner yet. Their existing producer binds them with that callback.
+            if (!is_generator and self.semantic_edit_enabled and !call_scope.isNone()) {
+                const function_scope = self.outputOwnedScope(func_expr) orelse try self.addGeneratedFunctionScope(call_scope, func_expr);
+                try self.reparentGeneratedBodyScopes(call_scope, function_scope, transformed_body);
+                transformed_body = try lowerExtractedNativeAnnexB(self, transformed_body, call_scope, function_scope);
+                self.ast.extra_data.items[func_extra + 2] = @backingInt(transformed_body);
+            }
+
             // The body temps were allocated before this extracted function
             // had an AST owner or ScopeId. Bind them now, after the exact
             // function scope exists, so the binding and every pending use
             // move together into the emitted `_loop` function.
-            if ((body_temp_bindings.items.len > 0 or annex_b_declarations.items.len > 0) and self.semantic_edit_enabled) {
+            if (body_temp_bindings.items.len > 0 and self.semantic_edit_enabled) {
                 if (call_scope.isNone())
                     std.debug.panic("extracted loop body temps have no exact source scope", .{});
-                const function_scope = extracted_function_scope orelse
+                const function_scope = generator_function_scope orelse self.outputOwnedScope(func_expr) orelse
                     try self.addGeneratedFunctionScope(call_scope, func_expr);
-                extracted_function_scope = function_scope;
                 try self.bindGeneratedFunctionTemps(
                     call_scope,
                     function_scope,
@@ -1260,6 +1299,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     body_temp_bindings.items,
                     span,
                 );
+            }
+
+            if (self.semantic_edit_enabled and !call_scope.isNone()) {
+                const function_scope = self.outputOwnedScope(func_expr) orelse @panic("extracted body has no exact function owner");
+                try bindExtractedBodyVarStorage(self, transformed_body, function_scope);
             }
 
             // --- var _loop = function(...) { ... } ---
@@ -1286,7 +1330,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 generated.synthetic_kind = .block_scoping_loop_binding;
                 generated.output_name_hint = "_loop";
             }
-            const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
+            const output_function = if (await_driver or (is_generator and !self.options.unsupported.generator)) try self.visitNode(func_expr) else func_expr;
+            const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, output_function, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
             for (hoist_vars, 0..) |name, name_i| {
@@ -1296,16 +1341,34 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             try decls.append(self.allocator, loop_decl);
             const loop_var = try es_helpers.makeVarDeclaration(self, decls.items, .@"var", span);
 
+            // The call block is an actual emitted lexical owner. Reserve it
+            // before its argument/helper reads are born, rather than letting
+            // final binding introduce a new scope around existing rows.
+            const call_block = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+            const callsite_scope = if (!is_generator and self.semantic_edit_enabled)
+                try self.addGeneratedScope(call_scope, call_block, .block)
+            else
+                call_scope;
+
+            const control_block = if (needs_ret_var and !is_generator and !await_driver and self.semantic_edit_enabled)
+                try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } })
+            else
+                NodeIndex.none;
+            const evaluation_scope = if (!control_block.isNone())
+                try self.addGeneratedScope(callsite_scope, control_block, .block)
+            else
+                callsite_scope;
+
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
             const loop_ref = try es_helpers.makeExactSyntheticRef(self, loop_name);
-            var loop_ref_scope = call_scope;
+            var loop_ref_scope = evaluation_scope;
             if (loop_symbol) |symbol| {
                 const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 const loop_symbol_scope = symbols[@backingInt(symbol)].scope_id;
-                var cursor = call_scope;
+                var cursor = evaluation_scope;
                 var visible_from_call_scope = false;
                 for (0..scopes.len) |_| {
                     if (cursor.isNone() or cursor.toIndex() >= scopes.len) break;
@@ -1330,14 +1393,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
-                const arg = try self.makeUserRefNamedAtScope(name, lexical_bindings[name_i], call_scope);
+                const arg = try self.makeUserRefNamedAtScope(name, lexical_bindings[name_i], evaluation_scope);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
 
             // is_async — `_loop(...)` 가 Promise 반환. 호출부도 `await _loop(...)` 로
             // wrap 해야 iteration 순서 보존 + needsRetVar 시 _ret 가 resolved value.
-            const call_expr: NodeIndex = if (is_generator)
+            const driver = if (await_driver) try @import("loop_await_driver.zig").build(self, loop_call, call_scope, span) else null;
+            defer if (driver) |owned| self.allocator.free(owned.statements);
+            const call_expr: NodeIndex = if (driver) |driven| driven.value else if (delegates_yield)
                 try self.ast.addNode(.{
                     .tag = .yield_expression,
                     .span = span,
@@ -1355,7 +1420,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             var ret_temp_symbol_id: ?SymbolId = null;
             var ret_temp_owner_scope: ScopeId = .none;
             if (needs_ret_var) {
-                const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
+                const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, evaluation_scope, control_block, span);
                 final_stmt = control_flow_check.node;
                 ret_temp_span = control_flow_check.ret_temp_span;
                 ret_temp_binding = control_flow_check.ret_temp_binding;
@@ -1370,16 +1435,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
 
             // 호출문을 블록으로 감싸기
-            const call_block_list = try self.ast.addNodeList(&.{final_stmt});
-            const call_block = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = call_block_list },
-            });
+            var call_statements: std.ArrayList(NodeIndex) = .empty;
+            defer call_statements.deinit(self.allocator);
+            if (driver) |driven| try call_statements.appendSlice(self.allocator, driven.statements);
+            try call_statements.append(self.allocator, final_stmt);
+            const call_block_list = try self.ast.addNodeList(call_statements.items);
+            self.ast.nodes.items[@backingInt(call_block)].data.list = call_block_list;
 
             return .{
                 .loop_fn = loop_var,
-                .loop_function = func_expr,
+                .loop_function = output_function,
                 .loop_binding = loop_binding,
                 .loop_symbol_id = loop_symbol,
                 .loop_owner_scope = loop_owner_scope,
@@ -1884,6 +1949,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             flow: *const FlowResult,
             local_label: ?[]const u8,
             call_scope: @import("../semantic/scope.zig").ScopeId,
+            reserved_block: NodeIndex,
             span: Span,
         ) Transformer.Error!ControlFlowCheck {
             const scratch_top = self.scratch.items.len;
@@ -2023,11 +2089,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // 모든 문을 블록으로 감싸기
             const block_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const block = try self.ast.addNode(.{
+            const block = if (reserved_block.isNone()) try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = block_list },
-            });
+            }) else blk: {
+                self.ast.nodes.items[@backingInt(reserved_block)].data.list = block_list;
+                break :blk reserved_block;
+            };
             return .{
                 .node = block,
                 .ret_temp_span = ret_name_span,

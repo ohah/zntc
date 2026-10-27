@@ -46,6 +46,8 @@ fn trackPrivateHelperPrelude(
 }
 
 pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
+    if (try @import("../retained_class_keys.zig").maybeWrap(self, source_idx, node)) |wrapped| return wrapped;
+    try @import("../native_constructor_timing.zig").prepareClass(self, node);
     // `export default class {}` is an anonymous declaration: lowering that
     // needs a class name treats it as a class expression (IIFE wrapper).
     const as_expression = node.tag == .class_expression or
@@ -120,7 +122,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // that real output scope before registering their exact identities.
         if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
             (classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false) or
-                (self.options.unsupported.class_static_block and classBodyHasStaticBlockComputedKey(self, _anon_body_idx))))
+                (self.options.unsupported.class_static_block and classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))))
         {
             prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
         }
@@ -251,6 +253,9 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
         // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)
         const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+        const saved_lowered_class = self.active_lowered_class;
+        self.active_lowered_class = null;
+        defer self.active_lowered_class = saved_lowered_class;
         self.current_super_in_extracted_fn = false;
         defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
@@ -780,7 +785,18 @@ pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) E
         std.debug.panic("private helper class expression has no source scope", .{});
     const wrapper_scope = try self.reserveGeneratedFunctionScope(self.outputScopeParent(class_scope));
     try self.reparentGeneratedScope(class_scope, wrapper_scope);
-    if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, wrapper_scope);
+    if (self.current_class_self_symbol_id) |id| {
+        const class_binding = self.ast.readExtraNode(self.ast.getNode(source_idx).data.extra, ast_mod.ClassExtra.name);
+        const worklet = @import("../worklet_class_clone.zig");
+        const move = worklet.prepareClassSelfStorageMove(self, source_idx, class_binding, @fromBackingInt(id), wrapper_scope) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => std.debug.panic("class expression worklet storage preflight rejected: {s}", .{@errorName(err)}),
+        };
+        defer if (move) |known| self.allocator.free(known.origins);
+        try self.moveSymbolToOutputScope(id, wrapper_scope);
+        if (move) |known| worklet.completeClassSelfStorageMove(self, known) catch |err|
+            std.debug.panic("class expression worklet storage handoff rejected: {s}", .{@errorName(err)});
+    }
     return wrapper_scope;
 }
 

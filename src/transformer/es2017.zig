@@ -448,7 +448,16 @@ pub fn ES2017(comptime Transformer: type) type {
             self.runtime_helpers.await_helper = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncGenerator");
             const this_arg = try es_helpers.makeThisExpr(self, span);
-            const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
+            // Kept default formals retain their exact native parameter owner.
+            // Removed parameter environments still require a lowering handoff.
+            const arguments_plan = @import("native_arguments.zig");
+            const native_owner = self.outputOwnedScope(params_idx) orelse state_parent_scope;
+            const parameter_handoff = !native_params_retained and arguments_plan.canHandoffParameterEngine(self, params_idx, state_parent_scope);
+            const args_ref = if ((native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner)) or
+                arguments_plan.hasRetainedParameterEngine(self, params_idx, state_parent_scope) or parameter_handoff)
+                try self.makeNativeArgumentsRef(native_owner, state_parent_scope, span)
+            else
+                try es_helpers.makeGlobalRef(self, "arguments");
             const helper_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ this_arg, args_ref, lowered_inner }, span);
 
             // outer wrapper: function name(<params>) { return __asyncGenerator(...); }
@@ -486,6 +495,10 @@ pub fn ES2017(comptime Transformer: type) type {
             };
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
             try self.remapCopiedScopeOwner(params_idx, outer_params_node);
+            if (parameter_handoff) arguments_plan.recordParameterHandoff(self, args_ref, outer_params_node, state_parent_scope) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => std.debug.panic("native parameter handoff creation failed: {s}", .{@errorName(err)}),
+            };
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
                 @backingInt(new_name),
@@ -992,4 +1005,289 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
     };
+}
+
+test "async generator native wrapper arguments preserve ten simple function contexts" {
+    const sources = [_][]const u8{
+        "async function* f(){yield 7}(async()=>console.log((await f().next()).value))();",
+        "async function* f(value){yield value}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){yield arguments[0]}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){yield(()=>arguments[0])()}(async()=>console.log((await f(7).next()).value))();",
+        "async function* f(value){const get=()=>arguments;yield get()[0];arguments=[9];yield get()[0]}(async()=>{const it=f(7);console.log((await it.next()).value,(await it.next()).value)})();",
+        "async function* f(value){yield(function(argument){return(()=>arguments[0])()})(value)}(async()=>console.log((await f(7).next()).value))();",
+        "class C{static async*f(value){yield value}}(async()=>console.log((await C.f(7).next()).value))();",
+        "class P{static value(){return 5}}class C extends P{static async*f(){yield await Promise.resolve(super.value()+2)}}(async()=>console.log((await C.f().next()).value))();",
+        "class P{static value(){return 5}}class C extends P{static offset=2;static async*#f(){yield await Promise.resolve(super.value()+this.offset)}static f(){return this.#f()}}(async()=>console.log((await C.f().next()).value))();",
+        "function outer(value){return async function* inner(argument){yield value+argument}}(async()=>console.log((await outer(5)(2).next()).value))();",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                    .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("ASYNC NATIVE ARGS case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+        }
+    }
+}
+
+test "async generator kept parameter engines preserve ten native contexts" {
+    const sources = [_][]const u8{
+        "async function*f(value=7){yield value}(async()=>console.log((await f().next()).value))();",
+        "const f=async function*(value=7){yield value};(async()=>console.log((await f().next()).value))();",
+        "const f=async function*inner(value=7){yield typeof inner==='function'?value:0};(async()=>console.log((await f().next()).value))();",
+        "const obj={async*f(value=7){yield value}};(async()=>console.log((await obj.f().next()).value))();",
+        "class C{static async*f(value=7){yield value}}(async()=>console.log((await C.f().next()).value))();",
+        "function make(){return async function*f(value=7){yield value}}(async()=>console.log((await make()().next()).value))();",
+        "async function*f(value={count:7}){yield value.count}(async()=>console.log((await f().next()).value))();",
+        "async function*f({count}={count:7}){yield count}(async()=>console.log((await f().next()).value))();",
+        "async function*f(get=()=>7){yield get()}(async()=>console.log((await f().next()).value))();",
+        "async function*__asyncGenerator(value=7,other=value+1){yield other}(async()=>console.log((await __asyncGenerator().next()).value))();",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{ .es2015, .es2017 }) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                    .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("KEPT NATIVE ARGS case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es2015, 1);
+        }
+    }
+}
+
+test "async generator erased parameter engines preserve ten native contexts" {
+    const sources = [_][]const u8{
+        "async function*f(value=7){yield value}(async()=>console.log((await f().next()).value))();",
+        "const f=async function*(value=7){yield value};(async()=>console.log((await f().next()).value))();",
+        "const f=async function*inner(value=7){yield typeof inner==='function'?value:0};(async()=>console.log((await f().next()).value))();",
+        "const obj={async*f(value=7){yield value}};(async()=>console.log((await obj.f().next()).value))();",
+        "class C{static async*f(value=7){yield value}}(async()=>console.log((await C.f().next()).value))();",
+        "function make(){return async function*f(value=7){yield value}}(async()=>console.log((await make()().next()).value))();",
+        "async function*f(value={count:7}){yield value.count}(async()=>console.log((await f().next()).value))();",
+        "async function*f({count}={count:7}){yield count}(async()=>console.log((await f().next()).value))();",
+        "async function*f(get=()=>7){yield get()}(async()=>console.log((await f().next()).value))();",
+        "async function*__asyncGenerator(value=7,other=value+1){yield other}(async()=>console.log((await __asyncGenerator().next()).value))();",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("compat.zig").ESTarget{.es5}) |target| {
+            for ([_]bool{ false, true }) |minify| {
+                const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                    .unsupported = @import("transformer.zig").TransformOptions.compat.fromESTarget(target),
+                    .keep_names = true,
+                    .minify_identifiers = minify,
+                    .minify_syntax = minify,
+                    .minify_whitespace = minify,
+                });
+                const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+                if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                    std.debug.print("ERASED NATIVE ARGS case={d} target={s} minify={} expected={s} actual={s} stderr={s} code={s}\n", .{ index, @tagName(target), minify, native.stdout, actual.stdout, actual.stderr, result.code });
+                try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+                try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+            }
+            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es5, 1);
+        }
+    }
+}
+
+fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool, expected_forwards: usize) !void {
+    const symbol_mod = @import("../semantic/symbol.zig");
+    const utils = @import("output_scope_test_utils.zig");
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".cjs");
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var source_engine_by_body: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for (analyzer.scopes.items, 0..) |scope, body| {
+        if (scope.kind != .function or scope.parent.isNone()) continue;
+        const parent = scope.parent.toIndex();
+        if (parent >= analyzer.scope_maps.items.len or analyzer.scopes.items[parent].kind != .function) continue;
+        const engine = analyzer.scope_maps.items[parent].get("arguments") orelse continue;
+        const symbol = analyzer.symbols.items[engine];
+        if (symbol.kind == .parameter and symbol.synthetic_kind == .implicit_arguments and symbol.scope_id == scope.parent)
+            try source_engine_by_body.put(a, @intCast(body), @intCast(engine));
+    }
+    var t = try @import("transformer.zig").Transformer.init(a, &parser.ast, .{ .unsupported = @import("compat.zig").fromESTarget(target), .emit_runtime_helper_imports = false });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.semantic_edit_enabled = true;
+    const output = try t.transform();
+    const editor = &t.semantic_editor.?;
+    var parents = try utils.buildParentMap(a, t.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var live = parents.keyIterator();
+    while (live.next()) |raw| if (t.outputOwnedScope(@fromBackingInt(raw.*))) |scope| {
+        try owners.put(a, raw.*, @backingInt(scope));
+    };
+    const helper = t.runtime_helper_symbol_ids.get("__asyncGenerator") orelse return error.MissingAsyncGeneratorHelper;
+    var forwards: usize = 0;
+    live = parents.keyIterator();
+    while (live.next()) |raw| {
+        const call = t.ast.nodes.items[raw.*];
+        if (call.tag != .call_expression or t.getSymbolIdAt(t.ast.readExtraNode(call.data.extra, 0)) != @as(?u32, @backingInt(helper))) continue;
+        try std.testing.expectEqual(@as(u32, 3), t.ast.readExtra(call.data.extra, 2));
+        const argument = t.ast.readExtraNode(t.ast.readExtra(call.data.extra, 1), 1);
+        const id = t.getSymbolIdAt(argument) orelse return error.MissingNativeParameterEngine;
+        const symbol = editor.symbols.items[id];
+        try std.testing.expectEqual(symbol_mod.SymbolKind.parameter, symbol.kind);
+        try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), symbol.synthetic_kind);
+        try std.testing.expectEqual(@as(?ScopeId, symbol.scope_id), t.native_arguments_declaration_origins.get(id));
+        try std.testing.expect(!t.explicit_global_reference_nodes.contains(@backingInt(argument)));
+        const creation = t.native_arguments_reference_origins.get(@backingInt(argument)) orelse return error.MissingNativeReferenceCreationOrigin;
+        try std.testing.expectEqual(@as(u32, id), @backingInt(creation.symbol_id));
+        try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
+        const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(argument)) orelse return error.MissingActualArgumentsScope;
+        if (target == .es5) {
+            if (expected_forwards == 1) try std.testing.expectEqual(@as(?u32, id), source_engine_by_body.get(@backingInt(use_scope)));
+            try std.testing.expectEqual(use_scope, symbol.scope_id);
+            try std.testing.expectEqual(@as(usize, 0), t.native_arguments_parameter_handoffs.count());
+        } else {
+            try std.testing.expect(use_scope != symbol.scope_id);
+            try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+        }
+        var reads: usize = 0;
+        var declarations: usize = 0;
+        for (editor.references.items) |row| {
+            if (@backingInt(row.symbol_id) != id) continue;
+            if (row.flags.declare) {
+                try std.testing.expect(row.node_index.isNone() and row.declaration_node_index.isNone());
+                try std.testing.expectEqual(symbol.scope_id, row.scope_id);
+                declarations += 1;
+            } else if (row.node_index == argument) {
+                try std.testing.expectEqual(use_scope, row.scope_id);
+                try std.testing.expectEqualDeep(@as(symbol_mod.ReferenceFlags, .{ .read = true }), row.flags);
+                const coordinate = utils.expectedStatementCoordinates(t.ast, &parents, @backingInt(argument)).?;
+                try std.testing.expectEqual(coordinate.stmt_idx, row.stmt_idx);
+                try std.testing.expectEqual(coordinate.scope_stmt_idx, row.scope_stmt_idx);
+                reads += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expectEqual(@as(usize, 1), reads);
+        if (check_negative) try checkNativeArgumentsPublicationNegatives(&t, argument, helper);
+        forwards += 1;
+    }
+    try std.testing.expectEqual(expected_forwards, forwards);
+}
+
+fn checkNativeArgumentsPublicationNegatives(t: *@import("transformer.zig").Transformer, argument: NodeIndex, sibling: @import("../semantic/symbol.zig").SymbolId) !void {
+    const native = @import("native_arguments.zig");
+    const raw = @backingInt(argument);
+    const editor = &t.semantic_editor.?;
+    const original = t.native_arguments_reference_origins.get(raw).?;
+    var row_index: ?usize = null;
+    for (editor.references.items, 0..) |row, index| if (row.node_index == argument) {
+        try std.testing.expect(row_index == null);
+        row_index = index;
+    };
+    const index = row_index.?;
+    const original_row = editor.references.items[index];
+    const original_node_id = t.symbol_ids.items[raw];
+    const original_editor_id = editor.symbol_ids.items[raw];
+    const Mutation = enum { origin_sid, owner_scope, use_scope, origin_stmt, origin_scope_stmt, row_sid, row_scope, row_stmt, row_scope_stmt, row_flags, node_sid };
+    for (std.enums.values(Mutation)) |mutation| {
+        errdefer std.debug.print("kept native publication mutation={s}\n", .{@tagName(mutation)});
+        const origin = t.native_arguments_reference_origins.getPtr(raw).?;
+        const row = &editor.references.items[index];
+        switch (mutation) {
+            .origin_sid => origin.symbol_id = sibling,
+            .owner_scope => origin.owner_scope = t.programScope(),
+            .use_scope => origin.scope = t.programScope(),
+            .origin_stmt => origin.stmt += 1,
+            .origin_scope_stmt => origin.scope_stmt += 1,
+            .row_sid => row.symbol_id = sibling,
+            .row_scope => row.scope_id = t.programScope(),
+            .row_stmt => row.stmt_idx += 1,
+            .row_scope_stmt => row.scope_stmt_idx += 1,
+            .row_flags => row.flags = .{ .write = true },
+            .node_sid => {
+                t.symbol_ids.items[raw] = @backingInt(sibling);
+                editor.symbol_ids.items[raw] = @backingInt(sibling);
+            },
+        }
+        const expected = switch (mutation) {
+            .origin_sid, .row_sid, .node_sid => error.InvalidSymbol,
+            .owner_scope, .use_scope, .row_scope => error.InvalidScope,
+            else => error.InvalidNode,
+        };
+        try std.testing.expectError(expected, native.publication(t, raw));
+        origin.* = original;
+        row.* = original_row;
+        t.symbol_ids.items[raw] = original_node_id;
+        editor.symbol_ids.items[raw] = original_editor_id;
+        const restored = (try native.publication(t, raw)).?;
+        try std.testing.expectEqual(original.symbol_id, restored.symbol_id);
+        try std.testing.expectEqual(original.scope, restored.scope);
+        try std.testing.expectEqual(original.stmt, restored.stmt);
+        try std.testing.expectEqual(original.scope_stmt, restored.scope_stmt);
+    }
+}
+
+test "async generator kept parameter engines survive private initializer clones" {
+    const source = "class P{}class C extends P{#read=async function*inner(value=7){yield value};constructor(flag){if(flag)super();else super()}read(){return this.#read()}}(async()=>console.log((await new C(true).read().next()).value,(await new C(false).read().next()).value))();";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    for ([_]@import("compat.zig").ESTarget{ .es5, .es2015, .es2017 }) |target| {
+        for ([_]bool{ false, true }) |minify| {
+            const result = try @import("../transpile.zig").transpile(a, source, "input.cjs", .{
+                .unsupported = @import("compat.zig").fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("cloned native parameter engine target={s} minify={} code={s} stderr={s}\n", .{ @tagName(target), minify, result.code, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+        try checkKeptParameterEngineBirth(a, source, target, false, 2);
+    }
 }

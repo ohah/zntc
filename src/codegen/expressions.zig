@@ -18,8 +18,8 @@ const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 /// minify_syntax 시 string_literal 객체 키를 따옴표 없이 emit 가능한지.
 /// `raw` 는 따옴표 포함 리터럴 텍스트. escape 없는 단순 리터럴이고 valid ES
 /// IdentifierName 이며 `__proto__` 가 아닐 때만 true. 객체 키는 reserved
-/// word 도 valid 라 reserved 검사 불필요; `{"__proto__":v}` 는 일반 프로퍼티,
-/// `{__proto__:v}` 는 proto setter 라 semantic 이 달라져 반드시 제외.
+/// word 도 valid 라 reserved 검사 불필요. `__proto__` 는 quoted/unquoted colon
+/// 형태 모두 prototype setter이며, computed/shorthand data-property 역할과 구분한다.
 fn objectKeyUnquotable(raw: []const u8) bool {
     if (raw.len < 2) return false;
     const q = raw[0];
@@ -529,7 +529,15 @@ pub fn emitObjectProperty(self: anytype, node: Node) !void {
         // 따라서 치환이 하나라도 걸리면 longhand(`이름: 값`)로 펼쳐 키를 원본으로 고정한다.
         if (identifierEmitsSubstituted(self, key, .value)) {
             const key_node = self.ast.getNode(key);
-            try self.writeIdentifierSpan(key_node.data.string_ref);
+            const source_name = try self.ast.directStaticKeyName(self.allocator, key);
+            defer if (source_name) |name| self.allocator.free(name);
+            if (source_name != null and std.mem.eql(u8, source_name.?, "__proto__")) {
+                // Expanding shorthand must keep an own data property, rather
+                // than turn the source key into a prototype-setter colon form.
+                try self.write("[\"__proto__\"]");
+            } else {
+                try self.writeIdentifierSpan(key_node.data.string_ref);
+            }
             if (self.options.minify_whitespace) {
                 try self.writeByte(':');
             } else {

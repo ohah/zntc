@@ -103,12 +103,12 @@ test "#4819 namespace and enum IIFE parameters choose linked output names by Sym
     try std.testing.expect(!result.hasErrors());
     // These virtual parameters are collision-resolved after the complete graph
     // is available. Their generated-body references must consume the same SID.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "((Color$2) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(function(Color$2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Color$2[Color$2[\"Red\"]") != null);
     try std.testing.expect(std.mem.count(u8, result.output, "_classDecorators$1") >= 2);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "((_dynamicNamespace) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(function(_dynamicNamespace)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(\"_dynamicNamespace\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "((DynamicEnum) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(function(DynamicEnum)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(\"DynamicEnum\")") != null);
 
     const modes = [_]@import("../bundler.zig").BundleOptions{
@@ -126,8 +126,8 @@ test "#4819 namespace and enum IIFE parameters choose linked output names by Sym
             try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "[\"Red\"]") != null);
             try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "eval(\"_dynamicNamespace\")") != null);
         } else {
-            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "((Color$2) =>") != null);
-            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "((_classDecorators$1) =>") != null);
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "(function(Color$2)") != null);
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "(function(_classDecorators$1)") != null);
         }
     }
 }

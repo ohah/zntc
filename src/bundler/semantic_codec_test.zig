@@ -904,7 +904,11 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .lowered }) |state| {
+    const original_kind = sem.symbols.items[lexical].kind;
+    const original_flags = sem.symbols.items[lexical].decl_flags;
+    for ([_]@import("../semantic/symbol.zig").AnnexBFunctionAlias.State{ .native, .lowered, .lowered_catch }) |state| {
+        sem.symbols.items[lexical].kind = if (state == .lowered_catch) .catch_binding else original_kind;
+        sem.symbols.items[lexical].decl_flags = sem.symbols.items[lexical].kind.declFlags();
         sem.symbols.items[lexical].annex_b_alias.state = state;
         var bytes: std.ArrayList(u8) = .empty;
         try codec.serialize(&sem, &bytes, allocator);
@@ -923,6 +927,14 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         try testing.expectEqualSlices(?u32, sem.symbol_ids, restored.symbol_ids);
         try testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, restored.owner_token);
     }
+    sem.symbols.items[lexical].annex_b_alias.state = .lowered_catch;
+    for ([_]@import("../semantic/symbol.zig").SymbolKind{ .function_decl, .variable_var, .parameter }) |kind| {
+        sem.symbols.items[lexical].kind = kind;
+        var invalid_state_kind: std.ArrayList(u8) = .empty;
+        try testing.expectError(error.InvalidAnnexBRole, codec.serialize(&sem, &invalid_state_kind, allocator));
+    }
+    sem.symbols.items[lexical].kind = original_kind;
+    sem.symbols.items[lexical].decl_flags = original_flags;
     sem.symbols.items[lexical].annex_b_alias.state = .native;
     const saved_alias = sem.symbols.items[lexical].annex_b_alias;
     var copied_parameter: ?u32 = null;
@@ -960,5 +972,108 @@ test "semantic_codec: Annex B lexical variable parameter roles round-trip withou
         // Losing the optional tuple must be a miss, never a name-based repair.
         std.mem.writeInt(u64, corrupt[8..16], @import("../util/wyhash.zig").hashU64(corrupt[16..]), .little);
         try testing.expectError(error.Truncated, codec.deserialize(corrupt, allocator));
+    }
+}
+
+test "enum outer binding codec24 retains lexical source identity and rejects codec23" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "function f(){enum E{A=7};return E}");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(a, &parser.ast);
+    ana.is_ts = true;
+    ana.enable_exact_declaration_anchors = true;
+    try ana.analyze();
+    const sem = ModuleSemanticData{
+        .symbols = ana.symbols,
+        .scopes = ana.scopes.items,
+        .scope_maps = ana.scope_maps.items,
+        .scope_owner_map = ana.scope_owner_map,
+        .exported_names = ana.exported_names,
+        .symbol_ids = ana.symbol_ids.items,
+        .unresolved_references = ana.unresolved_references,
+        .references = ana.references.items,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    const restored = try codec.deserialize(bytes.items, a);
+    var enums: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").EnumExtra.name);
+        const id = ana.symbol_ids.items[@backingInt(name)].?;
+        try testing.expectEqual(.variable_let, restored.symbols.items[id].kind);
+        try testing.expectEqual(ana.symbols.items[id].scope_id, restored.symbols.items[id].scope_id);
+        try testing.expectEqual(@as(?u32, id), restored.symbol_ids[@backingInt(name)]);
+        enums += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), enums);
+    for ([_]u32{ 23, 24 }) |legacy_version| {
+        std.mem.writeInt(u32, bytes.items[4..8], legacy_version, .little);
+        try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
+    }
+}
+
+test "static block environment codec25 restores exact var owners with matching cached AST" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "class C{static{var value=3;this.a=()=>value}static{var value=9;this.b=()=>value}}");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    var ana = SemanticAnalyzer.init(a, &parser.ast);
+    ana.enable_exact_declaration_anchors = true;
+    try ana.analyze();
+    const sem = ModuleSemanticData{
+        .symbols = ana.symbols,
+        .scopes = ana.scopes.items,
+        .scope_maps = ana.scope_maps.items,
+        .scope_owner_map = ana.scope_owner_map,
+        .class_self_symbol_map = ana.class_self_symbol_map,
+        .exported_names = ana.exported_names,
+        .symbol_ids = ana.symbol_ids.items,
+        .unresolved_references = ana.unresolved_references,
+        .references = ana.references.items,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    try codec.serialize(&sem, &bytes, a);
+    var restored = try codec.deserialize(bytes.items, a);
+    var ast_bytes: std.ArrayList(u8) = .empty;
+    const ast_codec = @import("../parser/ast_codec.zig");
+    try ast_codec.serialize(&parser.ast, &ast_bytes, a);
+    var restored_ast = try ast_codec.deserialize(ast_bytes.items, a);
+    var ids: std.ArrayList(u32) = .empty;
+    for (restored_ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, restored_ast.getText(node.span), "value")) continue;
+        const sid = restored.symbol_ids[raw].?;
+        try testing.expectEqual(.class_static_block, restored.scopes[restored.symbols.items[sid].scope_id.toIndex()].kind);
+        try testing.expectEqual(ana.symbol_ids.items[raw], restored.symbol_ids[raw]);
+        try ids.append(a, sid);
+    }
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expect(ids.items[0] != ids.items[1]);
+    var t = try @import("../transformer/transformer.zig").Transformer.init(a, &restored_ast, .{ .unsupported = @import("../transformer/options.zig").TransformOptions.compat.fromESTarget(.es5) });
+    try t.initSymbolIdsOwned(&restored_ast, restored.symbol_ids);
+    t.symbols = restored.symbols.items;
+    t.scopes = restored.scopes;
+    t.scope_maps = restored.scope_maps;
+    t.references = restored.references;
+    t.scope_owner_map = restored.scope_owner_map;
+    t.class_self_symbol_map = restored.class_self_symbol_map;
+    t.unresolved_references = &restored.unresolved_references;
+    t.semantic_edit_enabled = true;
+    try t.buildBlockRenameMap();
+    _ = try t.visitNode(root);
+    for (ids.items) |id| {
+        const storage = t.semantic_editor.?.symbols.items[id].scope_id;
+        try testing.expectEqual(.function, t.semantic_editor.?.scopes.items[storage.toIndex()].kind);
+        try testing.expect(storage.toIndex() >= restored.scopes.len);
+    }
+    for ([_]u32{ 23, 24 }) |version| {
+        std.mem.writeInt(u32, bytes.items[4..8], version, .little);
+        try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, a));
     }
 }

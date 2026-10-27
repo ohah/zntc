@@ -230,6 +230,7 @@ pub fn transformExperimentalDecorators(
             empty_list.start, empty_list.len, // decorator 제거
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
+        try @import("../native_private_field_certificate.zig").record(self, .class_copy, source_idx, class_result);
         try self.pending_nodes.append(self.allocator, class_result);
         try self.pending_nodes.appendSlice(self.allocator, static_statements);
 
@@ -493,4 +494,88 @@ test "legacy decorator self reference transfers to outer identity before finaliz
     try std.testing.expectEqual(target_scope, editor.scopes.items[arrow_scope.toIndex()].parent);
     const name_environment = editor.scopes.items[named_scope.toIndex()].parent;
     try std.testing.expectEqual(target_scope, editor.scopes.items[name_environment.toIndex()].parent);
+}
+
+test "legacy parameter decorator relocation keeps one exact source read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(a, "const __decorateClass=7,__decorateParam=8,__metadata=9,__defProp2=10; const events:Record<string,number>={class:0,property:0,method:0,parameter:0,computed:0}; function classDec(target:any):any{events.class++;return target;} function propertyDec(target:any,key:string):void{events.property++;} function methodDec(target:any,key:string,descriptor:PropertyDescriptor):PropertyDescriptor{events.method++;const original=descriptor.value;descriptor.value=function(...args:any[]){return original.apply(this,args)+1;};return descriptor;} function parameterDec(target:any,key:string,index:number):void{events.parameter++;} function computedKey():string{events.computed++;return 'computed';} @classDec class Example{@propertyDec value:number=2; @methodDec method(@parameterDec first:number,value:number):number{return(first??0)+value+40;} @methodDec [computedKey()]():number{return 2;} static self():typeof Example{return Example;}} console.log(new Example().value,new Example().method(undefined,3),new Example().computed(),Example.self()===Example,events.class,events.property,events.method,events.parameter,events.computed,__decorateClass,__decorateParam,__metadata,__defProp2);");
+    var parser = @import("../../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    var expression: NodeIndex = .none;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .decorator) continue;
+        const operand = node.data.unary.operand;
+        const value = parser.ast.getNode(operand);
+        if (value.tag == .identifier_reference and std.mem.eql(u8, parser.ast.identifierNameText(value), "parameterDec")) expression = operand;
+    }
+    try std.testing.expect(!expression.isNone());
+    const sid = analyzer.symbol_ids.items[@backingInt(expression)].?;
+    var original_flags: ?ReferenceFlags = null;
+    for (analyzer.references.items) |ref| {
+        if (ref.node_index == expression) original_flags = ref.flags;
+    }
+    try std.testing.expect(original_flags != null);
+    var transformer = try Transformer.init(a, &parser.ast, .{ .experimental_decorators = true });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const output = try transformer.transform();
+    var before_finish_count: usize = 0;
+    for (transformer.semantic_editor.?.references.items) |ref| {
+        if (ref.node_index != expression) continue;
+        before_finish_count += 1;
+        try std.testing.expectEqual(sid, @backingInt(ref.symbol_id));
+        try std.testing.expectEqual(original_flags.?, ref.flags);
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(ref.scope_id));
+    }
+    try std.testing.expectEqual(@as(usize, 1), before_finish_count);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var count: usize = 0;
+    for (edited.references) |ref| {
+        if (ref.node_index != expression) continue;
+        count += 1;
+        try std.testing.expectEqual(sid, @backingInt(ref.symbol_id));
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(ref.scope_id));
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+    // The consumed metadata edge must be absent, independently of whether
+    // the old semantic graph is retained or a fresh analyzer is requested.
+    const contexts = try @import("../../semantic/statement_coordinates.zig").collect(a, transformer.ast, output);
+    const expected = contexts[@backingInt(expression)].?;
+    try std.testing.expect(expected.stmt_idx != @import("../../semantic/symbol.zig").Reference.NO_STMT);
+    var fresh = @import("../../semantic/analyzer.zig").SemanticAnalyzer.init(a, transformer.ast);
+    fresh.enable_stmt_info = true;
+    fresh.enable_exact_declaration_anchors = true;
+    try fresh.analyze();
+    var fresh_count: usize = 0;
+    for (fresh.references.items) |ref| {
+        if (ref.node_index != expression) continue;
+        fresh_count += 1;
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(ref.scope_id));
+        try std.testing.expectEqual(original_flags.?, ref.flags);
+        try std.testing.expectEqual(expected.stmt_idx, ref.stmt_idx);
+        try std.testing.expectEqual(expected.scope_stmt_idx, ref.scope_stmt_idx);
+        try std.testing.expectEqual(fresh.symbol_ids.items[@backingInt(expression)].?, @backingInt(ref.symbol_id));
+    }
+    try std.testing.expectEqual(@as(usize, 1), fresh_count);
+}
+
+test {
+    _ = @import("../legacy_assignment_field_certificate.zig");
 }

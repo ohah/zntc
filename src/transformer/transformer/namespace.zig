@@ -60,7 +60,7 @@ pub fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
 /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
 /// flags=1: ambient module/namespace declaration -> strip.
 /// flags=0: namespace with runtime output; codegen emits the IIFE.
-pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitNamespaceDeclaration(self: *Transformer, primary: NodeIndex, node: Node) Error!NodeIndex {
     if (node.data.binary.flags == 1) return .none;
 
     const namespace_owner_symbol_id: ?u32 = if (self.getSymbolIdAt(node.data.binary.left)) |symbol_id| blk: {
@@ -76,7 +76,23 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         _ = self.namespace_path.pop();
         if (is_root_namespace) self.namespace_root_symbol_id = saved_root_symbol;
     }
-    const new_name = try self.visitNode(node.data.binary.left);
+    const shared_enum_storage = self.semantic_edit_enabled and if (self.getSymbolIdAt(node.data.binary.left)) |id| self.enum_outer_source_ids.contains(id) else false;
+    var new_name = if (shared_enum_storage) node.data.binary.left else try self.visitNode(node.data.binary.left);
+    // A namespace is emitted as an ordinary IIFE, so its captures belong to
+    // that invocation, even when the declaration is nested in another arrow.
+    const capture_frame = es_helpers.pushCaptureFrame(self);
+    const saved_arrow_depth = self.arrow_this_depth;
+    const saved_needs_this = self.needs_this_var;
+    const saved_needs_arguments = self.needs_arguments_var;
+    self.arrow_this_depth = 0;
+    self.needs_this_var = false;
+    self.needs_arguments_var = false;
+    defer {
+        self.arrow_this_depth = saved_arrow_depth;
+        self.needs_this_var = saved_needs_this;
+        self.needs_arguments_var = saved_needs_arguments;
+        es_helpers.popCaptureFrame(self, capture_frame);
+    }
     const saved_namespace_scope = self.namespace_iife_scope;
     const saved_temp_counter = self.temp_var_counter;
     const saved_binding_len = self.namespace_temp_bindings.items.len;
@@ -105,7 +121,13 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         frame.exported_symbol_ids.deinit(self.allocator);
     };
 
-    var new_body = try self.visitNode(node.data.binary.right);
+    const source_body = node.data.binary.right;
+    if (!source_body.isNone()) {
+        const body_tag = self.ast.getNode(source_body).tag;
+        if (body_tag == .block_statement or body_tag == .ts_module_block)
+            try @import("semantic_edit.zig").bindNamespaceBodyOwner(self, primary, source_body, self.current_scope);
+    }
+    var new_body = try self.visitNode(source_body);
     if (!new_body.isNone()) {
         for (self.namespace_temp_bindings.items[saved_binding_len..]) |entry| {
             if (self.getSymbolIdAt(entry.binding) != null) continue;
@@ -131,6 +153,52 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         return .none;
     }
 
+    if (body_node.tag == .ts_module_declaration) {
+        // A dotted namespace's implicit outer body is a real IIFE body too.
+        // Materialize its implicit exported inner declaration so a strict
+        // directive has an actual statement-list owner without losing A.B.
+        const exported = try self.addExtraNode(.export_named_declaration, body_node.span, &.{
+            @backingInt(new_body), 0, 0, @backingInt(NodeIndex.none),
+        });
+        new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{ .list = try self.ast.addNodeList(&.{exported}) } });
+        if (self.semantic_edit_enabled) {
+            try self.transformed_scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+            if (self.semantic_editor) |*editor| try editor.scope_owner_map.put(self.allocator, @backingInt(new_body), @backingInt(self.current_scope));
+            // This wrapper is born as this outer IIFE's actual body. Later
+            // strict/capture copies must carry that exact creation owner.
+            const origin = try self.scope_owner_origins.getOrPut(self.allocator, @backingInt(new_body));
+            if (!origin.found_existing) origin.value_ptr.* = @backingInt(new_body);
+        }
+    }
+
+    if (!new_body.isNone()) {
+        var captures: [3]NodeIndex = undefined;
+        const capture_count = try es_helpers.fillThisArgumentsCaptures(self, &captures, node.span);
+        const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        const strict_iife = !self.current_scope.isNone() and self.current_scope.toIndex() < source_scopes.len and source_scopes[self.current_scope.toIndex()].is_strict;
+        if (capture_count != 0 or strict_iife) {
+            const previous_body = self.ast.getNode(new_body);
+            if (previous_body.tag != .block_statement and previous_body.tag != .ts_module_block)
+                @panic("namespace captures require the actual IIFE body");
+            var statements: std.ArrayList(NodeIndex) = .empty;
+            defer statements.deinit(self.allocator);
+            if (strict_iife) {
+                // The generated ordinary IIFE must preserve its source strict
+                // environment: unmapped arguments, poisoned callee and this.
+                const text = try self.ast.addString("\"use strict\"");
+                const directive = try self.ast.addNode(.{ .tag = .directive, .span = text, .data = .{ .none = 0 } });
+                try statements.append(self.allocator, directive);
+            }
+            try statements.appendSlice(self.allocator, captures[0..capture_count]);
+            for (0..previous_body.data.list.len) |index| {
+                try statements.append(self.allocator, self.ast.readExtraNode(previous_body.data.list.start, @intCast(index)));
+            }
+            const captured_body = try self.ast.addNode(.{ .tag = previous_body.tag, .span = previous_body.span, .data = .{ .list = try self.ast.addNodeList(statements.items) } });
+            try self.remapCopiedScopeOwner(new_body, captured_body);
+            new_body = captured_body;
+        }
+    }
+    if (shared_enum_storage) new_name = try @import("enum.zig").prepareTsIifeOuterStorage(self, node.data.binary.left, node.span);
     return self.ast.addNode(.{
         .tag = .ts_module_declaration,
         .span = node.span,

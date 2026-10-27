@@ -31,27 +31,16 @@ fn ensureStatementBody(self: *Transformer, original_idx: NodeIndex, visited_idx:
 
 /// 함수 경계를 넘지 않고 `yield` 식이 있는지.
 fn bodyHasYield(self: *Transformer, root: NodeIndex) bool {
-    if (root.isNone()) return false;
-    var found = false;
-    ast_walk.walkPreorderIterative(self.allocator, self.ast, root, &found, yieldVisit) catch return true;
-    return found;
+    return @import("../loop_await_driver.zig").hasSuspension(self, root, .yield_expression) catch true;
 }
 
-fn yieldVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
-    switch (node.tag) {
-        .yield_expression => {
-            found.* = true;
-            return .stop;
-        },
-        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => return .skip_children,
-        else => return .descend,
-    }
+fn visitSuspendingLoopBody(self: *Transformer, body: NodeIndex, capture_source_values: bool) Error!NodeIndex {
+    const saved = self.in_extracted_fn_body;
+    self.in_extracted_fn_body = saved or capture_source_values;
+    defer self.in_extracted_fn_body = saved;
+    return self.visitNode(body);
 }
 
-/// 루프 추출 판단에 쓰는 이름들 (#4743).
-/// - `names`: 헤더 let/const + 본문에서 선언한 let/const/class — 이 중 하나라도 클로저가
-///   캡처하면 반복별 추출이 필요하다.
-/// - `var_names`: 본문의 원래 `var` — 추출하면 바깥으로 끌어올린다.
 pub const LoopCapture = struct {
     names: std.ArrayList([]const u8) = .empty,
     var_names: std.ArrayList([]const u8) = .empty,
@@ -59,15 +48,18 @@ pub const LoopCapture = struct {
     var_bindings: std.ArrayList(NodeIndex) = .empty,
     /// 헤더가 아니라 본문 선언 때문에 추출해야 하는지(헤더 let 이 없는 루프도 추출하게 한다).
     body_captured: bool = false,
+    retained_key_cells: bool = false,
 
     pub fn init(self: *Transformer, head_names: []const []const u8, body: NodeIndex) Error!LoopCapture {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var c: LoopCapture = .{};
+        c.retained_key_cells = try @import("../retained_class_keys.zig").prepareLoopBody(self, body);
         try c.names.appendSlice(self.allocator, head_names);
         try BlockScoping.collectLoopBodyLexicalNames(self, body, false, &c.names);
         if (c.names.items.len > head_names.len) {
             c.body_captured = BlockScoping.hasCapturedClosure(self, body, c.names.items[head_names.len..]);
         }
+        c.body_captured = c.body_captured or c.retained_key_cells;
         try BlockScoping.collectLoopBodyVarBindings(self, body, &c.var_bindings);
         for (c.var_bindings.items) |binding| try c.var_names.append(self.allocator, try self.decodedName(self.ast.getText(self.ast.getNode(binding).span)));
         return c;
@@ -252,7 +244,10 @@ pub fn visitWithStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 /// 경로 자체가 없었다 — 모든 클로저가 마지막 값을 봤다.
 pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     const node = self.ast.getNode(idx);
-    if (!self.options.unsupported.block_scoping) return visitBinaryStatementBody(self, idx);
+    if (!self.options.unsupported.block_scoping) {
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, node.data.binary.right);
+        return visitBinaryStatementBody(self, idx);
+    }
     const orig_body = node.data.binary.right;
     var capture = try LoopCapture.init(self, &.{}, orig_body);
     defer capture.deinit(self);
@@ -270,7 +265,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     try self.label_scope.append(self.allocator, null);
     const body_temp_start = self.temp_var_counter;
     self.pending_loop_extraction_depth += 1;
-    const raw_body = self.visitNode(orig_body) catch |err| {
+    const raw_body = visitSuspendingLoopBody(self, orig_body, is_async) catch |err| {
         self.pending_loop_extraction_depth -= 1;
         return err;
     };
@@ -294,6 +289,7 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         capture.var_bindings.items,
         self.current_scope,
         .none,
+        is_async,
     );
     const loop_node = try self.ast.addNode(.{
         .tag = node.tag,
@@ -311,6 +307,8 @@ pub fn visitWhileLoop(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
 /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
 pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
+    if (!self.options.unsupported.block_scoping)
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, node.data.ternary.c);
     if (self.options.unsupported.block_scoping) {
         const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
         var lexical_names = try BlockScoping.collectLexicalVarNames(self, node.data.ternary.a);
@@ -325,7 +323,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
         if (lexical_names.items.len > 0 or capture.body_captured) {
             const orig_body_idx = node.data.ternary.c;
             // 원본 AST 에서 capture 검사 — visitNode 가 closure 경계를 변환하기 전 시점.
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
+            const has_capture = capture.retained_key_cells or BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             // body 에 await 가 있으면 _loop 도 async 여야 (호출부도 await wrap).
             // for-await-of 자체는 enclosing async function 보장이지만 body 에 await
             // 가 없으면 sync _loop 으로 충분.
@@ -348,7 +346,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
             if (has_capture) self.pending_loop_extraction_depth += 1;
-            const raw_c = self.visitNode(orig_body_idx) catch |err| {
+            const raw_c = visitSuspendingLoopBody(self, orig_body_idx, is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -377,6 +375,7 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     .none,
+                    is_async,
                 );
                 try splitCapturedLoopHeaderSymbols(
                     self,
@@ -432,17 +431,17 @@ pub fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
 ///   - es2015~17(unsupported.object_spread): object rest binding 만 (for_of 가
 ///     native 라 LHS 슬롯 expand 불가 → body-destructure).
 /// LHS 가 binding(variable_declaration) 아니거나 lowering 불요면 null.
-pub fn maybeLowerForInOfDestructuring(self: *Transformer, node: Node) Error!?NodeIndex {
+pub fn maybeLowerForInOfDestructuring(self: *Transformer, source: NodeIndex, node: Node) Error!?NodeIndex {
     const left = node.data.ternary.a;
     if (left.isNone()) return null;
     const left_node = self.ast.getNode(left);
     const D = es2015_destructuring.ES2015Destructuring(Transformer);
     if (left_node.tag == .variable_declaration) {
         if (self.options.unsupported.destructuring and D.hasDestructuring(self, left_node)) {
-            return try D.lowerForInOfDestructuring(self, node);
+            return try D.lowerForInOfDestructuring(self, source, node);
         }
         if (self.options.unsupported.object_spread and D.hasObjectRest(self, left_node)) {
-            return try D.lowerForInOfDestructuring(self, node);
+            return try D.lowerForInOfDestructuring(self, source, node);
         }
         return null;
     }
@@ -455,7 +454,7 @@ pub fn maybeLowerForInOfDestructuring(self: *Transformer, node: Node) Error!?Nod
         self.options.unsupported.object_spread and
         D.destructuringTargetHasObjectRest(self, left))
     {
-        return try D.lowerForInOfDestructuring(self, node);
+        return try D.lowerForInOfDestructuring(self, source, node);
     }
     return null;
 }
@@ -472,6 +471,13 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     if (!has_private) return null;
 
     const span = node.span;
+    const source_scope = self.current_scope;
+    // Reserve the actual emitted body before any prefix references are born.
+    const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+    const body_scope = if (self.semantic_edit_enabled)
+        try self.addGeneratedScope(source_scope, new_body, .block)
+    else
+        source_scope;
     const temp_span = try es_helpers.makeTempVarSpan(self);
     // var _t;
     const binding = try es_helpers.makeSyntheticBinding(self, temp_span);
@@ -483,8 +489,8 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
 
     // (LHS = _t) assignment_expression — 이후 방문 시 lowerPrivateFieldSet / destructuring 경로 거침.
-    const tmp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-    try self.addSyntheticRefInScope(tmp_ref, temp_symbol, self.current_scope, .{ .read = true });
+    const owner_scope = if (temp_symbol) |id| self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id else source_scope;
+    const tmp_ref = try es_helpers.makeTempRefFromIdentity(self, .{ .span = temp_span, .symbol_id = temp_symbol, .owner_scope = owner_scope, .reference_scope = body_scope }, span, .{ .read = true });
     const prefix_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
@@ -502,7 +508,7 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
 
     // 원본 body 의 자식을 prefix_stmt 와 묶어 block_statement 생성 (body 내부는 일반 visit).
     const body_idx = node.data.ternary.c;
-    const new_body = try buildForBodyWithPrefix(self, body_idx, prefix_stmt, span);
+    try buildForBodyWithPrefix(self, body_idx, prefix_stmt, new_body, source_scope, body_scope);
 
     // for (var _t ... ) new_body 로 재조립한 뒤, 표준 visit로 하위 변환 적용.
     const rewritten = try self.ast.addNode(.{
@@ -513,35 +519,27 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
     return try self.visitNode(rewritten);
 }
 
-/// for-loop body 앞에 prefix statement를 삽입해 새 block_statement 생성.
-/// body 가 이미 block_statement면 기존 자식 앞에 prefix를 끼우고, 아니면 [prefix, body] 두 개로 감쌈.
-fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: NodeIndex, span: Span) Error!NodeIndex {
-    if (body_idx.isNone()) {
-        const list = try self.ast.addNodeList(&.{prefix_stmt});
-        return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+/// The prefix executes outside the original body's lexical environment.
+/// Keep that original block as a child rather than flattening away its owner.
+fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: NodeIndex, result: NodeIndex, source_scope: @import("../../semantic/scope.zig").ScopeId, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!void {
+    if (self.semantic_edit_enabled) {
+        const strict = @import("../class_strict_context.zig");
+        try strict.moveSourceReferences(self, prefix_stmt, source_scope, source_scope, body_scope);
+        try self.reparentGeneratedBodyScopes(source_scope, body_scope, prefix_stmt);
+        if (!body_idx.isNone()) {
+            try strict.moveSourceReferences(self, body_idx, source_scope, source_scope, body_scope);
+            try self.reparentGeneratedBodyScopes(source_scope, body_scope, body_idx);
+        }
     }
-    const body_node = self.ast.getNode(body_idx);
-    if (body_node.tag != .block_statement) {
-        const list = try self.ast.addNodeList(&.{ prefix_stmt, body_idx });
-        return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
-    }
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    try self.scratch.append(self.allocator, prefix_stmt);
-    const start = body_node.data.list.start;
-    const len = body_node.data.list.len;
-    var i: u32 = 0;
-    while (i < len) : (i += 1) {
-        const child_raw = self.ast.extra_data.items[start + i];
-        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(child_raw)));
-    }
-    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+    self.ast.nodes.items[@backingInt(result)].data.list = try self.ast.addNodeList(if (body_idx.isNone()) &.{prefix_stmt} else &.{ prefix_stmt, body_idx });
 }
 
-pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitForStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
     const e = node.data.extra;
     const init_idx = self.readNodeIdx(e, 0);
+    if (!self.options.unsupported.block_scoping)
+        _ = try @import("../retained_class_keys.zig").prepareLoopBody(self, self.readNodeIdx(e, 3));
 
     // ES2015 block scoping: let/const 변수 캡처 감지
     if (self.options.unsupported.block_scoping) {
@@ -558,7 +556,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         if (lexical_names.items.len > 0 or capture.body_captured) {
             // 원본 body에서 캡처/제어흐름 분석 (new AST에서는 extra 레이아웃이 변경됨)
             const orig_body_idx = self.readNodeIdx(e, 3);
-            const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
+            const has_capture = capture.retained_key_cells or BlockScoping.hasCapturedClosure(self, orig_body_idx, capture.names.items);
             const is_async = if (has_capture) BlockScoping.hasAwaitExpression(self, orig_body_idx) else false;
             const preserve_this = if (has_capture) BlockScoping.hasLexicalThisReference(self, orig_body_idx) else false;
 
@@ -577,12 +575,20 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             // 위임하며, 본문은 방문하지 않고 원본 그대로 둔다(그 generator 가 나중에 한 번 방문).
             // 헤더 let 은 리네임될 수 있어 방문 안 한 본문과 이름이 어긋나므로 헤더 선언이 없는
             // 루프(for-of 풀이 결과)에만 쓴다 (#4722 → #4746).
-            const yield_closure = has_capture and lexical_names.items.len == 0 and bodyHasYield(self, orig_body_idx);
+            const yield_closure = has_capture and (lexical_names.items.len == 0 or self.semantic_edit_enabled) and bodyHasYield(self, orig_body_idx);
             // 이 본문은 `_loop` 클로저로 추출된다 — 안쪽에서 바깥 라벨은 경계 너머다 (#4722).
             if (has_capture) try self.label_scope.append(self.allocator, null);
             const body_temp_start = self.temp_var_counter;
             if (has_capture and !yield_closure) self.pending_loop_extraction_depth += 1;
-            const raw_body = if (yield_closure) orig_body_idx else self.visitNode(orig_body_idx) catch |err| {
+            const raw_body = if (yield_closure) native_generator_body: {
+                if (self.options.unsupported.generator) break :native_generator_body orig_body_idx;
+                // Visit in the actual source frame before the implementation
+                // generator creates its own arguments environment.
+                const saved_extracted = self.in_extracted_fn_body;
+                self.in_extracted_fn_body = true;
+                defer self.in_extracted_fn_body = saved_extracted;
+                break :native_generator_body try self.visitNode(orig_body_idx);
+            } else visitSuspendingLoopBody(self, orig_body_idx, is_async) catch |err| {
                 if (has_capture) self.pending_loop_extraction_depth -= 1;
                 return err;
             };
@@ -611,6 +617,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     capture.var_bindings.items,
                     self.current_scope,
                     if (yield_closure) self.outputScopeParent(self.current_scope) else .none,
+                    is_async and !yield_closure,
                 );
 
                 try splitCapturedLoopHeaderSymbols(
@@ -627,6 +634,10 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                     @backingInt(new_init),   @backingInt(new_test),
                     @backingInt(new_update), @backingInt(result.call_and_check),
                 });
+
+                // The helper declaration is outside the source loop; the
+                // actual replacement loop retains its source lexical owner.
+                try self.remapCopiedScopeOwner(idx, for_node);
 
                 // 두 문을 블록으로 반환 (호이스팅 불필요 — for 문 바로 앞에 삽입)
                 const stmts = try self.ast.addNodeList(&.{ result.loop_fn, for_node });
@@ -654,10 +665,36 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
     });
 }
 
+const Scope = @import("../../semantic/scope.zig").Scope;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+
+fn switchDiscriminantParent(scopes: []const Scope, current: ScopeId, owned: ScopeId) error{InvalidSwitchOwner}!ScopeId {
+    if (owned != current) return error.InvalidSwitchOwner;
+    if (owned.toIndex() >= scopes.len) return error.InvalidSwitchOwner;
+    if (scopes[owned.toIndex()].kind != .switch_block) return error.InvalidSwitchOwner;
+    const parent = scopes[owned.toIndex()].parent;
+    if (parent.isNone()) return error.InvalidSwitchOwner;
+    if (parent == owned) return error.InvalidSwitchOwner;
+    if (parent.toIndex() >= scopes.len) return error.InvalidSwitchOwner;
+    return parent;
+}
+
 /// switch_statement: extra = [discriminant, cases.start, cases.len]
-pub fn visitSwitchStatement(self: *Transformer, node: Node) Error!NodeIndex {
+pub fn visitSwitchStatement(self: *Transformer, source: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
-    const new_disc = try self.visitNode(self.readNodeIdx(e, 0));
+    const switch_scope = self.current_scope;
+    const new_disc = discriminant: {
+        // The discriminant is evaluated before entering the switch lexical
+        // environment. Case tests and statements still use the switch owner.
+        if (self.outputOwnedScope(source)) |owned| {
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const parent = switchDiscriminantParent(scopes, switch_scope, owned) catch
+                std.debug.panic("switch discriminant requires its exact switch owner and enclosing scope", .{});
+            self.current_scope = parent;
+        }
+        defer self.current_scope = switch_scope;
+        break :discriminant try self.visitNode(self.readNodeIdx(e, 0));
+    };
     const new_cases = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     return self.addExtraNode(.switch_statement, node.span, &.{
         @backingInt(new_disc), new_cases.start, new_cases.len,
@@ -670,4 +707,27 @@ pub fn visitSwitchCase(self: *Transformer, node: Node) Error!NodeIndex {
     const new_test = try self.visitNode(self.readNodeIdx(e, 0));
     const new_stmts = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     return self.addExtraNode(.switch_case, node.span, &.{ @backingInt(new_test), new_stmts.start, new_stmts.len });
+}
+
+test "post super switch discriminant owner guards restore" {
+    var scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @fromBackingInt(0), .kind = .function, .is_strict = true },
+        .{ .parent = @fromBackingInt(1), .kind = .switch_block, .is_strict = true },
+        .{ .parent = @fromBackingInt(1), .kind = .switch_block, .is_strict = true },
+    };
+    const owned: ScopeId = @fromBackingInt(2);
+    const parent: ScopeId = @fromBackingInt(1);
+    try std.testing.expectEqual(parent, try switchDiscriminantParent(&scopes, owned, owned));
+    try std.testing.expectError(error.InvalidSwitchOwner, switchDiscriminantParent(&scopes, @fromBackingInt(3), owned));
+    try std.testing.expectError(error.InvalidSwitchOwner, switchDiscriminantParent(&scopes, @fromBackingInt(9), @fromBackingInt(9)));
+    scopes[2].kind = .block;
+    try std.testing.expectError(error.InvalidSwitchOwner, switchDiscriminantParent(&scopes, owned, owned));
+    scopes[2].kind = .switch_block;
+    for ([_]ScopeId{ .none, owned, @fromBackingInt(9) }) |bad_parent| {
+        scopes[2].parent = bad_parent;
+        try std.testing.expectError(error.InvalidSwitchOwner, switchDiscriminantParent(&scopes, owned, owned));
+    }
+    scopes[2].parent = parent;
+    try std.testing.expectEqual(parent, try switchDiscriminantParent(&scopes, owned, owned));
 }

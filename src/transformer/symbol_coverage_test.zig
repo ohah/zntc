@@ -4774,6 +4774,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
         "__assertThisInitialized",
         "__assertThisUninitialized",
         "__possibleConstructorReturn",
+        "__nativeCtorThis",
     };
     const callsite = try es_helpers.makeRuntimeHelperRef(&transformer, bases[0]);
     const callsite_id = transformer.runtime_helper_symbol_ids.get(bases[0]) orelse return error.MissingCallsiteRuntimeHelperSymbolId;
@@ -7155,7 +7156,7 @@ test "#4819 private field helper references retain their producer SymbolIds" {
         transformer.scope_owner_map = analyzer.scope_owner_map;
         transformer.node_scope_provenance = analyzer.node_scope_provenance;
         transformer.semantic_edit_enabled = true;
-        _ = try transformer.transform();
+        const output = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
 
         if (target == .es2015) {
@@ -7168,17 +7169,52 @@ test "#4819 private field helper references retain their producer SymbolIds" {
                 }
             }
             try std.testing.expect(capture_id != null);
+            const utils = @import("output_scope_test_utils.zig");
+            var parents = try utils.buildParentMap(allocator, transformer.ast, output);
             var initialized_from_exact_class = false;
             for (transformer.ast.nodes.items) |node| {
                 if (node.tag != .variable_declarator) continue;
                 const binding = transformer.ast.readExtraNode(node.data.extra, 0);
-                if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != capture_id) continue;
+                if (binding.isNone() or edited.symbol_ids[@backingInt(binding)] != capture_id or !parents.contains(@backingInt(binding))) continue;
+                const declaration = transformer.ast.nodes.items[parents.get(parents.get(@backingInt(binding)).?).?];
+                try std.testing.expectEqual(.variable_declaration, declaration.tag);
+                try std.testing.expectEqual(.@"const", transformer.ast.variableDeclarationKind(declaration));
                 const value = transformer.ast.readExtraNode(node.data.extra, 2);
                 try std.testing.expect(!value.isNone());
                 try std.testing.expectEqual(@as(?u32, outer_class_id), edited.symbol_ids[@backingInt(value)]);
                 initialized_from_exact_class = true;
             }
             try std.testing.expect(initialized_from_exact_class);
+            var static_wrapper_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+            var wrapper_owners: usize = 0;
+            var scope_owners = edited.scope_owner_map.iterator();
+            while (scope_owners.next()) |entry| {
+                const owner = transformer.ast.nodes.items[entry.key_ptr.*];
+                if (owner.tag != .function_expression or !parents.contains(entry.key_ptr.*)) continue;
+                const member_raw = parents.get(entry.key_ptr.*).?;
+                const member = transformer.ast.nodes.items[member_raw];
+                if (member.tag != .static_member_expression) continue;
+                const key = transformer.ast.readExtraNode(member.data.extra, 1);
+                if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(key).data.string_ref), "call")) continue;
+                const call = transformer.ast.nodes.items[parents.get(member_raw).?];
+                try std.testing.expectEqual(.call_expression, call.tag);
+                const args = transformer.ast.extra_data.items[transformer.ast.readExtra(call.data.extra, 1)..][0..transformer.ast.readExtra(call.data.extra, 2)];
+                try std.testing.expectEqual(@as(usize, 1), args.len);
+                try std.testing.expectEqual(capture_id, edited.symbol_ids[args[0]]);
+                const scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(entry.value_ptr.*);
+                try std.testing.expectEqual(.function, edited.scopes[scope.toIndex()].kind);
+                try std.testing.expectEqual(edited.symbols.items[capture_id.?].scope_id, edited.scopes[scope.toIndex()].parent);
+                try std.testing.expectEqual(@as(u32, 0), transformer.ast.readExtra(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.flags));
+                const params = transformer.ast.getNode(transformer.ast.readExtraNode(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.params));
+                try std.testing.expectEqual(@as(u32, 0), params.data.list.len);
+                const body = transformer.ast.getNode(transformer.ast.readExtraNode(owner.data.extra, @import("../parser/ast.zig").FunctionExtra.body));
+                const directive = transformer.ast.nodes.items[transformer.ast.extra_data.items[body.data.list.start]];
+                try std.testing.expectEqual(.directive, directive.tag);
+                try std.testing.expectEqualStrings("\"use strict\"", transformer.ast.getText(directive.span));
+                static_wrapper_scope = scope;
+                wrapper_owners += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), wrapper_owners);
             var static_block_capture_refs: usize = 0;
             var exact_class_value_reads: usize = 0;
             for (edited.references) |reference| {
@@ -7186,9 +7222,11 @@ test "#4819 private field helper references retain their producer SymbolIds" {
                 const node = transformer.ast.getNode(reference.node_index);
                 if (node.tag != .identifier_reference) continue;
                 if (@backingInt(reference.symbol_id) == capture_id.? and
-                    edited.scopes[reference.scope_id.toIndex()].kind == .block)
+                    reference.scope_id == static_wrapper_scope.?)
                 {
-                    try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    const actual_scope = utils.expectedScope(transformer.ast, output, &parents, &edited.scope_owner_map, @backingInt(reference.node_index)) orelse return error.MissingStaticWrapperReferenceOwner;
+                    try std.testing.expectEqual(actual_scope, reference.scope_id);
+                    try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
                     static_block_capture_refs += 1;
                 }
                 if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields") and
@@ -8522,4 +8560,253 @@ test "exact scope audit accepts a generated function-expression self-name scope 
     const detached = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, empty_root, &analyzer, scopes, scope_maps, references, name_scope);
     try std.testing.expect(detached.scope_owner_mismatch > 0);
     try std.testing.expect(!detached.isClean());
+}
+
+test "exact native Annex B counts include actual implicit assignments and reject stale metadata" {
+    const Audit = struct {
+        fn run(a: std.mem.Allocator, parser: *const Parser, root: AstNodeIndex, analyzer: *const SemanticAnalyzer, symbols: []const Symbol) !coverage.ExactReport {
+            const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+            return coverage.checkExactWithDeclarationAnchors(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), analyzer.symbol_ids.items, symbols, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, analyzer.helper_ref_nodes, &analyzer.helper_scope_map, &analyzer.unresolved_reference_nodes, &.{}, &origins);
+        }
+    };
+    const cases = [_]struct { source: []const u8, assignments: u32 }{
+        .{ .source = "function run(){{function local(){return 1;}local();}return local();}", .assignments = 1 },
+        .{ .source = "function run(){{function local(){return 1;}function local(){return 2;}local();}return local();}", .assignments = 2 },
+        .{ .source = "function run(flag){if(flag)function local(){return 3;}return local();}", .assignments = 1 },
+        .{ .source = "function run(value=1){{function local(){return value;}local();}return local();}", .assignments = 1 },
+        .{ .source = "function run(){var unrelated=0;{function local(){return 1;}local();}return local();}function sibling(){var local=0;return local;}", .assignments = 1 },
+        .{ .source = "'use strict';function run(){{function local(){return 1;}local();}return 1;}", .assignments = 0 },
+        .{ .source = "function run(){{const local=()=>1;local();}return 1;}", .assignments = 0 },
+    };
+    var foreign_scope_checks: usize = 0;
+    var wrong_name_checks: usize = 0;
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".js");
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = parser.is_module;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        const baseline = try Audit.run(a, &parser, root, &analyzer, analyzer.symbols.items);
+        if (!baseline.isClean()) {
+            std.debug.print("native Annex B source: {s}\n", .{case.source});
+            coverage.printExact("native-annex-source", baseline);
+            for (analyzer.references.items) |row| {
+                if (row.flags.declare) std.debug.print("decl sid={d} anchor={d} scope={d} stmt={d}/{d}\n", .{ @backingInt(row.symbol_id), @backingInt(row.declaration_node_index), @backingInt(row.scope_id), row.stmt_idx, row.scope_stmt_idx });
+            }
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag == .binding_identifier) std.debug.print("binding node={d} name={s} sid={any}\n", .{ raw, parser.ast.getText(node.span), analyzer.symbol_ids.items[raw] });
+            }
+        }
+        try std.testing.expect(baseline.isClean());
+        var roles: usize = 0;
+        for (analyzer.symbols.items, 0..) |symbol, lexical| {
+            const alias = symbol.annex_b_alias;
+            if (alias.variable.isNone()) continue;
+            roles += 1;
+            try std.testing.expectEqual(case.assignments, alias.source_assignment_count);
+            const variable = @backingInt(alias.variable);
+            for (0..10) |change| {
+                const symbols = try a.dupe(Symbol, analyzer.symbols.items);
+                switch (change) {
+                    0 => symbols[lexical].reference_count += 1,
+                    1 => symbols[variable].reference_count += 1,
+                    2 => symbols[variable].write_count += 1,
+                    3 => symbols[lexical].annex_b_alias.source_assignment_count += 1,
+                    4 => symbols[lexical].annex_b_alias.variable = @fromBackingInt(@as(u32, @intCast(lexical))),
+                    5 => symbols[variable].kind = .variable_let,
+                    6 => symbols[lexical].scope_id = symbols[variable].scope_id,
+                    7 => symbols[lexical].annex_b_alias.state = .lowered,
+                    8 => symbols[lexical].annex_b_alias.source_assignment_count = 0,
+                    9 => symbols[lexical].annex_b_alias.source_assignment_count -= 1,
+                    else => unreachable,
+                }
+                const broken = try Audit.run(a, &parser, root, &analyzer, symbols);
+                try std.testing.expect(!broken.isClean());
+                if (change < 2) try std.testing.expectEqual(@as(usize, 1), broken.reference_count_mismatch);
+                if (change == 2) try std.testing.expectEqual(@as(usize, 1), broken.write_count_mismatch);
+                if (change == 3) try std.testing.expect(broken.declaration_identity_mismatch > 0);
+            }
+            for (analyzer.symbols.items, 0..) |candidate, other| {
+                if (candidate.kind != .variable_var or other == variable) continue;
+                const foreign_scope = candidate.scope_id != analyzer.symbols.items[variable].scope_id;
+                const same_name = std.mem.eql(u8, parser.ast.getText(candidate.name), "local");
+                if (foreign_scope != same_name) continue;
+                const symbols = try a.dupe(Symbol, analyzer.symbols.items);
+                symbols[lexical].annex_b_alias.variable = @fromBackingInt(@as(u32, @intCast(other)));
+                // Retarget counts too: the exact producer pair, not merely the
+                // aggregate totals, must still reject this valid other symbol.
+                symbols[variable].reference_count -= case.assignments;
+                symbols[variable].write_count -= case.assignments;
+                symbols[other].reference_count += case.assignments;
+                symbols[other].write_count += case.assignments;
+                const broken = try Audit.run(a, &parser, root, &analyzer, symbols);
+                try std.testing.expect(!broken.isClean());
+                if (foreign_scope) {
+                    foreign_scope_checks += 1;
+                    try std.testing.expect(broken.declaration_scope_mismatch > 0);
+                } else {
+                    wrong_name_checks += 1;
+                    try std.testing.expect(broken.declaration_identity_mismatch > 0);
+                }
+            }
+            const restored = try Audit.run(a, &parser, root, &analyzer, analyzer.symbols.items);
+            try std.testing.expect(restored.isClean());
+        }
+        try std.testing.expectEqual(@as(usize, if (case.assignments == 0) 0 else 1), roles);
+    }
+    try std.testing.expect(foreign_scope_checks > 0);
+    try std.testing.expect(wrong_name_checks > 0);
+}
+
+fn sourceFlowOwnerReport(allocator: std.mem.Allocator, ast: *const Ast, root: AstNodeIndex, analyzer: *const SemanticAnalyzer) !coverage.ExactReport {
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const none: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    return coverage.checkExactWithCompleteSourceScopeOwners(allocator, ast, root, @intCast(ast.nodes.items.len), analyzer.symbol_ids.items, analyzer.symbols.items, analyzer.scopes.items, analyzer.scope_maps.items, &analyzer.scope_owner_map, analyzer.references.items, &.{}, &helpers, &analyzer.unresolved_reference_nodes, &none, &origins);
+}
+
+test "Flow canonical rest source ownership is the actual ordinary implementation" {
+    const ast_mod = @import("../parser/ast.zig");
+    const walk = @import("../parser/ast_walk.zig");
+    const scope_utils = @import("output_scope_test_utils.zig");
+    const Case = struct { source: []const u8, known_const_reads: usize };
+    for ([_]Case{
+        .{ .source = "// @flow\nconst LongCard_withRef = 'user-binding';\nconst React = { forwardRef: (fn) => fn };\ncomponent LongCard(ref?: mixed, ...props: { label?: string }) {\n  return props.label;\n}\nfunction renderLocal() {\n  const LocalCard_withRef = 'nested-binding';\n  component LocalCard(ref?: mixed, ...props: { label?: string }) {\n    return props.label;\n  }\n  return [LocalCard({ label: 'nested' }), LocalCard_withRef].join(' ');\n}\nconsole.log(LongCard({ label: 'ok' }), LongCard_withRef, renderLocal());\n", .known_const_reads = 4 },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(ref?:mixed,value:string='fallback',...props:{label?:string}){return [value,props.label,ref]}", .known_const_reads = 1 },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".flow");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        const root: AstNodeIndex = @fromBackingInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1)));
+        const live = try walk.collectReachableNodeIndicesFrom(a, &parser.ast, root);
+        var parents = try scope_utils.buildParentMap(a, &parser.ast, root);
+        var const_reads: usize = 0;
+        var first_const_reference: ?usize = null;
+        var wrappers: usize = 0;
+        var first_wrapper: AstNodeIndex = .none;
+        var first_function: AstNodeIndex = .none;
+        for (live) |raw| {
+            const wrapper = parser.ast.nodes.items[raw];
+            if (wrapper.tag != .flow_component_wrapper) continue;
+            wrappers += 1;
+            const function_node = parser.ast.readExtraNode(wrapper.data.extra, 0);
+            const const_node = parser.ast.readExtraNode(wrapper.data.extra, 1);
+            const function = parser.ast.getNode(function_node);
+            try std.testing.expect(function.tag == .function_declaration);
+            try std.testing.expect(analyzer.scope_owner_map.get(raw) == null);
+            const body_scope = analyzer.scope_owner_map.get(@backingInt(function_node)).?;
+            try std.testing.expect(analyzer.scopes.items[body_scope].kind == .function);
+            const params = parser.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+            const has_expr = try walk.parameterListHasExpressions(a, &parser.ast, parser.ast.getNode(params).data.list);
+            const outer_scope = scope_utils.expectedScope(&parser.ast, root, &parents, &analyzer.scope_owner_map, raw).?;
+            const native_scope: ScopeId = if (has_expr) @fromBackingInt(analyzer.scope_owner_map.get(@backingInt(params)).?) else @fromBackingInt(body_scope);
+            if (has_expr) {
+                try std.testing.expect(native_scope != @as(ScopeId, @fromBackingInt(body_scope)));
+                try std.testing.expectEqual(native_scope, analyzer.scopes.items[body_scope].parent);
+                try std.testing.expectEqual(outer_scope, analyzer.scopes.items[native_scope.toIndex()].parent);
+            } else try std.testing.expectEqual(outer_scope, analyzer.scopes.items[body_scope].parent);
+            if (has_expr) {
+                // Split P creates the engine eagerly; the owners map is the
+                // lazy lookup boundary used by expression-free functions.
+                var engine: ?u32 = null;
+                for (analyzer.symbols.items, 0..) |symbol, sid| {
+                    if (symbol.synthetic_kind != .implicit_arguments or symbol.scope_id != native_scope) continue;
+                    try std.testing.expect(engine == null);
+                    engine = @intCast(sid);
+                    try std.testing.expect(symbol.kind == .parameter);
+                    try std.testing.expectEqual(function.span, symbol.declaration_span);
+                }
+                try std.testing.expect(engine != null);
+            } else try std.testing.expectEqual(function_node, analyzer.implicit_arguments_owners.get(native_scope).?);
+            var parameter_bindings = try walk.bindingIdentifiers(a, &parser.ast, params, .{});
+            var parameter_count: usize = 0;
+            while (try parameter_bindings.next()) |binding| {
+                parameter_count += 1;
+                const id = analyzer.symbol_ids.items[@backingInt(binding)].?;
+                try std.testing.expect(analyzer.symbols.items[id].kind == .parameter);
+                try std.testing.expectEqual(native_scope, analyzer.symbols.items[id].scope_id);
+                var anchors: usize = 0;
+                for (analyzer.references.items) |row| if (row.flags.declare and row.declaration_node_index == binding) {
+                    anchors += 1;
+                    try std.testing.expectEqual(id, @as(u32, @intCast(@backingInt(row.symbol_id))));
+                    try std.testing.expectEqual(native_scope, row.scope_id);
+                };
+                try std.testing.expectEqual(@as(usize, 1), anchors);
+            }
+            try std.testing.expect(parameter_count >= 2);
+            const const_live = try walk.collectReachableNodeIndicesFrom(a, &parser.ast, const_node);
+            for (analyzer.references.items, 0..) |row, reference_index| {
+                if (!row.flags.read or row.node_index.isNone()) continue;
+                for (const_live) |node| if (node == @backingInt(row.node_index)) {
+                    const_reads += 1;
+                    if (first_const_reference == null) first_const_reference = reference_index;
+                    try std.testing.expectEqual(outer_scope, row.scope_id);
+                    try std.testing.expectEqual(@as(?ScopeId, row.scope_id), scope_utils.expectedScope(&parser.ast, root, &parents, &analyzer.scope_owner_map, node));
+                    break;
+                };
+            }
+            if (first_wrapper.isNone()) {
+                first_wrapper = @fromBackingInt(raw);
+                first_function = function_node;
+            }
+        }
+        try std.testing.expect(wrappers > 0);
+        try std.testing.expectEqual(case.known_const_reads, const_reads);
+        const valid = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        std.debug.print("Flow source owner wrappers={d} missing/wrong={d} parents={d} duplicate={d} refScope={d}\n", .{ wrappers, valid.scope_owner_mismatch, valid.scope_owner_parent_mismatch, valid.duplicate_scope_owner, valid.reference_scope_mismatch });
+        try std.testing.expectEqual(@as(usize, 0), valid.scope_owner_mismatch);
+        try std.testing.expectEqual(@as(usize, 0), valid.scope_owner_parent_mismatch);
+        try std.testing.expectEqual(@as(usize, 0), valid.duplicate_scope_owner);
+        try std.testing.expectEqual(@as(usize, 0), valid.reference_scope_mismatch);
+        const body_scope = analyzer.scope_owner_map.get(@backingInt(first_function)).?;
+        _ = analyzer.scope_owner_map.remove(@backingInt(first_function));
+        const missing = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        try std.testing.expect(missing.scope_owner_mismatch > 0);
+        try analyzer.scope_owner_map.put(a, @backingInt(first_function), body_scope);
+        try analyzer.scope_owner_map.put(a, @backingInt(first_wrapper), body_scope);
+        const forged = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        try std.testing.expect(forged.scope_owner_mismatch > 0);
+        _ = analyzer.scope_owner_map.remove(@backingInt(first_wrapper));
+        var sibling: ?u32 = null;
+        for (analyzer.scopes.items, 0..) |scope, raw| {
+            if (scope.kind == .function and raw != body_scope) {
+                sibling = @intCast(raw);
+                break;
+            }
+        }
+        try std.testing.expect(sibling != null);
+        try analyzer.scope_owner_map.put(a, @backingInt(first_function), sibling.?);
+        const foreign = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        try std.testing.expect(foreign.scope_owner_mismatch + foreign.scope_owner_parent_mismatch + foreign.duplicate_scope_owner + foreign.reference_scope_mismatch > 0);
+        try analyzer.scope_owner_map.put(a, @backingInt(first_function), body_scope);
+        const const_index = first_const_reference.?;
+        const original_reference = analyzer.references.items[const_index];
+        try std.testing.expect(original_reference.scope_id != @as(ScopeId, @fromBackingInt(body_scope)));
+        analyzer.references.items[const_index].scope_id = @fromBackingInt(body_scope);
+        const polluted_const = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        try std.testing.expect(polluted_const.reference_scope_mismatch > 0);
+        analyzer.references.items[const_index] = original_reference;
+        const restored = try sourceFlowOwnerReport(a, &parser.ast, root, &analyzer);
+        try std.testing.expectEqual(@as(usize, 0), restored.scope_owner_mismatch);
+        try std.testing.expectEqual(@as(usize, 0), restored.reference_scope_mismatch);
+    }
 }

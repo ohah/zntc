@@ -1397,7 +1397,61 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// for-in/for-of 는 left 에 단일 binding 만 허용하므로 destructuring pattern 을
         /// 임시 변수로 교체하고 body 앞에 분해 선언문을 삽입한다. LHS 슬롯에 multi-
         /// declarator 를 직접 넣으면(`for(var _a,a=_a.a,... of)`) invalid 문법이 된다.
-        pub fn lowerForInOfDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        const IterationBody = struct {
+            wrapper: ?NodeIndex,
+            scope: @import("../semantic/scope.zig").ScopeId,
+        };
+
+        // Reserve the actual body environment before visiting a non-block
+        // statement. References created by lowering must be born in the block
+        // which will contain both the pattern prefix and that statement.
+        pub fn validateIterationBodyOwner(self: *Transformer, source: NodeIndex, node: Node) error{InvalidIterationBodyOwner}!?@import("../semantic/scope.zig").ScopeId {
+            if (source.isNone() or @backingInt(source) >= self.ast.nodes.items.len) return error.InvalidIterationBodyOwner;
+            const actual = self.ast.getNode(source);
+            if ((actual.tag != .for_in_statement and actual.tag != .for_of_statement) or actual.tag != node.tag)
+                return error.InvalidIterationBodyOwner;
+            if (actual.data.ternary.a != node.data.ternary.a or actual.data.ternary.b != node.data.ternary.b or
+                actual.data.ternary.c != node.data.ternary.c)
+                return error.InvalidIterationBodyOwner;
+            const body = node.data.ternary.c;
+            if (body.isNone() or @backingInt(body) >= self.ast.nodes.items.len) return error.InvalidIterationBodyOwner;
+            if (!self.semantic_edit_enabled) return null;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (self.current_scope.isNone() or self.current_scope.toIndex() >= scopes.len) return error.InvalidIterationBodyOwner;
+            if (self.outputOwnedScope(source)) |loop_scope| {
+                if (loop_scope != self.current_scope or scopes[loop_scope.toIndex()].kind != .block)
+                    return error.InvalidIterationBodyOwner;
+            } else if (@backingInt(source) < self.parser_node_count) return error.InvalidIterationBodyOwner;
+            if (self.ast.getNode(body).tag != .block_statement) return null;
+            const body_scope = self.outputOwnedScope(body) orelse return error.InvalidIterationBodyOwner;
+            if (body_scope.toIndex() >= scopes.len or scopes[body_scope.toIndex()].kind != .block or
+                scopes[body_scope.toIndex()].parent != self.current_scope or body_scope == self.current_scope)
+                return error.InvalidIterationBodyOwner;
+            return body_scope;
+        }
+
+        fn prepareIterationBody(self: *Transformer, body: NodeIndex, span: Span, known_scope: ?@import("../semantic/scope.zig").ScopeId) Transformer.Error!IterationBody {
+            const tag = self.ast.getNode(body).tag;
+            if (tag == .block_statement or tag == .function_body) {
+                return .{ .wrapper = null, .scope = known_scope orelse self.current_scope };
+            }
+            const block = try @import("loop_scope_producer.zig").createBlock(self, self.current_scope, span);
+            if (self.semantic_edit_enabled)
+                try @import("loop_scope_producer.zig").moveExpression(self, body, self.current_scope, block.scope);
+            return .{ .wrapper = block.node, .scope = if (self.semantic_edit_enabled) block.scope else self.current_scope };
+        }
+
+        fn assembleIterationBody(self: *Transformer, plan: IterationBody, body: NodeIndex, prefix: NodeIndex) Transformer.Error!NodeIndex {
+            if (plan.wrapper) |wrapper| {
+                try @import("loop_scope_producer.zig").fillBlock(self, wrapper, &.{ prefix, body });
+                return wrapper;
+            }
+            const result = try self.prependStatementsToBody(body, &.{prefix});
+            try self.remapCopiedScopeOwner(body, result);
+            return result;
+        }
+
+        pub fn lowerForInOfDestructuring(self: *Transformer, source: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a; // variable_declaration
             const right = node.data.ternary.b; // right-hand side expression
@@ -1408,7 +1462,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // assignment-target LHS (`for ({a, ...r} of arr)`) 는 binding 이 아니므로
             // 별도 처리: body 에 `({a,...r} = _ref)` assignment 를 prepend (#4254 후속).
             if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
-                return lowerForInOfAssignTargetDestructuring(self, node);
+                return lowerForInOfAssignTargetDestructuring(self, source, node);
             }
 
             // variable_declaration에서 첫 번째 declarator의 패턴을 추출
@@ -1430,6 +1484,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 return visitForInDefault(self, node);
             }
 
+            const known_body_scope = validateIterationBodyOwner(self, source, node) catch
+                @panic("destructuring iteration has no exact source/body owner");
+
             // 1) 임시 변수 _ref 생성
             const temp_span = try es_helpers.makeTempVarSpan(self);
 
@@ -1448,7 +1505,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // 3) right를 visit
             const new_right = try self.visitNode(right);
 
-            // 4) body를 visit
+            // 4) Reserve the emitted body owner before creating its reads.
+            const body_plan = try prepareIterationBody(self, body, span, known_body_scope);
+            const loop_scope = self.current_scope;
+            self.current_scope = body_plan.scope;
+            defer self.current_scope = loop_scope;
             const new_body = try self.visitNode(body);
 
             // 5) body 앞에 삽입할 destructuring 선언문들을 생성
@@ -1456,7 +1517,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            try emitPatternDeclaratorsWithIdentity(self, binding_node, temp.identity, span, out_kind);
+            var body_identity = temp.identity;
+            body_identity.reference_scope = body_plan.scope;
+            try emitPatternDeclaratorsWithIdentity(self, binding_node, body_identity, span, out_kind);
             try bindPatternTemp(self, temp.binding, temp_span, span, out_kind, temp.identity);
 
             // scratch에 쌓인 declarator들로 variable_declaration 생성
@@ -1470,7 +1533,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // 6) body 앞에 destructuring 선언문 삽입
             const final_body = if (!new_body.isNone())
-                try self.prependStatementsToBody(new_body, &.{destr_decl})
+                try assembleIterationBody(self, body_plan, new_body, destr_decl)
             else
                 new_body;
 
@@ -1488,11 +1551,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// visit 시 lowerDestructuringAssignment(#4251 object_spread 게이트)가 __rest
         /// 로 lowering. assignment target(a/r)은 outer 변수라 _ref 만 per-iteration
         /// 바인딩(closure 는 outer 캡처).
-        fn lowerForInOfAssignTargetDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        fn lowerForInOfAssignTargetDestructuring(self: *Transformer, source: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a; // object/array_assignment_target
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
+            const known_body_scope = validateIterationBodyOwner(self, source, node) catch
+                @panic("destructuring iteration has no exact source/body owner");
 
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const out_kind: ast_mod.VariableDeclarationKind = if (self.options.unsupported.block_scoping) .@"var" else .@"const";
@@ -1501,17 +1566,23 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, out_kind, span);
 
             const new_right = try self.visitNode(right);
+            const body_plan = try prepareIterationBody(self, body, span, known_body_scope);
+            const loop_scope = self.current_scope;
+            self.current_scope = body_plan.scope;
+            defer self.current_scope = loop_scope;
             const new_body = try self.visitNode(body);
 
             // ({a,...r} = _ref) — visit 시 lowerDestructuringAssignment 로 __rest lowering.
-            const ref_for_assign = try makeDestructuringTempReadWithIdentity(self, span, temp.identity);
+            var body_identity = temp.identity;
+            body_identity.reference_scope = body_plan.scope;
+            const ref_for_assign = try makeDestructuringTempReadWithIdentity(self, span, body_identity);
             const assign = try es_helpers.makeAssignExpr(self, left, ref_for_assign, span, 0);
             const visited_assign = try self.visitNode(assign);
             try bindPatternTemp(self, temp.binding, temp_span, span, out_kind, temp.identity);
             const assign_stmt = try es_helpers.makeExprStmt(self, visited_assign, span);
 
             const final_body = if (!new_body.isNone())
-                try self.prependStatementsToBody(new_body, &.{assign_stmt})
+                try assembleIterationBody(self, body_plan, new_body, assign_stmt)
             else
                 new_body;
 

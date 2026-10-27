@@ -350,6 +350,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.active_class_super_parameter = .{ .binding = super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
 
+            const saved_lowered_class = self.active_lowered_class;
+            self.active_lowered_class = .{ .node = source_idx, .source_scope = source_class_scope };
+            defer self.active_lowered_class = saved_lowered_class;
+
             // super class context 설정 (constructor/method body 방문 시 사용)
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
@@ -379,8 +383,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            if (self.pending_deferred_super_class_plan) |plan| {
+                if (plan.class_node != source_idx or plan.class_scope != source_class_scope or
+                    cm.constructor_idx != plan.constructor_node or self.outputOwnedScope(plan.constructor_node) != plan.constructor_scope)
+                    @panic("deferred super class lost its exact source owner");
+            }
             try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
-            try bindComputedKeyTemps(self, &cm, iife_scope, span);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span, source_idx);
             const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
             const inner = self.class_self_symbol_map.get(@backingInt(source_idx)) orelse
                 self.class_self_symbol_map.get(source_origin);
@@ -562,7 +571,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
-                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                const extends_ref = blk: {
+                    const previous = self.current_scope;
+                    self.current_scope = iife_scope;
+                    defer self.current_scope = previous;
+                    break :blk try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                };
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
                 self.runtime_helpers.extends = true;
@@ -586,8 +600,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // elements run, not after its generated binding (#5519).
             if (name_idx.isNone()) {
                 if (@import("parameter_environment.zig").takeAnonymousClassName(self, source_idx)) |inferred| {
-                    const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
-                    try self.scratch.append(self.allocator, try @import("parameter_environment.zig").classNameStatement(self, class_ref, inferred, iife_scope, span));
+                    if (!try @import("parameter_environment.zig").definesStaticNameBeforeFields(self, source_idx)) {
+                        const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
+                        try self.scratch.append(self.allocator, try @import("parameter_environment.zig").classNameStatement(self, class_ref, inferred, iife_scope, span));
+                    }
                 }
             }
             // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE
@@ -646,6 +662,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
@@ -662,6 +679,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
             const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             try self.pending_nodes.append(self.allocator, var_decl);
+            if (self.selective_class_candidate) |candidate| {
+                if (candidate.plan.class_node == source_idx)
+                    try @import("selective_class_certificate.zig").record(self, candidate.plan, wrapper_fn, iife_scope, func_node, ctor_scope, cm.constructor_idx orelse .none, new_name, fresh_name, super_param_binding);
+            }
 
             // experimentalDecorators
             if (self.options.experimental_decorators) {
@@ -772,6 +793,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.active_class_super_parameter = saved_class_super_parameter;
             self.active_class_super_parameter = null;
 
+            const saved_lowered_class = self.active_lowered_class;
+            self.active_lowered_class = .{ .node = source_idx, .source_scope = source_class_scope };
+            defer self.active_lowered_class = saved_lowered_class;
+
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
@@ -800,6 +825,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            if (self.pending_deferred_super_class_plan) |plan| {
+                if (plan.class_node != source_idx or plan.class_scope != source_class_scope or
+                    cm.constructor_idx != plan.constructor_node or self.outputOwnedScope(plan.constructor_node) != plan.constructor_scope)
+                    @panic("deferred super class lost its exact source owner");
+            }
 
             // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
@@ -861,7 +891,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.active_class_super_parameter = .{ .binding = expr_super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
-            try bindComputedKeyTemps(self, &cm, iife_scope, span);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span, source_idx);
             const func_name = if (has_extra)
                 try self.makeUserBinding(name_span, .none)
             else
@@ -1058,6 +1088,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(wrapper_body), 0, none });
                 const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
                 try self.bindReservedFunctionOwner(iife_scope, wrapper);
+                if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
                 return es_helpers.makeCallExpr(self, wrapper, &.{}, span);
             }
 
@@ -1113,7 +1144,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
                 const parent_ref = try self.makeCurrentClassSuperRef(super_span.?, .none, iife_scope);
-                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                const extends_ref = blk: {
+                    const previous = self.current_scope;
+                    self.current_scope = iife_scope;
+                    defer self.current_scope = previous;
+                    break :blk try es_helpers.makeRuntimeHelperRef(self, "__extends");
+                };
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;
             }
@@ -1175,6 +1211,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(wrapper_params_node2), @backingInt(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
+            if (self.semantic_edit_enabled) self.class_factory_statement_lists_changed = true;
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             // IIFE callee paren 은 emitCall 자동 wrap 이 처리 (#4042 PR8)
@@ -1246,7 +1283,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // Class body member classification and field emission — es2015_class/members.zig로 위임
         const members_mod = class_members.Members(Transformer);
         const classifyMembers = members_mod.classifyMembers;
-        const bindComputedKeyTemps = members_mod.bindComputedKeyTemps;
+        const bindComputedKeyTemps = members_mod.bindComputedKeyTempsForClass;
         const flushComputedKeyTempProducerReferences = members_mod.flushComputedKeyTempProducerReferences;
         const setupPrivateFieldMappings = members_mod.setupPrivateFieldMappings;
         const visitDeferredStaticBlocks = members_mod.visitDeferredStaticBlocks;

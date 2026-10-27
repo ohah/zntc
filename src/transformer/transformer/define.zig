@@ -10,6 +10,7 @@ const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Kind = @import("../../lexer/token.zig").Kind;
 const type_args = @import("../../parser/expression/type_args.zig");
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -130,6 +131,16 @@ fn buildLexicalDefinePath(
     return output;
 }
 
+fn makeDefineLexicalRef(self: *Transformer, name: []const u8) Error!NodeIndex {
+    if (std.mem.eql(u8, name, "arguments")) {
+        if (self.define_native_arguments_owner) |owner| {
+            const span = try self.ast.addString(name);
+            return self.makeNativeArgumentsRef(owner, self.current_scope, span);
+        }
+    }
+    return self.makeLexicalScopeRefAtScope(name, self.current_scope);
+}
+
 /// Parse a conservative define-expression subset. Every identifier reference
 /// is resolved in the define use site's lexical scope. Calls accept nested
 /// path expressions, primitive literal arguments, and binary expressions.
@@ -187,6 +198,18 @@ fn parseLexicalDefineExpression(
         scanner.next() catch return Error.OutOfMemory;
         if (scanner.token.kind != .kw_return) return null;
         scanner.next() catch return Error.OutOfMemory;
+        const callback_scope: ScopeId = if (build_nodes and self.semantic_edit_enabled)
+            self.reserveGeneratedFunctionScope(self.current_scope) catch return Error.OutOfMemory
+        else
+            .none;
+        const saved_scope = self.current_scope;
+        const saved_arguments_owner = self.define_native_arguments_owner;
+        if (!callback_scope.isNone()) {
+            self.current_scope = callback_scope;
+            self.define_native_arguments_owner = callback_scope;
+        }
+        defer self.current_scope = saved_scope;
+        defer self.define_native_arguments_owner = saved_arguments_owner;
         const parsed_return = parseLexicalDefineExpression(
             self,
             scanner,
@@ -221,6 +244,7 @@ fn parseLexicalDefineExpression(
             }) catch return Error.OutOfMemory;
             output = self.ast.addExtraNode(.function_expression, replacement_span, extra) catch
                 return Error.OutOfMemory;
+            if (!callback_scope.isNone()) self.bindReservedFunctionOwner(callback_scope, output) catch return Error.OutOfMemory;
         }
         consumed_initial = true;
     } else if (root_token.kind == .no_substitution_template or root_token.kind == .template_head) {
@@ -240,6 +264,13 @@ fn parseLexicalDefineExpression(
             scanner.next() catch return Error.OutOfMemory;
             if (scanner.token.kind != .arrow) return null;
             scanner.next() catch return Error.OutOfMemory;
+            const callback_scope: ScopeId = if (build_nodes and self.semantic_edit_enabled)
+                self.reserveGeneratedFunctionScope(self.current_scope) catch return Error.OutOfMemory
+            else
+                .none;
+            const saved_scope = self.current_scope;
+            if (!callback_scope.isNone()) self.current_scope = callback_scope;
+            defer self.current_scope = saved_scope;
             const parsed_body = parseLexicalDefineExpression(
                 self,
                 scanner,
@@ -257,6 +288,7 @@ fn parseLexicalDefineExpression(
                     return Error.OutOfMemory;
                 output = self.ast.addExtraNode(.arrow_function_expression, replacement_span, extra) catch
                     return Error.OutOfMemory;
+                if (!callback_scope.isNone()) self.bindReservedFunctionOwner(callback_scope, output) catch return Error.OutOfMemory;
             }
             assignment_target = .none;
         } else {
@@ -332,7 +364,7 @@ fn parseLexicalDefineExpression(
             const root_name = Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name) catch
                 return Error.OutOfMemory;
             defer if (root_name.ptr != raw_name.ptr) self.allocator.free(root_name);
-            output = self.makeLexicalScopeRefAtScope(root_name, self.current_scope) catch |err| return err;
+            output = makeDefineLexicalRef(self, root_name) catch |err| return err;
         }
     } else return null;
 
@@ -560,7 +592,11 @@ fn parseLexicalDefineExpression(
                         .{ .write = true }
                     else
                         .{ .read = true, .write = true };
-                    editor.updateReferenceFlags(output, flags) catch |err| {
+                    const updated = if (self.native_arguments_reference_origins.contains(@backingInt(output)))
+                        @import("../native_arguments.zig").recordAssignment(self, output, flags)
+                    else
+                        editor.updateReferenceFlags(output, flags);
+                    updated catch |err| {
                         if (err == error.OutOfMemory) return Error.OutOfMemory;
                         std.debug.panic("define assignment reference lost its SymbolId: {s}", .{@errorName(err)});
                     };
@@ -862,7 +898,7 @@ fn parseLexicalDefineObject(
                     const decoded_key = Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_key) catch
                         return Error.OutOfMemory;
                     defer if (decoded_key.ptr != raw_key.ptr) self.allocator.free(decoded_key);
-                    property_value = self.makeLexicalScopeRefAtScope(decoded_key, self.current_scope) catch |err| return err;
+                    property_value = makeDefineLexicalRef(self, decoded_key) catch |err| return err;
                 }
             } else return null;
 

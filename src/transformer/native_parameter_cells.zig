@@ -45,6 +45,7 @@ fn classOwnerForMethod(self: anytype, owner: NodeIndex) ?NodeIndex {
 }
 
 fn classMovesNativePrivateInitializers(self: anytype, body: NodeIndex) bool {
+    if (@import("transformer/class_member_helpers.zig").canKeepNativePrivateInitializers(self, body)) return false;
     const unsupported = self.options.unsupported;
     if (self.options.use_define_for_class_fields and !unsupported.class_field) return false;
     // The assign/legacy producer can move an initializer while leaving its

@@ -3764,7 +3764,7 @@ pub const Linker = struct {
             // so equal local/canonical spellings need no repair for them. Generated helper
             // references bypass lexical resolution by SymbolId and can be captured in output.
             if (!ib.is_helper and std.mem.eql(u8, ib.local_name, ref_name)) continue;
-            if (!self.hasNestedBinding(mod_i, ref_name)) continue;
+            if (!self.hasNestedBinding(mod_i, ref_name) and !helperFactoryScopeZeroShadow(m, ib, ref_name)) continue;
 
             // (#4566 C) same-chunk 라도 target 이 **cross-chunk-export** 되면, dev-split 의 lazy override
             // (computeRenamesForModules 2.5)가 target canonical 을 전역 공개명으로 되돌려 target-rename 이
@@ -3806,6 +3806,22 @@ pub const Linker = struct {
                 try self.renameConsumerScopeBindings(mod_i, m, csem, ref_name, name_to_owners, 1);
             }
         }
+    }
+
+    /// A CJS factory emits source scope zero inside a function. Its user
+    /// bindings can capture a helper provider's canonical global spelling,
+    /// although they are deliberately outside hasNestedBinding's scope 1+ set.
+    /// A removed helper import itself is not a physical factory-local shadow.
+    fn helperFactoryScopeZeroShadow(m: *const Module, binding: ImportBinding, name: []const u8) bool {
+        if (!binding.is_helper or m.wrap_kind != .cjs) return false;
+        const sem = m.semantic orelse return false;
+        if (sem.scope_maps.len == 0) return false;
+        const id = sem.scope_maps[0].get(name) orelse return false;
+        if (id >= sem.symbols.items.len) return false;
+        if (binding.local_symbol.moduleIndex() == m.index and sem.symbols.items[id].kind == .import_binding)
+            if (binding.local_symbol.semanticIndex()) |local| if (id == local) return false;
+        return !sem.symbols.items[id].scope_id.isNone() and
+            sem.symbols.items[id].scope_id.toIndex() == 0;
     }
 
     /// unified_mangler.mangleAll() 을 호출하기 위한 입력 수집. `(module_index,
@@ -4056,6 +4072,11 @@ pub const Linker = struct {
             }
 
             if (sem_opt) |sem| {
+                // Textual scope aliases can share one exact binding. Keep
+                // eligibility/reservation checks, but allocate its Phase A name
+                // only once, including the synthetic-symbol pass below.
+                var candidate_symbols = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
+                defer candidate_symbols.deinit();
                 const blocks = sem.scopes.len > 0 and sem.scopes[0].blocksMangling();
                 if (sem.scope_maps.len > 0) {
                     var sit = sem.scope_maps[0].iterator();
@@ -4117,6 +4138,8 @@ pub const Linker = struct {
                         }
                         if (exported.contains(key)) continue;
 
+                        if (candidate_symbols.isSet(sym_idx_usize)) continue;
+                        candidate_symbols.set(sym_idx_usize);
                         try candidates.append(self.allocator, .{
                             .module_index = @intCast(mi),
                             .symbol_id = sym_idx,
@@ -4133,6 +4156,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
+                            .implicit_arguments => continue,
                             .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .hmr_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding => {},
                         }
                         // Tagged-template caches are ordinary program-scope
@@ -4212,6 +4236,8 @@ pub const Linker = struct {
                         else
                             sym.reference_count;
 
+                        if (candidate_symbols.isSet(si)) continue;
+                        candidate_symbols.set(si);
                         try candidates.append(self.allocator, .{
                             .module_index = @intCast(mi),
                             .symbol_id = @intCast(si),
@@ -4741,7 +4767,22 @@ pub const Linker = struct {
         const helper_module = self.getModule(helper_module_index) orelse return false;
         if (!helper_modules.isVirtualId(helper_module.path)) return false;
         if (self.getCrossChunkGlobalName(helper_module_index, export_name) != null) return false;
-        return self.hasNestedBinding(consumer_module_index, binding_name);
+        if (self.hasNestedBinding(consumer_module_index, binding_name)) return true;
+        const consumer = self.getModule(consumer_module_index) orelse return false;
+        const provider_sid = helper_module.findLocalExportSemanticIndex(export_name) orelse return false;
+        const provider_sem = helper_module.semantic orelse return false;
+        if (provider_sid >= provider_sem.symbols.items.len) return false;
+        const sem = consumer.semantic orelse return false;
+        for (consumer.import_bindings) |binding| {
+            if (!binding.is_helper or binding.local_symbol.moduleIndex() != consumer.index) continue;
+            const local_sid = binding.local_symbol.semanticIndex() orelse continue;
+            if (local_sid >= sem.symbols.items.len or sem.symbols.items[local_sid].kind != .import_binding) continue;
+            const resolved = self.getResolvedBinding(consumer_module_index, binding.local_span) orelse continue;
+            if (resolved.canonical.module_index != helper_module.index or
+                !std.mem.eql(u8, resolved.canonical.export_name, export_name)) continue;
+            if (helperFactoryScopeZeroShadow(consumer, binding, binding_name)) return true;
+        }
+        return false;
     }
 
     pub fn preserveRuntimeHelperImportAliasAvailable(self: *const Linker, consumer_module_index: u32, name: []const u8) bool {

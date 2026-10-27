@@ -537,6 +537,9 @@ pub const Node = struct {
             /// extra 노드의 간접 NodeIndex 리스트 필드. {start_offset, len_offset} 쌍.
             /// extra_data[e + start_offset .. + start_offset + extra_data[e + len_offset]]가 NodeIndex 리스트.
             list_offsets: []const [2]u8 = &.{},
+            /// Fixed runtime payload width in u32 words. Zero denotes a
+            /// type-only layout not traversed by runtime subtree cloning.
+            extra_words: u8 = 0,
             /// `kind == .leaf` 전용: 이 태그가 실제로 쓰는 `Data` sub-variant 의 의미 바이트 폭.
             /// leaf 은 `none`(u32=4) / `string_ref`(Span=8) / `number_bytes`([8]u8=8) 셋을 conflate 하므로
             /// 직렬화 폭이 태그마다 다르다. `.none` 만 쓰는 태그는 4(꼬리 4B 는 미초기화 poison →
@@ -775,63 +778,65 @@ pub const Node = struct {
 
                 // === extra: 태그별 NodeIndex 오프셋 명시 ===
                 // 호출: extra = [callee(0), args_start(1), args_len(2), flags]
-                .call_expression, .new_expression => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .call_expression, .new_expression => .{ .kind = .extra, .extra_words = 4, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // tagged template: extra = [tag(0), template(1), flags]
-                .tagged_template_expression => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                .tagged_template_expression => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{ 0, 1 } },
                 // member: extra = [object(0), property(1), flags]
                 .static_member_expression,
                 .private_field_expression,
                 .computed_member_expression,
-                => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{ 0, 1 } },
                 // function: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
-                .function_expression, .function_declaration, .function => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
+                .function_expression, .function_declaration, .function => .{ .kind = .extra, .extra_words = 5, .child_offsets = &.{ 0, 1, 2 } },
                 // arrow: extra = [params(0), body(1), flags]
-                .arrow_function_expression => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                .arrow_function_expression => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{ 0, 1 } },
                 // class: extra = [name(0), super(1), body(2), type_params(3), impl_start, impl_len, deco_start, deco_len]
-                .class_expression, .class_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
+                .class_expression, .class_declaration => .{ .kind = .extra, .extra_words = 8, .child_offsets = &.{ 0, 1, 2 } },
                 // method: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
-                .method_definition => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
+                .method_definition => .{ .kind = .extra, .extra_words = 6, .child_offsets = &.{ 0, 1, 2 } },
                 // property_definition: extra = [key(0), init(1), flags, deco_start, deco_len]
-                .property_definition, .accessor_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                .property_definition, .accessor_property => .{ .kind = .extra, .extra_words = 5, .child_offsets = &.{ 0, 1 } },
                 // for_statement: extra = [init(0), test(1), update(2), body(3)]
-                .for_statement => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2, 3 } },
+                .for_statement => .{ .kind = .extra, .extra_words = 4, .child_offsets = &.{ 0, 1, 2, 3 } },
                 // switch_statement: extra = [discriminant(0), cases_start(1), cases_len(2)]
-                .switch_statement => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .switch_statement => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // flow_match_expression: extra = [discriminant(0), arms_start(1), arms_len(2)]
-                .flow_match_expression => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .flow_match_expression => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // switch_case: extra = [test(0), stmts_start(1), stmts_len(2)]
-                .switch_case => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .switch_case => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // variable_declaration: extra = [kind_flags, list_start(1), list_len(2)]
-                .variable_declaration => .{ .kind = .extra, .child_offsets = &.{}, .list_offsets = &.{.{ 1, 2 }} },
+                .variable_declaration => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{}, .list_offsets = &.{.{ 1, 2 }} },
                 // variable_declarator: extra = [name(0), type_ann(1), init(2)]
-                .variable_declarator => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
+                .variable_declarator => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{ 0, 2 } },
                 // formal_parameter: extra = [pattern(0), type_ann(1), default(2), flags, deco_start, deco_len]
-                .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
-                // Runtime enum: extra = [name(0), members_start(1), members_len(2), flags/base_type].
-                // Initializer expressions are runtime children of the emitted enum IIFE.
-                .ts_enum_declaration, .flow_enum_declaration => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .formal_parameter => .{ .kind = .extra, .extra_words = 6, .child_offsets = &.{ 0, 2 } },
+                // TS enum: [name, members_start, members_len, flags, runtime_prelude].
+                // Prelude is .none in parsed source and a real IIFE-body block
+                // after lowering. Flow keeps its independent four-slot layout.
+                .ts_enum_declaration => .{ .kind = .extra, .extra_words = 5, .child_offsets = &.{ 0, 4 }, .list_offsets = &.{.{ 1, 2 }} },
+                .flow_enum_declaration => .{ .kind = .extra, .extra_words = 4, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // unary/update_expression: 파서에서 data.extra로 생성 — extra = [operand(0), flags]
-                .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
+                .unary_expression, .update_expression => .{ .kind = .extra, .extra_words = 2, .child_offsets = &.{0} },
                 // object_property: binary = { left: key, right: value, flags: prop_flags }
                 .object_property => .{ .kind = .binary },
                 // import_declaration: extra = [specs_start(0), specs_len(1), source(2), phase_flags, attrs_start, attrs_len]
                 // phase_flags: u32. low 4 bits = ImportPhase (0=none, 1=defer, 2=source)
-                .import_declaration => .{ .kind = .extra, .child_offsets = &.{2}, .list_offsets = &.{.{ 0, 1 }} },
+                .import_declaration => .{ .kind = .extra, .extra_words = 6, .child_offsets = &.{2}, .list_offsets = &.{.{ 0, 1 }} },
                 // export_named: extra = [decl(0), specs_start, specs_len, source(3), attrs_start(4), attrs_len(5)]
-                .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
+                .export_named_declaration => .{ .kind = .extra, .extra_words = 6, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
                 // export_all: extra = [exported_name(0), source(1), attrs_start(2), attrs_len(3)]
                 // `export *` 은 exported_name = .none, `export * as ns` 는 namespace identifier.
-                .export_all_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                .export_all_declaration => .{ .kind = .extra, .extra_words = 4, .child_offsets = &.{ 0, 1 } },
                 // export_default: unary = { operand: decl, flags: module.EXPORT_DEFAULT_NAMED_DECLARATION }
                 .export_default_declaration => .{ .kind = .unary },
                 // jsx_element: extra = [tag(0), attrs_start, attrs_len, children_start, children_len]
-                .jsx_element => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{ .{ 1, 2 }, .{ 3, 4 } } },
+                .jsx_element => .{ .kind = .extra, .extra_words = 5, .child_offsets = &.{0}, .list_offsets = &.{ .{ 1, 2 }, .{ 3, 4 } } },
                 // jsx_opening_element: extra = [tag(0), attrs_start, attrs_len]
-                .jsx_opening_element => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                .jsx_opening_element => .{ .kind = .extra, .extra_words = 3, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // jsx_fragment: list = children (파서에서 .list로 저장)
                 .jsx_fragment => .{ .kind = .list },
                 // flow_component_wrapper: extra = [func_decl(0), const_decl(1)]
-                .flow_component_wrapper => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                .flow_component_wrapper => .{ .kind = .extra, .extra_words = 2, .child_offsets = &.{ 0, 1 } },
                 // flow_object_spread_property: unary = { operand: argument_type, flags: 0 }
                 // Flow `Type.Object.SpreadProperty` 동등 — argument 가 type ref (보통 단순)
                 // 또는 임의 type expression. codegen schema_builder 가 type ref 만 추적.
@@ -954,6 +959,13 @@ pub const Node = struct {
                 .binary, .ternary => 12,
                 .extra => 4,
             };
+        }
+
+        /// Exact runtime extra payload width, independent of allocation order.
+        /// TS enums use five words (including runtime_prelude); Flow enums use four.
+        pub fn runtimeExtraWords(tag: Tag) ?u8 {
+            const words = getLayout(tag).extra_words;
+            return if (words == 0) null else words;
         }
 
         /// extra 노드의 NodeIndex 자식 필드 오프셋을 반환한다.
@@ -1875,7 +1887,16 @@ pub const Ast = struct {
         key_idx: NodeIndex,
     ) std.mem.Allocator.Error!?[]u8 {
         if (key_idx.isNone() or @backingInt(key_idx) >= self.nodes.items.len) return null;
-        if (self.getNode(key_idx).tag == .computed_property_key) return null;
+        const key = self.getNode(key_idx);
+        if (key.tag == .computed_property_key) return null;
+        if (key.tag == .identifier_reference or key.tag == .binding_identifier) {
+            const raw = self.identifierNameText(key);
+            if (std.mem.indexOfScalar(u8, raw, '\\') == null) return try alloc.dupe(u8, raw);
+            const scratch = try alloc.alloc(u8, raw.len);
+            defer alloc.free(scratch);
+            const decoded = @import("../lexer/scanner.zig").Scanner.decodeIdentifierEscapesInto(raw, scratch) orelse raw;
+            return try alloc.dupe(u8, decoded);
+        }
         return self.staticKeyName(alloc, key_idx);
     }
 };
@@ -1923,6 +1944,16 @@ pub const FunctionExtra = struct {
     pub const body: u32 = 2;
     pub const flags: u32 = 3;
     pub const return_type: u32 = 4;
+};
+
+/// The optional runtime prelude is part of the canonical AST graph. It shares
+/// the enum IIFE's existing function scope and is emitted before member actions.
+pub const EnumExtra = struct {
+    pub const name: u32 = 0;
+    pub const members_start: u32 = 1;
+    pub const members_len: u32 = 2;
+    pub const flags: u32 = 3;
+    pub const runtime_prelude: u32 = 4;
 };
 
 /// method_definition의 flags 비트 (extra[3] u16).

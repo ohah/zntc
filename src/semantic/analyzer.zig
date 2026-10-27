@@ -95,6 +95,10 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프 (스코프 스택 대신 인덱스 하나로 추적)
     current_scope: ScopeId = .none,
 
+    /// Simple ordinary functions lazily materialize their engine binding at
+    /// the first source reference, before resolving any enclosing arguments.
+    implicit_arguments_owners: std.AutoHashMapUnmanaged(ScopeId, NodeIndex) = .empty,
+
     /// strict mode 여부 (파서에서 전달받음, 스코프 진입 시 전파)
     is_strict_mode: bool = false,
 
@@ -199,6 +203,8 @@ pub const SemanticAnalyzer = struct {
     /// Bare references to preceding members inside an enum initializer resolve
     /// to virtual property symbols owned by the generated enum IIFE scope.
     enum_member_contexts: std.ArrayList(EnumMemberContext) = .empty,
+    enum_outer_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    namespace_outer_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
     /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
@@ -431,6 +437,7 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit(self.allocator);
         self.scope_maps.deinit(self.allocator);
         self.scope_owner_map.deinit(self.allocator);
+        self.implicit_arguments_owners.deinit(self.allocator);
         self.annex_b_variable_targets.deinit(self.allocator);
         self.parameter_environments.deinit(self.allocator);
         var parameter_maps = self.function_parameter_names.valueIterator();
@@ -458,6 +465,8 @@ pub const SemanticAnalyzer = struct {
             context.owned_member_names.deinit(self.allocator);
         }
         self.enum_member_contexts.deinit(self.allocator);
+        self.enum_outer_bindings.deinit(self.allocator);
+        self.namespace_outer_bindings.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // #4221: 키는 전부 dupe 사본 (소유) — 함께 해제.
         var unres_it = self.unresolved_references.keyIterator();
@@ -542,7 +551,7 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[parent.toIndex()].is_strict
         else
             false;
-        const intrinsically_strict = kind == .module or kind == .class_body;
+        const intrinsically_strict = kind == .module or kind == .class_body or kind == .class_static_block;
         const new_id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
         try self.scopes.append(self.allocator, .{
             .parent = parent,
@@ -1352,6 +1361,14 @@ pub const SemanticAnalyzer = struct {
             const idx = scope_id.toIndex();
             if (idx >= self.scope_maps.items.len) break;
 
+            if (std.mem.eql(u8, name, "arguments")) {
+                if (self.implicit_arguments_owners.get(scope_id)) |owner| {
+                    self.declareImplicitArguments(scope_id, owner) catch {
+                        self.alloc_failed = true;
+                        return;
+                    };
+                }
+            }
             if (self.findSymbolIndexInScope(scope_id, name)) |sym_idx| {
                 // reference_count / write_count 는 value 참조만 집계 (#1791 호환).
                 // mangler / tree-shaker 는 이 카운트를 "runtime 에 살아있는 참조 수" 로
@@ -1488,13 +1505,18 @@ pub const SemanticAnalyzer = struct {
     /// predeclared 심볼에 대해 symbol_ids[node_idx]를 설정한다.
     /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
     /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
-    fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) void {
+    const PredeclaredAnchorRole = enum { declaration, variable_redeclaration };
+
+    fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32, role: PredeclaredAnchorRole) void {
         const name = self.ast.getText(name_span);
         const sym_idx = self.findSymbolIndexInScope(self.current_scope, name) orelse
             self.findSymbolIndexInScope(self.findVarScope(), name) orelse return;
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
+        // A var occurrence owns its own row. It cannot consume the pending
+        // function declaration's source anchor just because the SID is shared.
+        if (role == .variable_redeclaration and self.symbols.items[sym_idx].kind.isFunctionLike()) return;
         for (self.references.items) |*reference| {
             if (reference.flags.declare and @backingInt(reference.symbol_id) == sym_idx and
                 reference.declaration_node_index.isNone())
@@ -1576,6 +1598,15 @@ pub const SemanticAnalyzer = struct {
                 if (sid >= self.symbols.items.len) return;
                 const symbol = self.symbols.items[sid];
                 if (symbol.kind != .variable_var and !symbol.kind.isFunctionLike()) return;
+                if (symbol.kind.isFunctionLike()) {
+                    // Generated trees can intern equal spellings into one span.
+                    // The exact variable node, not that span, owns this row.
+                    for (self.references.items) |reference| {
+                        if (@backingInt(reference.symbol_id) == sid and reference.flags.declare and reference.declaration_node_index == idx) return;
+                    }
+                    self.recordDeclareRef(sid, symbol.scope_id, ni);
+                    return;
+                }
                 if (symbol.name.start != node.span.start) {
                     self.recordDeclareRef(sid, symbol.scope_id, ni);
                     return;
@@ -1614,7 +1645,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .assignment_target_identifier => {
-                self.setSymbolIdForPredeclared(node.span, ni);
+                self.setSymbolIdForPredeclared(node.span, ni, .variable_redeclaration);
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
@@ -2125,8 +2156,14 @@ pub const SemanticAnalyzer = struct {
             .static_block => {
                 // static block은 함수와 같은 경계 — label은 넘지 못함
                 const saved_labels = self.saveLabelLen();
-                try self.visitNode(node.data.unary.operand);
-                self.restoreLabelLen(saved_labels);
+                defer self.restoreLabelLen(saved_labels);
+                const saved_scope = try self.enterScope(.class_static_block, true);
+                defer self.current_scope = saved_scope;
+                const body = node.data.unary.operand;
+                if (!body.isNone() and self.ast.getNode(body).tag == .block_statement) {
+                    try self.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(self.current_scope));
+                    try self.visitFunctionBodyInner(body);
+                } else try self.visitNode(body);
             },
 
             // ---- 식별자 참조 추적 ----
@@ -2658,9 +2695,9 @@ pub const SemanticAnalyzer = struct {
         //   예: const foo = () => bar();  // bar가 아직 스코프에 없어도
         //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
         // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
-        try self.predeclareTopLevelBindings(node.data.list);
+        try self.predeclareTopLevelBindings(node.data.list, true);
         try self.predeclareNamespaceMembers(node.data.list);
-        try self.predeclareNestedTopLevelVarDecls(node.data.list);
+        try self.predeclareNestedTopLevelVarDecls(node.data.list, true);
         self.predeclared_scope = self.current_scope;
 
         // StmtInfo 사전 수집: statement 개수만 기록. declared/referenced 둘 다 references 배열에서
@@ -2735,7 +2772,7 @@ pub const SemanticAnalyzer = struct {
         return if (decl.tag == .variable_declaration) decl else null;
     }
 
-    fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+    fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList, program_statements: bool) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
 
@@ -2748,7 +2785,7 @@ pub const SemanticAnalyzer = struct {
         }
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) {
-                self.current_top_stmt_idx = @intCast(i);
+                if (program_statements) self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
             const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
@@ -2954,7 +2991,7 @@ pub const SemanticAnalyzer = struct {
     /// top-level `{ var x; }` / `if (...) var x` 도 module/global var scope 에 hoist 되어야
     /// 한다. Direct top-level declarations 는 `predeclareTopLevelBindings` 가 이미 처리하므로
     /// 여기서는 중복 등록하지 않는다.
-    fn predeclareNestedTopLevelVarDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+    fn predeclareNestedTopLevelVarDecls(self: *SemanticAnalyzer, list: NodeList, program_statements: bool) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
 
@@ -2968,7 +3005,7 @@ pub const SemanticAnalyzer = struct {
 
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) {
-                self.current_top_stmt_idx = @intCast(i);
+                if (program_statements) self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
             const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
@@ -3171,18 +3208,35 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// ts_enum_declaration의 이름만 등록.
-    /// extra = [name, members_start, members_len, flags]
+    /// Initial enum declarations share a binding only with another enum in
+    /// this exact source environment. Nested enums have lexical storage; a
+    /// normal source let remains a conflicting declaration.
     fn predeclareEnumDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        const extra_start = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (extra_start + 3 >= extras.len) return;
-        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
-
-        if (!name_idx.isNone()) {
-            const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
+        const name_idx = self.ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.name);
+        if (name_idx.isNone() or self.ast.getNode(name_idx).tag != .binding_identifier) return;
+        if (self.symbolIndexOfNode(name_idx) != null) return;
+        const name = self.ast.getNode(name_idx);
+        const raw = try self.ast.getTextStable(self.allocator, name.span);
+        defer if ((name.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0) self.allocator.free(raw);
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw);
+        defer if (decoded.ptr != raw.ptr) self.allocator.free(decoded);
+        if (self.findSymbolIndexInScope(self.current_scope, decoded)) |existing| {
+            if (self.enum_outer_bindings.contains(@intCast(existing)) or self.namespace_outer_bindings.contains(@intCast(existing))) {
+                if (self.scopes.items[self.current_scope.toIndex()].kind != .global and self.scopes.items[self.current_scope.toIndex()].kind != .module) {
+                    self.symbols.items[existing].kind = .variable_let;
+                    self.symbols.items[existing].decl_flags.function_scoped = false;
+                    self.symbols.items[existing].decl_flags.block_scoped = true;
+                }
+                try self.enum_outer_bindings.put(self.allocator, @intCast(existing), {});
+                self.symbol_ids.items[@backingInt(name_idx)] = @intCast(existing);
+                self.recordDeclareRef(@intCast(existing), self.current_scope, @backingInt(name_idx));
+                return;
+            }
         }
+        const scope = self.scopes.items[self.current_scope.toIndex()];
+        const kind: SymbolKind = if (scope.kind == .global or scope.kind == .module) .variable_var else .variable_let;
+        try self.declareSymbolWithNode(name.span, kind, node.span, @backingInt(name_idx));
+        if (self.symbolIndexOfNode(name_idx)) |id| try self.enum_outer_bindings.put(self.allocator, @intCast(id), {});
     }
 
     /// flow_enum_declaration is a lexical runtime binding emitted as a const.
@@ -3230,9 +3284,17 @@ pub const SemanticAnalyzer = struct {
         const members_len = extras[e + 2];
         if (members_start + members_len > extras.len) return;
 
+        // A transformed enum's outer declaration is now an actual preceding
+        // AST statement. Its canonical name edge is the corresponding write,
+        // evaluated in the enclosing environment before entering the IIFE.
+        if (!name_idx.isNone() and self.ast.getNode(name_idx).tag == .assignment_target_identifier)
+            _ = self.tryResolveNodeAsRef(name_idx, .{ .read = true, .write = true });
+
         const saved_scope = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved_scope);
         const enum_parameter = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
+        if (enum_parameter != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (enum_parameter) |parameter| {
             const popped = self.enum_iife_param_names.pop() orelse unreachable;
             std.debug.assert(std.mem.eql(u8, popped, parameter.name));
@@ -3250,7 +3312,22 @@ pub const SemanticAnalyzer = struct {
             context.owned_member_names.deinit(self.allocator);
         }
 
-        for (extras[members_start .. members_start + members_len]) |raw_idx| {
+        // Lowered enums expose the actual ordinary-IIFE prelude as a
+        // canonical child. Reanalysis must visit its bindings and reads in
+        // this same function environment before evaluating member actions.
+        const saved_stmt = self.current_stmt_idx;
+        defer self.current_stmt_idx = saved_stmt;
+        const prelude = self.ast.readExtraNode(e, ast_mod.EnumExtra.runtime_prelude);
+        var prefix_len: u32 = 0;
+        if (!prelude.isNone()) {
+            const body = self.ast.getNode(prelude);
+            std.debug.assert(body.tag == .block_statement);
+            try self.scope_owner_map.put(self.allocator, @backingInt(prelude), @backingInt(self.current_scope));
+            prefix_len = body.data.list.len;
+            try self.visitFunctionBodyInner(prelude);
+        }
+        for (extras[members_start .. members_start + members_len], 0..) |raw_idx, member_index| {
+            if (self.enable_stmt_info) self.current_stmt_idx = prefix_len + @as(u32, @intCast(member_index));
             const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
@@ -3547,6 +3624,9 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
+        if (!name_idx.isNone() and self.ast.getNode(name_idx).tag == .assignment_target_identifier)
+            _ = self.tryResolveNodeAsRef(name_idx, .{ .read = true, .write = true });
+
         const parent_scope = self.current_scope;
         const saved = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved);
@@ -3571,6 +3651,8 @@ pub const SemanticAnalyzer = struct {
         if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
         const namespace_iife_param_name = try self.declareNamespaceIifeParameter(name_idx, node);
+        if (namespace_iife_param_name != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (namespace_iife_param_name != null) {
             self.allocator.free(self.namespace_iife_param_names.pop() orelse unreachable);
         };
@@ -3578,9 +3660,9 @@ pub const SemanticAnalyzer = struct {
             const saved_predeclared = self.predeclared_scope;
             self.predeclared_scope = self.current_scope;
             defer self.predeclared_scope = saved_predeclared;
-            try self.predeclareTopLevelBindings(body.data.list);
+            try self.predeclareTopLevelBindings(body.data.list, false);
             try self.predeclareNamespaceMembers(body.data.list);
-            try self.predeclareNestedTopLevelVarDecls(body.data.list);
+            try self.predeclareNestedTopLevelVarDecls(body.data.list, false);
             try self.visitStmtList(body.data.list);
         } else {
             try self.visitNode(body_idx);
@@ -3598,6 +3680,7 @@ pub const SemanticAnalyzer = struct {
             self.symbol_ids.items[@backingInt(name_idx)] = @intCast(sym_idx);
         } else {
             try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
+            if (self.symbolIndexOfNode(name_idx)) |id| try self.namespace_outer_bindings.put(self.allocator, @intCast(id), {});
         }
     }
 
@@ -3699,6 +3782,9 @@ pub const SemanticAnalyzer = struct {
                     self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @backingInt(name_idx)) catch {
                         self.alloc_failed = true;
                     };
+                },
+                .ts_enum_declaration => self.predeclareEnumDecl(stmt) catch {
+                    self.alloc_failed = true;
                 },
                 .flow_enum_declaration => self.predeclareFlowEnumDecl(stmt) catch {
                     self.alloc_failed = true;
@@ -3842,7 +3928,7 @@ pub const SemanticAnalyzer = struct {
                 try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx), .declaration);
             }
 
             // @__NO_SIDE_EFFECTS__ → symbol에 전파 (predeclared 여부와 무관하게 항상 수행)
@@ -3894,17 +3980,24 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[fe + 2]));
         if (body_idx.isNone()) return;
 
-        // 1) Name_withRef 함수: 독립 parameter/body 환경에서 순회.
-        const params_list = self.ast.functionParamsList(func_node);
-        const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
-        const function_scopes = try self.enterFunctionScopesWithParams(
-            functionParamsNode(self, func_node),
-            params_list,
-            has_parameter_expressions,
-            body_idx,
-        );
-        try self.visitFunctionBodyInner(body_idx);
-        self.exitFunctionScopes(function_scopes);
+        // The wrapper is a structural function+const sequence, not a
+        // lexical owner. Create P/B and the native engine on the actual
+        // implementation, then restore the outer owner for forwardRef.
+        {
+            const saved_visit_node = self.current_visit_node;
+            self.current_visit_node = func_idx;
+            defer self.current_visit_node = saved_visit_node;
+            const params_list = self.ast.functionParamsList(func_node);
+            const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+            const function_scopes = try self.enterFunctionScopesWithParams(
+                functionParamsNode(self, func_node),
+                params_list,
+                has_parameter_expressions,
+                body_idx,
+            );
+            try self.visitFunctionBodyInner(body_idx);
+            self.exitFunctionScopes(function_scopes);
+        }
 
         // 2) `const Name = React.forwardRef(Name_withRef)` (const_decl): 외부 스코프에서 순회해야
         //    `React` / `Name_withRef` identifier_reference 의 `symbol_ids` 가 채워지고, bundler
@@ -4298,7 +4391,7 @@ pub const SemanticAnalyzer = struct {
                 try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx), .declaration);
             }
             const name_node = self.ast.getNode(name_idx);
             const name_raw = @backingInt(name_idx);
@@ -4553,6 +4646,23 @@ pub const SemanticAnalyzer = struct {
         if (symbol_id >= self.symbols.items.len) return false;
         const name_node = self.ast.getNode(name_idx);
         const symbol = self.symbols.items[symbol_id];
+        // A later sloppy block function can share the first declaration's SID
+        // while keeping its own exact source anchor. Reuse that completed
+        // predeclaration instead of recording this declaration a second time.
+        if (name_node.tag == .binding_identifier and symbol.kind == .function_decl and
+            symbol.scope_id == self.current_scope and symbol.origin_scope == self.current_scope)
+        {
+            const role = @import("annex_b_function.zig").forSymbol(self.symbols.items, @fromBackingInt(symbol_id)) catch return false;
+            if (role) |native| if (native.state == .native) {
+                var anchors: usize = 0;
+                for (self.references.items) |reference| {
+                    if (@backingInt(reference.symbol_id) == symbol_id and reference.scope_id == self.current_scope and
+                        reference.declaration_node_index == name_idx and reference.node_index.isNone() and
+                        std.meta.eql(reference.flags, @as(symbol_mod.ReferenceFlags, .{ .declare = true }))) anchors += 1;
+                }
+                if (anchors == 1) return true;
+            };
+        }
         return symbol.kind.isFunctionLike() and symbol.scope_id == self.current_scope and
             symbol.origin_scope == self.current_scope and
             symbol.name.start == name_node.span.start and symbol.name.end == name_node.span.end and
@@ -5451,7 +5561,43 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 함수 파라미터를 현재 스코프에 등록한다.
-    fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
+    /// FunctionDeclarationInstantiation creates this binding in an ordinary
+    /// function's parameter environment. Arrows inherit that exact identity.
+    /// Simple lists wait for body declaration instantiation so lexical/function
+    /// declarations called arguments can suppress the implicit object.
+    fn declareImplicitArguments(self: *SemanticAnalyzer, owner_scope: ScopeId, owner: NodeIndex) AllocError!void {
+        const map = &self.scope_maps.items[owner_scope.toIndex()];
+        if (map.get("arguments")) |id| {
+            // A source var redeclares the same native arguments binding.
+            // Parameters and lexical/function declarations supply their own.
+            if (self.symbols.items[id].kind == .variable_var and
+                !self.namespace_member_owners.contains(@intCast(id)))
+                self.symbols.items[id].synthetic_kind = .implicit_arguments;
+            return;
+        }
+        const name = try self.ast.addString("arguments");
+        const id = self.symbols.items.len;
+        // This engine-supplied name has static storage. Unlike source string
+        // table bindings it needs no separately owned name allocation.
+        // The parameter kind models an unknown value initialized at native
+        // function entry; implicit_arguments distinguishes it from a literal
+        // formal. Do not fabricate an AST parameter or count it in formal names.
+        try self.symbols.append(self.allocator, .{
+            .name = name,
+            .scope_id = owner_scope,
+            .origin_scope = owner_scope,
+            .kind = .parameter,
+            .decl_flags = SymbolKind.parameter.declFlags(),
+            .declaration_span = self.ast.getNode(owner).span,
+            .synthetic_kind = .implicit_arguments,
+            .synthetic_name = "arguments",
+        });
+        self.scopes.items[owner_scope.toIndex()].symbol_count += 1;
+        try self.scope_maps.items[owner_scope.toIndex()].put(self.allocator, "arguments", id);
+        self.recordDeclareRef(@intCast(id), owner_scope, null);
+    }
+
+    fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList, implicit_arguments: bool) AllocError!void {
         const split = self.ast.nodeListSplitRest(params);
         // Parameter initializers can refer to later parameters (and must hit
         // their TDZ binding), so install every parameter identity before
@@ -5462,6 +5608,7 @@ pub const SemanticAnalyzer = struct {
         if (split.rest_operand) |op| {
             try self.predeclareBindingNames(op, .parameter);
         }
+        if (implicit_arguments) try self.declareImplicitArguments(self.current_scope, self.current_visit_node);
         for (split.elements) |raw_idx| {
             try self.visitBindingPatternExpressions(@fromBackingInt(@intCast(raw_idx)));
         }
@@ -5516,7 +5663,8 @@ pub const SemanticAnalyzer = struct {
         errdefer names.deinit(self.allocator);
         var parameters = self.scope_maps.items[parameter_scope.toIndex()].iterator();
         while (parameters.next()) |entry| {
-            if (self.symbols.items[entry.value_ptr.*].kind == .parameter)
+            if (self.symbols.items[entry.value_ptr.*].kind == .parameter and
+                self.symbols.items[entry.value_ptr.*].synthetic_kind != .implicit_arguments)
                 try names.put(self.allocator, entry.key_ptr.*, @fromBackingInt(@as(u32, @intCast(entry.value_ptr.*))));
         }
         try self.function_parameter_names.put(self.allocator, body_scope, names);
@@ -5533,11 +5681,12 @@ pub const SemanticAnalyzer = struct {
         const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions, function_strict);
         if (parameter_scope_saved == null) {
             const body_scope_saved = try self.enterScope(.function, function_strict);
-            try self.registerParams(params);
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
+            try self.registerParams(params, false);
             try self.captureFunctionParameterNames(self.current_scope, self.current_scope);
             return .{ .body_scope_saved = body_scope_saved };
         }
-        try self.registerParams(params);
+        try self.registerParams(params, true);
         const parameter_scope = self.current_scope;
         const body_scope_saved = try self.enterScope(.function, function_strict);
         try self.parameter_environments.put(self.allocator, self.current_scope, parameter_scope);
@@ -5582,12 +5731,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn paramsHaveExpressions(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!bool {
-        const split = self.ast.nodeListSplitRest(params);
-        for (split.elements) |raw_idx| {
-            if (try parameterHasExpressions(self, @fromBackingInt(@intCast(raw_idx)))) return true;
-        }
-        if (split.rest_operand) |rest| return parameterHasExpressions(self, rest);
-        return false;
+        return ast_walk.parameterListHasExpressions(self.allocator, self.ast, params);
     }
 
     fn functionParamsNode(self: *const SemanticAnalyzer, function: Node) NodeIndex {
@@ -5601,68 +5745,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn parameterHasExpressions(self: *SemanticAnalyzer, root: NodeIndex) AllocError!bool {
-        if (root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return false;
-        var pending: std.ArrayList(NodeIndex) = .empty;
-        defer pending.deinit(self.allocator);
-        try pending.append(self.allocator, root);
-        while (pending.pop()) |idx| {
-            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
-            const node = self.ast.getNode(idx);
-            switch (node.tag) {
-                .formal_parameter => {
-                    const extra = node.data.extra;
-                    if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) continue;
-                    const default_value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]));
-                    if (!default_value.isNone()) return true;
-                    try pending.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])));
-                },
-                .formal_parameters, .sequence_expression => {
-                    const list = node.data.list;
-                    if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) continue;
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                        try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
-                    }
-                },
-                .parenthesized_expression => try pending.append(self.allocator, node.data.unary.operand),
-                .assignment_pattern, .assignment_expression, .assignment_target_with_default => return true,
-                .array_pattern, .array_assignment_target => {
-                    const split = self.ast.nodeListSplitRest(node.data.list);
-                    for (split.elements) |raw| try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
-                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
-                },
-                .object_pattern, .object_assignment_target => {
-                    const split = self.ast.nodeListSplitRest(node.data.list);
-                    for (split.elements) |raw| {
-                        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
-                        if (child_idx.isNone() or @backingInt(child_idx) >= self.ast.nodes.items.len) continue;
-                        const child = self.ast.getNode(child_idx);
-                        if (child.tag == .binding_property or child.tag == .assignment_target_property_property) {
-                            const key = child.data.binary.left;
-                            if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
-                                self.ast.getNode(key).tag == .computed_property_key) return true;
-                            try pending.append(self.allocator, child.data.binary.right);
-                        } else if (child.tag == .assignment_target_property_identifier) {
-                            if (!child.data.binary.right.isNone()) return true;
-                        } else {
-                            try pending.append(self.allocator, child_idx);
-                        }
-                    }
-                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
-                },
-                .rest_element, .spread_element, .binding_rest_element, .assignment_target_rest => try pending.append(self.allocator, node.data.unary.operand),
-                .binding_property, .assignment_target_property_property => {
-                    const key = node.data.binary.left;
-                    if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
-                        self.ast.getNode(key).tag == .computed_property_key) return true;
-                    try pending.append(self.allocator, node.data.binary.right);
-                },
-                .assignment_target_property_identifier => {
-                    if (!node.data.binary.right.isNone()) return true;
-                },
-                else => {},
-            }
-        }
-        return false;
+        return ast_walk.parameterHasExpressions(self.allocator, self.ast, root);
     }
 
     /// 함수 본문 내부를 순회한다 (block_statement의 스코프 중복 생성 방지).
@@ -5757,7 +5840,16 @@ pub const SemanticAnalyzer = struct {
                         try self.addAnnexBBarrier(self.ast.readExtraNode(declaration.data.extra, 0), added);
                 }
             },
-            .function_declaration, .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
+            .function_declaration => {
+                // Sloppy ordinary block functions permit the nested Annex B
+                // var binding of the same name. Other lexical functions and
+                // erased/strict declarations retain their existing barrier.
+                const flags = self.ast.extra_data.items[statement.data.extra + ast_mod.FunctionExtra.flags];
+                const body = self.ast.readExtraNode(statement.data.extra, ast_mod.FunctionExtra.body);
+                if (self.isCurrentStrict() or functionSymbolKind(flags) != .function_decl or body.isNone())
+                    try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added);
+            },
+            .class_declaration => try self.addAnnexBBarrier(self.ast.readExtraNode(statement.data.extra, 0), added),
             .labeled_statement => try self.addAnnexBLexicalBarriers(self.ast.getNode(statement.data.binary.right), added),
             else => {},
         }
@@ -5859,9 +5951,11 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             // 재귀 대상: block/if/for/while/switch/try/labeled 등
-            .block_statement, .static_block => {
+            .block_statement => {
                 try self.predeclareVarDeclsInLexicalRegion(&.{node.data.list});
             },
+            // Class static initialization owns a separate var environment.
+            .static_block => {},
             .if_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
                 try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);

@@ -130,15 +130,16 @@ test "ChildIterator: runtime enum reaches member initializers" {
     const enum_idx = findFirstTag(&parser.ast, .ts_enum_declaration) orelse return error.NotFound;
     var enum_children = try collectChildren(a, &parser.ast, enum_idx);
     defer enum_children.deinit(a);
-    try std.testing.expectEqual(@as(usize, 3), enum_children.items.len);
+    try std.testing.expectEqual(@as(usize, 4), enum_children.items.len);
+    try std.testing.expect(enum_children.items[1].isNone());
     try std.testing.expectEqual(Node.Tag.binding_identifier, parser.ast.getNode(enum_children.items[0]).tag);
-    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[1]).tag);
     try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[2]).tag);
+    try std.testing.expectEqual(Node.Tag.ts_enum_member, parser.ast.getNode(enum_children.items[3]).tag);
 
-    const next_member = parser.ast.getNode(enum_children.items[2]);
+    const next_member = parser.ast.getNode(enum_children.items[3]);
     const initializer = next_member.data.binary.right;
     try std.testing.expectEqual(Node.Tag.binary_expression, parser.ast.getNode(initializer).tag);
-    var member_children = try collectChildren(a, &parser.ast, enum_children.items[2]);
+    var member_children = try collectChildren(a, &parser.ast, enum_children.items[3]);
     defer member_children.deinit(a);
     try std.testing.expectEqual(@as(usize, 2), member_children.items.len);
     try std.testing.expectEqual(initializer, member_children.items[1]);
@@ -323,4 +324,42 @@ test "bindingIdentifiers: cover_grammar_assignment 옵션이 arrow param 의 ass
         seen_x = true;
     };
     try std.testing.expect(seen_x);
+}
+
+test "parameter expressions distinguish unmapped syntax from split environments" {
+    const Case = struct { source: []const u8, expressions: bool };
+    for ([_]Case{
+        .{ .source = "function read(value){}", .expressions = false },
+        .{ .source = "function read({value}){}", .expressions = false },
+        .{ .source = "function read({value,...rest}){}", .expressions = false },
+        .{ .source = "function read(...rest){}", .expressions = false },
+        .{ .source = "function read(value=1){}", .expressions = true },
+        .{ .source = "function read({value=1}){}", .expressions = true },
+        .{ .source = "function read({[0]:value}){}", .expressions = true },
+        .{ .source = "function read(...[value=1]){}", .expressions = true },
+        .{ .source = "function read(raw,value=void 0,...tail){}", .expressions = true },
+        .{ .source = "function read(raw,...tail){}", .expressions = false },
+        .{ .source = "function read(...{length}){}", .expressions = false },
+        .{ .source = "function read(...{['length']:length}){}", .expressions = true },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        const root = try parser.parse();
+        const statement = parser.ast.readExtraNode(parser.ast.getNode(root).data.list.start, 0);
+        const function = parser.ast.getNode(statement);
+        const params = parser.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+        try std.testing.expectEqual(case.expressions, try ast_walk.parameterListHasExpressions(a, &parser.ast, parser.ast.getNode(params).data.list));
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        try analyzer.analyze();
+        const body_scope = analyzer.scope_owner_map.get(@backingInt(statement)).?;
+        const parameter_scope = analyzer.scope_owner_map.get(@backingInt(params));
+        try std.testing.expectEqual(case.expressions, parameter_scope != null);
+        if (parameter_scope) |scope| {
+            try std.testing.expect(scope != body_scope);
+            try std.testing.expectEqual(@as(u32, @intCast(scope)), @backingInt(analyzer.scopes.items[body_scope].parent));
+        }
+    }
 }

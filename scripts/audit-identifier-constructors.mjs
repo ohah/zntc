@@ -57,8 +57,18 @@ const ALLOWLIST = {
     'source class-self SymbolId를 output capture SymbolId에 매핑하고 write Reference를 target으로 재사용',
   'src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite':
     'producer가 확정한 class-self SymbolId와 output ScopeId를 copied write Reference에 직접 등록',
+  'src/transformer/transformer/semantic_edit.zig::makeEnumOuterWrite':
+    '실제 enum storage binding Node/SID/Scope를 검증하고 동일 SID write row를 즉시 생성',
   'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
     '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
+  'src/transformer/native_constructor_function_cells.zig::prepareImpl':
+    '생산자가 확정한 constructor 함수 셀 SID와 try Scope로 Reference를 먼저 등록한 뒤 대입 target으로 retag',
+  'src/transformer/transformer/semantic_edit.zig::makeNativeArgumentsRef':
+    '실제 함수 스코프의 native arguments SID/참조 생성; semantic-less 경로만 raw native operand를 생성',
+  'src/transformer/native_constructor_guard.zig::reference':
+    '호출자가 넘긴 정확한 capture SID와 실제 use Scope에 Reference를 먼저 등록한 뒤 write target으로 retag',
+  'src/transformer/es2015_class/super_props.zig::makeThisAliasRefWithFlags':
+    '실제 constructor capture frame의 예약된 SID를 검증하고 write target에 정확한 flags/Scope의 Reference를 즉시 등록',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
     '사용자 바인딩 생성 함수(심볼 전달)',
   'src/transformer/es_helpers.zig::jsxIdentifierNode':
@@ -70,9 +80,11 @@ const ALLOWLIST = {
 // another direct identifier construction inside an allowed producer cannot
 // silently widen the exception.
 const PINNED_ALLOW_COUNTS = new Map([
+  ['src/transformer/transformer/semantic_edit.zig::makeNativeArgumentsRef', 1],
   ['src/transformer/es2015_generator.zig::appendCollectedFunctionAlias', 1],
   ['src/transformer/static_class_capture.zig::makeClassSelfReference', 1],
   ['src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite', 1],
+  ['src/transformer/es2015_class/super_props.zig::makeThisAliasRefWithFlags', 1],
   ['src/transformer/es_helpers.zig::makeExactUserWriteTargetAtScope', 1],
 ]);
 

@@ -70,6 +70,8 @@ test {
     _ = @import("using_block_scope_semantic_test.zig");
     _ = @import("symbol_coverage.zig");
     _ = @import("symbol_coverage_test.zig");
+    _ = @import("legacy_static_field_scope_test.zig");
+    _ = @import("legacy_static_field_block_certificate.zig");
     _ = @import("loop_semantic_test.zig");
     _ = @import("generator_state_semantic_test.zig");
     _ = @import("generator_case_reference_scope_test.zig");
@@ -85,6 +87,7 @@ test {
     _ = @import("private_reference_scope_semantic_test.zig");
     _ = @import("native_parameter_cells_semantic_test.zig");
     _ = @import("native_parameter_this_semantic_test.zig");
+    _ = @import("implicit_arguments_semantic_test.zig");
     _ = @import("object_computed_temp_identity_semantic_test.zig");
     _ = @import("es2015_parameter_temp_identity_semantic_test.zig");
     _ = @import("generated_alias_reference_semantic_test.zig");
@@ -104,6 +107,7 @@ test {
     _ = @import("retained_private_capture_semantic_test.zig");
     _ = @import("generator_temp_semantic_test.zig");
     _ = @import("parameter_temp_semantic_test.zig");
+    _ = @import("rest_native_arguments_semantic_test.zig");
     _ = @import("object_super_semantic_test.zig");
     _ = @import("flow_match_semantic_test.zig");
     _ = @import("generated_name_eval_semantic_test.zig");
@@ -123,4 +127,50 @@ test {
 
 test {
     _ = @import("for_of_cleanup_scope_semantic_test.zig");
+    _ = @import("namespace_live_arguments_test.zig");
+    _ = @import("enum_runtime_prelude_test.zig");
+    _ = @import("enum_outer_binding_semantic_test.zig");
+}
+
+test {
+    _ = @import("retained_field_arrow_test.zig");
+    _ = @import("native_constructor_body_scope.zig");
+    _ = @import("native_constructor_function_cells.zig");
+    _ = @import("native_constructor_guard.zig");
+}
+
+test {
+    _ = @import("static_block_environment_test.zig");
+}
+
+test {
+    _ = @import("native_arguments_handoff_test.zig");
+}
+
+test {
+    _ = @import("generated_static_block_test.zig");
+}
+
+test {
+    _ = @import("legacy_default_static_capture_test.zig");
+}
+
+test {
+    _ = @import("loop_annex_b_semantic_test.zig");
+}
+
+test {
+    _ = @import("native_private_initializer_semantic_test.zig");
+}
+
+test {
+    _ = @import("computed_object_own_data_test.zig");
+}
+
+test {
+    _ = @import("computed_object_helper_authority.zig");
+}
+
+test {
+    _ = @import("native_private_field_certificate_test.zig");
 }

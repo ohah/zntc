@@ -207,7 +207,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (member.tag == .static_block) {
                     // static block → IIFE로 변환
-                    const iife = try buildStaticBlockIIFE(self, member, class_name_span);
+                    const iife = try buildStaticBlockIIFE(self, @fromBackingInt(raw_idx), class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
                 } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
                     const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, lookupKeyMemo(static_key_memos.items, raw_idx));
@@ -324,7 +324,14 @@ pub fn ES2022(comptime Transformer: type) type {
         }
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
-        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool) Transformer.Error!NodeIndex {
+        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool, constructor_scope: ScopeId) Transformer.Error!NodeIndex {
+            const saved_scope = self.current_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.outputOwnedScope(method_node_idx) != constructor_scope)
+                    @panic("private initializer lost its actual constructor owner");
+                self.current_scope = constructor_scope;
+            }
+            defer self.current_scope = saved_scope;
             const node = self.ast.getNode(method_node_idx);
             const extras = self.ast.extra_data.items;
             const me = node.data.extra;
@@ -805,8 +812,10 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // ctor 주입: 기존 constructor에 prepend, 없으면 새로 생성.
             if (ctor_init_stmts.items.len > 0) {
+                if (!self.options.unsupported.class)
+                    try @import("native_constructor_timing.zig").registerPlacementOwner(self, constructor_scope);
                 if (ctor_pos) |pos| {
-                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
+                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super, constructor_scope);
                 } else {
                     const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span, source_class_scope, constructor_scope);
                     try body_nodes.insert(self.allocator, 0, ctor);
@@ -1117,12 +1126,37 @@ pub fn ES2022(comptime Transformer: type) type {
         fn visitInstanceFieldInitValue(self: *Transformer, init_idx: NodeIndex, source_scope: ScopeId) Transformer.Error!NodeIndex {
             try self.reparentGeneratedBodyScopes(source_scope, self.current_scope, init_idx);
             try @import("class_strict_context.zig").moveSourceReferences(self, init_idx, source_scope, source_scope, self.current_scope);
+            // The moved initializer executes in the actual constructor, but
+            // is built before visiting its method. Give its arrows their own
+            // creation-time field receiver factory rather than borrowing an
+            // absent (or enclosing method's) lexical capture frame.
+            const capture = if (!self.options.unsupported.class and self.options.unsupported.arrow)
+                es_helpers.pushCaptureFrame(self)
+            else
+                null;
+            defer if (capture) |saved| es_helpers.popCaptureFrame(self, saved);
+            const saved_field_frame = self.retained_field_initializer_frame;
+            const saved_field_static = self.retained_field_initializer_static;
+            const saved_field_plan = self.retained_field_this_plan;
+            if (capture != null) {
+                self.retained_field_initializer_frame = self.capture_frame;
+                self.retained_field_initializer_static = false;
+                self.retained_field_this_plan = null;
+            }
+            defer {
+                self.retained_field_initializer_frame = saved_field_frame;
+                self.retained_field_initializer_static = saved_field_static;
+                self.retained_field_this_plan = saved_field_plan;
+            }
             const saved_super_is_static = self.current_super_is_static;
             const saved_method_is_static = self.current_method_is_static;
+            const saved_new_target = self.new_target_ctx;
             self.current_super_is_static = false;
             self.current_method_is_static = false;
+            self.new_target_ctx = .field_initializer;
             defer self.current_super_is_static = saved_super_is_static;
             defer self.current_method_is_static = saved_method_is_static;
+            defer self.new_target_ctx = saved_new_target;
             return self.visitNode(init_idx);
         }
 
@@ -1132,7 +1166,21 @@ pub fn ES2022(comptime Transformer: type) type {
         /// class_name_span이 있으면 body 안의 this → 클래스 이름으로 치환.
         /// 치환은 transformer의 static_block_class_name / this_depth 필드를 통해
         /// visitNode(.this_expression) 단계에서 수행된다.
-        pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node, class_name_span: ?Span) Transformer.Error!NodeIndex {
+        pub fn buildStaticBlockIIFE(self: *Transformer, source_idx: NodeIndex, class_name_span: ?Span) Transformer.Error!NodeIndex {
+            const static_block_node = self.ast.getNode(source_idx);
+            const source_environment = self.outputOwnedScope(source_idx);
+            const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const source_owned = if (source_environment) |scope| source_scopes[scope.toIndex()].kind == .class_static_block else !self.semantic_edit_enabled and @backingInt(source_idx) < self.parser_node_count;
+            if (source_owned) {
+                const static_context = try es_helpers.enterStaticInitContext(self, class_name_span);
+                defer es_helpers.leaveStaticInitContext(self, static_context);
+                const parent = if (self.semantic_edit_enabled) self.outputScopeParent(self.current_scope) else ScopeId.none;
+                return @import("static_block_environment.zig").lower(self, source_idx, parent, class_name_span orelse @panic("source static block lowering has no exact class value"));
+            }
+            if (self.semantic_edit_enabled and @backingInt(source_idx) < self.parser_node_count)
+                @panic("source static block has no exact var environment");
+            // Synthetic metadata blocks retain their separate flattening and
+            // binding protocol; they are not source static environments.
             // static block body 는 IIFE 로 빠져 클래스 밖에서 평가된다 — this·super 를 클래스 기준으로
             // (VSB fix: spec 상 static block 의 super 는 class.[[Prototype]]).
             const static_ctx = try es_helpers.enterStaticInitContext(self, class_name_span);

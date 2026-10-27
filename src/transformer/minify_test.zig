@@ -2820,3 +2820,26 @@ test "minify: statement-position sequence with rewritable middle element (#4273 
     // 여러 rewritable 중간 원소로 extra_data grow를 누적 (realloc 유발 가능성 ↑).
     try expectMinifyFull("(a, [x()], [y()], [w()], z());", "a,x(),y(),w(),z();");
 }
+
+test "declaration merge keeps live preserved owners as boundaries on both sides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "var before=first();var owner=factory();var after=last();var tail=end();");
+    var parser = Parser.init(a, &scanner);
+    const root = try parser.parse();
+    const ast = &parser.ast;
+    const list = ast.getNode(root).data.list;
+    const before = ast.readExtraNode(list.start, 0);
+    const owner = ast.readExtraNode(list.start, 1);
+    const after = ast.readExtraNode(list.start, 2);
+    minify_mod.mergeDeclsPreserving(ast, root, null, &.{owner}, a);
+    minify_mod.mergeDeclsPreserving(ast, root, null, &.{owner}, a);
+    const actual = ast.getNode(root).data.list;
+    try std.testing.expectEqual(@as(u32, 3), actual.len);
+    try std.testing.expectEqual(before, ast.readExtraNode(actual.start, 0));
+    try std.testing.expectEqual(owner, ast.readExtraNode(actual.start, 1));
+    try std.testing.expectEqual(after, ast.readExtraNode(actual.start, 2));
+    try std.testing.expectEqual(@as(u32, 1), ast.extra_data.items[ast.getNode(owner).data.extra + 2]);
+    try std.testing.expectEqual(@as(u32, 2), ast.extra_data.items[ast.getNode(after).data.extra + 2]);
+}
