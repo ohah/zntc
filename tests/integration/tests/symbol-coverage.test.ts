@@ -13,7 +13,7 @@ import { spawnSync as spawnSyncRaw } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import ts from 'typescript';
 import { transpile as transpileNapi } from '@zntc/core';
 import { ZNTC_BIN, ZNTC_JS_CLI } from './helpers';
@@ -1275,8 +1275,17 @@ function transpileGraphModeProblems(
 function requiredProducerObservationProblems(
   reports: { exact: string; strict: string },
   requirements: readonly ProducerObservationRequirement[],
+  expectedFile: string,
 ): string[] {
   const problems: string[] = [];
+  const expectedPath = expectedFile.replaceAll('\\', '/');
+  const expectedFixture = relative(FIXTURE_DIR, expectedFile).replaceAll('\\', '/');
+  for (const report of ['exact', 'strict'] as const) {
+    const prefix = report === 'exact' ? 'zntc: symbol-identity ' : 'zntc: synthetic-coverage ';
+    if (!reports[report].replaceAll('\\', '/').startsWith(`${prefix}${expectedPath}: `)) {
+      problems.push(`${report} report is not attributed to required fixture ${expectedFixture}`);
+    }
+  }
   for (const requirement of requirements) {
     if (!Number.isSafeInteger(requirement.minimum) || requirement.minimum <= 0) {
       problems.push(
@@ -2119,7 +2128,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(strict, `${label}: strict identity report missing`).toBeDefined();
           const reports = { exact: exact ?? '', strict: strict ?? '' };
           expect(
-            requiredProducerObservationProblems(reports, entry.observations),
+            requiredProducerObservationProblems(reports, entry.observations, file),
             `${label}: required producer observations missing`,
           ).toEqual([]);
 
@@ -2137,6 +2146,7 @@ describe('symbol identity coverage gate (#4819)', () => {
               requiredProducerObservationProblems(
                 { ...reports, [requirement.report]: missingReport },
                 [requirement],
+                file,
               ),
               `${label}: ${requirement.field} missing-field negative control`,
             ).toContain(`${requirement.report}.${requirement.field} observations=0, expected 1`);
@@ -2150,7 +2160,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             );
             const corruptedReports = { ...reports, [requirement.report]: corruptedReport };
             expect(
-              requiredProducerObservationProblems(corruptedReports, [requirement]),
+              requiredProducerObservationProblems(corruptedReports, [requirement], file),
               `${label}: ${requirement.field} negative control`,
             ).toContain(
               `${requirement.report}.${requirement.field}=0, required >=${requirement.minimum}`,
@@ -2165,6 +2175,7 @@ describe('symbol identity coverage gate (#4819)', () => {
               requiredProducerObservationProblems(
                 { ...reports, [requirement.report]: belowMinimumReport },
                 [requirement],
+                file,
               ),
               `${label}: ${requirement.field} below-minimum negative control`,
             ).toContain(
@@ -2179,6 +2190,7 @@ describe('symbol identity coverage gate (#4819)', () => {
               requiredProducerObservationProblems(
                 { ...reports, [requirement.report]: duplicateReport },
                 [requirement],
+                file,
               ),
               `${label}: ${requirement.field} duplicate-field negative control`,
             ).toContain(`${requirement.report}.${requirement.field} observations=2, expected 1`);
@@ -2191,6 +2203,7 @@ describe('symbol identity coverage gate (#4819)', () => {
               requiredProducerObservationProblems(
                 { ...reports, [requirement.report]: unsafeReport },
                 [requirement],
+                file,
               ),
               `${label}: ${requirement.field} unsafe-integer negative control`,
             ).toContain(`${requirement.report}.${requirement.field} is not a safe integer`);
@@ -2226,6 +2239,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             requiredProducerObservationProblems(
               { exact: mutantExact ?? '', strict: mutantStrict ?? '' },
               entry.observations,
+              mutantFile,
             ),
           ).toContain('exact.generated_references=8, required >=9');
         }
@@ -2237,16 +2251,77 @@ describe('symbol identity coverage gate (#4819)', () => {
   });
 
   test('required producer observation minimums reject vacuous or unsafe thresholds', () => {
-    const reports = { exact: 'generated_scope_owners_checked=28', strict: '' };
+    const expectedFile = join(FIXTURE_DIR, 'observation-census-case.mjs');
+    const expectedPath = expectedFile.replaceAll('\\', '/');
+    const reports = {
+      exact: `zntc: symbol-identity ${expectedPath}: generated_scope_owners_checked=28`,
+      strict: `zntc: synthetic-coverage ${expectedPath}: marked_synthetic=1`,
+    };
     for (const minimum of [0, -1, 9007199254740992, Number.NaN]) {
       expect(
-        requiredProducerObservationProblems(reports, [
-          { report: 'exact', field: 'generated_scope_owners_checked', minimum },
-        ]),
+        requiredProducerObservationProblems(
+          reports,
+          [{ report: 'exact', field: 'generated_scope_owners_checked', minimum }],
+          expectedFile,
+        ),
       ).toContain(
         `exact.generated_scope_owners_checked minimum=${minimum} is not a positive safe integer`,
       );
     }
+  });
+
+  test('required producer observations reject same-named reports from another path', () => {
+    const expectedFile = join(FIXTURE_DIR, 'observation-census-case.mjs');
+    const expectedPath = expectedFile.replaceAll('\\', '/');
+    const expectedFixture = relative(FIXTURE_DIR, expectedFile).replaceAll('\\', '/');
+    const correctReports = {
+      exact: `zntc: symbol-identity ${expectedPath}: generated_bindings=1`,
+      strict: `zntc: synthetic-coverage ${expectedPath}: marked_synthetic=1`,
+    };
+    const requirements: ProducerObservationRequirement[] = [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ];
+    expect(requiredProducerObservationProblems(correctReports, requirements, expectedFile)).toEqual(
+      [],
+    );
+
+    const foreignPaths = [
+      join(dirname(expectedFile), 'foreign', 'observation-census-case.mjs'),
+      `${expectedFile}.bak`,
+      `${expectedFile}-copy`,
+      join(dirname(dirname(expectedFile)), 'observation-census-case.mjs'),
+      `/foreign${expectedPath}`,
+      expectedPath.replace('/downlevel-oracle/', '/downlevel-oracle//'),
+      expectedPath.replace('/downlevel-oracle/', '/foreign/downlevel-oracle/'),
+      expectedPath.replace('/downlevel-oracle/', '/downlevel-oracle/./'),
+      `${expectedPath}:foreign`,
+      `${expectedPath}/../observation-census-case.mjs`,
+    ];
+    for (const report of ['exact', 'strict'] as const) {
+      for (const foreignPath of foreignPaths) {
+        const mutatedReports = {
+          ...correctReports,
+          [report]: correctReports[report].replace(expectedPath, foreignPath.replaceAll('\\', '/')),
+        };
+        expect(
+          requiredProducerObservationProblems(mutatedReports, requirements, expectedFile),
+          `${report}: ${foreignPath}`,
+        ).toContain(`${report} report is not attributed to required fixture ${expectedFixture}`);
+      }
+    }
+
+    const windowsPath = expectedPath.replaceAll('/', '\\');
+    expect(
+      requiredProducerObservationProblems(
+        {
+          exact: correctReports.exact.replace(expectedPath, windowsPath),
+          strict: correctReports.strict.replace(expectedPath, windowsPath),
+        },
+        requirements,
+        expectedFile,
+      ),
+    ).toEqual([]);
   });
 
   test('exact scope observations exclude live scopes that came from source analysis', () => {
