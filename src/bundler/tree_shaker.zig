@@ -1707,10 +1707,19 @@ pub const TreeShaker = struct {
         cjs_patterns.collectNodeBufferModuleObjectNames(self.allocator, ast, &buffer_names) catch return false;
         if (buffer_names.count() == 0) return false;
 
+        var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer buffer_ctor_names.deinit(self.allocator);
+        cjs_patterns.collectNodeBufferCtorNames(self.allocator, ast, &buffer_names, &buffer_ctor_names) catch return false;
+
         for (infos.stmts, 0..) |stmt, si| {
             const stmt_ni: usize = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            if (!cjs_patterns.isModuleExportsAssignedNodeBufferObject(ast, ast.nodes.items[stmt_ni], &buffer_names)) continue;
+            if (!cjs_patterns.isModuleExportsAssignedNodeBufferObject(
+                ast,
+                @fromBackingInt(@intCast(stmt_ni)),
+                &buffer_names,
+                &buffer_ctor_names,
+            )) continue;
             if (reachable_stmts[mod_idx] == null) {
                 reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
