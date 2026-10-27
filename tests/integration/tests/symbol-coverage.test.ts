@@ -5217,6 +5217,201 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__typeOnlyImportRan = true; export interface Shape { value: number }\n',
         },
+        graph: 'retained',
+        stdout: 'elided',
+      },
+      {
+        name: 'generic alias chains keep runtime imports and erase type-only modules',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'type Nullable<T> = T | null;',
+          'type Model = Nullable<Shape>;',
+          'const model: Model = { value };',
+          "process.stdout.write(`${model.value}:${globalThis.__genericAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__genericAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'function-local aliases remove only their type references',
+        source: [
+          "import { Shape } from './shape';",
+          'function read(input: Shape) { type Local = Shape; const copy: Local = input; return copy.value; }',
+          "process.stdout.write(`${read({ value: 42 })}:${globalThis.__localAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__localAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'type-query aliases preserve a runtime import read',
+        source: [
+          "import { value } from './values';",
+          'type Value = typeof value;',
+          'const answer: Value = value;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'import type expressions inside aliases create no runtime module edge',
+        source: [
+          "import { value } from './values';",
+          "type Shape = import('./shape').Shape;",
+          'const answer: Shape = { value };',
+          "process.stdout.write(`${answer.value}:${globalThis.__importTypeAliasRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__importTypeAliasRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'object signature aliases erase type-only imports and retain value identity',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'type Access = { get value(): Shape; read(input: Shape): Shape };',
+          'const answer: Access = { get value() { return value; }, read(input) { return input; } };',
+          "process.stdout.write(`${answer.value}:${globalThis.__signatureAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__signatureAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'nested union and intersection aliases erase their imported type',
+        source: [
+          "import { Shape } from './shape';",
+          'type Nullable<T> = T | null;',
+          'type ObjectShape = Nullable<Shape> & object;',
+          'const shape: ObjectShape = { value: 42 };',
+          "process.stdout.write(`${shape.value}:${globalThis.__unionAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__unionAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'keyof aliases erase imported type references without dropping output',
+        source: [
+          "import { Shape } from './shape';",
+          'type Keys<T> = keyof T;',
+          'type ShapeKey = Keys<Shape>;',
+          "const key: ShapeKey = 'value';",
+          "process.stdout.write(`${key}:${globalThis.__keyofAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__keyofAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: 'value:elided',
+      },
+      {
+        name: 'tuple aliases preserve runtime bindings and erase type-only imports',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'type Row<T> = readonly [head: T, ...tail: T[]];',
+          'type ShapeRow = Row<Shape>;',
+          'const row: ShapeRow = [{ value }];',
+          "process.stdout.write(`${row[0].value}:${globalThis.__tupleAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__tupleAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'exported type aliases do not add runtime exports or module edges',
+        source: [
+          "import { Shape } from './shape';",
+          'export type Alias = Shape;',
+          'export const value = 42;',
+          "process.stdout.write(`${value}:${globalThis.__exportedAliasShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__exportedAliasShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'type alias names stay separate from same-spelled runtime bindings',
+        source: [
+          'type Model = number;',
+          'const Model = 42;',
+          'const answer: Model = Model;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: {},
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'type aliases containing attributed import types keep reanalysis',
+        source: [
+          "import { value } from './values';",
+          "type Shape = import('./shape', { assert: { type: 'json' } }).Shape;",
+          'const answer: Shape = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts': 'export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'interfaces remain outside the declaration alias gate',
+        source: [
+          "import { Shape } from './shape';",
+          'interface Alias extends Shape {}',
+          "process.stdout.write(globalThis.__interfaceAliasRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__interfaceAliasRan = true; export interface Shape { value: number }\n',
+        },
         graph: 'reanalyzed',
         stdout: 'elided',
       },
@@ -5235,19 +5430,19 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'elided',
       },
       {
-        name: 'a namespace import read only in a type keeps reanalysis',
+        name: 'a namespace import read only in an alias erases its module edge',
         source: [
           "import * as types from './types';",
           'type Alias = types.Shape;',
-          "process.stdout.write('ok');",
+          "process.stdout.write(globalThis.__typeOnlyNamespaceImportRan ? 'loaded' : 'elided');",
           '',
         ].join('\n'),
         dependencies: {
           'types.ts':
             'globalThis.__typeOnlyNamespaceImportRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
-        stdout: 'ok',
+        graph: 'retained',
+        stdout: 'elided',
       },
       {
         name: 'inline type-only specifiers keep reanalysis',

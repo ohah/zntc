@@ -790,6 +790,10 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_template_literal_type,
             .ts_type_reference,
             .ts_type_parameter_instantiation,
+            // Type alias declarations and their type references are erased as
+            // one AST subtree. finishSemanticEdit removes the exact references
+            // whose nodes disappear, so the existing graph remains valid.
+            .ts_type_alias_declaration,
             .ts_qualified_name,
             .ts_type_query,
             // Literal type nodes, including the parsed module-specifier type
@@ -827,13 +831,15 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
         .{ .name = "infer type", .source = "const value: number extends infer Result ? Result : never = 1;", .required_tag = .ts_infer_type, .expected = true },
         .{ .name = "mapped type parameter", .source = "const value: { [Key in 'value']: number } = 1;", .required_tag = .ts_type_parameter, .expected = true },
         .{ .name = "function type parameter declaration", .source = "const value: <T>(arg: T) => T = 1;", .required_tag = .ts_type_parameter_declaration, .expected = true },
+        .{ .name = "type query under alias", .source = "type Alias = typeof value; const value = 1;", .required_tag = .ts_type_query, .expected = true },
         .{ .name = "this type", .source = "const value: this = 1;", .required_tag = .ts_this_type, .expected = true },
         .{ .name = "type predicate", .source = "function isString(value: unknown): value is string { return true; }", .required_tag = .ts_type_predicate, .expected = true },
         .{ .name = "as expression", .source = "const value = 1 as number;", .required_tag = .ts_as_expression, .expected = true },
         .{ .name = "satisfies expression", .source = "const value = { value: 1 } satisfies { value: number };", .required_tag = .ts_satisfies_expression, .expected = true },
         .{ .name = "non-null expression", .source = "const value: { value: number } | null = { value: 1 }; const result = value!.value;", .required_tag = .ts_non_null_expression, .expected = true },
         .{ .name = "angle-bracket type assertion", .source = "const value = <number>1;", .required_tag = .ts_type_assertion, .expected = true },
-        .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = false },
+        .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = true },
+        .{ .name = "type alias with attributed import type", .source = "type Alias = import('./types', { assert: { type: 'json' } }).Shape;", .required_tag = .ts_type_alias_declaration, .expected = false },
         .{ .name = "interface declaration", .source = "interface Shape {} const value: Shape = {};", .required_tag = .ts_interface_declaration, .expected = false },
         .{ .name = "no type erasure", .source = "const value = 1;", .required_tag = null, .expected = false },
         .{ .name = "import type without attributes", .source = "const value: import('./types').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
