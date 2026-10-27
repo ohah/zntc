@@ -430,6 +430,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         self.readU32(e, 3),   new_decos.start,              new_decos.len,
     });
 
+    // A plugin can consume this method and create an ordinary function.
+    // Publish its existing exact owner before handing the result to it.
+    try self.remapCopiedScopeOwner(source_owner, result);
+
     // Plugin dispatch: worklet 등 AST 플러그인 적용
     // method_definition은 object/class 내부에 있으므로 IIFE 교체는 불가.
     // 대신 워크릿 플러그인이 method body 기반으로 function_expression을 생성하여

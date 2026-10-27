@@ -494,6 +494,7 @@ fn checkWorkletClassFactoryExactCoverage(
     _ = try parser.parse();
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
     try analyzer.analyze();
 
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
@@ -511,6 +512,7 @@ fn checkWorkletClassFactoryExactCoverage(
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.node_scope_provenance = analyzer.node_scope_provenance;
     transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
     transformer.semantic_edit_enabled = true;
     transformer.synthetic_idents = .empty;
 
@@ -1944,4 +1946,191 @@ test "static block environment Worklet reconstruction consumes its body alias be
     ;
     try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es5), "static-worklet-body-es5.ts", "Clazz", source);
     try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2015), "static-worklet-body-es2015.ts", "Clazz", source);
+}
+
+test "worklet class factory owns distinct statement nodes and cloned lexical identities" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const coordinates = @import("../semantic/statement_coordinates.zig");
+    const source =
+        \\const outside=42;
+        \\class Clazz {
+        \\  __workletClass=true;
+        \\  method(value=outside){const local=value;return()=>[local,outside,Clazz]}
+        \\}
+        \\console.log(new Clazz().method()()[0]);
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.init(a, &parser.ast, .{
+        .plugins = &plugins,
+        .jsx_filename = "owned-class.mjs",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+    const source_root: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@as(u32, @intCast(transformer.ast.nodes.items.len - 1)));
+    const source_symbol_count = analyzer.symbols.items.len;
+    try transformer.buildBlockRenameMap();
+    const root = try transformer.visitNode(source_root);
+    const actual = try coordinates.collect(a, transformer.ast, root);
+    try std.testing.expect(actual[@backingInt(root)] != null);
+    const scope_utils = @import("output_scope_test_utils.zig");
+    const editor = &transformer.semantic_editor.?;
+    var parents = try scope_utils.buildParentMap(a, transformer.ast, root);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, transformer.ast, root);
+    for (live) |raw| if (transformer.outputOwnedScope(@fromBackingInt(raw))) |scope| try owners.put(a, raw, @backingInt(scope));
+    try std.testing.expectEqual(@as(usize, 1), transformer.plugins.worklet.class_factories.items.len);
+    const factory = transformer.plugins.worklet.class_factories.items[0];
+    try std.testing.expect(factory.source_self != factory.target_self);
+    try std.testing.expect(factory.source_scope != factory.target_scope);
+    var external: ?u32 = null;
+    var parameter: ?u32 = null;
+    var local: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (std.mem.eql(u8, symbol.nameText(source), "outside")) external = @intCast(raw);
+        if (std.mem.eql(u8, symbol.nameText(source), "value")) parameter = @intCast(raw);
+        if (std.mem.eql(u8, symbol.nameText(source), "local")) local = @intCast(raw);
+    }
+    try std.testing.expect(external != null and parameter != null and local != null);
+    for ([_]u32{ parameter.?, local.? }) |original| {
+        var matches: usize = 0;
+        for (editor.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, raw| {
+            if (std.meta.eql(symbol.name, analyzer.symbols.items[original].name) and symbol.kind == analyzer.symbols.items[original].kind) {
+                try std.testing.expect(raw != original);
+                try std.testing.expect(symbol.scope_id != analyzer.symbols.items[original].scope_id);
+                matches += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), matches);
+    }
+    var clone_external_reads: usize = 0;
+    var clone_self_reads: usize = 0;
+    var checked: usize = 0;
+    for (transformer.plugins.worklet.class_reference_nodes.items) |node| {
+        const raw = @backingInt(node);
+        if (raw >= actual.len or actual[raw] == null) continue;
+        const origin = transformer.plugins.worklet.class_reference_origins.get(raw).?;
+        var count: usize = 0;
+        for (editor.references.items) |row| {
+            const anchor = if (row.flags.declare) row.declaration_node_index else row.node_index;
+            if (anchor != node) continue;
+            try std.testing.expectEqual(origin.symbol, row.symbol_id);
+            try std.testing.expectEqual(origin.scope, row.scope_id);
+            try std.testing.expectEqualDeep(origin.flags, row.flags);
+            const expected = scope_utils.expectedStatementCoordinates(transformer.ast, &parents, raw).?;
+            try std.testing.expectEqual(expected.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(expected.scope_stmt_idx, row.scope_stmt_idx);
+            if (!row.flags.declare) try std.testing.expectEqual(@as(?@import("../semantic/scope.zig").ScopeId, row.scope_id), scope_utils.expectedScope(transformer.ast, root, &parents, &owners, raw));
+            count += 1;
+            if (row.flags.read and @backingInt(row.symbol_id) == external.?) clone_external_reads += 1;
+            if (row.flags.read and row.symbol_id == factory.target_self) clone_self_reads += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), count);
+        checked += 1;
+    }
+    try std.testing.expect(checked > 5 and clone_external_reads > 0 and clone_self_reads > 0);
+    const publication = @import("worklet_class_clone.zig");
+    var selected_node: @import("../parser/ast.zig").NodeIndex = .none;
+    var selected_row: usize = 0;
+    for (transformer.plugins.worklet.class_reference_nodes.items) |node| {
+        if (actual[@backingInt(node)] == null) continue;
+        const origin = transformer.plugins.worklet.class_reference_origins.get(@backingInt(node)).?;
+        if (@backingInt(origin.symbol) != external.? or !origin.flags.read) continue;
+        for (editor.references.items, 0..) |row, index| {
+            if (row.node_index == node) {
+                selected_node = node;
+                selected_row = index;
+                break;
+            }
+        }
+        if (!selected_node.isNone()) break;
+    }
+    try std.testing.expect(!selected_node.isNone());
+    const original_row = editor.references.items[selected_row];
+    const original_origin = transformer.plugins.worklet.class_reference_origins.get(@backingInt(selected_node)).?;
+    const original_slot = editor.symbol_ids.items[@backingInt(selected_node)];
+    const reference_snapshot = try a.dupe(@import("../semantic/symbol.zig").Reference, editor.references.items);
+    for (0..8) |hostile| {
+        switch (hostile) {
+            0 => editor.references.items[selected_row].symbol_id = factory.source_self,
+            1 => editor.references.items[selected_row].scope_id = factory.source_scope,
+            2 => editor.references.items[selected_row].flags = .{ .write = true },
+            3 => editor.symbol_ids.items[@backingInt(selected_node)] = @backingInt(factory.source_self),
+            4 => _ = transformer.plugins.worklet.class_reference_origins.remove(@backingInt(selected_node)),
+            5 => transformer.plugins.worklet.class_factories.items[0].target_self = factory.source_self,
+            6 => transformer.plugins.worklet.class_factories.items[0].parent = factory.source_scope,
+            7 => transformer.plugins.worklet.class_factories.items[0].source_scope = factory.target_scope,
+            else => unreachable,
+        }
+        if (hostile >= 5) try std.testing.expectError(error.InvalidWorkletFactoryOwner, publication.publishChecked(&transformer, root)) else if (hostile == 4) try std.testing.expectError(error.MissingWorkletCloneOrigin, publication.publishChecked(&transformer, root)) else try std.testing.expectError(error.InvalidWorkletCloneOrigin, publication.publishChecked(&transformer, root));
+        // Rejection does not publish positions for any other participating row.
+        for (editor.references.items, reference_snapshot, 0..) |row, previous, index| {
+            if (index == selected_row) continue;
+            try std.testing.expectEqualDeep(previous, row);
+        }
+        editor.references.items[selected_row] = original_row;
+        editor.symbol_ids.items[@backingInt(selected_node)] = original_slot;
+        try transformer.plugins.worklet.class_reference_origins.put(a, @backingInt(selected_node), original_origin);
+        transformer.plugins.worklet.class_factories.items[0] = factory;
+        try publication.publishChecked(&transformer, root);
+        try std.testing.expectEqualDeep(reference_snapshot, editor.references.items);
+    }
+    const clone_core = @import("../semantic/runtime_subtree_clone.zig");
+    const good = clone_core.BoundaryBinding{ .source = factory.source_self, .target = factory.target_self };
+    const node_count = transformer.ast.nodes.items.len;
+    const symbol_count = editor.symbols.items.len;
+    const row_count = editor.references.items.len;
+    var no_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var foreign_ast = transformer.ast.*;
+    for (0..5) |hostile| {
+        var bindings = [_]clone_core.BoundaryBinding{ good, good };
+        switch (hostile) {
+            0 => bindings[0].source = @fromBackingInt(external.?),
+            1 => bindings[0].target = factory.source_self,
+            2 => bindings[0].source = factory.target_self,
+            3, 4 => {},
+            else => unreachable,
+        }
+        try std.testing.expectError(error.InvalidCloneOwnership, clone_core.cloneWithBindings(
+            a,
+            if (hostile == 4) &foreign_ast else transformer.ast,
+            editor,
+            &.{},
+            &no_owners,
+            &.{},
+            &.{},
+            factory.source_scope,
+            factory.target_scope,
+            bindings[0..if (hostile == 3) 2 else 1],
+        ));
+        try std.testing.expectEqual(node_count, transformer.ast.nodes.items.len);
+        try std.testing.expectEqual(symbol_count, editor.symbols.items.len);
+        try std.testing.expectEqual(row_count, editor.references.items.len);
+        try std.testing.expectEqualDeep(reference_snapshot, editor.references.items);
+        try publication.publishChecked(&transformer, root);
+    }
 }

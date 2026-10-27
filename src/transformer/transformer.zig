@@ -1135,6 +1135,8 @@ pub const Transformer = struct {
             try @import("native_arguments.zig").publish(self, new_idx);
         }
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
+        if (self.ast.getNode(idx).tag == .program)
+            try @import("worklet_class_clone.zig").publish(self, new_idx);
         // A later visit may copy a generated capture declaration while
         // building an outer async/generator state machine. Pass 2 must see
         // the same parameter-capture role on the final statement identity.

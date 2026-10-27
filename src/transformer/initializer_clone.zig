@@ -79,21 +79,64 @@ fn bindPendingNodes(self: anytype, seen: *std.AutoHashMapUnmanaged(u32, void)) s
     }
 }
 
+const CloneMode = enum { initializer, worklet_class, worklet_method };
+
 pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: ScopeId) std.mem.Allocator.Error!core.Result {
+    return cloneImpl(self, roots, from, to, &.{}, .initializer);
+}
+
+pub fn cloneWithBindings(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: ScopeId, boundary_bindings: []const core.BoundaryBinding) std.mem.Allocator.Error!core.Result {
+    return cloneImpl(self, roots, from, to, boundary_bindings, .worklet_class);
+}
+
+/// The accessor remains live. Copy its actual method environment under that
+/// accessor's body rather than transferring the original owner to two nodes.
+pub fn cloneWorkletMethod(self: anytype, method: ast.NodeIndex, to: ScopeId) std.mem.Allocator.Error!core.Result {
+    if (!self.semantic_edit_enabled) return cloneImpl(self, &.{method}, .none, .none, &.{}, .worklet_method);
+    if (self.ast.getNode(method).tag != .method_definition) @panic("worklet accessor clone has no method owner");
+    const editor = &self.semantic_editor.?;
+    const source = self.outputOwnedScope(method) orelse @panic("worklet accessor has no exact function scope");
+    if (source != to or source.isNone() or source.toIndex() >= editor.scopes.items.len or editor.scopes.items[source.toIndex()].kind != .function)
+        @panic("worklet accessor copy has a foreign actual target parent");
+    var parent = editor.scopes.items[source.toIndex()].parent;
+    const params = self.ast.readExtraNode(self.ast.getNode(method).data.extra, ast.MethodExtra.params);
+    if (self.outputOwnedScope(params)) |parameter_scope| {
+        if (parameter_scope != source) {
+            if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len or
+                editor.scopes.items[parameter_scope.toIndex()].kind != .function or parent != parameter_scope)
+                @panic("worklet accessor copy lost its exact formal environment");
+            parent = editor.scopes.items[parameter_scope.toIndex()].parent;
+        }
+    }
+    if (parent.isNone() or parent.toIndex() >= editor.scopes.items.len) @panic("worklet accessor copy has no lexical creation owner");
+    return cloneImpl(self, &.{method}, parent, to, &.{}, .worklet_method);
+}
+
+fn cloneImpl(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: ScopeId, boundary_bindings: []const core.BoundaryBinding, mode: CloneMode) std.mem.Allocator.Error!core.Result {
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(self.allocator);
-    var stack: std.ArrayList(ast.NodeIndex) = .empty;
+    const Work = struct { node: ast.NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    var named_parents: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty;
+    defer named_parents.deinit(self.allocator);
     defer stack.deinit(self.allocator);
-    try stack.appendSlice(self.allocator, roots);
+    for (roots) |root| try stack.append(self.allocator, .{ .node = root, .scope = from });
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(self.allocator);
-    while (stack.pop()) |node| {
+    while (stack.pop()) |work| {
+        const node = work.node;
         if (node.isNone()) continue;
         const gop = try seen.getOrPut(self.allocator, @backingInt(node));
         if (gop.found_existing) continue;
         if (self.outputOwnedScope(node)) |scope| try owners.put(self.allocator, @backingInt(node), @backingInt(scope));
+        if (mode != .initializer and self.ast.getNode(node).tag == .function_expression)
+            try named_parents.put(self.allocator, @backingInt(node), work.scope);
+        const own_scope = self.outputOwnedScope(node) orelse work.scope;
         var children = @import("../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
-        while (children.next()) |child| try stack.append(self.allocator, child);
+        while (children.next()) |child| {
+            const scope = if (@import("transformer/semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(node), @backingInt(child))) work.scope else own_scope;
+            try stack.append(self.allocator, .{ .node = child, .scope = scope });
+        }
     }
     try bindPendingNodes(self, &seen);
     // Named expression self bindings have a lexical-name scope without an
@@ -108,7 +151,7 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
             if (node.tag != .function_expression) continue;
             const name = self.ast.readExtraNode(node.data.extra, 0);
             if (name.isNone()) continue;
-            const scope = namedExpressionScope(self, @fromBackingInt(raw.*), from) catch @panic("named clone lost its exact lexical self scope");
+            const scope = namedExpressionScope(self, @fromBackingInt(raw.*), named_parents.get(raw.*) orelse from) catch @panic("named clone lost its exact lexical self scope");
             try lexical_names.append(self.allocator, scope);
         }
     }
@@ -124,9 +167,10 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
             };
         }
     }
+    const old_scope_count = if (self.semantic_editor) |*editor| editor.scopes.items.len else 0;
     const result = if (self.semantic_edit_enabled) blk: {
         const editor = if (self.semantic_editor) |*value| value else @panic("typed initializer clone has no semantic owner");
-        break :blk core.clone(self.allocator, self.ast, editor, roots, &owners, lexical_names.items, implicit.items, from, to) catch |err| switch (err) {
+        break :blk core.cloneWithOptions(self.allocator, self.ast, editor, roots, &owners, lexical_names.items, implicit.items, from, to, .{ .boundary_bindings = boundary_bindings, .nested_lexical_name_parents = mode != .initializer }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => std.debug.panic("invalid typed initializer clone: {s}", .{@errorName(err)}),
         };
@@ -217,7 +261,18 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
         const editor = &self.semantic_editor.?;
         const id = editor.symbol_ids.items[raw];
         self.symbol_ids.items[raw] = id;
-        if (editor.scope_owner_map.get(raw)) |scope| try self.transformed_scope_owner_map.put(self.allocator, raw, scope);
+        if (editor.scope_owner_map.get(raw)) |scope| {
+            if (mode != .initializer) {
+                const source_scope = owners.get(original) orelse @panic("cloned worklet owner has no exact source owner");
+                const fresh = result.scopes.get(source_scope) orelse @panic("cloned worklet owner has no fresh ScopeId");
+                if (@backingInt(fresh) != scope or scope < old_scope_count or scope == source_scope or self.scope_owner_origins.contains(raw))
+                    @panic("cloned worklet owner reused a foreign or duplicate ScopeId");
+                if (self.transformed_scope_owner_map.get(raw)) |existing| if (existing != scope)
+                    @panic("cloned worklet owner conflicts with a live ScopeId");
+                try self.scope_owner_origins.put(self.allocator, raw, raw);
+            }
+            try self.transformed_scope_owner_map.put(self.allocator, raw, scope);
+        }
         if (self.class_self_symbol_map.get(original)) |old_id| try self.class_self_symbol_map.put(self.allocator, raw, @backingInt(result.sid(@fromBackingInt(old_id))));
         const source_node: ast.NodeIndex = @fromBackingInt(original);
         if (editor.node_scope_provenance.get(source_node)) |source| {
@@ -246,7 +301,11 @@ pub fn clone(self: anytype, roots: []const ast.NodeIndex, from: ScopeId, to: Sco
             if (row.symbol_id != result.sid(source.symbol_id) or row.scope_id != result.scope(source.scope_id) or !std.meta.eql(row.flags, source.flags))
                 @panic("cloned initializer reference changed its exact source contract");
             try self.trackExactOutputReferenceInScope(node, @backingInt(row.symbol_id), row.scope_id);
-            try @import("native_constructor_guard.zig").recordReference(self, node, row.symbol_id, row.scope_id, row.flags);
+            // Initializer placements and worklet class copies have separate
+            // publication owners. A class boundary cannot authorize a native
+            // constructor's reference ledger.
+            if (mode == .initializer)
+                try @import("native_constructor_guard.zig").recordReference(self, node, row.symbol_id, row.scope_id, row.flags);
             if (self.private_helper_symbol_ids.contains(self.getSymbolIdAt(source_node) orelse std.math.maxInt(u32)))
                 try self.private_helper_symbol_ids.put(self.allocator, @backingInt(row.symbol_id), {});
         }

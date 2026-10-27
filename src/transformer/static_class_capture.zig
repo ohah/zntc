@@ -146,6 +146,7 @@ pub fn makeClassSelfReference(self: anytype, source: NodeIndex) !?NodeIndex {
                 .reference = reference,
             });
             try self.reference_origin_map.put(self.allocator, raw, raw);
+            try @import("worklet_class_clone.zig").registerClassSelfReplacement(self, source, ref, reference);
             return ref;
         }
     }

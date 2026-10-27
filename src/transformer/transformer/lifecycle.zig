@@ -205,6 +205,10 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.namespace_export_frames.deinit(self.allocator);
     self.namespace_temp_bindings.deinit(self.allocator);
     self.plugins.worklet.class_factory_display_names.deinit(self.allocator);
+    self.plugins.worklet.class_factories.deinit(self.allocator);
+    self.plugins.worklet.class_reference_nodes.deinit(self.allocator);
+    self.plugins.worklet.class_reference_origins.deinit(self.allocator);
+    self.plugins.worklet.class_reference_replacements.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
     self.plugins.refresh.signatures.deinit(self.allocator);

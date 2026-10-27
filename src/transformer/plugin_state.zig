@@ -17,7 +17,34 @@ const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 
+pub const WorkletClassFactory = struct {
+    ast_owner: *const ast_mod.Ast,
+    function: NodeIndex,
+    binding: NodeIndex,
+    symbol: SymbolId,
+    scope: @import("../semantic/scope.zig").ScopeId,
+    parent: @import("../semantic/scope.zig").ScopeId,
+    source_class: NodeIndex,
+    source_scope: @import("../semantic/scope.zig").ScopeId,
+    source_self: SymbolId,
+    target_class: NodeIndex,
+    target_scope: @import("../semantic/scope.zig").ScopeId,
+    target_self: SymbolId,
+};
+
+pub const WorkletClassReferenceOrigin = struct {
+    factory: usize,
+    symbol: SymbolId,
+    scope: @import("../semantic/scope.zig").ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
+};
+
 pub const WorkletState = struct {
+    class_factories: std.ArrayListUnmanaged(WorkletClassFactory) = .empty,
+    class_reference_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty,
+    class_reference_origins: std.AutoHashMapUnmanaged(u32, WorkletClassReferenceOrigin) = .empty,
+    class_reference_replacements: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+
     /// auto-workletization 플래그.
     /// visitCallExpression에서 callee 매칭 시 true로 설정하고,
     /// dispatchFunctionPlugins에서 FunctionInfo.is_auto_worklet로 전달 후 false로 리셋.

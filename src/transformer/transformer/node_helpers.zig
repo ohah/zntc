@@ -313,14 +313,17 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
 
     try copyDeferredGeneratorForInReference(self, old_i, new_idx);
 
-    if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
+    const class_replacement = old_i != new_i and @import("../worklet_class_clone.zig").isClassSelfReplacement(self, old_idx, new_idx);
+    if (old_i != new_i and self.plugins.worklet.class_reference_replacements.contains(new_i) and !class_replacement)
+        @panic("worklet class-self replacement lost its exact creator pair");
+    if (!class_replacement) if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
         if (self.exact_output_ref_scope_ids.get(new_i)) |existing_scope| {
             if (existing_scope != planned_scope)
                 std.debug.panic("copied generated reference changed its producer-selected output ScopeId", .{});
         } else {
             try self.exact_output_ref_scope_ids.put(self.allocator, new_i, planned_scope);
         }
-    }
+    };
 
     // Some producers deliberately remap a copied reference to a different
     // output identity, such as a Worklet class-self reference copied into its

@@ -114,8 +114,45 @@ pub fn cloneAst(allocator: std.mem.Allocator, ast: *Ast, roots: []const NodeInde
 /// `owners` and `implicit_symbols` come from exact source owner/role maps,
 /// never identifier spelling. The original fragment must not move until all
 /// requested clones have been made.
+/// An already-created immutable class-self binding at the fragment boundary.
+/// Owned descendants still receive fresh symbols; unrelated captures keep IDs.
+pub const BoundaryBinding = struct { source: SymbolId, target: SymbolId };
+
 pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []const NodeIndex, owners: *const std.AutoHashMapUnmanaged(u32, u32), lexical_name_scopes: []const ScopeId, implicit_symbols: []const SymbolId, from: ScopeId, to: ScopeId) Error!Result {
+    return cloneWithBindings(allocator, ast, editor, roots, owners, lexical_name_scopes, implicit_symbols, from, to, &.{});
+}
+
+pub const CloneOptions = struct {
+    boundary_bindings: []const BoundaryBinding = &.{},
+    /// The adapter validated each named-expression node against its actual
+    /// incoming owned Scope; parent must still be from or in the owned ledger.
+    nested_lexical_name_parents: bool = false,
+};
+
+pub fn cloneWithBindings(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []const NodeIndex, owners: *const std.AutoHashMapUnmanaged(u32, u32), lexical_name_scopes: []const ScopeId, implicit_symbols: []const SymbolId, from: ScopeId, to: ScopeId, boundary_bindings: []const BoundaryBinding) Error!Result {
+    return cloneWithOptions(allocator, ast, editor, roots, owners, lexical_name_scopes, implicit_symbols, from, to, .{
+        .boundary_bindings = boundary_bindings,
+        .nested_lexical_name_parents = boundary_bindings.len != 0,
+    });
+}
+
+pub fn cloneWithOptions(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []const NodeIndex, owners: *const std.AutoHashMapUnmanaged(u32, u32), lexical_name_scopes: []const ScopeId, implicit_symbols: []const SymbolId, from: ScopeId, to: ScopeId, options: CloneOptions) Error!Result {
+    const boundary_bindings = options.boundary_bindings;
     if (from.isNone() or to.isNone() or from.toIndex() >= editor.scopes.items.len or to.toIndex() >= editor.scopes.items.len) return error.InvalidScope;
+    if ((boundary_bindings.len != 0 or options.nested_lexical_name_parents) and editor.ast != ast) return error.InvalidCloneOwnership;
+    for (boundary_bindings, 0..) |binding, index| {
+        if (binding.source == binding.target or from == to or
+            @backingInt(binding.source) >= editor.symbols.items.len or @backingInt(binding.target) >= editor.symbols.items.len or
+            editor.scopes.items[from.toIndex()].kind != .class_body or editor.scopes.items[to.toIndex()].kind != .class_body)
+            return error.InvalidCloneOwnership;
+        const source = editor.symbols.items[@backingInt(binding.source)];
+        const target = editor.symbols.items[@backingInt(binding.target)];
+        if (source.scope_id != from or target.scope_id != to or source.kind != .class_decl or target.kind != .class_decl or
+            !source.decl_flags.is_const or !target.decl_flags.is_const) return error.InvalidCloneOwnership;
+        for (boundary_bindings[0..index]) |previous| {
+            if (previous.source == binding.source or previous.target == binding.target) return error.InvalidCloneOwnership;
+        }
+    }
     var result = try cloneAst(allocator, ast, roots, from, to);
     errdefer result.deinit(allocator);
     const old_ref_count = editor.references.items.len;
@@ -128,7 +165,9 @@ pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []
         try owned.put(allocator, entry.value_ptr.*, entry.key_ptr.*);
     }
     for (lexical_name_scopes) |id| {
-        if (id.isNone() or id.toIndex() >= editor.scopes.items.len or editor.scopes.items[id.toIndex()].parent != from or editor.scopes.items[id.toIndex()].kind != .block) return error.InvalidCloneOwnership;
+        if (id.isNone() or id.toIndex() >= editor.scopes.items.len or editor.scopes.items[id.toIndex()].kind != .block) return error.InvalidCloneOwnership;
+        const parent = editor.scopes.items[id.toIndex()].parent;
+        if (parent != from and (!options.nested_lexical_name_parents or !owned.contains(@backingInt(parent)))) return error.InvalidCloneOwnership;
         try owned.put(allocator, @backingInt(id), @backingInt(NodeIndex.none));
     }
     var scope_iter = owned.keyIterator();
@@ -195,6 +234,12 @@ pub fn clone(allocator: std.mem.Allocator, ast: *Ast, editor: *Editor, roots: []
         while (names.next()) |name| {
             if (result.symbols.get(@intCast(name.value_ptr.*))) |id| try editor.scope_maps.items[entry.value_ptr.toIndex()].put(allocator, name.key_ptr.*, @backingInt(id));
         }
+    }
+    // The boundary target already owns its declaration. Only copied uses
+    // substitute this known SID, after fresh owned symbol metadata is remapped.
+    for (boundary_bindings) |binding| {
+        if (result.symbols.contains(@backingInt(binding.source))) return error.InvalidCloneOwnership;
+        try result.symbols.put(allocator, @backingInt(binding.source), binding.target);
     }
     try editor.symbol_ids.resize(allocator, ast.nodes.items.len);
     @memset(editor.symbol_ids.items[old_slot_count..], null);
