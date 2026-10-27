@@ -5286,7 +5286,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'type reference annotation keeps reanalysis',
+        name: 'generic type reference annotation keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: Promise<number> = Promise.resolve(value);',
@@ -5294,11 +5294,11 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
-        name: 'intersection containing a type reference keeps reanalysis',
+        name: 'intersection containing a generic type reference keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: Promise<number> & unknown = Promise.resolve(value);',
@@ -5306,7 +5306,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5424,7 +5424,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'type operator containing a type reference keeps reanalysis',
+        name: 'type operator containing a generic type reference keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: keyof Promise<number> = value;',
@@ -5432,7 +5432,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5489,19 +5489,20 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'generic import type expression keeps reanalysis',
+        name: 'generic import type expression has no runtime module edge',
         source: [
           "import { value } from './values';",
           "const answer: import('./types').Shape<string> = value;",
-          'process.stdout.write(String(value));',
+          "process.stdout.write(`${value}:${globalThis.__genericImportTypeRan ? 'loaded' : 'elided'}`);",
           '',
         ].join('\n'),
         dependencies: {
           'values.ts': 'export const value = 42;\n',
-          'types.ts': 'export interface Shape<T> { value: T }\n',
+          'types.ts':
+            'globalThis.__genericImportTypeRan = true; export interface Shape<T> { value: T }\n',
         },
-        graph: 'reanalyzed',
-        stdout: '42',
+        graph: 'retained',
+        stdout: '42:elided',
       },
       {
         name: 'import type expression with attributes keeps reanalysis',
