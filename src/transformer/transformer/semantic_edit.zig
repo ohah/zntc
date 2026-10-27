@@ -812,6 +812,7 @@ pub fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
     switch (parent.tag) {
+        .ts_module_declaration => return @backingInt(parent.data.binary.left) == child_raw,
         .ts_enum_declaration => {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
@@ -2777,16 +2778,18 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
         !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression))) return;
     const old_key = @backingInt(old);
     const new_key = @backingInt(new);
-    const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
-    if (self.transformed_scope_owner_map.get(new_key) orelse self.scope_owner_map.get(new_key)) |existing| {
+    const scope = self.outputOwnedScope(old) orelse return;
+    if (self.outputOwnedScope(new)) |existing| {
         if (existing != scope) std.debug.panic("copied scope owner has conflicting scopes", .{});
     }
-    const origin = self.scope_owner_origins.get(old_key) orelse if (self.scope_owner_map.contains(old_key)) old_key else null;
+    const editor_has_old_owner = if (self.semantic_editor) |*editor| editor.scope_owner_map.contains(old_key) else false;
+    const origin = self.scope_owner_origins.get(old_key) orelse
+        if (self.scope_owner_map.contains(old_key) or editor_has_old_owner) old_key else null;
     if (origin) |first| {
         try self.scope_owner_remaps.put(self.allocator, first, new_key);
         try self.scope_owner_origins.put(self.allocator, new_key, first);
     }
-    try self.transformed_scope_owner_map.put(self.allocator, new_key, scope);
+    try self.transformed_scope_owner_map.put(self.allocator, new_key, @backingInt(scope));
 }
 
 /// Resolve branch copies only after transform() has installed the final root.
