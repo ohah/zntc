@@ -5825,3 +5825,113 @@ test "linker: native parameter this capture rejects wrong kind scope and hint" {
         try std.testing.expectError(error.InvalidThisCaptureOutputBinding, result.linker.computeRenames());
     }
 }
+
+test "runtime helper CJS factory scope zero shadows rename the exact provider" {
+    const body = "function P(){}class D extends P{constructor(){var go=()=>super();go()}}module.exports=D;";
+    for ([_][]const u8{
+        "var __callSuper=42;" ++ body,
+        "function nested(){var __callSuper=42;" ++ body ++ "}nested();",
+        body,
+    }, 0..) |source, index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.cjs", source);
+        var result = try buildAndLinkWithTransformOptions(std.testing.allocator, &tmp, "entry.cjs", .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+            .emit_runtime_helper_imports = true,
+            .defer_runtime_helper_name_resolution = true,
+        }, false);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const entry_index = findModuleIdx(result.graph, "entry.cjs").?;
+        const entry = result.graph.getModule(entry_index).?;
+        try std.testing.expect(entry.wrap_kind == .cjs);
+        var helper: ?ImportBinding = null;
+        for (entry.import_bindings) |binding| {
+            if (binding.is_helper and std.mem.eql(u8, binding.imported_name, "__callSuper")) helper = binding;
+        }
+        const binding = helper orelse return error.MissingCallSuperImport;
+        const resolved = result.linker.getResolvedBinding(entry_index.toU32(), binding.local_span).?;
+        const provider = result.graph.getModule(resolved.canonical.module_index).?;
+        const inner = provider.findLocalExportSemanticIndex(resolved.canonical.export_name).?;
+        const exact = bundler_symbol.SymbolID.make(provider.index, inner);
+        const local = binding.local_symbol.semanticIndex().?;
+        const symbols_before = try std.testing.allocator.dupe(semantic_symbol.Symbol, entry.semantic.?.symbols.items);
+        defer std.testing.allocator.free(symbols_before);
+        // Shared nested-binding input remains scope 1+; the CJS source-zero
+        // exception belongs only to this helper/factory consumer.
+        try std.testing.expectEqual(index == 1, result.linker.hasNestedBinding(entry_index.toU32(), "__callSuper"));
+        if (index == 0) {
+            const source_binding_id = entry.semantic.?.scope_maps[0].get("__callSuper").?;
+            try std.testing.expect(source_binding_id != local);
+        }
+        try result.linker.computeRenames();
+        const selected = result.linker.rename_table.get(exact) orelse result.linker.resolveToLocalName(resolved.canonical);
+        std.debug.print("CJS0 HELPER case={d} canonical={s}\n", .{ index, selected });
+        if (index < 2) {
+            try std.testing.expect(!std.mem.eql(u8, selected, "__callSuper"));
+        } else {
+            try std.testing.expectEqualStrings("__callSuper", selected);
+        }
+        try std.testing.expectEqualDeep(symbols_before, entry.semantic.?.symbols.items);
+        // A separately emitted helper keeps its public export spelling. The
+        // import writer selects a local alias; source zero must remain intact.
+        result.graph.code_splitting = true;
+        try result.linker.computeRenamesForModules(&.{entry_index}, &.{});
+        try std.testing.expectEqual(index < 2, result.linker.preserveRuntimeHelperImportIsShadowed(
+            entry_index.toU32(),
+            provider.index.toU32(),
+            resolved.canonical.export_name,
+            "__callSuper",
+        ));
+        if (index == 0) {
+            const source_binding_id = entry.semantic.?.scope_maps[0].get("__callSuper").?;
+            const source_id = bundler_symbol.SymbolID.make(entry_index, source_binding_id);
+            try std.testing.expectEqualStrings("__callSuper", result.linker.rename_table.get(source_id) orelse "__callSuper");
+            const mutable_entry = @constCast(entry);
+            var helper_binding: ?*ImportBinding = null;
+            for (mutable_entry.import_bindings) |*candidate| {
+                if (candidate.is_helper and candidate.local_symbol.semanticIndex() == local) helper_binding = candidate;
+            }
+            const actual_binding = helper_binding.?;
+            const saved_binding = actual_binding.*;
+            const saved_wrapper = mutable_entry.wrap_kind;
+            const saved_local_kind = mutable_entry.semantic.?.symbols.items[local].kind;
+            const saved_source_scope = mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id;
+            for (0..10) |hostile| {
+                switch (hostile) {
+                    0 => actual_binding.is_helper = false,
+                    1 => actual_binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(provider.index, local),
+                    2 => actual_binding.local_symbol = .invalid,
+                    3 => actual_binding.local_symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, mutable_entry.semantic.?.symbols.items.len),
+                    4 => mutable_entry.semantic.?.symbols.items[local].kind = .variable_var,
+                    5 => mutable_entry.wrap_kind = .none,
+                    6 => mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id = .none,
+                    7 => mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id = @fromBackingInt(1),
+                    8 => mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = local,
+                    9 => {},
+                    else => unreachable,
+                }
+                try std.testing.expect(!result.linker.preserveRuntimeHelperImportIsShadowed(
+                    entry_index.toU32(),
+                    if (hostile == 9) entry_index.toU32() else provider.index.toU32(),
+                    resolved.canonical.export_name,
+                    "__callSuper",
+                ));
+                actual_binding.* = saved_binding;
+                mutable_entry.wrap_kind = saved_wrapper;
+                mutable_entry.semantic.?.symbols.items[local].kind = saved_local_kind;
+                mutable_entry.semantic.?.symbols.items[source_binding_id].scope_id = saved_source_scope;
+                mutable_entry.semantic.?.scope_maps[0].getPtr("__callSuper").?.* = source_binding_id;
+                try std.testing.expect(result.linker.preserveRuntimeHelperImportIsShadowed(
+                    entry_index.toU32(),
+                    provider.index.toU32(),
+                    resolved.canonical.export_name,
+                    "__callSuper",
+                ));
+            }
+        }
+        try std.testing.expectEqualDeep(symbols_before, entry.semantic.?.symbols.items);
+    }
+}
