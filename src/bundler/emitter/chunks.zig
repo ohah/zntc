@@ -5244,6 +5244,21 @@ test "PM plain import alias actual source SID selector metadata and body tuple" 
     std.debug.print("PM plain import alias tuple module={d} bindingNode={d} sourceSID={d} sourceKind={s} sourceScope={d} calleeNode={d} calleeSID={?d} provider={d} export={s} selected={s} selectedFirstByte={d} validUTF8={any} legacyASCIIStart={any} metadata={s} body={s}\n", .{ module.index.toU32(), @backingInt(anchor), sid, @tagName(sem.symbols.items[sid].kind), @backingInt(sem.symbols.items[sid].scope_id), @backingInt(callee), codegen.sourceSymbolId(callee), sym.canonical_module, sym.name, selected, selected[0], std.unicode.utf8ValidateSlice(selected), selected[0] >= 0x21 and selected[0] < 0x80, metadata.renames.get(sid) orelse "<none>", codegen.buf.items });
     for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid) std.debug.print("PM plain import alias source-row node={d} declaration={d} scope={d} flags={d}\n", .{ @backingInt(reference.node_index), @backingInt(reference.declaration_node_index), @backingInt(reference.scope_id), @as(u8, @bitCast(reference.flags)) });
     try std.testing.expectEqualStrings(selected, codegen.buf.items);
+    // Exercise the metadata consumer, not only the lexical helper. The same
+    // current source anchor/SID/read survives every malformed owned target.
+    for ([_][]const u8{ "\xAA", "name.member", "class", "\\u0063lass" }) |invalid| {
+        try linker.putConsumerImportLocal(sym.canonical_module, sym.name, invalid);
+        var rejected = try linker.buildMetadataForAst(ast, module.index.toU32(), true, null, .cjs, true);
+        defer rejected.deinit();
+        try std.testing.expect(!rejected.renames.contains(sid));
+        try std.testing.expectEqual(@as(?u32, sid), rejected.symbol_ids[@backingInt(callee)]);
+        try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(anchor)]);
+        try linker.putConsumerImportLocal(sym.canonical_module, sym.name, selected);
+        var restored = try linker.buildMetadataForAst(ast, module.index.toU32(), true, null, .cjs, true);
+        defer restored.deinit();
+        try std.testing.expectEqualStrings(selected, restored.renames.get(sid) orelse return error.MissingRestoredAliasRename);
+    }
+    std.debug.print("PM plain import alias actual-metadata-invalid-targets=4 restored=4 sameSID={d}\n", .{sid});
 }
 
 test "PM plain import alias member StringValue literal backslash retains key" {
