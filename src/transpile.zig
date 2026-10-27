@@ -2589,6 +2589,29 @@ fn isDeclarationFile(file_path: []const u8) bool {
         std.mem.endsWith(u8, file_path, ".d.cts");
 }
 
+/// Whether the program's directive prologue already contains a literal
+/// `"use strict"`/`'use strict'` directive. Module input is implicitly strict,
+/// but an explicit directive (when present) is emitted by codegen already.
+fn hasProgramUseStrictDirective(ast: *const Ast, root: ast_mod.NodeIndex) bool {
+    if (root.isNone()) return false;
+    const program = ast.getNode(root);
+    if (program.tag != .program) return false;
+    const list = program.data.list;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw_idx| {
+        const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (node_idx.isNone()) continue;
+        const node = ast.getNode(node_idx);
+        if (node.tag == .hashbang) continue;
+        if (node.tag != .directive) return false;
+        const span = node.span;
+        if (span.start > span.end or span.end > ast.source.len) return false;
+        const text = ast.source[span.start..span.end];
+        if (text.len >= 2 and std.mem.eql(u8, text[1 .. text.len - 1], "use strict")) return true;
+    }
+    return false;
+}
+
 /// `ZNTC_MEM_PROFILE` 존재 여부 — 프로세스 1회 캐시 (std.once, WASI/Windows 포터블).
 /// 직접 std.posix.getenv 는 WASI 에서 @compileError 라 env_flag.Once 사용.
 const mem_profile_env = @import("env_flag.zig").Once("ZNTC_MEM_PROFILE");
@@ -3336,9 +3359,21 @@ fn transpileWithCallbackInternal(
         // Helper declarations and cross-helper references carry their selected local names.
         break :blk buf.items;
     } else "";
+    // CJS codegen removes module strictness, and TypeScript sources are also
+    // parsed as strict scripts. Preserve either source mode before generated
+    // helpers and user statements unless the emitted directive already exists.
+    const needs_cjs_source_strict = options.module_format == .cjs and parser.is_strict_mode and
+        !hasProgramUseStrictDirective(transformer.ast, root);
+    const program_preamble = if (needs_cjs_source_strict) blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(arena_alloc, "\"use strict\";");
+        if (!options.minify_whitespace) try buf.append(arena_alloc, '\n');
+        try buf.appendSlice(arena_alloc, helper_preamble);
+        break :blk buf.items;
+    } else helper_preamble;
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
-        .program_preamble = helper_preamble,
+        .program_preamble = program_preamble,
         .minify_whitespace = options.minify_whitespace,
         .minify_syntax = options.minify_syntax,
         .keep_names = options.keep_names,
@@ -3375,7 +3410,7 @@ fn transpileWithCallbackInternal(
         // directive/hashbang boundaries use the final preamble from the start.
         // No parser/analyzer or semantic edit is repeated.
         var with_name: std.ArrayList(u8) = .empty;
-        try with_name.appendSlice(arena_alloc, helper_preamble);
+        try with_name.appendSlice(arena_alloc, program_preamble);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(&with_name, arena_alloc, .{ .keep_names = true }, options.minify_whitespace, transformer.runtime_es5_compat, .{ .keep_names = keep_names_helper_name orelse return error.TransformError }) catch return error.OutOfMemory;
         var final_options = cg.options;
         final_options.program_preamble = with_name.items;
