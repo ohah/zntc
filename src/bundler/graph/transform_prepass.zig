@@ -790,10 +790,11 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_template_literal_type,
             .ts_type_reference,
             .ts_type_parameter_instantiation,
-            // Type alias declarations and their type references are erased as
-            // one AST subtree. finishSemanticEdit removes the exact references
+            // Type declarations and their type references are erased as one
+            // AST subtree. finishSemanticEdit removes the exact references
             // whose nodes disappear, so the existing graph remains valid.
             .ts_type_alias_declaration,
+            .ts_interface_declaration,
             .ts_qualified_name,
             .ts_type_query,
             // Literal type nodes, including the parsed module-specifier type
@@ -840,7 +841,11 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
         .{ .name = "angle-bracket type assertion", .source = "const value = <number>1;", .required_tag = .ts_type_assertion, .expected = true },
         .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = true },
         .{ .name = "type alias with attributed import type", .source = "type Alias = import('./types', { assert: { type: 'json' } }).Shape;", .required_tag = .ts_type_alias_declaration, .expected = false },
-        .{ .name = "interface declaration", .source = "interface Shape {} const value: Shape = {};", .required_tag = .ts_interface_declaration, .expected = false },
+        .{ .name = "generic interface declaration", .source = "interface Shape<T extends Base> extends Base { value: T; read(input: Base): T; } const value: Shape<Base> = {};", .required_tag = .ts_interface_declaration, .expected = true },
+        .{ .name = "interface union member", .source = "interface Shape { value: string | number }", .required_tag = .ts_union_type, .expected = true },
+        .{ .name = "interface this parameter type reference stays supported", .source = "interface Shape { read(this: Shape): number }", .required_tag = .ts_type_reference, .expected = true },
+        .{ .name = "interface with attributed import type", .source = "interface Shape { value: import('./types', { assert: { type: 'json' } }).Value }", .required_tag = .ts_interface_declaration, .expected = false },
+        .{ .name = "class implements type reference stays supported", .source = "interface Shape {} class Value implements Shape {}", .required_tag = .ts_type_reference, .expected = true },
         .{ .name = "no type erasure", .source = "const value = 1;", .required_tag = null, .expected = false },
         .{ .name = "import type without attributes", .source = "const value: import('./types').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
         .{ .name = "import type attributes", .source = "const value: import('./types', { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },

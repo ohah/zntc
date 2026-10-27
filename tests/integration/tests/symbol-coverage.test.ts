@@ -5401,10 +5401,10 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'interfaces remain outside the declaration alias gate',
+        name: 'interface declarations erase their type-only imported module edges',
         source: [
           "import { Shape } from './shape';",
-          'interface Alias extends Shape {}',
+          'interface Alias extends Shape { value: number }',
           "process.stdout.write(globalThis.__interfaceAliasRan ? 'loaded' : 'elided');",
           '',
         ].join('\n'),
@@ -5412,8 +5412,162 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__interfaceAliasRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'elided',
+      },
+      {
+        name: 'generic interface heritage erases type imports and retains value imports',
+        source: [
+          "import { value } from './values';",
+          "import { Base } from './base';",
+          'interface Shape<T extends Base> extends Base { value: T; read(input: Base): T; }',
+          'const shape: Shape<number> = { value, read(input) { return input as number; } };',
+          "process.stdout.write(`${shape.value}:${globalThis.__interfaceBaseRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'base.ts': 'globalThis.__interfaceBaseRan = true; export class Base {}\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'merged interface declarations erase their imported heritage reference',
+        source: [
+          "import { Shape } from './shape';",
+          'interface Model extends Shape { id: number }',
+          'interface Model { label: string }',
+          "const model: Model = { id: 42, label: 'ok' };",
+          "process.stdout.write(`${model.id}:${globalThis.__mergedInterfaceRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__mergedInterfaceRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'function-local interface erases nested imported references',
+        source: [
+          "import { Shape } from './shape';",
+          'function read(value: number) { interface Local extends Shape { value: number } const local: Local = { value }; return local.value; }',
+          "process.stdout.write(`${read(42)}:${globalThis.__localInterfaceRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__localInterfaceRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'interface and same-spelled value binding keep separate identities',
+        source: [
+          'interface Model { value: number }',
+          'const Model = 42;',
+          'const model: Model = { value: Model };',
+          'process.stdout.write(String(model.value));',
+          '',
+        ].join('\n'),
+        dependencies: {},
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'exported interface erasure preserves the runtime export and drops its type edge',
+        source: [
+          "import { Shape } from './shape';",
+          'export interface PublicShape extends Shape { value: number }',
+          'export const value = 42;',
+          "process.stdout.write(`${value}:${globalThis.__exportedInterfaceRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__exportedInterfaceRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'namespace imports used only by interface heritage are erased',
+        source: [
+          "import * as types from './types';",
+          'interface Alias extends types.Shape { value: number }',
+          "process.stdout.write(globalThis.__interfaceNamespaceRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'types.ts':
+            'globalThis.__interfaceNamespaceRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: 'elided',
+      },
+      {
+        name: 'interface typeof reference removal keeps a separate runtime read',
+        source: [
+          "import { value } from './values';",
+          'interface Box { value: typeof value }',
+          'const box: Box = { value };',
+          "process.stdout.write(`${box.value}:${globalThis.__interfaceTypeofRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'globalThis.__interfaceTypeofRan = true; export const value = 42;\n',
+        },
+        graph: 'retained',
+        stdout: '42:loaded',
+      },
+      {
+        name: 'computed interface keys remove only the type-context value reference',
+        source: [
+          "import { key } from './keys';",
+          'interface Shape { [key]: number }',
+          "process.stdout.write(globalThis.__computedInterfaceKeyRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'keys.ts':
+            "globalThis.__computedInterfaceKeyRan = true; export const key: unique symbol = Symbol('key');\n",
+        },
+        graph: 'retained',
+        stdout: 'elided',
+      },
+      {
+        name: 'attributed import type inside an interface keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          "interface Shape { value: import('./shape', { assert: { type: 'json' } }).Shape }",
+          'const answer: Shape = { value };',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts': 'export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'class implements erases its imported type while retaining runtime class output',
+        source: [
+          "import { Shape } from './shape';",
+          'class Model implements Shape { value = 42 }',
+          "process.stdout.write(`${new Model().value}:${globalThis.__implementsShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42:elided',
       },
       {
         name: 'a type-query-only import is erased while the graph is retained',
