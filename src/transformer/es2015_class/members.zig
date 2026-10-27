@@ -582,6 +582,11 @@ pub fn Members(comptime Transformer: type) type {
         /// Static computed fields use an explicit `var` inside that IIFE, so
         /// their temp must be removed from the enclosing function's later
         /// temp sweep.
+        pub fn bindComputedKeyTempsForClass(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span, source_class: NodeIndex) Transformer.Error!void {
+            for (cm.accessor_key_memos.items) |fragment| try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_class, fragment, scope);
+            return bindComputedKeyTemps(self, cm, scope, span);
+        }
+
         pub fn bindComputedKeyTemps(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!void {
             if (!self.semantic_edit_enabled) return;
             if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or

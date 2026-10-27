@@ -1202,7 +1202,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 // reference scope from this final AST walk.
                 if (scope.isNone() or tracked_index >= self.tracked_runtime_helper_refs.items.len)
                     std.debug.panic("runtime helper reference has no exact output scope", .{});
-                const publication = @import("../native_constructor_timing.zig").publication(self, raw);
+                const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
+                const publication = try @import("../worklet_class_clone.zig").agreePublication(self, raw, @import("../native_constructor_timing.zig").publication(self, raw), flags);
                 if (publication == null and self.generator_function_statement_value_nodes.contains(raw) and try generatorStatementScopeParticipates(self, scope)) return error.InvalidNode;
                 const produced = editor.referenceForNode(work.node) catch |err| return editError(err);
                 if (publication) |known| {
@@ -1255,7 +1256,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 }
                 if (raw_id) |id| {
                     if (id < editor.symbols.items.len) {
-                        try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id });
+                        const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
+                        try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id, .flags = flags });
                     }
                 }
             }
@@ -1369,7 +1371,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
                     return error.InvalidNode;
             }
-            const publication = constructor_publication orelse arguments_publication;
+            const publication = try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags);
             if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
                 std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
                 return error.InvalidNode;
@@ -1454,7 +1456,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
                 return error.InvalidNode;
         }
-        const publication = constructor_publication orelse arguments_publication;
+        const publication = try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags);
         if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
             std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
             return error.InvalidNode;

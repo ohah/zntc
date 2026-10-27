@@ -39,11 +39,20 @@ pub const WorkletClassReferenceOrigin = struct {
     flags: @import("../semantic/symbol.zig").ReferenceFlags,
 };
 
+pub const WorkletClassPublication = struct {
+    ast_owner: *const ast_mod.Ast,
+    factory: usize,
+    owner: NodeIndex,
+    value: @import("transformer.zig").StatementPublication,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
+};
+
 pub const WorkletState = struct {
     class_factories: std.ArrayListUnmanaged(WorkletClassFactory) = .empty,
     class_reference_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty,
     class_reference_origins: std.AutoHashMapUnmanaged(u32, WorkletClassReferenceOrigin) = .empty,
     class_reference_replacements: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    class_publications: std.AutoHashMapUnmanaged(u32, WorkletClassPublication) = .empty,
 
     /// auto-workletization 플래그.
     /// visitCallExpression에서 callee 매칭 시 true로 설정하고,

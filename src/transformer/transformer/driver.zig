@@ -953,6 +953,10 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                 self.ast.extra_data.items[e + 1] = @backingInt(new_params_node);
                 const retained_carrier = try retainNativeParameterCarrier(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope);
+                if (!retained_carrier) @import("../worklet_class_clone.zig").handoffSimpleParameterDeclarations(self, @fromBackingInt(@as(u32, @intCast(i))), params_idx, new_params_node, self.current_scope) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("lowered worklet formals lost their declaration handoff: {s}", .{@errorName(err)}),
+                };
                 if (lr.native_formal_scope) |scope| {
                     if (!retained_carrier or self.outputOwnedScope(new_params_node) != scope)
                         @panic("native formal bindings lost their exact planned parameter carrier");

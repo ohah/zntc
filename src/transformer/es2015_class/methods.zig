@@ -38,6 +38,21 @@ pub fn Methods(comptime Transformer: type) type {
             member_span: Span,
         };
 
+        fn visitSourceParameters(self: *Transformer, params: NodeIndex, list: ast_mod.NodeList) Transformer.Error!ast_mod.NodeList {
+            const saved_scope = self.current_scope;
+            defer self.current_scope = saved_scope;
+            if (self.semantic_edit_enabled) {
+                if (self.outputOwnedScope(params)) |scope| {
+                    const editor = &self.semantic_editor.?;
+                    if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .function or
+                        (scope != saved_scope and (saved_scope.isNone() or saved_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[saved_scope.toIndex()].parent != scope)))
+                        @panic("lowered method parameters lost their known source environment");
+                    self.current_scope = scope;
+                }
+            }
+            return self.visitParameterList(list);
+        }
+
         /// accessor method_definition에서 function expression 생성.
         /// ES2015 params lowering 포함 (setter destructuring/default 등).
         fn buildAccessorFunc(
@@ -103,7 +118,8 @@ pub fn Methods(comptime Transformer: type) type {
             defer es_helpers.popArrowEnv(self, arrow_env);
             const parameter_temp_start = self.temp_var_counter;
             const param_capture_use_start = self.lexical_capture_uses.items.len;
-            const new_params = try self.visitParameterList(.{ .start = params_start, .len = params_len });
+            const source_params = self.readNodeIdx(me, MethodExtra.params);
+            const new_params = try visitSourceParameters(self, source_params, .{ .start = params_start, .len = params_len });
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
@@ -115,6 +131,7 @@ pub fn Methods(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            try self.remapCopiedScopeOwner(source_params, new_params_node);
             const func_extra = try self.ast.addExtras(&.{
                 none,                  @backingInt(new_params_node),
                 @backingInt(new_body), 0,
@@ -207,7 +224,7 @@ pub fn Methods(comptime Transformer: type) type {
             // The synthetic async/generator function was already visited by
             // lowerAsyncOrGeneratorMethod. A second visit rewrites its freshly
             // generated captures and loses their source parameter boundary.
-            const new_params = if (already_lowered) params_list_unwrap else try self.visitParameterList(params_list_unwrap);
+            const new_params = if (already_lowered) params_list_unwrap else try visitSourceParameters(self, self.readNodeIdx(me, MethodExtra.params), params_list_unwrap);
             const parameter_temp_end = self.temp_var_counter;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
@@ -287,10 +304,10 @@ pub fn Methods(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            const source_params = self.readNodeIdx(me, MethodExtra.params);
+            try self.remapCopiedScopeOwner(source_params, new_params_node);
             if (already_lowered) {
-                const lowered_params = self.readNodeIdx(me, MethodExtra.params);
-                try self.remapCopiedScopeOwner(lowered_params, new_params_node);
-                @import("../native_arguments.zig").copyParameterHandoff(self, lowered_params, new_params_node, self.current_scope);
+                @import("../native_arguments.zig").copyParameterHandoff(self, source_params, new_params_node, self.current_scope);
             }
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous

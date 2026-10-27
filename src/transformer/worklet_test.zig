@@ -2030,7 +2030,6 @@ fn checkWorkletClassOwnedIdentity(is_module: bool) !void {
         const raw = @backingInt(row.node_index);
         if (raw >= actual.len or actual[raw] == null) continue;
         const use_scope = scope_utils.expectedScope(transformer.ast, root, &parents, &owners, raw) orelse continue;
-        if (use_scope != row.scope_id) std.debug.print("worklet physical reference node={d} name={s} SID={d} actual={d} row={d}\n", .{ raw, transformer.ast.identifierNameText(transformer.ast.getNode(row.node_index)), @backingInt(row.symbol_id), @backingInt(use_scope), @backingInt(row.scope_id) });
         try std.testing.expectEqual(use_scope, row.scope_id);
     }
     var external: ?u32 = null;
@@ -2125,6 +2124,23 @@ fn checkWorkletClassOwnedIdentity(is_module: bool) !void {
         try publication.publishChecked(&transformer, root);
         try std.testing.expectEqualDeep(reference_snapshot, editor.references.items);
     }
+    const raw_selected = @backingInt(selected_node);
+    const published = (try publication.publication(&transformer, raw_selected)).?;
+    for (0..5) |hostile| {
+        var conflicting = published;
+        var flags = original_origin.flags;
+        switch (hostile) {
+            0 => conflicting.symbol_id = factory.source_self,
+            1 => conflicting.scope = factory.source_scope,
+            2 => conflicting.stmt +%= 1,
+            3 => conflicting.scope_stmt +%= 1,
+            4 => flags = .{ .write = true },
+            else => unreachable,
+        }
+        if (hostile == 0) try std.testing.expectError(error.InvalidSymbol, publication.agreePublication(&transformer, raw_selected, conflicting, flags)) else if (hostile == 1) try std.testing.expectError(error.InvalidScope, publication.agreePublication(&transformer, raw_selected, conflicting, flags)) else try std.testing.expectError(error.InvalidNode, publication.agreePublication(&transformer, raw_selected, conflicting, flags));
+        try std.testing.expectEqualDeep(published, (try publication.agreePublication(&transformer, raw_selected, published, original_origin.flags)).?);
+        try std.testing.expectEqualDeep(reference_snapshot, editor.references.items);
+    }
     const clone_core = @import("../semantic/runtime_subtree_clone.zig");
     const good = clone_core.BoundaryBinding{ .source = factory.source_self, .target = factory.target_self };
     const node_count = transformer.ast.nodes.items.len;
@@ -2161,23 +2177,34 @@ fn checkWorkletClassOwnedIdentity(is_module: bool) !void {
     }
 }
 
+const worklet_class_birth_sources = [_][]const u8{
+    "class Clazz{__workletClass=true;method(value){return value}}",
+    "const outside=42;class Clazz{__workletClass=true;method(value=outside){const local=value;return local}}",
+    "const outside=42;class Clazz{__workletClass=true;method(){const local=outside;return(function named(){return local})()}}",
+    "class Clazz{__workletClass=true;method(value){return(()=>arguments[0])()}}",
+    "const outside=42;class Clazz{__workletClass=true;method(){class Inner{read(){return outside}}return new Inner().read()}}",
+    "const outside=42;class Clazz{__workletClass=true;get value(){'worklet';return outside}}",
+    "const outside=42;class Clazz{__workletClass=true;set value(value){'worklet';this.stored=value+outside}}",
+    "const outside=42;class Clazz{__workletClass=true;value=()=>outside;method(){return this.value()}}",
+    "const outside=42;class Clazz{__workletClass=true;static read(){return [outside,Clazz]}}",
+    "const outside='answer';class Clazz{__workletClass=true;[outside](){return Clazz}}",
+};
+
 test "worklet class clone ten source owners publish before output walker" {
-    const sources = [_][]const u8{
-        "class Clazz{__workletClass=true;method(value){return value}}",
-        "const outside=42;class Clazz{__workletClass=true;method(value=outside){const local=value;return local}}",
-        "const outside=42;class Clazz{__workletClass=true;method(){const local=outside;return(function named(){return local})()}}",
-        "class Clazz{__workletClass=true;method(value){return(()=>arguments[0])()}}",
-        "const outside=42;class Clazz{__workletClass=true;method(){class Inner{read(){return outside}}return new Inner().read()}}",
-        "const outside=42;class Clazz{__workletClass=true;get value(){'worklet';return outside}}",
-        "const outside=42;class Clazz{__workletClass=true;set value(value){'worklet';this.stored=value+outside}}",
-        "const outside=42;class Clazz{__workletClass=true;value=()=>outside;method(){return this.value()}}",
-        "const outside=42;class Clazz{__workletClass=true;static read(){return [outside,Clazz]}}",
-        "const outside='answer';class Clazz{__workletClass=true;[outside](){return Clazz}}",
-    };
-    for (sources) |source| try checkWorkletSourceBirth(source, false);
+    for (worklet_class_birth_sources) |source| try checkWorkletSourceBirth(source, false, .{});
 }
 
-fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool) !void {
+test "worklet class clone downlevel source owners publish before output walker" {
+    for (worklet_class_birth_sources) |source| {
+        try checkWorkletSourceBirth(source, false, compat.fromESTarget(.es5));
+    }
+}
+
+fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool, unsupported: @TypeOf(compat.fromESTarget(.es5))) !void {
+    try checkWorkletSourceBirthMode(source, expect_external_class, unsupported, false, false);
+}
+
+fn checkWorkletSourceBirthMode(source: []const u8, expect_external_class: bool, unsupported: @TypeOf(compat.fromESTarget(.es5)), use_driver: bool, name_hostiles: bool) !void {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
     const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -2197,7 +2224,7 @@ fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool) !voi
     analyzer.enable_exact_declaration_anchors = true;
     try analyzer.analyze();
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var t = try transformer_mod.Transformer.init(a, &parser.ast, .{ .plugins = &plugins, .jsx_filename = "owned-ten.mjs" });
+    var t = try transformer_mod.Transformer.init(a, &parser.ast, .{ .plugins = &plugins, .jsx_filename = "owned-ten.mjs", .unsupported = unsupported });
     try t.initSymbolIds(analyzer.symbol_ids.items);
     t.symbols = analyzer.symbols.items;
     t.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -2211,14 +2238,16 @@ fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool) !voi
     t.semantic_edit_enabled = true;
     t.synthetic_idents = .empty;
     const source_root: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
-    try t.buildBlockRenameMap();
     const external_class = if (expect_external_class) blk: {
         const first: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(t.ast.extra_data.items[t.ast.getNode(source_root).data.list.start]);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.class_declaration, t.ast.getNode(first).tag);
         const name = t.ast.readExtraNode(t.ast.getNode(first).data.extra, @import("../parser/ast.zig").ClassExtra.name);
         break :blk analyzer.symbol_ids.items[@backingInt(name)];
     } else null;
-    const root = try t.visitNode(source_root);
+    const root = if (use_driver) try t.transform() else blk: {
+        try t.buildBlockRenameMap();
+        break :blk try t.visitNode(source_root);
+    };
     const actual = try coordinates.collect(a, t.ast, root);
     var parents = try scope_utils.buildParentMap(a, t.ast, root);
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -2248,6 +2277,52 @@ fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool) !voi
         checked += 1;
     }
     try std.testing.expect(checked > 0);
+    if (name_hostiles) {
+        const clone = @import("worklet_class_clone.zig");
+        const frame = t.plugins.worklet.class_factories.items[0];
+        const previous_scope = t.current_scope;
+        t.current_scope = frame.scope;
+        defer t.current_scope = previous_scope;
+        var factory_owner: @import("../parser/ast.zig").NodeIndex = .none;
+        for (live) |raw| {
+            const node = t.ast.nodes.items[raw];
+            if (node.tag == .function_declaration and t.outputOwnedScope(@fromBackingInt(raw)) == frame.scope and t.ast.readExtraNode(node.data.extra, 0) == frame.binding) factory_owner = @fromBackingInt(raw);
+        }
+        try std.testing.expect(!factory_owner.isNone());
+        var detections: usize = 0;
+        for (live) |raw| {
+            const fn_node = t.ast.nodes.items[raw];
+            if (fn_node.tag != .function_expression) continue;
+            const name = t.ast.readExtraNode(fn_node.data.extra, 0);
+            if (name.isNone()) continue;
+            const name_sid = editor.symbol_ids.items[@backingInt(name)] orelse continue;
+            const saved_symbol = editor.symbols.items[name_sid];
+            const fn_scope = t.outputOwnedScope(@fromBackingInt(raw)) orelse continue;
+            if (saved_symbol.kind != .function_decl or editor.scopes.items[fn_scope.toIndex()].parent != saved_symbol.scope_id or editor.scopes.items[saved_symbol.scope_id.toIndex()].kind != .block) continue;
+            for (t.plugins.worklet.class_reference_nodes.items) |reference| {
+                if (actual[@backingInt(reference)] == null or !clone.ownsClosureClassReference(&t, factory_owner, reference)) continue;
+                const origin = t.plugins.worklet.class_reference_origins.get(@backingInt(reference)).?;
+                if (editor.symbols.items[@backingInt(origin.symbol)].scope_id != fn_scope) continue;
+                const saved_slot = editor.symbol_ids.items[@backingInt(name)];
+                const saved_parent = editor.scopes.items[fn_scope.toIndex()].parent;
+                for (0..3) |hostile| {
+                    switch (hostile) {
+                        0 => editor.symbol_ids.items[@backingInt(name)] = @backingInt(frame.source_self),
+                        1 => editor.symbols.items[name_sid].kind = .variable_const,
+                        2 => editor.scopes.items[fn_scope.toIndex()].parent = frame.parent,
+                        else => unreachable,
+                    }
+                    try std.testing.expect(!clone.ownsClosureClassReference(&t, factory_owner, reference));
+                    editor.symbol_ids.items[@backingInt(name)] = saved_slot;
+                    editor.symbols.items[name_sid] = saved_symbol;
+                    editor.scopes.items[fn_scope.toIndex()].parent = saved_parent;
+                    try std.testing.expect(clone.ownsClosureClassReference(&t, factory_owner, reference));
+                    detections += 1;
+                }
+            }
+        }
+        try std.testing.expect(detections >= 3);
+    }
     if (external_class) |sid| {
         var captures: usize = 0;
         const frame = t.plugins.worklet.class_factories.items[0];
@@ -2264,5 +2339,21 @@ test "worklet class clone preserves external class beside same-spelled local cla
     try checkWorkletSourceBirth(
         "class Inner{static read(){return 42}}class Clazz{__workletClass=true;method(){{class Inner{};new Inner()}return Inner.read()}}",
         true,
+        .{},
     );
+}
+
+test "worklet class clone downlevel direct field initializers" {
+    try checkWorkletSourceBirth("const outside=42;class Clazz{__workletClass=true;value=outside;method(){return this.value}}", false, compat.fromESTarget(.es5));
+    try checkWorkletSourceBirth("const outside='answer';class Clazz{__workletClass=true;static [outside]=42;method(){return Clazz[outside]}}", false, compat.fromESTarget(.es5));
+}
+
+test "worklet class clone lowered fragments remain exact after real Pass2" {
+    try checkWorkletSourceBirthMode(worklet_class_birth_sources[1], false, compat.fromESTarget(.es5), true, false);
+    try checkWorkletSourceBirthMode("const outside=42;class Clazz{__workletClass=true;value=outside;method(){return this.value}}", false, compat.fromESTarget(.es5), true, false);
+    try checkWorkletSourceBirthMode("const outside='answer';class Clazz{__workletClass=true;static [outside]=42;method(){return Clazz[outside]}}", false, compat.fromESTarget(.es5), true, false);
+}
+
+test "worklet class clone name environment rejects foreign SID kind and parent" {
+    try checkWorkletSourceBirthMode(worklet_class_birth_sources[4], false, compat.fromESTarget(.es5), false, true);
 }

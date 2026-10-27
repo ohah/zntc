@@ -56,7 +56,10 @@ pub fn publishChecked(self: anytype, root: ast.NodeIndex) !void {
     const editor = &self.semantic_editor.?;
     const contexts = try projection.collect(self.allocator, self.ast, root);
     defer self.allocator.free(contexts);
-    for (self.plugins.worklet.class_factories.items) |factory| {
+    const factory_owners = try self.allocator.alloc(ast.NodeIndex, self.plugins.worklet.class_factories.items.len);
+    defer self.allocator.free(factory_owners);
+    @memset(factory_owners, .none);
+    for (self.plugins.worklet.class_factories.items, 0..) |factory, factory_index| {
         if (self.scope_owner_map.get(@backingInt(factory.source_class)) != @backingInt(factory.source_scope) or
             editor.scope_owner_map.get(@backingInt(factory.target_class)) != @backingInt(factory.target_scope) or
             self.class_self_symbol_map.get(@backingInt(factory.source_class)) != @backingInt(factory.source_self) or
@@ -75,6 +78,7 @@ pub fn publishChecked(self: anytype, root: ast.NodeIndex) !void {
             const binding = self.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
             if (binding != factory.binding) return error.InvalidWorkletFactoryOwner;
             live_owners += 1;
+            factory_owners[factory_index] = @fromBackingInt(@as(u32, @intCast(raw)));
         }
         if (live_owners != 1) return error.InvalidWorkletFactoryOwner;
     }
@@ -117,7 +121,6 @@ pub fn publishChecked(self: anytype, root: ast.NodeIndex) !void {
         if (origin.flags.declare) {
             if (editor.symbols.items[@backingInt(origin.symbol)].scope_id != origin.scope) return error.InvalidWorkletCloneOrigin;
         } else if (scopes[raw] != origin.scope) {
-            std.debug.print("worklet clone scope drift node={d} name={s} SID={d} birth={d} actual={any} classUnsupported={any}\n", .{ raw, self.ast.identifierNameText(self.ast.getNode(node)), @backingInt(origin.symbol), @backingInt(origin.scope), scopes[raw], self.options.unsupported.class });
             return error.InvalidWorkletCloneOrigin;
         }
         var enclosing = origin.scope;
@@ -161,10 +164,24 @@ pub fn publishChecked(self: anytype, root: ast.NodeIndex) !void {
     const view = .{ .references = selected.items, .symbols = editor.symbols, .scopes = editor.scopes.items, .symbol_ids = editor.symbol_ids.items, .scope_owner_map = current_owners, .class_self_symbol_map = self.class_self_symbol_map };
     const updated = (try projection.project(self.allocator, self.ast, root, &view)) orelse return error.InvalidWorkletStatementOwner;
     defer self.allocator.free(updated);
+    var next_publications: std.AutoHashMapUnmanaged(u32, state.WorkletClassPublication) = .empty;
+    errdefer next_publications.deinit(self.allocator);
+    for (updated) |reference| {
+        const node = if (reference.flags.declare) reference.declaration_node_index else reference.node_index;
+        if (node.isNone()) continue;
+        const birth = self.plugins.worklet.class_reference_origins.get(@backingInt(node)) orelse continue;
+        if (birth.symbol != reference.symbol_id or birth.scope != reference.scope_id or !std.meta.eql(birth.flags, reference.flags))
+            return error.InvalidWorkletCloneOrigin;
+        const slot = try next_publications.getOrPut(self.allocator, @backingInt(node));
+        if (slot.found_existing) return error.InvalidWorkletCloneOrigin;
+        slot.value_ptr.* = .{ .ast_owner = self.ast, .factory = birth.factory, .owner = factory_owners[birth.factory], .flags = birth.flags, .value = .{ .symbol_id = birth.symbol, .scope = birth.scope, .stmt = reference.stmt_idx, .scope_stmt = reference.scope_stmt_idx } };
+    }
     for (updated, indices.items) |reference, index| {
         editor.references.items[index].stmt_idx = reference.stmt_idx;
         editor.references.items[index].scope_stmt_idx = reference.scope_stmt_idx;
     }
+    self.plugins.worklet.class_publications.deinit(self.allocator);
+    self.plugins.worklet.class_publications = next_publications;
 }
 
 pub fn publish(self: anytype, root: ast.NodeIndex) std.mem.Allocator.Error!void {
@@ -275,10 +292,42 @@ fn ownedScopeReachesFactory(self: anytype, start: @import("../semantic/scope.zig
                 break;
             }
         }
-        if (!owned) return false;
+        if (!owned and !isFunctionNameEnvironment(self, scope)) return false;
         scope = editor.scopes.items[scope.toIndex()].parent;
     }
     return true;
+}
+
+// A named function expression has a lexical name environment without an AST
+// scope owner. Admit only its exact binding and actual function/formal chain.
+fn isFunctionNameEnvironment(self: anytype, scope: @import("../semantic/scope.zig").ScopeId) bool {
+    const editor = &self.semantic_editor.?;
+    if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .block) return false;
+    var matches: usize = 0;
+    var owners = self.scope_owner_origins.iterator();
+    while (owners.next()) |entry| {
+        const function: ast.NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const node = self.ast.getNode(function);
+        if (node.tag != .function_expression) continue;
+        const body_scope = self.outputOwnedScope(function) orelse continue;
+        if (body_scope.isNone() or body_scope.toIndex() >= editor.scopes.items.len) continue;
+        const name = self.ast.readExtraNode(node.data.extra, ast.FunctionExtra.name);
+        if (name.isNone() or @backingInt(name) >= editor.symbol_ids.items.len) continue;
+        const sid = editor.symbol_ids.items[@backingInt(name)] orelse continue;
+        if (sid >= editor.symbols.items.len) continue;
+        const name_symbol = editor.symbols.items[sid];
+        if (name_symbol.kind != .function_decl or name_symbol.scope_id != scope) continue;
+        var inner = body_scope;
+        const params = self.ast.readExtraNode(node.data.extra, ast.FunctionExtra.params);
+        if (!params.isNone()) if (self.outputOwnedScope(params)) |parameter_scope| {
+            if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len or
+                editor.scopes.items[body_scope.toIndex()].parent != parameter_scope) continue;
+            inner = parameter_scope;
+        };
+        if (editor.scopes.items[inner.toIndex()].parent != scope) continue;
+        matches += 1;
+    }
+    return matches == 1;
 }
 
 /// The generated factory declaration is consumed by the ordinary function
@@ -307,4 +356,167 @@ pub fn transferFactoryFunctionOwner(self: anytype, source: ast.NodeIndex, result
         try self.remapCopiedScopeOwner(source, result);
         return;
     }
+}
+
+pub const ReferenceScopeMove = struct {
+    ast_owner: *const ast.Ast,
+    node: ast.NodeIndex,
+    before: symbol.Reference,
+    birth: state.WorkletClassReferenceOrigin,
+    storage_scope: @import("../semantic/scope.zig").ScopeId,
+    target: @import("../semantic/scope.zig").ScopeId,
+    planned: bool,
+};
+
+/// Called only by an existing exact initializer-fragment mover, before it
+/// changes the row. A missing worklet participant leaves the old path alone.
+pub fn prepareReferenceScopeMove(self: anytype, node: ast.NodeIndex, before: symbol.Reference, target: @import("../semantic/scope.zig").ScopeId) !?ReferenceScopeMove {
+    const raw = @backingInt(node);
+    const birth = self.plugins.worklet.class_reference_origins.get(raw) orelse return null;
+    const editor = &self.semantic_editor.?;
+    if (birth.factory >= self.plugins.worklet.class_factories.items.len or before.flags.declare or before.node_index != node or
+        before.symbol_id != birth.symbol or before.scope_id != birth.scope or !std.meta.eql(before.flags, birth.flags) or
+        raw >= editor.symbol_ids.items.len or editor.symbol_ids.items[raw] != @backingInt(birth.symbol) or
+        @backingInt(birth.symbol) >= editor.symbols.items.len) return error.InvalidWorkletCloneOrigin;
+    const factory = self.plugins.worklet.class_factories.items[birth.factory];
+    if (factory.ast_owner != self.ast) return error.InvalidWorkletFactoryOwner;
+    var scope = target;
+    var hops: usize = 0;
+    while (scope != factory.scope) : (hops += 1) {
+        if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or hops >= editor.scopes.items.len)
+            return error.InvalidWorkletCloneOrigin;
+        scope = editor.scopes.items[scope.toIndex()].parent;
+    }
+    const planned_symbol = self.exact_output_ref_symbol_ids.get(raw);
+    const planned_scope = self.exact_output_ref_scope_ids.get(raw);
+    if ((planned_symbol == null) != (planned_scope == null) or
+        (planned_symbol != null and (planned_symbol.? != @backingInt(birth.symbol) or planned_scope.? != @backingInt(birth.scope))))
+        return error.InvalidWorkletCloneOrigin;
+    return .{ .ast_owner = self.ast, .node = node, .before = before, .birth = birth, .storage_scope = editor.symbols.items[@backingInt(birth.symbol)].scope_id, .target = target, .planned = planned_symbol != null };
+}
+
+/// The selected mover has now changed this exact existing row. Only its use
+/// Scope and an already-existing exact plan may follow that known handoff.
+pub fn completeReferenceScopeMove(self: anytype, move: ReferenceScopeMove) !void {
+    if (move.ast_owner != self.ast) return error.InvalidWorkletCloneOrigin;
+    const editor = &self.semantic_editor.?;
+    const raw = @backingInt(move.node);
+    const origin = self.plugins.worklet.class_reference_origins.getPtr(raw) orelse return error.MissingWorkletCloneOrigin;
+    if (!std.meta.eql(origin.*, move.birth) or move.before.node_index != move.node or
+        editor.symbols.items[@backingInt(move.birth.symbol)].scope_id != move.storage_scope) return error.InvalidWorkletCloneOrigin;
+    const row = (try editor.referenceForNode(move.node)) orelse return error.InvalidWorkletCloneOrigin;
+    if (row.symbol_id != move.before.symbol_id or row.scope_id != move.target or !std.meta.eql(row.flags, move.before.flags))
+        return error.InvalidWorkletCloneOrigin;
+    if (move.planned) {
+        const planned = self.exact_output_ref_scope_ids.getPtr(raw) orelse return error.InvalidWorkletCloneOrigin;
+        if (self.exact_output_ref_symbol_ids.get(raw) != @backingInt(move.birth.symbol) or
+            (planned.* != @backingInt(move.before.scope_id) and planned.* != @backingInt(move.target))) return error.InvalidWorkletCloneOrigin;
+        planned.* = @backingInt(move.target);
+    } else if (self.exact_output_ref_symbol_ids.contains(raw) or self.exact_output_ref_scope_ids.contains(raw)) return error.InvalidWorkletCloneOrigin;
+    origin.scope = move.target;
+}
+
+/// A key is being assembled outside this exact reconstructed class body.
+/// The actual key producer supplies its output scope; no other class enters
+/// this worklet-only source-fragment handoff.
+pub fn moveHoistedKeyReferences(self: anytype, source_class: ast.NodeIndex, fragment: ast.NodeIndex, target: @import("../semantic/scope.zig").ScopeId) !void {
+    if (!self.semantic_edit_enabled or source_class.isNone()) return;
+    for (self.plugins.worklet.class_factories.items) |factory| {
+        if (factory.target_class != source_class) continue;
+        if (factory.ast_owner != self.ast or self.outputOwnedScope(source_class) != factory.target_scope or
+            self.class_self_symbol_map.get(@backingInt(source_class)) != @backingInt(factory.target_self))
+            @panic("hoisted worklet key lost its exact class creator");
+        try @import("class_strict_context.zig").moveSourceReferences(self, fragment, factory.target_scope, factory.target_scope, target);
+        return;
+    }
+}
+
+/// Fully lowered native formals now bind in the actual function body, rather
+/// than the removed non-simple parameter environment. Retained non-simple
+/// carriers never call this entry. Only exact cloned parameter declarations
+/// participate; ordinary/source-only functions keep their existing path.
+pub fn handoffSimpleParameterDeclarations(self: anytype, function: ast.NodeIndex, old_params: ast.NodeIndex, new_params: ast.NodeIndex, body_scope: @import("../semantic/scope.zig").ScopeId) !void {
+    if (!self.semantic_edit_enabled or self.plugins.worklet.class_reference_origins.count() == 0) return;
+    const editor = &self.semantic_editor.?;
+    const list = self.ast.getNode(new_params).data.list;
+    for (0..list.len) |offset| {
+        const parameter = self.ast.readExtraNode(list.start, @intCast(offset));
+        const binding = @import("native_constructor_timing.zig").simpleFormalBinding(self, parameter) orelse continue;
+        const raw = @backingInt(binding);
+        const birth = self.plugins.worklet.class_reference_origins.get(raw) orelse continue;
+        if (!birth.flags.declare) continue;
+        if (body_scope.isNone() or body_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[body_scope.toIndex()].kind != .function or
+            self.current_scope != body_scope or self.outputOwnedScope(function) != body_scope or
+            self.ast.readExtraNode(self.ast.getNode(function).data.extra, ast.FunctionExtra.params) != new_params) return error.InvalidWorkletCloneOrigin;
+        if (birth.scope == body_scope) continue;
+        const source_scope = self.outputOwnedScope(old_params) orelse return error.InvalidWorkletCloneOrigin;
+        if (birth.factory >= self.plugins.worklet.class_factories.items.len or source_scope != birth.scope or body_scope.isNone() or
+            body_scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[body_scope.toIndex()].parent != source_scope or
+            self.outputOwnedScope(function) != body_scope or self.ast.readExtraNode(self.ast.getNode(function).data.extra, ast.FunctionExtra.params) != new_params or
+            self.outputOwnedScope(new_params) != null or raw >= editor.symbol_ids.items.len or editor.symbol_ids.items[raw] != @backingInt(birth.symbol) or
+            @backingInt(birth.symbol) >= editor.symbols.items.len) return error.InvalidWorkletCloneOrigin;
+        const factory = self.plugins.worklet.class_factories.items[birth.factory];
+        if (factory.ast_owner != self.ast) return error.InvalidWorkletFactoryOwner;
+        const storage = editor.symbols.items[@backingInt(birth.symbol)];
+        if (storage.kind != .parameter or storage.scope_id != source_scope) return error.InvalidWorkletCloneOrigin;
+        var declarations: usize = 0;
+        for (editor.references.items) |row| {
+            if (row.symbol_id != birth.symbol or !row.flags.declare) continue;
+            if (row.declaration_node_index != binding or row.scope_id != source_scope or !std.meta.eql(row.flags, birth.flags))
+                return error.InvalidWorkletCloneOrigin;
+            declarations += 1;
+        }
+        if (declarations != 1) return error.InvalidWorkletCloneOrigin;
+        // Relocate the same selected binding. The editor preserves its flags,
+        // anchors and original source scope, and rejects a conflicting cell.
+        try editor.moveSymbolToScope(birth.symbol, body_scope);
+        self.plugins.worklet.class_reference_origins.getPtr(raw).?.scope = body_scope;
+    }
+}
+
+/// A consumer may preserve only an actual published tuple. Missing worklet
+/// publication is an error, never a general waiver for an existing row.
+pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Error!?@import("transformer.zig").StatementPublication {
+    const birth = self.plugins.worklet.class_reference_origins.get(raw) orelse {
+        if (self.plugins.worklet.class_publications.contains(raw)) return error.InvalidNode;
+        return null;
+    };
+    const known = self.plugins.worklet.class_publications.get(raw) orelse return error.InvalidNode;
+    const editor = &self.semantic_editor.?;
+    if (known.ast_owner != self.ast or known.factory != birth.factory or birth.factory >= self.plugins.worklet.class_factories.items.len)
+        return error.InvalidNode;
+    const factory = self.plugins.worklet.class_factories.items[birth.factory];
+    if (factory.ast_owner != self.ast or @backingInt(known.owner) >= self.ast.nodes.items.len or factory.scope.isNone() or
+        factory.scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[factory.scope.toIndex()].kind != .function or
+        editor.scopes.items[factory.scope.toIndex()].parent != factory.parent or self.outputOwnedScope(known.owner) != factory.scope)
+        return error.InvalidNode;
+    const owner = self.ast.getNode(known.owner);
+    if ((owner.tag != .function_declaration and owner.tag != .function_expression) or
+        self.ast.readExtraNode(owner.data.extra, ast.FunctionExtra.name) != factory.binding or
+        self.getSymbolIdAt(factory.binding) != @as(?u32, @backingInt(factory.symbol))) return error.InvalidNode;
+    if (known.value.symbol_id != birth.symbol or self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(birth.symbol))) return error.InvalidSymbol;
+    if (known.value.scope != birth.scope) return error.InvalidScope;
+    if (!std.meta.eql(known.flags, birth.flags)) return error.InvalidNode;
+    var rows: usize = 0;
+    for (editor.references.items) |row| {
+        const anchor = if (row.flags.declare) row.declaration_node_index else row.node_index;
+        if (anchor != @as(ast.NodeIndex, @fromBackingInt(raw))) continue;
+        if (row.symbol_id != known.value.symbol_id) return error.InvalidSymbol;
+        if (row.scope_id != known.value.scope) return error.InvalidScope;
+        if (!std.meta.eql(row.flags, known.flags) or row.stmt_idx != known.value.stmt or row.scope_stmt_idx != known.value.scope_stmt) return error.InvalidNode;
+        rows += 1;
+    }
+    if (rows != 1) return error.ReferenceNotFound;
+    return known.value;
+}
+
+pub fn agreePublication(self: anytype, raw: u32, other: ?@import("transformer.zig").StatementPublication, flags: symbol.ReferenceFlags) @import("../semantic/editor.zig").Error!?@import("transformer.zig").StatementPublication {
+    const worklet = try publication(self, raw);
+    if (worklet != null and !std.meta.eql(self.plugins.worklet.class_publications.get(raw).?.flags, flags)) return error.InvalidNode;
+    if (other != null and worklet != null) {
+        if (other.?.symbol_id != worklet.?.symbol_id) return error.InvalidSymbol;
+        if (other.?.scope != worklet.?.scope) return error.InvalidScope;
+        if (other.?.stmt != worklet.?.stmt or other.?.scope_stmt != worklet.?.scope_stmt) return error.InvalidNode;
+    }
+    return other orelse worklet;
 }

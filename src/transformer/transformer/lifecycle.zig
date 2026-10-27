@@ -209,6 +209,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.plugins.worklet.class_reference_nodes.deinit(self.allocator);
     self.plugins.worklet.class_reference_origins.deinit(self.allocator);
     self.plugins.worklet.class_reference_replacements.deinit(self.allocator);
+    self.plugins.worklet.class_publications.deinit(self.allocator);
     self.plugins.refresh.registrations.deinit(self.allocator);
     for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
     self.plugins.refresh.signatures.deinit(self.allocator);

@@ -73,11 +73,17 @@ pub fn moveSourceReferences(self: anytype, root: NodeIndex, source: ScopeId, pre
         };
         if (existing) |reference| {
             if (!reference.flags.declare and (reference.scope_id == source or reference.scope_id == previous_output)) {
+                const worklet_move = @import("worklet_class_clone.zig").prepareReferenceScopeMove(self, idx, reference, target) catch |err|
+                    std.debug.panic("initializer lost its worklet creation identity: {s}", .{@errorName(err)});
                 if (self.tracked_runtime_helper_ref_index.contains(@backingInt(idx))) {
                     try self.relocateRuntimeHelperRef(idx, target);
                 } else editor.moveReference(idx, target, reference.stmt_idx, reference.scope_stmt_idx) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => std.debug.panic("strict initializer lost its exact source reference: {s}", .{@errorName(err)}),
+                };
+                if (worklet_move) |move| @import("worklet_class_clone.zig").completeReferenceScopeMove(self, move) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("initializer lost its worklet scope handoff: {s}", .{@errorName(err)}),
                 };
             }
         }

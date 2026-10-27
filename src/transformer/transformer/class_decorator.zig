@@ -1243,6 +1243,13 @@ pub fn lowerClassWithPrehoistedKeys(
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
     const new_body = try hoistAllComputedKeys(self, node.tag, body_idx, &key_assigns);
+    // These expression fragments are emitted before the reconstructed class.
+    // Their exact cloned reads now execute in the known enclosing scope.
+    if (self.semantic_edit_enabled) {
+        const class_scope = self.outputOwnedScope(source_idx) orelse @panic("prehoisted class key has no source environment");
+        const output_scope = self.outputScopeParent(class_scope);
+        for (key_assigns.items) |fragment| try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_idx, fragment, output_scope);
+    }
 
     var slots: [8]u32 = undefined;
     for (0..8) |k| slots[k] = self.ast.extra_data.items[node.data.extra + k];

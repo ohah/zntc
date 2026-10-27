@@ -389,7 +389,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     @panic("deferred super class lost its exact source owner");
             }
             try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
-            try bindComputedKeyTemps(self, &cm, iife_scope, span);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span, source_idx);
             const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
             const inner = self.class_self_symbol_map.get(@backingInt(source_idx)) orelse
                 self.class_self_symbol_map.get(source_origin);
@@ -891,7 +891,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.active_class_super_parameter = .{ .binding = expr_super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
-            try bindComputedKeyTemps(self, &cm, iife_scope, span);
+            try bindComputedKeyTemps(self, &cm, iife_scope, span, source_idx);
             const func_name = if (has_extra)
                 try self.makeUserBinding(name_span, .none)
             else
@@ -1283,7 +1283,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // Class body member classification and field emission — es2015_class/members.zig로 위임
         const members_mod = class_members.Members(Transformer);
         const classifyMembers = members_mod.classifyMembers;
-        const bindComputedKeyTemps = members_mod.bindComputedKeyTemps;
+        const bindComputedKeyTemps = members_mod.bindComputedKeyTempsForClass;
         const flushComputedKeyTempProducerReferences = members_mod.flushComputedKeyTempProducerReferences;
         const setupPrivateFieldMappings = members_mod.setupPrivateFieldMappings;
         const visitDeferredStaticBlocks = members_mod.visitDeferredStaticBlocks;
