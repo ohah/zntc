@@ -429,19 +429,15 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 find_rest: for (nodes) |raw| {
                     const pattern = self.ast.nodes.items[raw];
                     if (pattern.tag != .object_pattern) continue;
-                    for (0..pattern.data.list.len) |offset| {
-                        const member = self.ast.getNode(self.ast.readExtraNode(pattern.data.list.start, @intCast(offset)));
-                        if (member.tag != .rest_element and member.tag != .spread_element) continue;
-                        const binding = member.data.unary.operand;
-                        if (self.ast.getNode(binding).tag != .binding_identifier) @panic("object rest tail has no exact source binding");
-                        const id = self.getSymbolIdAt(binding) orelse @panic("object rest tail has no source identity");
-                        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-                        const expected_scope = if (expressions) old_scope.? else owner.body_scope;
-                        if (symbols[id].kind != .parameter or symbols[id].scope_id != expected_scope) @panic("native tail cannot reuse another parameter environment");
-                        source_tail = binding;
-                        source_tail_id = id;
-                        break :find_rest;
-                    }
+                    const binding = self.ast.nodeListSplitRest(pattern.data.list).rest_operand orelse continue;
+                    if (self.ast.getNode(binding).tag != .binding_identifier) @panic("object rest tail has no exact source binding");
+                    const id = self.getSymbolIdAt(binding) orelse @panic("object rest tail has no source identity");
+                    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                    const expected_scope = if (expressions) old_scope.? else owner.body_scope;
+                    if (symbols[id].kind != .parameter or symbols[id].scope_id != expected_scope) @panic("native tail cannot reuse another parameter environment");
+                    source_tail = binding;
+                    source_tail_id = id;
+                    break :find_rest;
                 }
                 if (source_tail_id == null) @panic("expression-free object rest has no native tail carrier");
             }

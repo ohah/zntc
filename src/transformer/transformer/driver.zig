@@ -1594,6 +1594,45 @@ test "dynamic body wrapper native runtime and source arguments controls" {
     }
 }
 
+test "dynamic body wrapper Flow canonical rest carrier native controls" {
+    const Case = struct { source: []const u8, reference: []const u8, call: []const u8 };
+    for ([_]Case{
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(ref?: mixed,...props:{label?:string}){return props.label}", .reference = "const React={forwardRef:fn=>fn};function Card({...props},ref){return props.label}", .call = "Card({label:'ok'})" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(ref?: mixed,value:string,...props:{label?:string}){return [value,props.label,ref]}", .reference = "const React={forwardRef:fn=>fn};function Card({value,...props},ref){return [value,props.label,ref]}", .call = "Card({value:'v',label:'ok'},'r')" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(value:string,...props:{label?:string}){return [value,props.label]}", .reference = "const React={forwardRef:fn=>fn};function Card({value,...props}){return [value,props.label]}", .call = "Card({value:'v',label:'ok'})" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(value:string='fallback',...props:{label?:string}){return [value,props.label]}", .reference = "const React={forwardRef:fn=>fn};function Card({value='fallback',...props}){return [value,props.label]}", .call = "Card({label:'ok'})" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};function outer(){const text='nested';component Card(ref?:mixed,...props:{label?:string}){return [text,props.label]}return Card({label:'ok'})}", .reference = "const React={forwardRef:fn=>fn};function outer(){const text='nested';function Card({...props},ref){return [text,props.label]}return Card({label:'ok'})}", .call = "outer()" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};const Card_withRef='user';component Card(ref?:mixed,...props:{label?:string}){return [Card_withRef,props.label]}", .reference = "const React={forwardRef:fn=>fn};const Card_withRef='user';function Card({...props},ref){return [Card_withRef,props.label]}", .call = "Card({label:'ok'})" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(ref?:mixed,value:string='fallback',...props:{label?:string}){return [value,props.label,ref]}", .reference = "const React={forwardRef:fn=>fn};function Card({value='fallback',...props},ref){return [value,props.label,ref]}", .call = "Card({label:'ok'},'r')" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(ref?:mixed,...props:{label?:string}){return props.label}component Other(ref?:mixed,...props:{label?:string}){return props.label}", .reference = "const React={forwardRef:fn=>fn};function Card({...props},ref){return props.label}function Other({...props},ref){return props.label}", .call = "[Card({label:'a'}),Other({label:'b'})]" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(value:string){return value}", .reference = "const React={forwardRef:fn=>fn};function Card({value}){return value}", .call = "Card({value:'plain'})" },
+        .{ .source = "// @flow\nconst React={forwardRef:fn=>fn};component Card(...props:{label?:string}){return props.label}", .reference = "const React={forwardRef:fn=>fn};function Card(props){return props.label}", .call = "Card({label:'only'})" },
+        .{ .source = "// @flow\nfunction Card({value,...props}){return [value,props.label]}", .reference = "function Card({value,...props}){return [value,props.label]}", .call = "Card({value:'v',label:'ok'})" },
+    }, 0..) |case, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = try std.fmt.allocPrint(a, "{s};console.log(JSON.stringify({s}));", .{ case.source, case.call });
+        const reference = try std.fmt.allocPrint(a, "{s};console.log(JSON.stringify({s}));", .{ case.reference, case.call });
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", reference } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]@import("../compat.zig").ESTarget{ .es2015, .es2017 }) |target| for ([_]bool{ false, true }) |minify| {
+            errdefer std.debug.print("dynamic wrapper runtime source={d} target={s} min={any}\n", .{ index, @tagName(target), minify });
+            std.debug.print("Flow rest case={d} target={s} min={any}\n", .{ index, @tagName(target), minify });
+            const result = try @import("../../transpile.zig").transpile(a, source, "input.flow", .{
+                .unsupported = @import("../compat.zig").fromESTarget(target),
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
+                .minify_whitespace = minify,
+            });
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+            if (!(actual.term == .exited and actual.term.exited == 0)) std.debug.print("{s}\n{s}\n", .{ result.code, actual.stderr });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        };
+    }
+}
+
 test "lowered unused native arguments rejects malformed ownership without identity recovery" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;

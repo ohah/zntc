@@ -3980,17 +3980,24 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[fe + 2]));
         if (body_idx.isNone()) return;
 
-        // 1) Name_withRef 함수: 독립 parameter/body 환경에서 순회.
-        const params_list = self.ast.functionParamsList(func_node);
-        const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
-        const function_scopes = try self.enterFunctionScopesWithParams(
-            functionParamsNode(self, func_node),
-            params_list,
-            has_parameter_expressions,
-            body_idx,
-        );
-        try self.visitFunctionBodyInner(body_idx);
-        self.exitFunctionScopes(function_scopes);
+        // The wrapper is a structural function+const sequence, not a
+        // lexical owner. Create P/B and the native engine on the actual
+        // implementation, then restore the outer owner for forwardRef.
+        {
+            const saved_visit_node = self.current_visit_node;
+            self.current_visit_node = func_idx;
+            defer self.current_visit_node = saved_visit_node;
+            const params_list = self.ast.functionParamsList(func_node);
+            const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+            const function_scopes = try self.enterFunctionScopesWithParams(
+                functionParamsNode(self, func_node),
+                params_list,
+                has_parameter_expressions,
+                body_idx,
+            );
+            try self.visitFunctionBodyInner(body_idx);
+            self.exitFunctionScopes(function_scopes);
+        }
 
         // 2) `const Name = React.forwardRef(Name_withRef)` (const_decl): 외부 스코프에서 순회해야
         //    `React` / `Name_withRef` identifier_reference 의 `symbol_ids` 가 채워지고, bundler

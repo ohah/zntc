@@ -1678,7 +1678,7 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .formal_parameters, .formal_parameter, .assignment_pattern, .assignment_expression, .assignment_target_with_default, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target, .parenthesized_expression, .sequence_expression => kind == .function,
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
-        .ts_module_declaration, .ts_enum_declaration, .flow_component_wrapper => kind == .function,
+        .ts_module_declaration, .ts_enum_declaration => kind == .function,
         .flow_match_arm => kind == .block,
         else => false,
     };
@@ -1728,18 +1728,6 @@ fn enumPreludeOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u3
     const node = ast.nodes.items[owner];
     if (node.tag != .ts_enum_declaration or node.data.extra + ast_mod.EnumExtra.runtime_prelude >= ast.extra_data.items.len) return null;
     return if (@backingInt(ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.runtime_prelude)) == block) owner else null;
-}
-
-fn isFlowComponentImplementationFunction(
-    ast: *const Ast,
-    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
-    function_raw: u32,
-) bool {
-    const parent_raw = parent_by_node.get(function_raw) orelse return false;
-    if (parent_raw >= ast.nodes.items.len) return false;
-    const parent = ast.nodes.items[parent_raw];
-    if (parent.tag != .flow_component_wrapper or parent.data.extra >= ast.extra_data.items.len) return false;
-    return ast.extra_data.items[parent.data.extra] == function_raw;
 }
 
 fn isFlowMatchWildcardReference(ctx: *const ExactCtx, node_raw: u32) bool {
@@ -3572,7 +3560,7 @@ fn checkExactImpl(
             .catch_clause => null,
             .class_declaration, .class_expression => .class_body,
             .static_block => .class_static_block,
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .flow_component_wrapper => .function,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => .function,
             else => continue,
         };
         if (tag == .block_statement) {
@@ -3613,11 +3601,6 @@ fn checkExactImpl(
             } else false;
             if (is_function_body or is_aliased_catch_body) continue;
         }
-        // Flow component analysis enters the function scope on the wrapper,
-        // then visits the synthetic implementation declaration's body in
-        // that scope. The inner declaration does not own a second scope.
-        if (tag == .function_declaration and
-            isFlowComponentImplementationFunction(ast, &parent_by_node, raw)) continue;
         const raw_scope = scope_owner_map.get(raw) orelse {
             // Rebuilt Programs and generated blocks/loops may be structural
             // wrappers with no fresh semantic scope. Class, switch, catch, and
@@ -4222,6 +4205,9 @@ fn isRetainedSourceScopeReference(
     const raw_id = @backingInt(symbol_id);
     if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope) or
         !exactValidScope(ctx.scopes, output_scope)) return false;
+    // Historical scope evidence is valid only after its actual AST owner
+    // disappears, not when another live branch still owns that ScopeId.
+    if (hasReachableScopeOwner(ctx, @backingInt(use_scope))) return false;
     const symbol = ctx.symbols[raw_id];
     if (symbol.synthetic_kind != null or symbol.synthetic_name.len > 0) {
         // A generator state machine can replace a generated catch clause with
