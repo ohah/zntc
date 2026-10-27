@@ -32,7 +32,9 @@ pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
 // v5: retain initial named-default declaration semantics after operand lowering.
 // v6: TS enums have a fifth canonical runtime-prelude child slot. A v5
 // four-slot enum must never be traversed as the new layout after cache restore.
-pub const FORMAT_VERSION: u32 = 6;
+// v7: function expressions own the return-type word, including absent types.
+// v6 caches may contain four-slot expressions and must be reparsed.
+pub const FORMAT_VERSION: u32 = 7;
 
 /// null `?[]const u8` 표식 (jsx_pragma offset 자리).
 const NULL_OFFSET: u32 = std.math.maxInt(u32);

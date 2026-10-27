@@ -224,3 +224,23 @@ test "hashEmitOptions distinguishes namespace initialization owner and SymbolId"
         for (hashes[0..index]) |previous| try std.testing.expect(previous != hashes[index]);
     }
 }
+
+test "function expression owned payload changes v6 disk key" {
+    const InputHasher = @import("compiled_cache.zig").InputHasher;
+    const ast_codec = @import("../parser/ast_codec.zig");
+    const semantic_codec = @import("semantic_codec.zig");
+    const flags: cache_key.ParseFlags = .{};
+    const source_hash = wyhash.hashU64("const f=function(){};");
+    const old_format = (@as(u64, 6) << 32) |
+        (@as(u64, semantic_codec.FORMAT_VERSION) << 16) |
+        @as(u64, module_codec.FORMAT_VERSION);
+    var previous = InputHasher.init(0x5A4E5443_4B4559);
+    previous.addU64(source_hash);
+    previous.addU32(flags.bits());
+    previous.addU64(0);
+    previous.addU64(old_format);
+    previous.addU64(BUILD_ID);
+    try testing.expectEqual(@as(u32, 7), ast_codec.FORMAT_VERSION);
+    try testing.expect(cache_key.CODEC_FORMAT != old_format);
+    try testing.expect(cache_key.compute(source_hash, flags, 0, BUILD_ID) != previous.final());
+}

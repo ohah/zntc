@@ -299,3 +299,132 @@ test "ast_codec: default named-declaration role survives lowering and codec rest
         return error.AcceptedPreviousDefaultRoleVersion;
     } else |err| try testing.expectEqual(error.UnsupportedVersion, err);
 }
+
+// Parse the expression creator directly: at return its own extra allocation is
+// the tail. This proves its width without guessing from another node's offset.
+fn checkFunctionExpressionPayload(source: []const u8, flags: u32, mode: enum { js, ts, flow }, typed: bool) !void {
+    const alloc = testing.allocator;
+    var scanner = try Scanner.init(alloc, source);
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    switch (mode) {
+        .js => {},
+        .ts => parser.configureFromExtension(".ts"),
+        .flow => parser.is_flow = true,
+    }
+    try parser.advance();
+    const expression = try parser.parseFunctionExpressionWithFlags(flags);
+    try testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const node = parser.ast.getNode(expression);
+    try testing.expectEqual(Node.Tag.function_expression, node.tag);
+    const start: usize = node.data.extra;
+    try testing.expectEqual(@as(usize, 5), parser.ast.extra_data.items.len - start);
+    const original = parser.ast.extra_data.items[start..][0..5];
+    try testing.expectEqual(flags & ast_mod.FunctionFlags.is_async, original[3] & ast_mod.FunctionFlags.is_async);
+    try testing.expectEqual(std.mem.startsWith(u8, source, "function*"), (original[3] & ast_mod.FunctionFlags.is_generator) != 0);
+    const return_type: ast_mod.NodeIndex = @fromBackingInt(@intCast(original[4]));
+    try testing.expectEqual(typed, !return_type.isNone());
+    if (typed) try testing.expectEqual(if (mode == .flow) Node.Tag.flow_number_keyword else Node.Tag.ts_number_keyword, parser.ast.getNode(return_type).tag);
+    var clone = try Ast.cloneForTransformer(&parser.ast, alloc);
+    defer clone.deinit();
+    try testing.expectEqualSlices(u32, original, clone.extra_data.items[start..][0..5]);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(alloc);
+    try codec.serialize(&parser.ast, &bytes, alloc);
+    var restored = try codec.deserialize(bytes.items, alloc);
+    defer {
+        alloc.free(restored.source);
+        restored.deinit();
+    }
+    try testing.expectEqualSlices(u32, original, restored.extra_data.items[start..][0..5]);
+    if (typed) try testing.expectEqual(if (mode == .flow) Node.Tag.flow_number_keyword else Node.Tag.ts_number_keyword, restored.getNode(return_type).tag);
+}
+
+test "function expression owned payload 01 anonymous EOF" {
+    try checkFunctionExpressionPayload("function(){}", 0, .js, false);
+}
+test "function expression owned payload 02 named EOF" {
+    try checkFunctionExpressionPayload("function named(a){return a}", 0, .js, false);
+}
+test "function expression owned payload 03 following token" {
+    try checkFunctionExpressionPayload("function(){return 1}, sentinel", 0, .js, false);
+}
+test "function expression owned payload 04 object body" {
+    try checkFunctionExpressionPayload("function(){return {method:function(){return 2}}}", 0, .js, false);
+}
+test "function expression owned payload 05 nested self" {
+    try checkFunctionExpressionPayload("function named(){return function inner(){return named}}", 0, .js, false);
+}
+test "function expression owned payload 06 async" {
+    try checkFunctionExpressionPayload("function(){return await 1}", ast_mod.FunctionFlags.is_async, .js, false);
+}
+test "function expression owned payload 07 generator" {
+    try checkFunctionExpressionPayload("function*(){yield 1}", 0, .js, false);
+}
+test "function expression owned payload 08 async generator" {
+    try checkFunctionExpressionPayload("function*(){yield await 1}", ast_mod.FunctionFlags.is_async, .js, false);
+}
+test "function expression owned payload 09 TypeScript return" {
+    try checkFunctionExpressionPayload("function named(a: number): number{return a}", 0, .ts, true);
+}
+test "function expression owned payload 10 Flow return" {
+    try checkFunctionExpressionPayload("function named(a: number): number{return a}", 0, .flow, true);
+}
+
+test "function expression owned payload rejects v6 cache" {
+    const alloc = testing.allocator;
+    var scanner = try Scanner.init(alloc, "const f=function(){};");
+    defer scanner.deinit();
+    var parser = Parser.init(alloc, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(alloc);
+    try codec.serialize(&parser.ast, &bytes, alloc);
+    try testing.expectEqual(@as(u32, 7), codec.FORMAT_VERSION);
+    var previous: [4]u8 = undefined;
+    std.mem.writeInt(u32, &previous, 6, .little);
+    @memcpy(bytes.items[4..8], &previous);
+    try testing.expectError(error.UnsupportedVersion, codec.deserialize(bytes.items, alloc));
+}
+
+test "function expression owned payload full program visitor runtime ten" {
+    const Transformer = @import("../transformer/transformer.zig").Transformer;
+    const cases = [_][]const u8{
+        "const f=function(){return 2};console.log(f());",
+        "const f=function named(a){return a};console.log(f(2));",
+        "const f=function(){return 2}, sentinel=99;console.log(f());",
+        "const o={f:function(){return 2}};console.log(o.f());",
+        "const f=function(){return function named(){return 2}};console.log(f()());",
+        "const f=async function(){return await 2};f().then(console.log);",
+        "const f=function*(){yield 2};console.log(f().next().value);",
+        "const f=async function*(){yield await 2};f().next().then(x=>console.log(x.value));",
+        "const f=function named(a: number): number{return a};console.log(f(2));",
+        "const f=function named(a: number): number{return a};console.log(f(2));",
+    };
+    for (cases, 0..) |source, index| {
+        errdefer std.debug.print("function expression full-program case {d}\n", .{index});
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        var scanner = try Scanner.init(alloc, source);
+        var parser = Parser.init(alloc, &scanner);
+        if (index == 8) parser.configureFromExtension(".ts");
+        if (index == 9) parser.is_flow = true;
+        _ = try parser.parse();
+        try testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var transformer = try Transformer.init(alloc, &parser.ast, .{});
+        const root = try transformer.transform();
+        var cg = Codegen.init(alloc, transformer.ast);
+        const code = try cg.generate(root);
+        const execution = try std.process.run(alloc, testing.io, .{
+            .argv = &.{ "node", "-e", code },
+            .stdout_limit = .limited(16384),
+            .stderr_limit = .limited(16384),
+        });
+        try testing.expectEqualStrings("2\n", execution.stdout);
+        try testing.expectEqualStrings("", execution.stderr);
+        try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, execution.term);
+    }
+}
