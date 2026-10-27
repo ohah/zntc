@@ -707,6 +707,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_rest_type,
             .ts_type_operator,
             .ts_parenthesized_type,
+            .ts_template_literal_type,
             .ts_type_reference,
             .ts_qualified_name,
             .ts_type_query,
