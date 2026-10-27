@@ -466,18 +466,21 @@ fn hasStableRuntimeImports(
 fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *const ast_mod.Ast) bool {
     if (self.flow or isFlowPath(module.path)) return false;
     if (!ast.is_typescript) return module.module_type == .js;
-    return everyTypeScriptImportBindingHasValueUse(self, module, ast, false);
+    return everyTypeScriptImportBindingHasValueUse(self, module, ast, false, false);
 }
 
-/// The default TypeScript import-elision pass removes each binding without a
-/// source value read. An identifier-only minification pass can keep this graph
-/// only when every parsed import binding has such a read; type-only, unused,
-/// and incompletely mapped bindings stay on the analyzer path.
+/// The parser marks imports with no source value read as type-only for default
+/// TypeScript import elision (including unused imports). Identifier-only
+/// minification can keep this graph when each remaining import binding is
+/// value-used or carries that source-time elision classification. Admit the
+/// latter only without runtime lowering, where the type erasure edit removes
+/// any corresponding reference nodes before identity validation.
 fn everyTypeScriptImportBindingHasValueUse(
     self: anytype,
     module: *const Module,
     ast: *const ast_mod.Ast,
     require_source_import_bindings: bool,
+    allow_source_type_only: bool,
 ) bool {
     const semantic = &(module.semantic orelse return false);
     var value_used: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -494,7 +497,9 @@ fn everyTypeScriptImportBindingHasValueUse(
             .symbols = semantic.symbols.items,
         });
         const sid = local.semanticIndex() orelse return false;
-        if (!value_used.contains(sid)) return false;
+        if (value_used.contains(sid)) continue;
+        if (allow_source_type_only and binding.source_type_only == true) continue;
+        return false;
     }
     return true;
 }
@@ -669,11 +674,11 @@ fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
         !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
 }
 
-/// Primitive TypeScript keywords and structural wrappers/combinations made
-/// only from those keywords erase no bindings, references, or scopes. Other
-/// type nodes may carry semantic edges, so keep them on reanalysis until those
-/// edges have an explicit identity edit.
-fn canRetainIdentityFreeTypeErasures(ast: *const ast_mod.Ast) bool {
+/// Type erasure may remove exact type-context references from the source graph.
+/// `finishSemanticEdit` drops references whose identifier nodes are absent from
+/// the transformed AST; retain the import graph only for tags covered by that
+/// edit and keep other type shapes on the analyzer path.
+fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
     var found_type_erasure = false;
     for (ast.nodes.items) |node| {
         if (!isTypeErasureTag(node.tag)) continue;
@@ -700,6 +705,8 @@ fn canRetainIdentityFreeTypeErasures(ast: *const ast_mod.Ast) bool {
             .ts_rest_type,
             .ts_type_operator,
             .ts_parenthesized_type,
+            .ts_type_reference,
+            .ts_type_query,
             => {},
             else => return false,
         }
@@ -724,9 +731,16 @@ fn canRetainUsedTypeScriptImportsForIdentifierMinification(
     return minify_identifiers and module.module_type.isTypeScript() and ast.is_typescript and
         !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
         options.strip_types and !found_non_type_transform and
-        (!found_transform or canRetainIdentityFreeTypeErasures(ast)) and
+        (!found_transform or canRetainTypeErasuresWithExactReferenceEdits(ast)) and
         !has_dropped_labeled_statement and !has_mapped_import_split and
-        everyTypeScriptImportBindingHasValueUse(self, module, ast, true);
+        everyTypeScriptImportBindingHasValueUse(
+            self,
+            module,
+            ast,
+            true,
+            canRetainTypeErasuresWithExactReferenceEdits(ast) and !found_non_type_transform and
+                !options.verbatim_module_syntax,
+        );
 }
 
 test "plain JavaScript identifier-import retention rejects unsafe gates" {
