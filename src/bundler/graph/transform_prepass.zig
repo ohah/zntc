@@ -466,6 +466,19 @@ fn hasStableRuntimeImports(
 fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *const ast_mod.Ast) bool {
     if (self.flow or isFlowPath(module.path)) return false;
     if (!ast.is_typescript) return module.module_type == .js;
+    return everyTypeScriptImportBindingHasValueUse(self, module, ast, false);
+}
+
+/// The default TypeScript import-elision pass removes each binding without a
+/// source value read. An identifier-only minification pass can keep this graph
+/// only when every parsed import binding has such a read; type-only, unused,
+/// and incompletely mapped bindings stay on the analyzer path.
+fn everyTypeScriptImportBindingHasValueUse(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    require_source_import_bindings: bool,
+) bool {
     const semantic = &(module.semantic orelse return false);
     var value_used: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer value_used.deinit(self.allocator);
@@ -473,6 +486,7 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
         if (reference.isValueUse()) value_used.put(self.allocator, @backingInt(reference.symbol_id), {}) catch return false;
     }
     for (module.import_bindings) |binding| {
+        if (require_source_import_bindings and (binding.is_helper or binding.local_role != .import_binding)) return false;
         const local = binding_scanner_mod.resolveImportLocalSymbol(binding, .{
             .module_index = module.index,
             .ast = ast,
@@ -653,6 +667,25 @@ fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
     return minify_identifiers and module.module_type == .js and !ast.is_typescript and
         !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
         !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
+}
+
+fn canRetainUsedTypeScriptImportsForIdentifierMinification(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    found_transform: bool,
+    has_dropped_labeled_statement: bool,
+    has_mapped_import_split: bool,
+) bool {
+    const minify_identifiers = if (comptime @hasField(@TypeOf(self.*), "minify_identifiers"))
+        self.minify_identifiers
+    else
+        false;
+    return minify_identifiers and module.module_type.isTypeScript() and ast.is_typescript and
+        !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
+        !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split and
+        everyTypeScriptImportBindingHasValueUse(self, module, ast, true);
 }
 
 test "plain JavaScript identifier-import retention rejects unsafe gates" {
@@ -7341,6 +7374,16 @@ fn canKeepPrepassSemanticGraph(
             has_dropped_labeled_statement,
             has_mapped_import_split,
         );
+    const possible_used_typescript_imports_for_identifier_minification =
+        canRetainUsedTypeScriptImportsForIdentifierMinification(
+            self,
+            module,
+            ast,
+            options,
+            false,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
     const allow_plain_javascript_imports_for_console_drop =
         canRetainPlainJavaScriptImportsForConsoleDrop(
             self,
@@ -7351,6 +7394,7 @@ fn canKeepPrepassSemanticGraph(
         );
     const allow_nonverbatim_imports_before_transform_scan = allow_mapped_runtime_imports or
         possible_plain_javascript_imports_for_identifier_minification or
+        possible_used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop;
     if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_before_transform_scan)) return false;
 
@@ -7520,8 +7564,19 @@ fn canKeepPrepassSemanticGraph(
             has_dropped_labeled_statement,
             has_mapped_import_split,
         );
+    const used_typescript_imports_for_identifier_minification =
+        canRetainUsedTypeScriptImportsForIdentifierMinification(
+            self,
+            module,
+            ast,
+            options,
+            found_transform,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
     const allow_nonverbatim_imports_after_transform_scan = allow_mapped_runtime_imports or
         unchanged_plain_javascript_imports_for_identifier_minification or
+        used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop;
     if (!options.verbatim_module_syntax and
         allow_nonverbatim_imports_before_transform_scan != allow_nonverbatim_imports_after_transform_scan and

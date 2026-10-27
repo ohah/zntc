@@ -4992,7 +4992,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('non-verbatim TypeScript value imports keep semantic reanalysis under identifier minification', () => {
+  test('non-verbatim TypeScript value imports retain their graph under identifier minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-ts-import-minify-identifiers-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -5024,7 +5024,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         (line) =>
           line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.ts:'),
       );
-      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
       const identity = lines.find(
         (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.ts:'),
       );
@@ -5036,6 +5036,234 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(runtime.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TypeScript imports retain the prepass graph only when every binding has a value use', () => {
+    const cases = [
+      {
+        name: 'all named, default, and namespace bindings have value reads',
+        source: [
+          "import { value as named } from './named';",
+          "import defaultValue from './default';",
+          "import * as namespace from './namespace';",
+          "import './effects';",
+          'process.stdout.write(String(named + defaultValue + namespace.value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'named.ts': 'export const value: number = 10;\n',
+          'default.ts': 'const value: number = 20; export default value;\n',
+          'namespace.ts': 'export const value: number = 12;\n',
+          'effects.ts': 'globalThis.__tsImportEffects = (globalThis.__tsImportEffects || 0) + 1;\n',
+        },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'separate imports from one module each have a value read',
+        source: [
+          "import { first } from './values';",
+          "import { second } from './values';",
+          'process.stdout.write(String(first + second));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const first = 4; export const second = 9;\n' },
+        graph: 'retained',
+        stdout: '13',
+      },
+      {
+        name: 'an unused sibling binding keeps reanalysis',
+        source: [
+          "import { used, unused } from './values';",
+          'process.stdout.write(String(used));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const used = 42; export const unused = 99;\n' },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'an unused default binding keeps reanalysis',
+        source: [
+          "import unused from './unused';",
+          "import { value } from './used';",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'unused.ts': 'globalThis.__unusedTsImportRan = true; export default 1;\n',
+          'used.ts': 'export const value = 42;\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'an unused namespace binding keeps reanalysis',
+        source: [
+          "import * as unused from './unused';",
+          "import { value } from './used';",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'unused.ts': 'globalThis.__unusedNamespaceImportRan = true; export const value = 1;\n',
+          'used.ts': 'export const value = 42;\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'a type-only reference does not count as a value read',
+        source: [
+          "import { Shape } from './shape';",
+          'type Alias = Shape;',
+          "process.stdout.write('ok');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__typeOnlyImportRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'a namespace import read only in a type keeps reanalysis',
+        source: [
+          "import * as types from './types';",
+          'type Alias = types.Shape;',
+          "process.stdout.write('ok');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'types.ts':
+            'globalThis.__typeOnlyNamespaceImportRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'inline type-only specifiers keep reanalysis',
+        source: [
+          "import { value, type Shape } from './values';",
+          'type Alias = Shape;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'type erasure elsewhere in the entry keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          'const answer: number = value;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'syntax minification keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        args: ['--minify-syntax'],
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
+        name: 'a matched label that removes the only import read keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          'DROP: { value; }',
+          "process.stdout.write('ok');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'globalThis.__droppedImportRan = true; export const value = 42;\n',
+        },
+        args: ['--drop-labels=DROP'],
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+      {
+        name: 'dropping console cannot retain an import used only by the removed call',
+        source: [
+          "import { value } from './values';",
+          'console.log(value);',
+          "process.stdout.write('ok');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'globalThis.__droppedConsoleImportRan = true; export const value = 42;\n',
+        },
+        args: ['--drop=console'],
+        graph: 'reanalyzed',
+        stdout: 'ok',
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-ts-import-graph-${index}-`));
+      const input = join(dir, 'entry.ts');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(input, testCase.source);
+      for (const [name, contents] of Object.entries(testCase.dependencies)) {
+        writeFileSync(join(dir, name), contents);
+      }
+
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=esnext',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            ...(testCase.args ?? []),
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${testCase.name}: ${proc.stderr}`).toBe(0);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const mode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.ts:'),
+        );
+        expect(mode, `${testCase.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${testCase.graph}`,
+        );
+        const identity = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.ts:'),
+        );
+        expect(identity, `${testCase.name}: ${proc.stderr}`).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), `${testCase.name}: ${identity}`).toEqual([]);
+
+        const runtime = spawnSync('node', [output], { cwd: dir, encoding: 'utf8' });
+        expect(runtime.status, `${testCase.name}: ${runtime.stderr}`).toBe(0);
+        expect(runtime.stdout, testCase.name).toBe(testCase.stdout);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
