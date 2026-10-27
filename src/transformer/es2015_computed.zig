@@ -53,6 +53,10 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         /// { a: 1, [k]: v, b: 2 }
         /// → (_a = { a: 1 }, _a[k] = v, _a.b = 2, _a)
         pub fn lowerComputedProperties(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerComputedPropertiesWithSource(self, .none, node, null);
+        }
+
+        pub fn lowerComputedPropertiesWithSource(self: *Transformer, source_object: NodeIndex, node: Node, origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins) Transformer.Error!NodeIndex {
             const span = node.span;
             const members_start = node.data.list.start;
             const members_len = node.data.list.len;
@@ -134,7 +138,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    const define_call = try emitDefineAccessor(self, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_capture, span);
+                    const define_call = try emitDefineAccessor(self, source_object, origins, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_capture, span);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -273,6 +277,8 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         /// 후속 호출이 이전 descriptor의 get/set 필드를 보존하므로 동작은 정확하다 (ECMAScript ValidateAndApplyPropertyDescriptor).
         fn emitDefineAccessor(
             self: *Transformer,
+            source_object: NodeIndex,
+            origins: ?*const @import("object_builtin_reference.zig").AccessorOrigins,
             member_idx: NodeIndex,
             is_getter: bool,
             temp_capture: es_helpers.TempIdentityCapture,
@@ -323,7 +329,16 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_capture.span, .{ .read = true });
             const object_span = try self.ast.addString("Object");
             const define_property_span = try self.ast.addString("defineProperty");
-            return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
+            if (source_object.isNone()) return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
+            const builtin = @import("object_builtin_reference.zig");
+            const context = if (origins) |batch|
+                builtin.captureAccessorWithOrigins(self, source_object, member_idx, batch) catch |err| return builtin.productionFailure(err)
+            else
+                builtin.captureAccessor(self, source_object, member_idx) catch |err| return builtin.productionFailure(err);
+            const object_ref = builtin.makeReference(self, context) catch |err| return builtin.productionFailure(err);
+            const property = try es_helpers.makePropertyNameFromSpan(self, define_property_span);
+            const callee = try es_helpers.makeStaticMember(self, object_ref, property, span);
+            return es_helpers.makeCallExpr(self, callee, &.{ temp_ref, key_arg, desc_obj }, span);
         }
 
         /// Keep the accessor's original function scope and object home while lowering it
