@@ -172,8 +172,9 @@ fn crossChunkSemanticSymbolId(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ?S
 /// 그대로, 이미 쓰였으면 `binding$N`(N=2,3,…) 중 `used_locals`(선언됨)·`natural_bindings`(다른 binding
 /// 의 자연명)에 없는 첫 이름. per-binding 카운터로는 다른 그룹의 자연 `$N`(또는 사용자 `foo$2`)과
 /// 충돌하므로(#4576 리뷰 [0]) 반드시 집합으로 유일성을 판정한다.
-/// 반환은 borrowed(binding, 안정 slice) 또는 `alias_strs` 소유 slice(둘 다 청크 수명) — used_locals 는
-/// 둘 다 borrow 만 하고 테이블만 deinit. has_global/lazy 로 이름이 고정된 심볼은 호출 전에 예약해 둔다.
+/// 반환은 borrowed provider binding 또는 `alias_strs` 소유 slice다. 두 집합은 import phase에만
+/// borrow하며, provider canonical reset 전에 actual locals를 owned snapshot하고 keys를 비운다.
+/// has_global/lazy 로 이름이 고정된 심볼은 호출 전에 예약해 둔다.
 fn mintConsumerLocal(
     allocator: std.mem.Allocator,
     binding: []const u8,
@@ -196,6 +197,19 @@ fn mintConsumerLocal(
         try used_locals.put(allocator, cand, {});
         return cand;
     }
+}
+
+/// Reserve already selected lexical bindings, with chunk-owned bytes. The
+/// linker clears its prior canonical strings before consuming this list.
+fn appendOwnedOccupied(allocator: std.mem.Allocator, occupied: *std.ArrayList([]const u8), name: []const u8) !void {
+    const owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned);
+    try occupied.append(allocator, owned);
+}
+
+fn snapshotConsumerLocals(allocator: std.mem.Allocator, used_locals: *const std.StringHashMapUnmanaged(void), occupied: *std.ArrayList([]const u8)) !void {
+    var locals = used_locals.keyIterator();
+    while (locals.next()) |name| try appendOwnedOccupied(allocator, occupied, name.*);
 }
 
 /// (#4572/#4576/#4580/#4579) 소비자 청크에서 `sym` 의 로컬명을 발급하고 body 참조를 정합시킨다.
@@ -256,6 +270,10 @@ fn deconflictedConsumerLocal(
         binding
     else
         try mintConsumerLocal(allocator, binding, used_locals, natural_bindings, alias_strs);
+    // Fixed/global/lazy selections do not necessarily pass through the mint
+    // function. They are actual declarations too, so publish them to the same
+    // lexical set before the import phase ends.
+    try used_locals.put(allocator, local, {});
     if (linker) |l| {
         if (l.graph.preserve_modules and helper_local == null)
             try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
@@ -1591,26 +1609,19 @@ fn emitChunksImpl(
         };
         std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .graph = graph }, ModSortCtx.lessThan);
 
-        // cross-chunk import 이름 수집 — 점유 이름으로 등록하여 로컬과 충돌 방지.
-        // alias가 부여된 이름(x$2 등)도 점유 이름에 포함하여 로컬 변수와의 충돌 방지.
+        // Import emission already selected these exact lexical locals. Do
+        // not reselect provider names or treat live namespace member reads as
+        // bare declarations. Every reservation owns its bytes across the
+        // linker's clearCanonicalNames and the rest of this chunk's emission.
         var occupied: std.ArrayList([]const u8) = .empty;
-        defer occupied.deinit(allocator);
+        defer {
+            for (occupied.items) |name| allocator.free(name);
+            occupied.deinit(allocator);
+        }
         {
-            var ifit = chunk.imports_from.iterator();
-            while (ifit.next()) |if_entry| {
-                for (if_entry.value_ptr.items) |sym| {
-                    // 점유 이름 = 실제 **바인딩명**(예약어 키면 `_default`). export 키
-                    // (`default`)가 아니라 로컬과 충돌할 수 있는 바인딩명을 예약해야
-                    // 다른 로컬이 cross-chunk 바인딩과 겹치지 않는다.
-                    try occupied.append(allocator, crossChunkBindingName(linker, sym));
-                }
-            }
-            // deconfliction alias 이름도 점유 목록에 추가
-            for (alias_strs.items) |alias| {
-                try occupied.append(allocator, alias);
-            }
+            try snapshotConsumerLocals(allocator, &used_locals, &occupied);
             for (rbm_cross_imports.items) |imp| {
-                try occupied.append(allocator, imp.name);
+                try appendOwnedOccupied(allocator, &occupied, imp.name);
             }
             // (#4494) **provider 측** CJS-interop materialize 전역명도 점유. 이 청크가 CJS 모듈의
             // 멤버를 cross-chunk 로 노출하면 아래 xchunk_exports 블록이 `var <global> = <interop>;`
@@ -1631,11 +1642,16 @@ fn emitChunksImpl(
                     var eit = chunk.exports_to.iterator();
                     while (eit.next()) |e| {
                         const global = l.getCrossChunkGlobalName(@intCast(mi), e.key_ptr.*) orelse continue;
-                        try occupied.append(allocator, global);
+                        try appendOwnedOccupied(allocator, &occupied, global);
                     }
                 }
             }
         }
+
+        // These import-phase tables borrow provider canonical strings. No
+        // later phase reads them; drop their keys before that storage is freed.
+        used_locals.clearRetainingCapacity();
+        natural_bindings.clearRetainingCapacity();
 
         // per-chunk 리네임 계산: 각 청크는 독립된 네임스페이스이므로
         // 청크 내 모듈들만 대상으로 이름 충돌을 감지한다.

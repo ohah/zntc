@@ -6741,6 +6741,8 @@ pub const Linker = struct {
     /// cross-chunk import 이름을 점유로 등록하면서 이름 충돌을 해결한다.
     /// occupied_names: cross-chunk import로 이 청크에 도입되는 이름 목록.
     /// 이 이름들은 import 문으로 유지되므로 로컬 심볼과 충돌하면 로컬을 rename해야 함.
+    /// The caller must own these bytes independently of canonical_strings:
+    /// this pass clears prior canonical names before reading the reservations.
     pub fn computeRenamesForModules(
         self: *Linker,
         module_indices: []const ModuleIndex,
