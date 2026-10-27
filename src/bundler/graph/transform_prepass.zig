@@ -346,64 +346,6 @@ fn isTypeErasureTag(tag: NodeTag) bool {
     return isTypeOnlyNode(tag) or ast_mod.Node.Tag.isTransparentTypeWrapper(tag);
 }
 
-fn skipImportTypeTrivia(source: []const u8, start: usize) usize {
-    var index = start;
-    while (index < source.len) {
-        if (std.ascii.isWhitespace(source[index])) {
-            index += 1;
-            continue;
-        }
-        if (source.len - index >= 2 and source[index] == '/' and source[index + 1] == '/') {
-            index += 2;
-            while (index < source.len and source[index] != '\n' and source[index] != '\r') : (index += 1) {}
-            continue;
-        }
-        if (source.len - index >= 2 and source[index] == '/' and source[index + 1] == '*') {
-            index += 2;
-            while (source.len - index >= 2 and !(source[index] == '*' and source[index + 1] == '/')) : (index += 1) {}
-            if (source.len - index < 2) return source.len;
-            index += 2;
-            continue;
-        }
-        break;
-    }
-    return index;
-}
-
-fn importTypeHasAttributes(ast: *const ast_mod.Ast, import_type: ast_mod.Node) bool {
-    // parseImportType parses but does not attach the optional second argument
-    // (`import("x", { with: ... })`) to the ts_import_type node. Inspect only
-    // that source slice so large ASTs with many import types stay linear.
-    const start: usize = import_type.span.start;
-    const end: usize = import_type.span.end;
-    if (start >= end or end > ast.source.len) return true;
-    const source = ast.source[start..end];
-    var index: usize = 0;
-    while (index < source.len and source[index] != '(') : (index += 1) {}
-    if (index == source.len) return true;
-    index = skipImportTypeTrivia(source, index + 1);
-    if (index == source.len or (source[index] != '\'' and source[index] != '"')) return true;
-    const quote = source[index];
-    index += 1;
-    var closed_string = false;
-    while (index < source.len) {
-        if (source[index] == '\\') {
-            if (index + 1 == source.len) return true;
-            index += 2;
-        } else if (source[index] == quote) {
-            index += 1;
-            closed_string = true;
-            break;
-        } else {
-            index += 1;
-        }
-    }
-    if (!closed_string) return true;
-    index = skipImportTypeTrivia(source, index);
-    if (index == source.len) return true;
-    return source[index] != ')';
-}
-
 fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     if (node.tag != .ts_enum_declaration) return false;
     const extra = node.data.extra;
@@ -741,7 +683,6 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
     for (ast.nodes.items) |node| {
         if (!isTypeErasureTag(node.tag)) continue;
         found_type_erasure = true;
-        if (node.tag == .ts_import_type and importTypeHasAttributes(ast, node)) return false;
         switch (node.tag) {
             .ts_any_keyword,
             .ts_string_keyword,
@@ -840,16 +781,17 @@ test "bounded exact type erasure gate handles scoped syntax and rejects unsuppor
         .{ .name = "non-null expression", .source = "const value: { value: number } | null = { value: 1 }; const result = value!.value;", .required_tag = .ts_non_null_expression, .expected = true },
         .{ .name = "angle-bracket type assertion", .source = "const value = <number>1;", .required_tag = .ts_type_assertion, .expected = true },
         .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = true },
-        .{ .name = "type alias with attributed import type", .source = "type Alias = import('./types', { assert: { type: 'json' } }).Shape;", .required_tag = .ts_type_alias_declaration, .expected = false },
+        .{ .name = "type alias with attributed import type", .source = "type Alias = import('./types', { assert: { type: 'json' } }).Shape;", .required_tag = .ts_type_alias_declaration, .expected = true },
         .{ .name = "generic interface declaration", .source = "interface Shape<T extends Base> extends Base { value: T; read(input: Base): T; } const value: Shape<Base> = {};", .required_tag = .ts_interface_declaration, .expected = true },
         .{ .name = "interface union member", .source = "interface Shape { value: string | number }", .required_tag = .ts_union_type, .expected = true },
         .{ .name = "interface this parameter type reference stays supported", .source = "interface Shape { read(this: Shape): number }", .required_tag = .ts_type_reference, .expected = true },
-        .{ .name = "interface with attributed import type", .source = "interface Shape { value: import('./types', { assert: { type: 'json' } }).Value }", .required_tag = .ts_interface_declaration, .expected = false },
+        .{ .name = "interface with attributed import type", .source = "interface Shape { value: import('./types', { assert: { type: 'json' } }).Value }", .required_tag = .ts_interface_declaration, .expected = true },
         .{ .name = "class implements type reference stays supported", .source = "interface Shape {} class Value implements Shape {}", .required_tag = .ts_type_reference, .expected = true },
         .{ .name = "no type erasure", .source = "const value = 1;", .required_tag = null, .expected = false },
         .{ .name = "import type without attributes", .source = "const value: import('./types').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
-        .{ .name = "import type attributes", .source = "const value: import('./types', { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
-        .{ .name = "import type attributes after a comment", .source = "const value: import('./types' /* attributes follow */, { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
+        .{ .name = "import type assertion attributes", .source = "const value: import('./types', { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = true },
+        .{ .name = "import type resolution-mode attributes", .source = "const value: import('./types', { with: { 'resolution-mode': 'import' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = true },
+        .{ .name = "import type attributes after a comment", .source = "const value: import('./types' /* attributes follow */, { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = true },
         .{ .name = "comma inside import path", .source = "const value: import('./types,extra').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
     };
 
