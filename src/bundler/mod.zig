@@ -130,6 +130,7 @@ test {
     _ = @import("emitter/dev.zig");
     _ = @import("emitter/entry_exports.zig"); // public wrapped-entry writer regressions
     _ = @import("emitter/chunks.zig"); // inline test (rewriteImportSpecifier 등)
+    _ = @import("tree_shaker/cjs_patterns.zig"); // inline retained-graph fallback regressions
 
     // test files
     _ = @import("bundler_test.zig");

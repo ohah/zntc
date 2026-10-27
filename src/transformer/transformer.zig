@@ -1288,6 +1288,7 @@ pub const Transformer = struct {
     pub const rebindOutputBinding = @import("transformer/semantic_edit.zig").rebindOutputBinding;
     pub const splitOutputBindingAsVar = @import("transformer/semantic_edit.zig").splitOutputBindingAsVar;
     pub const relocateOutputSymbolAs = @import("transformer/semantic_edit.zig").relocateOutputSymbolAs;
+    pub const ensureAnnexBVariableStorage = @import("transformer/semantic_edit.zig").ensureAnnexBVariableStorage;
     pub const rebindOutputReference = @import("transformer/semantic_edit.zig").rebindOutputReference;
     pub const relocateNodeScopeProvenance = @import("transformer/semantic_edit.zig").relocateNodeScopeProvenance;
     pub const reparentGeneratedBodyScopes = @import("transformer/semantic_edit.zig").reparentGeneratedBodyScopes;
@@ -1425,6 +1426,7 @@ pub const Transformer = struct {
     pub const insertStatementsAfterSuper = declarations_mod.insertStatementsAfterSuper;
     pub const insertLoweredSuperInitializers = @import("transformer/declarations.zig").insertLoweredSuperInitializers;
     pub const prependStatementsToBody = declarations_mod.prependStatementsToBody;
+    pub const appendStatementsToBody = declarations_mod.appendStatementsToBody;
 
     pub const visitArrowFunction = function_visit_mod.visitArrowFunction;
 

@@ -15099,6 +15099,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         allocator,
         &module.ast.?,
         &removed_nodes,
+        &module.semantic.?,
         &needs_semantic_reanalysis,
     ));
     try std.testing.expect(!needs_semantic_reanalysis);

@@ -42,6 +42,52 @@ fn buildTestInfos(allocator: std.mem.Allocator, source: []const u8) !struct {
     return .{ .infos = infos, .arena = arena };
 }
 
+fn buildSemanticTestInfos(allocator: std.mem.Allocator, source: []const u8) !struct {
+    infos: ModuleStmtInfos,
+    arena: std.heap.ArenaAllocator,
+    hidden_symbol: u32,
+} {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    scanner.is_module = true;
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    var hidden_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, i| {
+        if (std.mem.eql(u8, parser.ast.getText(symbol.name), "hidden")) {
+            hidden_symbol = @intCast(i);
+            break;
+        }
+    }
+
+    const infos = (try stmt_info.buildFromSemantic(
+        allocator,
+        &parser.ast,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        null,
+        false,
+        false,
+    )) orelse return error.NullResult;
+
+    return .{
+        .infos = infos,
+        .arena = arena,
+        .hidden_symbol = hidden_symbol orelse return error.MissingHiddenSymbol,
+    };
+}
+
 test "stmt_info: function declarations" {
     const alloc = std.testing.allocator;
     var r = try buildTestInfos(alloc,
@@ -86,6 +132,39 @@ test "stmt_info: fallback builder keeps every top-level redeclaration of one var
     try std.testing.expect(reachable.isSet(0));
     try std.testing.expect(reachable.isSet(1));
     try std.testing.expect(reachable.isSet(2));
+}
+
+test "stmt_info: exact top-level writes retain every writer statement" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\let hidden;
+        \\hidden = "first";
+        \\hidden = "last";
+        \\export function observe() { eval("globalThis.observed = hidden"); }
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), r.infos.stmts.len);
+    const hidden_sym = r.infos.stmts[0].declared_symbols[0];
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2 }, r.infos.writerStmts(hidden_sym));
+}
+
+test "stmt_info: semantic builder records each dynamic-root binding writer" {
+    const alloc = std.testing.allocator;
+    var r = try buildSemanticTestInfos(alloc,
+        \\let hidden = "first";
+        \\eval("globalThis.first = hidden");
+        \\hidden = "middle";
+        \\eval("globalThis.middle = hidden");
+        \\hidden = "last";
+        \\eval("globalThis.last = hidden");
+        \\export const included = true;
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expectEqualSlices(u32, &.{ 2, 4 }, r.infos.writerStmts(r.hidden_symbol));
 }
 
 test "stmt_info: import binding tracked" {

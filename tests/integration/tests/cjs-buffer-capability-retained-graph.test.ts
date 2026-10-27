@@ -138,6 +138,238 @@ module.exports = second;
   },
 ] as const;
 
+const fallbackFunctionCases = [
+  {
+    name: 'dead plain top-level fallback declaration',
+    declarations: `function SafeBuffer() { return "fallback"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'direct eval alone keeps a removed fallback declaration live',
+    declarations: `function SafeBuffer() { return "fallback"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `eval("globalThis.sawSafeBuffer = typeof SafeBuffer === 'function'"); module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length, globalThis.sawSafeBuffer);`,
+    expected: '1 true',
+    liveFallback: true,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'fallback declaration before the capability branch',
+    declarations: `function SafeBuffer() { return "fallback"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: true,
+  },
+  {
+    name: 'dead async top-level fallback declaration',
+    declarations: `async function SafeBuffer() { return "fallback"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'dead generator top-level fallback declaration',
+    declarations: `function* SafeBuffer() { yield "fallback"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'duplicate fallback declarations share the removed edge',
+    declarations: `function SafeBuffer() { return "first"; } function SafeBuffer() { return "second"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'multiple exported fallback functions lose only fallback references',
+    declarations: `function SafeBuffer() { return "fallback"; } function SlowBuffer() { return "slow"; }`,
+    alternate: `exports.Buffer = SafeBuffer; exports.Slow = SlowBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'dead fallback factory drops its transitive function read',
+    declarations: `function SafeBuffer() { return "fallback"; } function FallbackFactory() { return SafeBuffer(); }`,
+    alternate: `exports.Buffer = FallbackFactory;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'module exports fallback property is removed by exact reference',
+    declarations: `function SafeBuffer() { return "fallback"; }`,
+    alternate: `module.exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'static var fallback function initializer remains on the retained graph',
+    declarations: `var SafeBuffer = function() { return "fallback"; }; function unrelated() { return 2; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = buffer;`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length);`,
+    expected: '1',
+    liveFallback: false,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'dynamic root without a removed fallback name stays on the retained graph',
+    declarations: `function SafeBuffer() { return "fallback"; }`,
+    alternate: `exports.Buffer = "fallback";`,
+    tail: `eval("globalThis.sawSafeBuffer = typeof SafeBuffer === 'function'"); module.exports = { Buffer: buffer.Buffer, fallback: SafeBuffer };`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length, lib.fallback(), globalThis.sawSafeBuffer);`,
+    expected: '1 fallback true',
+    liveFallback: true,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'direct eval module retains the graph and a live fallback export',
+    alternate: `exports.Buffer = FallbackAlias;`,
+    declarations: `function SafeBuffer() { return "fallback"; } var FallbackAlias = SafeBuffer;`,
+    tail: `eval("globalThis.sawSafeBuffer = typeof SafeBuffer === 'function'"); module.exports = { Buffer: buffer.Buffer, fallback: SafeBuffer };`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length, lib.fallback(), globalThis.sawSafeBuffer);`,
+    expected: '1 fallback true',
+    liveFallback: true,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'with scope retains the graph and a live fallback export',
+    alternate: `exports.Buffer = FallbackAlias;`,
+    declarations: `function SafeBuffer() { return "fallback"; } var FallbackAlias = SafeBuffer;`,
+    tail: `with ({}) { globalThis.sawSafeBuffer = typeof SafeBuffer === 'function'; } module.exports = { Buffer: buffer.Buffer, fallback: SafeBuffer };`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length, lib.fallback(), globalThis.sawSafeBuffer);`,
+    expected: '1 fallback true',
+    liveFallback: true,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+  {
+    name: 'independent module export keeps a live fallback binding',
+    declarations: `function SafeBuffer() { return "live"; }`,
+    alternate: `exports.Buffer = SafeBuffer;`,
+    tail: `module.exports = { Buffer: buffer.Buffer, fallback: SafeBuffer };`,
+    entry: `import lib from "./lib.js"; console.log(lib.Buffer.alloc(1).length, lib.fallback());`,
+    expected: '1 live',
+    liveFallback: true,
+    expectedResyncs: 0,
+    declarationsBeforeBranch: false,
+  },
+] as const;
+
+const dynamicRootBindingCases = [
+  {
+    name: 'function read hidden in eval string',
+    declarations: `function hidden() { return "function"; }`,
+    body: `eval("globalThis.observed = hidden()");`,
+    expected: 'function',
+  },
+  {
+    name: 'const read hidden in eval string',
+    declarations: `const hidden = "const";`,
+    body: `eval("globalThis.observed = hidden");`,
+    expected: 'const',
+  },
+  {
+    name: 'let read hidden in eval string',
+    declarations: `let hidden = "let";`,
+    body: `eval("globalThis.observed = hidden");`,
+    expected: 'let',
+  },
+  {
+    name: 'var initializer read hidden in eval string',
+    declarations: `var hidden = "var-init";`,
+    body: `eval("globalThis.observed = hidden");`,
+    expected: 'var-init',
+  },
+  {
+    name: 'split var writer read hidden in eval string',
+    declarations: `var hidden; if (true) hidden = "var-write";`,
+    body: `eval("globalThis.observed = hidden");`,
+    expected: 'var-write',
+  },
+  {
+    name: 'duplicate function declarations read hidden in eval string',
+    declarations: `function hidden() { return "first"; } function hidden() { return "last"; }`,
+    body: `eval("globalThis.observed = hidden()");`,
+    expected: 'last',
+  },
+  {
+    name: 'class read hidden in eval string',
+    declarations: `class Hidden { static value() { return "class"; } }`,
+    body: `eval("globalThis.observed = Hidden.value()");`,
+    expected: 'class',
+  },
+  {
+    name: 'nested eval closes over a top-level const',
+    declarations: `const hidden = "nested"; function observe() { eval("globalThis.observed = hidden"); }`,
+    body: `observe();`,
+    expected: 'nested',
+  },
+  {
+    name: 'eval inside with reads the outer function binding',
+    declarations: `function hidden() { return "with"; }`,
+    body: `with ({}) { eval("globalThis.observed = hidden()"); }`,
+    expected: 'with',
+  },
+  {
+    name: 'eval observes a later branch assignment',
+    declarations: `let hidden = "before"; if (true) hidden = "after";`,
+    body: `eval("globalThis.observed = hidden");`,
+    expected: 'after',
+  },
+  {
+    name: 'eval observes each of multiple exact writers',
+    declarations: `var hidden = "first";`,
+    body: `eval("globalThis.observed = hidden"); hidden = "middle"; eval("globalThis.observed += ' ' + hidden"); hidden = "last"; eval("globalThis.observed += ' ' + hidden");`,
+    expected: 'first middle last',
+  },
+  {
+    name: 'with lookup keeps an outer binding with no direct eval',
+    declarations: `var hidden = "with-only";`,
+    body: `with ({}) { globalThis.observed = hidden; }`,
+    expected: 'with-only',
+  },
+] as const;
+
 function semanticResyncCount(stderr: string): number {
   const jsonStart = stderr.indexOf('{\n  "profile_version"');
   expect(jsonStart, stderr).toBeGreaterThanOrEqual(0);
@@ -187,6 +419,138 @@ function runCaptured(command: string, args: string[]) {
 describe('CJS Node Buffer capability graph retention', () => {
   test('covers ten distinct direct-var runtime inputs', () => {
     expect(cases).toHaveLength(10);
+  });
+
+  test('folds top-level fallback-function cases and keeps dynamic-scope bindings live', () => {
+    expect(fallbackFunctionCases).toHaveLength(14);
+    for (const entry of fallbackFunctionCases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-fallback-function-'));
+      const input = join(dir, 'entry.js');
+      const modulePath = join(dir, 'lib.js');
+      const output = join(dir, 'out.cjs');
+      try {
+        writeFileSync(input, `${entry.entry}\n`);
+        const branch =
+          `var buffer = require("buffer");\n` +
+          `var B = buffer.Buffer;\n` +
+          `if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }\n` +
+          `else { ${entry.alternate} }\n`;
+        const source = entry.declarationsBeforeBranch
+          ? `${entry.declarations}\n${branch}${entry.tail}\n`
+          : `${branch}${entry.declarations}\n${entry.tail}\n`;
+        writeFileSync(modulePath, source);
+        const result = runCaptured(ZNTC_BIN, [
+          '--bundle',
+          input,
+          '--platform=node',
+          '--format=cjs',
+          '--profile=graph.resync.semantic',
+          '--profile-level=detailed',
+          '--profile-format=json',
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, `${entry.name}: ${result.stderr}`).toBe(0);
+        const profileOutput = `${result.stderr}\n${result.stdout}`;
+        expect(semanticResyncCount(profileOutput), `${entry.name}: ${profileOutput}`).toBe(
+          entry.expectedResyncs,
+        );
+        const bundled = readFileSync(output, 'utf8');
+        if (!entry.liveFallback) expect(bundled, entry.name).not.toContain('SafeBuffer');
+        else expect(bundled, entry.name).toContain('SafeBuffer');
+
+        const actual = runCaptured('node', [output]);
+        expect(actual.exitCode, `${entry.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout.trim(), entry.name).toBe(entry.expected);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('dynamic root bindings and exact writers survive without semantic reanalysis', () => {
+    expect(dynamicRootBindingCases).toHaveLength(12);
+    for (const entry of dynamicRootBindingCases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-dynamic-root-'));
+      const input = join(dir, 'entry.js');
+      const modulePath = join(dir, 'lib.js');
+      const output = join(dir, 'out.cjs');
+      try {
+        writeFileSync(
+          input,
+          `import { Buffer } from "./lib.js"; console.log(Buffer.alloc(1).length, globalThis.observed);\n`,
+        );
+        writeFileSync(
+          modulePath,
+          `var buffer = require("buffer");\n` +
+            `var B = buffer.Buffer;\n` +
+            `if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }\n` +
+            `else { exports.Buffer = SafeBuffer; }\n` +
+            `${entry.declarations}\n${entry.body}\nmodule.exports = buffer;\n`,
+        );
+        const result = runCaptured(ZNTC_BIN, [
+          '--bundle',
+          input,
+          '--platform=node',
+          '--format=cjs',
+          '--profile=graph.resync.semantic',
+          '--profile-level=detailed',
+          '--profile-format=json',
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, `${entry.name}: ${result.stderr}`).toBe(0);
+        const profileOutput = `${result.stderr}\n${result.stdout}`;
+        expect(semanticResyncCount(profileOutput), `${entry.name}: ${profileOutput}`).toBe(0);
+
+        const actual = runCaptured('node', [output]);
+        expect(actual.exitCode, `${entry.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout.trim(), entry.name).toBe(`1 ${entry.expected}`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('direct eval observes each pure top-level writer in an imported ESM module', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-dynamic-esm-writers-'));
+    const input = join(dir, 'entry.js');
+    const modulePath = join(dir, 'lib.js');
+    const output = join(dir, 'out.mjs');
+    try {
+      writeFileSync(
+        input,
+        `import { included } from "./lib.js"; console.log(included, globalThis.firstObserved, globalThis.middleObserved, globalThis.lastObserved);\n`,
+      );
+      writeFileSync(
+        modulePath,
+        `let hidden = "first";\n` +
+          `eval("globalThis.firstObserved = hidden");\n` +
+          `hidden = "middle";\n` +
+          `eval("globalThis.middleObserved = hidden");\n` +
+          `hidden = "last";\n` +
+          `eval("globalThis.lastObserved = hidden");\n` +
+          `export const included = true;\n`,
+      );
+      const result = runCaptured(ZNTC_BIN, [
+        '--bundle',
+        input,
+        '--platform=node',
+        '--format=esm',
+        '--minify-syntax',
+        '--profile=graph.resync.semantic',
+        '--profile-level=detailed',
+        '--profile-format=json',
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const actual = runCaptured('node', [output]);
+      expect(actual.exitCode, actual.stderr).toBe(0);
+      expect(actual.stdout.trim()).toBe('true first middle last');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   for (const entry of cases) {

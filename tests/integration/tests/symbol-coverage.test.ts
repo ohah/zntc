@@ -3166,8 +3166,11 @@ describe('symbol identity coverage gate (#4819)', () => {
 
       expect(successful + observedParseFailures.size).toBe(fixtures.length);
       expect([...observedParseFailures].sort()).toEqual([...expectedParseFailures].sort());
-      expect(successful).toBe(289);
+      const expectedSuccessful = fixtures.length - expectedParseFailures.size;
+      expect(expectedSuccessful).toBe(289);
+      expect(successful).toBe(expectedSuccessful);
       expect(retained).toBe(289);
+      expect(retained).toBe(expectedSuccessful - LENIENT_UNKNOWN_REANALYZED_FIXTURES.length);
       expect(reanalyzedFixtures.sort()).toEqual([...LENIENT_UNKNOWN_REANALYZED_FIXTURES].sort());
 
       for (const probe of LENIENT_UNKNOWN_GATE_PROBES) {
@@ -8941,6 +8944,28 @@ describe('symbol identity coverage gate (#4819)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('anonymous ES5 class name scopes inherit sloppy parents in lenient scripts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-anonymous-class-scope-'));
+    const fixture = join(FIXTURE_DIR, 'iife-collapse-identity.mjs');
+    const input = join(dir, 'iife-collapse-identity.unknown');
+    writeFileSync(input, readFileSync(fixture));
+    const reference = runNode([fixture]);
+    try {
+      expect(reference.status, reference.stderr).toBe(0);
+      const result = runCoverage(input, TARGETS[0], dir, true);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(transpileGraphModeProblems(result.stderr, true, 'retained')).toEqual([]);
+
+      const actual = runNode([join(dir, 'out.js')]);
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(reference.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test('anonymous static-field class wrappers preserve class-self identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-anonymous-static-field-self-symbols-'));

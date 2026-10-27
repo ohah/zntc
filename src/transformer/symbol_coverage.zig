@@ -4105,8 +4105,12 @@ fn checkExactImpl(
     }
     try accountNativeAnnexBAssignments(allocator, ast, &reachable_nodes, symbol_ids, symbols, scopes, value_counts, write_counts, &report);
     for (symbols, 0..) |symbol, sid| {
-        if (symbol.reference_count != value_counts[sid]) report.reference_count_mismatch += 1;
-        if (symbol.write_count != write_counts[sid]) report.write_count_mismatch += 1;
+        if (symbol.reference_count != value_counts[sid]) {
+            report.reference_count_mismatch += 1;
+        }
+        if (symbol.write_count != write_counts[sid]) {
+            report.write_count_mismatch += 1;
+        }
     }
     var helper_scopes = helper_scope_map.iterator();
     while (helper_scopes.next()) |entry| {

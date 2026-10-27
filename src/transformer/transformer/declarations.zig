@@ -1014,6 +1014,30 @@ pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: [
     });
 }
 
+/// Append hoisted storage declarations without shifting existing statement
+/// coordinates. `var` bindings are function-scoped regardless of their
+/// textual position in the body.
+pub fn appendStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) {
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        try self.scratch.append(self.allocator, body_idx);
+        for (stmts) |stmt| try self.scratch.append(self.allocator, stmt);
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{ .tag = .block_statement, .span = body.span, .data = .{ .list = new_list } });
+    }
+
+    const old_list = body.data.list;
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+    for (old_stmts) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
+    for (stmts) |stmt| try self.scratch.append(self.allocator, stmt);
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{ .tag = body.tag, .span = body.span, .data = .{ .list = new_list } });
+}
+
 /// ES2015 new.target 변환.
 /// constructor: this.constructor
 /// method: void 0

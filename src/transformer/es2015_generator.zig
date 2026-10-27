@@ -3502,27 +3502,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         pub fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32) Transformer.Error!void {
-            if (self.generator_annex_b_var_bindings.contains(variable)) return;
-            const editor = &self.semantic_editor.?;
-            // An explicit source var/function already has an actual declaration
-            // producer. Only the initial anchorless Annex B var needs a birth.
-            for (editor.references.items) |reference| {
-                if (@backingInt(reference.symbol_id) == variable and reference.flags.declare and !reference.declaration_node_index.isNone()) return;
-            }
-            const symbol = editor.symbols.items[variable];
-            // Production source analysis can omit declaration rows. A known
-            // source binding on this exact V still proves explicit storage;
-            // implicit Annex B V has no parser binding of its own.
-            for (self.ast.nodes.items[0..self.parser_node_count], 0..) |node, raw| {
-                if (node.tag == .binding_identifier and raw < self.symbol_ids.items.len and
-                    self.symbol_ids.items[raw] == variable) return;
-            }
-            if (symbol.kind != .variable_var or symbol.scope_id.isNone()) @panic("invalid implicit Annex B var storage");
-            const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbol.name);
-            try self.setGeneratedSymbolId(binding, variable);
-            try self.relocateOutputSymbolAs(variable, symbol.scope_id, binding);
-            try self.generator_annex_b_var_bindings.put(self.allocator, variable, binding);
-            try self.generator_function_storage_scopes.put(self.allocator, @backingInt(symbol.scope_id), {});
+            try self.ensureAnnexBVariableStorage(variable, true);
         }
 
         fn appendCollectedFunctionAlias(self: *Transformer, statement: NodeIndex, lexical: u32, ops: *std.ArrayList(Operation)) Transformer.Error!void {

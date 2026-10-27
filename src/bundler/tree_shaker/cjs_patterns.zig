@@ -4,11 +4,13 @@ const std = @import("std");
 const types = @import("../types.zig");
 const ModuleIndex = types.ModuleIndex;
 const Module = @import("../module.zig").Module;
+const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
 const StmtInfos = @import("../stmt_info.zig").ModuleStmtInfos;
 const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const Scope = @import("../../semantic/scope.zig").Scope;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
@@ -57,9 +59,10 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     allocator: std.mem.Allocator,
     ast: *Ast,
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+    semantic: ?*const ModuleSemanticData,
     needs_semantic_reanalysis: *bool,
 ) !bool {
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null, null);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null, semantic, null);
 }
 
 /// The module owns the actual AST and semantic tables. Only this typed path
@@ -72,7 +75,7 @@ pub fn foldNodeBufferCapabilityIfsForModule(
     needs_semantic_reanalysis: *bool,
 ) !bool {
     if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, null);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, null);
 }
 
 /// Producer-owned relation consumed by named-export reachability. It is held
@@ -100,7 +103,7 @@ pub fn foldNodeBufferCapabilityIfsForModuleWithExports(
 ) !bool {
     exports.clearRetainingCapacity();
     if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, exports);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, exports);
 }
 
 fn foldNodeBufferCapabilityIfsWithContext(
@@ -109,6 +112,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
     removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
     needs_semantic_reanalysis: *bool,
     module: ?*const Module,
+    semantic: ?*const ModuleSemanticData,
     folded_exports: ?*std.ArrayListUnmanaged(FoldedNodeBufferExport),
 ) !bool {
     removed_nodes.clearRetainingCapacity();
@@ -128,7 +132,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
     // program may authorize a semantic edit or provide an export fact.
     var reachable: ?std.DynamicBitSet = null;
     defer if (reachable) |*mask| mask.deinit();
-    if (module != null) {
+    if (module != null or semantic != null) {
         _ = programNode(ast) orelse return false;
         const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
         const nodes = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
@@ -173,8 +177,13 @@ fn foldNodeBufferCapabilityIfsWithContext(
         });
     }
     if (branches.items.len == 0) return false;
-    needs_semantic_reanalysis.* = hasTopLevelDeadFallbackFunction(ast, &dead_fallback_names);
-    const requires_function_consumer = needs_semantic_reanalysis.*;
+    // The retained graph edit removes the alternate's exact reference edges.
+    // The TreeShaker separately seeds every top-level declaration and writer
+    // in a dynamic root, so direct eval/with can still observe fallback
+    // functions without forcing a semantic rebuild. Missing root scope data
+    // cannot prove that the retained graph is complete and remains fail-closed.
+    needs_semantic_reanalysis.* = if (semantic) |sem| sem.scopes.len == 0 else true;
+    const requires_function_consumer = hasTopLevelDeadFallbackFunction(ast, &dead_fallback_names);
 
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
@@ -198,7 +207,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
         }
     }
 
-    if (needs_semantic_reanalysis.*) {
+    if (requires_function_consumer) {
         if (module) |owner| {
             // No declaration is removed. Exact alternate reads determine the
             // surviving function identity; the retained graph updater removes
@@ -232,37 +241,6 @@ fn foldNodeBufferCapabilityIfsWithContext(
         };
     }
     return true;
-}
-
-/// A removed CJS fallback export can make a same-named top-level function
-/// unreachable. The legacy path lets the normal tree shaker remove that
-/// declaration after rebuilding semantic data; the retained graph path does
-/// not yet update function declaration rows, so request that conservative
-/// path for this shape.
-fn hasTopLevelDeadFallbackFunction(
-    ast: *const Ast,
-    dead_names: *const std.StringHashMapUnmanaged(void),
-) bool {
-    if (dead_names.count() == 0) return false;
-    const root = programNode(ast) orelse return true;
-    const list = root.data.list;
-    const extra_len = ast.extra_data.items.len;
-    if (list.start > extra_len or list.len > extra_len - list.start) return true;
-    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
-        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return true;
-        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
-        if (stmt.tag != .function_declaration) continue;
-        const extra_base: usize = stmt.data.extra;
-        const name_offset: usize = ast_mod.FunctionExtra.name;
-        if (extra_base > extra_len or name_offset >= extra_len - extra_base) return true;
-        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_base + name_offset]));
-        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return true;
-        const name = ast.nodes.items[@backingInt(name_idx)];
-        if (name.tag != .binding_identifier) return true;
-        if (dead_names.contains(ast.getText(name.span))) return true;
-    }
-    return false;
 }
 
 fn isRetainableNodeBufferCapabilityBranch(tag: Node.Tag, variable_kind: ?u32) bool {
@@ -299,7 +277,7 @@ test "retained Node Buffer capability branch accepts only var declarations" {
     try std.testing.expect(!isRetainableNodeBufferCapabilityBranch(.if_statement, null));
 }
 
-test "retained Node Buffer fold falls back for matching top-level fallback functions" {
+test "retained Node Buffer fold defers missing semantic scope data to full analysis" {
     const sources = [_][]const u8{
         \\var buffer = require("buffer"); var B = buffer.Buffer;
         \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
@@ -354,9 +332,7 @@ test "retained Node Buffer fold falls back for matching top-level fallback funct
         \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
         \\else { exports.Buffer = SafeBuffer; }
     };
-    const expected_reanalysis = [_]bool{ true, false, false, true, true, true, true, true, true, true };
-
-    for (sources, expected_reanalysis) |source, expected| {
+    for (sources) |source| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
@@ -372,9 +348,11 @@ test "retained Node Buffer fold falls back for matching top-level fallback funct
             allocator,
             &parser.ast,
             &removed_nodes,
+            null,
             &needs_semantic_reanalysis,
         ));
-        try std.testing.expectEqual(expected, needs_semantic_reanalysis);
+        try std.testing.expect(removed_nodes.items.len > 0);
+        try std.testing.expect(needs_semantic_reanalysis);
     }
 }
 
@@ -682,6 +660,127 @@ fn fallbackFunctionGraphIsStable(
     return true;
 }
 
+test "retained Node Buffer fold keeps the graph when fallback function reads are removed" {
+    const cases = [_]struct {
+        source: []const u8,
+        has_direct_eval: bool,
+        expected_reanalysis: bool,
+    }{
+        .{
+            .source =
+            \\var buffer = require("buffer"); var B = buffer.Buffer;
+            \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+            \\else { exports.Buffer = SafeBuffer; }
+            \\function SafeBuffer() { return 1; }
+            ,
+            .has_direct_eval = false,
+            .expected_reanalysis = false,
+        },
+        .{
+            .source =
+            \\var buffer = require("buffer"); var B = buffer.Buffer;
+            \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+            \\else { exports.Buffer = Missing; }
+            \\function unrelated() { return 1; }
+            \\eval("unrelated");
+            ,
+            .has_direct_eval = true,
+            .expected_reanalysis = false,
+        },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, case.source);
+        scanner.is_module = false;
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".cjs");
+        parser.is_module = false;
+        _ = try parser.parse();
+
+        const root_scope: Scope = .{
+            .parent = .none,
+            .kind = .global,
+            .is_strict = false,
+            .subtree_has_direct_eval = case.has_direct_eval,
+        };
+        const scopes = [_]Scope{root_scope};
+        const semantic: ModuleSemanticData = .{
+            .symbols = .empty,
+            .scopes = &scopes,
+            .scope_maps = &.{},
+            .exported_names = .empty,
+            .symbol_ids = &.{},
+            .unresolved_references = .empty,
+        };
+        var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        var needs_semantic_reanalysis = false;
+        try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+            allocator,
+            &parser.ast,
+            &removed_nodes,
+            &semantic,
+            &needs_semantic_reanalysis,
+        ));
+        try std.testing.expectEqual(case.expected_reanalysis, needs_semantic_reanalysis);
+    }
+}
+
+test "retained Node Buffer fold fails closed when semantic scope data is unavailable" {
+    const source =
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        \\else { exports.Buffer = SafeBuffer; }
+        \\var SafeBuffer = function() { return 1; };
+        \\function unrelated() { return 2; }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+    scanner.is_module = false;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    parser.is_module = false;
+    _ = try parser.parse();
+    var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var needs_semantic_reanalysis = false;
+    try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+        allocator,
+        &parser.ast,
+        &removed_nodes,
+        null,
+        &needs_semantic_reanalysis,
+    ));
+    try std.testing.expect(needs_semantic_reanalysis);
+
+    const empty_semantic: ModuleSemanticData = .{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    var empty_scope_scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+    empty_scope_scanner.is_module = false;
+    var empty_scope_parser = @import("../../parser/parser.zig").Parser.init(allocator, &empty_scope_scanner);
+    empty_scope_parser.configureFromExtension(".cjs");
+    empty_scope_parser.is_module = false;
+    _ = try empty_scope_parser.parse();
+    var empty_scope_removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var empty_scope_needs_semantic_reanalysis = false;
+    try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+        allocator,
+        &empty_scope_parser.ast,
+        &empty_scope_removed_nodes,
+        &empty_semantic,
+        &empty_scope_needs_semantic_reanalysis,
+    ));
+    try std.testing.expect(empty_scope_needs_semantic_reanalysis);
+}
+
 const BufferCapabilityFoldBranch = struct {
     if_index: NodeIndex,
     kept: NodeIndex,
@@ -910,7 +1009,7 @@ pub fn collectNodeBufferModuleObjectNames(
     }
 }
 
-fn collectNodeBufferCtorNames(
+pub fn collectNodeBufferCtorNames(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     buffer_names: *const std.StringHashMapUnmanaged(void),
@@ -1024,19 +1123,199 @@ fn isNodeBufferCtorRead(
 
 pub fn isModuleExportsAssignedNodeBufferObject(
     ast: *const Ast,
-    stmt: Node,
+    stmt_index: NodeIndex,
     buffer_names: *const std.StringHashMapUnmanaged(void),
+    buffer_ctor_names: *const std.StringHashMapUnmanaged(void),
 ) bool {
+    if (stmt_index.isNone() or @backingInt(stmt_index) >= ast.nodes.items.len) return false;
+    const stmt = ast.nodes.items[@backingInt(stmt_index)];
+    if (stmt.tag == .block_statement) {
+        const inner = singleBlockStatement(ast, stmt_index) orelse return false;
+        return isModuleExportsAssignedNodeBufferObject(ast, inner, buffer_names, buffer_ctor_names);
+    }
+    if (stmt.tag == .if_statement) {
+        const branch = stmt.data.ternary;
+        if (!branch.c.isNone()) return false;
+        var capabilities: BufferCapabilitySet = .{};
+        if (!collectNodeBufferCapabilityCondition(ast, branch.a, buffer_ctor_names, &capabilities) or
+            !capabilities.hasAll()) return false;
+        return isModuleExportsAssignedNodeBufferObject(ast, branch.b, buffer_names, buffer_ctor_names);
+    }
     if (stmt.tag != .expression_statement) return false;
     const expr_idx = stmt.data.unary.operand;
     if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return false;
     const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return false;
+    const op: Kind = @fromBackingInt(@intCast(expr.data.binary.flags));
+    if (op != .eq) return false;
     if (!isModuleExportsLhs(ast, expr.data.binary.left)) return false;
     const rhs_idx = expr.data.binary.right;
     if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return false;
     const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     return rhs.tag == .identifier_reference and buffer_names.contains(ast.getText(rhs.span));
+}
+
+test "Node Buffer module.exports detection follows only a folded capability branch" {
+    const folded_source =
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) {
+        \\  module.exports = buffer;
+        \\} else { exports.Buffer = SafeBuffer; }
+        \\function SafeBuffer() { return 1; }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, folded_source);
+    scanner.is_module = false;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    parser.is_module = false;
+    _ = try parser.parse();
+
+    var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer buffer_names.deinit(allocator);
+    try collectNodeBufferModuleObjectNames(allocator, &parser.ast, &buffer_names);
+    var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer buffer_ctor_names.deinit(allocator);
+    try collectNodeBufferCtorNames(allocator, &parser.ast, &buffer_names, &buffer_ctor_names);
+
+    var if_index: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .if_statement) {
+            if_index = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const branch_index = if_index orelse return error.MissingCapabilityBranch;
+    try std.testing.expect(!isModuleExportsAssignedNodeBufferObject(
+        &parser.ast,
+        branch_index,
+        &buffer_names,
+        &buffer_ctor_names,
+    ));
+
+    var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var needs_semantic_reanalysis = false;
+    try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(
+        allocator,
+        &parser.ast,
+        &removed_nodes,
+        null,
+        &needs_semantic_reanalysis,
+    ));
+    try std.testing.expect(isModuleExportsAssignedNodeBufferObject(
+        &parser.ast,
+        branch_index,
+        &buffer_names,
+        &buffer_ctor_names,
+    ));
+
+    const rejected_cases = [_][]const u8{
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (someRuntimeCondition) { module.exports = buffer; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from) { module.exports = buffer; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer; var other = {};
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = other; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { exports.Buffer = buffer; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports.Buffer = buffer; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports += buffer; }
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) {
+        \\  if (someRuntimeCondition) { module.exports = buffer; }
+        \\}
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) {
+        \\  globalThis.sideEffect = true;
+        \\  module.exports = buffer;
+        \\}
+        ,
+        \\var buffer = require("buffer"); var B = buffer.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe) { module.exports = buffer; }
+        ,
+        \\var buffer = require("buffer"); var alias = buffer; var B = alias.Buffer;
+        \\if (B.from && B.alloc && B.allocUnsafe && B.allocUnsafeSlow) { module.exports = buffer; }
+        ,
+    };
+    try std.testing.expectEqual(@as(usize, 10), rejected_cases.len);
+    for (rejected_cases) |source| {
+        var case_scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+        case_scanner.is_module = false;
+        var case_parser = @import("../../parser/parser.zig").Parser.init(allocator, &case_scanner);
+        case_parser.configureFromExtension(".cjs");
+        case_parser.is_module = false;
+        _ = try case_parser.parse();
+
+        var case_buffer_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer case_buffer_names.deinit(allocator);
+        try collectNodeBufferModuleObjectNames(allocator, &case_parser.ast, &case_buffer_names);
+        var case_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer case_ctor_names.deinit(allocator);
+        try collectNodeBufferCtorNames(allocator, &case_parser.ast, &case_buffer_names, &case_ctor_names);
+
+        var case_if_index: ?NodeIndex = null;
+        const case_program = programNode(&case_parser.ast) orelse return error.MissingRejectedProgram;
+        const case_statements = case_program.data.list;
+        if (case_statements.start > case_parser.ast.extra_data.items.len or
+            case_statements.len > case_parser.ast.extra_data.items.len - case_statements.start)
+            return error.InvalidRejectedProgram;
+        for (case_parser.ast.extra_data.items[case_statements.start .. case_statements.start + case_statements.len]) |raw_stmt| {
+            const stmt_index: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+            if (stmt_index.isNone() or @backingInt(stmt_index) >= case_parser.ast.nodes.items.len) continue;
+            if (case_parser.ast.nodes.items[@backingInt(stmt_index)].tag != .if_statement) continue;
+            case_if_index = stmt_index;
+            break;
+        }
+        try std.testing.expect(!isModuleExportsAssignedNodeBufferObject(
+            &case_parser.ast,
+            case_if_index orelse return error.MissingRejectedBranch,
+            &case_buffer_names,
+            &case_ctor_names,
+        ));
+    }
+
+    const direct_export_source =
+        \\var buffer = require("buffer");
+        \\module.exports = buffer;
+        \\function unusedFallback() { return 1; }
+    ;
+    var direct_scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, direct_export_source);
+    direct_scanner.is_module = false;
+    var direct_parser = @import("../../parser/parser.zig").Parser.init(allocator, &direct_scanner);
+    direct_parser.configureFromExtension(".cjs");
+    direct_parser.is_module = false;
+    _ = try direct_parser.parse();
+    var direct_buffer_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer direct_buffer_names.deinit(allocator);
+    try collectNodeBufferModuleObjectNames(allocator, &direct_parser.ast, &direct_buffer_names);
+    var direct_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer direct_ctor_names.deinit(allocator);
+    try collectNodeBufferCtorNames(allocator, &direct_parser.ast, &direct_buffer_names, &direct_ctor_names);
+    var direct_export_found = false;
+    for (direct_parser.ast.nodes.items, 0..) |_, raw| {
+        if (isModuleExportsAssignedNodeBufferObject(
+            &direct_parser.ast,
+            @fromBackingInt(@intCast(raw)),
+            &direct_buffer_names,
+            &direct_ctor_names,
+        )) {
+            direct_export_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(direct_export_found);
 }
 
 fn isModuleExportsLhs(ast: *const Ast, idx: NodeIndex) bool {

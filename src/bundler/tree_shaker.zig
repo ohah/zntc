@@ -1037,6 +1037,36 @@ pub const TreeShaker = struct {
                     reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
                 }
 
+                // A direct eval can read any lexical binding visible from its
+                // scope, including bindings whose only use is inside the eval
+                // string. `with` also makes lookup depend on a runtime object.
+                // Keep every top-level declaration in a module with a dynamic
+                // root; declared symbols' writer edges retain split initializers
+                // and duplicate var/function declarations. Missing scope data
+                // cannot prove a narrower set, so preserve all statements.
+                const has_exact_root_scope = if (m.semantic) |semantic| semantic.scopes.len > 0 else false;
+                const has_dynamic_root_scope = if (m.semantic) |semantic|
+                    semantic.scopes.len == 0 or semantic.scopes[0].blocksMangling()
+                else
+                    true;
+                if (has_dynamic_root_scope) {
+                    for (infos.stmts, 0..) |stmt, si| {
+                        if (!has_exact_root_scope) {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                            continue;
+                        }
+                        for (stmt.declared_symbols) |symbol| {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                            // A dynamic read observes the value after preceding
+                            // assignments too, even though its identifier is
+                            // hidden in source text. Preserve exact writer rows.
+                            for (infos.writerStmts(symbol)) |writer_stmt| {
+                                try self.enqueue(@intCast(i), writer_stmt, reachable_stmts, &queue);
+                            }
+                        }
+                    }
+                }
+
                 // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
                 // side-effect statement와 entry export seed만 살리고, local-only pure statement는
                 // BFS dependency로 필요할 때만 도달시킨다.
@@ -1684,10 +1714,24 @@ pub const TreeShaker = struct {
         cjs_patterns.collectNodeBufferModuleObjectNames(self.allocator, ast, &buffer_names) catch return false;
         if (buffer_names.count() == 0) return false;
 
+        var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer buffer_ctor_names.deinit(self.allocator);
+        cjs_patterns.collectNodeBufferCtorNames(self.allocator, ast, &buffer_names, &buffer_ctor_names) catch return false;
+
         for (infos.stmts, 0..) |stmt, si| {
             const stmt_ni: usize = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            if (!cjs_patterns.isModuleExportsAssignedNodeBufferObject(ast, ast.nodes.items[stmt_ni], &buffer_names)) {
+            const dynamic_root = if (m.semantic) |sem| sem.scopes.len > 0 and sem.scopes[0].blocksMangling() else false;
+            // Static retained if/block exports require the producer's exact
+            // module/SID fact. Only dynamic roots use the legacy folded-shape
+            // consumer: their declarations and writers are all BFS seeds.
+            const legacy_shape_allowed = ast.nodes.items[stmt_ni].tag == .expression_statement or dynamic_root;
+            if (!legacy_shape_allowed or !cjs_patterns.isModuleExportsAssignedNodeBufferObject(
+                ast,
+                @fromBackingInt(@intCast(stmt_ni)),
+                &buffer_names,
+                &buffer_ctor_names,
+            )) {
                 const key = (@as(u64, mod_idx) << 32) | @as(u64, @intCast(stmt_ni));
                 const fact = self.node_buffer_folded_exports.get(key) orelse continue;
                 if (!cjs_patterns.foldedNodeBufferExportIsCurrent(m, ast, @fromBackingInt(@as(u32, @intCast(stmt_ni))), fact)) continue;
@@ -2435,20 +2479,33 @@ pub const TreeShaker = struct {
             var needs_semantic_reanalysis = false;
             var folded_exports: std.ArrayListUnmanaged(cjs_patterns.FoldedNodeBufferExport) = .empty;
             defer folded_exports.deinit(self.allocator);
-            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
-                self.allocator,
-                m,
-                ast,
-                &removed_nodes,
-                &needs_semantic_reanalysis,
-                &folded_exports,
-            ) catch false;
+            const semantic = if (m.semantic) |*value| value else null;
+            const dynamic_root = if (semantic) |sem| sem.scopes.len > 0 and sem.scopes[0].blocksMangling() else false;
+            // Dynamic root declarations and writers are seeded by crossModuleBFS.
+            // The static typed path retains its stricter source/fact proof;
+            // dynamic lookup must not authorize a named-export pruning fact.
+            const retained_folded = if (dynamic_root)
+                cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
+                    self.allocator,
+                    ast,
+                    &removed_nodes,
+                    semantic,
+                    &needs_semantic_reanalysis,
+                ) catch false
+            else
+                cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
+                    self.allocator,
+                    m,
+                    ast,
+                    &removed_nodes,
+                    &needs_semantic_reanalysis,
+                    &folded_exports,
+                ) catch false;
             if (retained_folded) {
                 if (needs_semantic_reanalysis) {
-                    // The retained candidate has already removed the
-                    // alternate. Finish the legacy shape normalization before
-                    // rebuilding semantics so ordinary tree shaking can make
-                    // the same fallback declaration decision as before.
+                    // Missing semantic scope proof cannot authorize the
+                    // retained updater. Keep the legacy shape normalization
+                    // and full-analysis recovery for this boundary.
                     _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
                     self.markAstMutatedAndResync(m);
                     continue;
