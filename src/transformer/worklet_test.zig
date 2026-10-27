@@ -1949,6 +1949,11 @@ test "static block environment Worklet reconstruction consumes its body alias be
 }
 
 test "worklet class factory owns distinct statement nodes and cloned lexical identities" {
+    try checkWorkletClassOwnedIdentity(true);
+    try checkWorkletClassOwnedIdentity(false);
+}
+
+fn checkWorkletClassOwnedIdentity(is_module: bool) !void {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
     const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -1966,10 +1971,10 @@ test "worklet class factory owns distinct statement nodes and cloned lexical ide
     const a = arena.allocator();
     var scanner = try Scanner.init(a, source);
     var parser = Parser.init(a, &scanner);
-    parser.configureFromExtension(".mjs");
+    parser.configureFromExtension(if (is_module) ".mjs" else ".js");
     _ = try parser.parse();
     var analyzer = Analyzer.init(a, &parser.ast);
-    analyzer.is_module = true;
+    analyzer.is_module = is_module;
     analyzer.collect_unresolved_reference_nodes = true;
     analyzer.enable_stmt_info = true;
     analyzer.enable_exact_declaration_anchors = true;
@@ -2007,6 +2012,27 @@ test "worklet class factory owns distinct statement nodes and cloned lexical ide
     const factory = transformer.plugins.worklet.class_factories.items[0];
     try std.testing.expect(factory.source_self != factory.target_self);
     try std.testing.expect(factory.source_scope != factory.target_scope);
+    try std.testing.expect(editor.scopes.items[factory.target_scope.toIndex()].is_strict);
+    try std.testing.expectEqual(is_module, editor.scopes.items[factory.parent.toIndex()].is_strict);
+    // Check the generated wrapper against its physical lexical context before
+    // the generic output walker can observe or alter any metadata.
+    var checked_wrappers: usize = 0;
+    var owner_iterator = owners.iterator();
+    while (owner_iterator.next()) |entry| {
+        if (entry.value_ptr.* != @backingInt(factory.parent)) continue;
+        const expected_parent = scope_utils.expectedScope(transformer.ast, root, &parents, &owners, entry.key_ptr.*).?;
+        checked_wrappers += 1;
+        try std.testing.expectEqual(expected_parent, editor.scopes.items[entry.value_ptr.*].parent);
+    }
+    try std.testing.expectEqual(@as(usize, 1), checked_wrappers);
+    for (editor.references.items) |row| {
+        if (row.flags.declare or row.node_index.isNone()) continue;
+        const raw = @backingInt(row.node_index);
+        if (raw >= actual.len or actual[raw] == null) continue;
+        const use_scope = scope_utils.expectedScope(transformer.ast, root, &parents, &owners, raw) orelse continue;
+        if (use_scope != row.scope_id) std.debug.print("worklet physical reference node={d} name={s} SID={d} actual={d} row={d}\n", .{ raw, transformer.ast.identifierNameText(transformer.ast.getNode(row.node_index)), @backingInt(row.symbol_id), @backingInt(use_scope), @backingInt(row.scope_id) });
+        try std.testing.expectEqual(use_scope, row.scope_id);
+    }
     var external: ?u32 = null;
     var parameter: ?u32 = null;
     var local: ?u32 = null;

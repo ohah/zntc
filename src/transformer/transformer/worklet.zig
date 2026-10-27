@@ -679,6 +679,14 @@ pub fn buildWorkletPropertyAssignments(
     /// codegen의 scope hoisting rename이 자동 적용된다.
     func_node_idx: NodeIndex,
 ) Error![5]NodeIndex {
+    // Every emitted metadata expression belongs to this explicitly supplied
+    // output scope, including closure values and the function-binding reads.
+    // The visitor may still be inside the function whose declaration owns
+    // the metadata, so its current scope is not the expression's use scope.
+    const saved_scope = self.current_scope;
+    self.current_scope = metadata_scope;
+    defer self.current_scope = saved_scope;
+
     // 원본 함수의 binding_identifier span 사용 (scope hoisting rename 호환)
     const func_name_span = blk: {
         if (!func_node_idx.isNone()) {

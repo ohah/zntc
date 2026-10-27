@@ -1050,6 +1050,10 @@ fn buildClassFactoryBody(
     var class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId = null;
     const class_scope = if (t.semantic_edit_enabled) try t.addGeneratedScope(factory_scope, class_expr, .class_body) else .none;
     if (t.semantic_edit_enabled) {
+        // Class syntax creates a strict environment even when its factory
+        // is evaluated in a sloppy enclosing source environment. Set this
+        // before cloning any owned method or parameter scopes.
+        t.semantic_editor.?.scopes.items[class_scope.toIndex()].is_strict = true;
         class_self_symbol = (try t.declareSyntheticInScope(
             class_self_binding,
             class_name_span,
@@ -1160,8 +1164,11 @@ fn buildClassFactoryAssignment(
     const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
         none, @backingInt(wrapper_params_node), none, 0, none,
     });
+    // This assignment is emitted after the source class, in its actual
+    // lexical evaluation environment rather than inside the class body.
+    const evaluation_scope = if (t.semantic_edit_enabled) t.outputScopeParent(source_class_scope) else t.current_scope;
     const wrapper_scope = if (t.semantic_edit_enabled)
-        try t.addGeneratedFunctionScope(t.current_scope, wrapper_fn)
+        try t.addGeneratedFunctionScope(evaluation_scope, wrapper_fn)
     else
         @as(@import("../../semantic/scope.zig").ScopeId, .none);
     const factory_scope = if (t.semantic_edit_enabled)
@@ -1217,7 +1224,7 @@ fn buildClassFactoryAssignment(
 
     // LHS: ClassName.ClassName__classFactory — ClassName 은 사용자 클래스라 그 심볼을 물려받는다.
     const obj_ref = try t.makeIdentifierRefWithSymbol(class_name_span, class_name_node);
-    try t.trackUserReadFromBinding(obj_ref, class_name_node, t.current_scope);
+    try t.trackUserReadFromBinding(obj_ref, class_name_node, evaluation_scope);
     const prop_ref = try es_helpers.makePropertyNameFromSpan(t, factory_name_span);
     const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
         @backingInt(obj_ref), @backingInt(prop_ref), 0,
