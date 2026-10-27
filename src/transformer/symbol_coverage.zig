@@ -1359,20 +1359,42 @@ fn generatedFunctionExpressionNameScope(
     const extra = ast.nodes.items[function_raw].data.extra;
     if (extra >= ast.extra_data.items.len) return null;
     const name_raw = ast.extra_data.items[extra];
-    const name_scope = functionExpressionNameScope(ast, scope_owner_map, scopes, function_raw, name_raw) orelse return null;
-    if (name_scope >= scopes.len or name_scope >= scope_maps.len) return null;
-    if (scope_maps[name_scope].count() != 1 or referenced_scopes.contains(name_scope)) return null;
+    var name_scope = functionExpressionNameScope(ast, scope_owner_map, scopes, function_raw, name_raw);
+    if (name_scope == null or name_scope.? >= scopes.len or name_scope.? >= scope_maps.len or
+        !isFunctionExpressionNameScope(
+            ast,
+            function_raw,
+            @fromBackingInt(@intCast(name_scope.?)),
+            scopes[name_scope.?].parent,
+            symbol_ids,
+            symbols,
+            scopes,
+            scope_maps,
+        ))
+    {
+        name_scope = functionExpressionNameScopeFromNameBinding(
+            ast,
+            scope_owner_map,
+            scopes,
+            symbol_ids,
+            symbols,
+            function_raw,
+        );
+    }
+    const name_scope_id = name_scope orelse return null;
+    if (name_scope_id >= scopes.len or name_scope_id >= scope_maps.len) return null;
+    if (scope_maps[name_scope_id].count() != 1 or referenced_scopes.contains(name_scope_id)) return null;
     if (!isFunctionExpressionNameScope(
         ast,
         function_raw,
-        @fromBackingInt(@intCast(name_scope)),
-        scopes[name_scope].parent,
+        @fromBackingInt(@intCast(name_scope_id)),
+        scopes[name_scope_id].parent,
         symbol_ids,
         symbols,
         scopes,
         scope_maps,
     )) return null;
-    return name_scope;
+    return name_scope_id;
 }
 
 fn functionExpressionNameScope(
@@ -1397,6 +1419,47 @@ fn functionExpressionNameScope(
     }
     if (name_scope.isNone() or name_scope.toIndex() >= scopes.len) return null;
     return name_scope.toIndex();
+}
+
+/// Parameter lowering can replace the formal-parameters container and leave
+/// it intentionally ownerless. In that case, accept the self-name block only
+/// when the function expression's exact name SymbolId and scope ancestry prove
+/// the analyzer's named-function shape.
+fn functionExpressionNameScopeFromNameBinding(
+    ast: *const Ast,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    function_raw: u32,
+) ?u32 {
+    if (function_raw >= ast.nodes.items.len or ast.nodes.items[function_raw].tag != .function_expression) return null;
+    const extra = ast.nodes.items[function_raw].data.extra;
+    if (extra + 1 >= ast.extra_data.items.len) return null;
+    const params_raw = ast.extra_data.items[extra + 1];
+    if (params_raw >= ast.nodes.items.len or ast.nodes.items[params_raw].tag != .formal_parameters or
+        scope_owner_map.contains(params_raw)) return null;
+
+    const name_raw = ast.extra_data.items[extra];
+    if (name_raw >= ast.nodes.items.len or name_raw >= symbol_ids.len or
+        ast.nodes.items[name_raw].tag != .binding_identifier) return null;
+    const name_symbol_id = symbol_ids[name_raw] orelse return null;
+    if (name_symbol_id >= symbols.len) return null;
+    const name_scope = @backingInt(symbols[name_symbol_id].scope_id);
+    if (name_scope == @backingInt(ScopeId.none) or name_scope >= scopes.len) return null;
+
+    const function_scope = scope_owner_map.get(function_raw) orelse return null;
+    if (function_scope >= scopes.len) return null;
+    const function_parent = scopes[function_scope].parent;
+    if (!exactValidScope(scopes, function_parent)) return null;
+    if (name_scope == @backingInt(function_parent)) return name_scope;
+
+    // The parameter environment is the single function scope between the
+    // self-name block and the function/body scope.
+    if (scopes[function_parent.toIndex()].kind == .function and
+        @backingInt(scopes[function_parent.toIndex()].parent) == name_scope)
+        return name_scope;
+    return null;
 }
 
 const ExpectedScopeOwner = struct { node: u32, scope: u32 };
