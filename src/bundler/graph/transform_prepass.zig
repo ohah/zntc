@@ -10771,19 +10771,13 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         @import("../../transformer/selective_class_certificate.zig").sourcePlan(arena_alloc, ast_ptr, semantic, opts) catch null
     else
         null;
-    const provider_source = if (module.runtime_helper_source) |loaded| blk: {
-        const semantic = if (module.semantic) |*value| value else break :blk null;
-        break :blk @import("../../transformer/virtual_helper_provider_certificate.zig").capture(
-            arena_alloc,
-            ast_ptr,
-            semantic,
-            loaded,
-            module.source,
-            self.helper_plugin_opts,
-            opts,
-            self.worklet_transform or self.codegen_transform or hasAstTransformHooks(self.plugins) or hasAstTransformHooks(merged_plugins) or module.plugin_source_maps.len != 0,
-        ) catch null;
-    } else null;
+    const provider_source = @import("../../transformer/virtual_helper_provider_certificate.zig").captureFromModule(
+        arena_alloc,
+        module,
+        self.helper_plugin_opts,
+        opts,
+        self.worklet_transform or self.codegen_transform or hasAstTransformHooks(self.plugins) or hasAstTransformHooks(merged_plugins) or module.plugin_source_maps.len != 0,
+    ) catch null;
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         (provider_source != null or canKeepPrepassSemanticGraph(

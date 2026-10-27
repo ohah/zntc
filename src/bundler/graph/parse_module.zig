@@ -572,8 +572,10 @@ fn tryDiskLoadHit(
     const dc = self.disk_cache orelse return false;
     const restored = (dc.load(io, self.allocator, arena_alloc, module.disk_cache_key) catch return false) orelse return false;
 
+    module.runtime_helper_cache_source = null;
     module.ast = restored.ast;
     module.semantic = restored.semantic;
+    _ = @import("../../transformer/virtual_helper_provider_certificate.zig").recordInstalledDiskSource(module, &restored, self.helper_plugin_opts);
     module.line_offsets = Scanner.computeLineOffsets(arena_alloc, module.source) catch {
         // OOM — 캐시 무관 자원고갈. 부분 복원이라 parse 로 degrade 불가 → 모듈만 비우고 진행.
         module.state = .ready;
