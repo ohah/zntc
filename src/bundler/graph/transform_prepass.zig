@@ -7536,6 +7536,24 @@ fn canKeepPrepassSemanticGraph(
     allow_es5_async_method_super_set: *bool,
     retained_simple_console_drops_out: ?*bool,
 ) bool {
+    const source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
+        @import("../../transformer/native_noop_graph.zig").forModule(self.allocator, module, options) catch null
+    else
+        null;
+    defer if (source) |owned| owned.deinit(self.allocator);
+    return canKeepPrepassSemanticGraphPrepared(self, module, options, plugins, allow_es5_async_method_super_get, allow_es5_async_method_super_set, retained_simple_console_drops_out, if (source) |*prepared| prepared else null);
+}
+
+fn canKeepPrepassSemanticGraphPrepared(
+    self: anytype,
+    module: *const Module,
+    options: TransformOptions,
+    plugins: anytype,
+    allow_es5_async_method_super_get: *bool,
+    allow_es5_async_method_super_set: *bool,
+    retained_simple_console_drops_out: ?*bool,
+    prepared_native_source: ?*const @import("../../transformer/native_noop_graph.zig").Source,
+) bool {
     allow_es5_async_method_super_get.* = false;
     allow_es5_async_method_super_set.* = false;
     if (retained_simple_console_drops_out) |out| out.* = false;
@@ -7589,11 +7607,10 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_get,
             &retainable_async_method_super_set,
         );
-    const native_noop_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
-        @import("../../transformer/native_noop_graph.zig").forModule(self.allocator, module, options) catch null
+    const native_noop_source = if (prepared_native_source) |prepared|
+        if (@import("../../transformer/native_noop_graph.zig").preparedMatches(prepared, module)) prepared else null
     else
         null;
-    defer if (native_noop_source) |source| source.deinit(self.allocator);
     const uses_define = define_mod.astUsesDefine(ast, options.define);
     const retained_define_references = uses_define and canRetainGraphForDefineReferences(
         self.allocator,
@@ -10794,9 +10811,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         opts,
         self.worklet_transform or self.codegen_transform or hasAstTransformHooks(self.plugins) or hasAstTransformHooks(merged_plugins) or module.plugin_source_maps.len != 0,
     ) catch null;
+    // One arena-owned capture is shared by admission and actual activation.
+    // An allocation failure supplies no new native retention alternative.
+    const prepared_native_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
+        @import("../../transformer/native_noop_graph.zig").forModule(arena_alloc, module, opts) catch null
+    else
+        null;
+    const native_certificate_required = prepared_native_source != null;
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
-        (provider_source != null or canKeepPrepassSemanticGraph(
+        (provider_source != null or canKeepPrepassSemanticGraphPrepared(
             self,
             module,
             opts,
@@ -10804,6 +10828,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             &allow_es5_async_method_super_get,
             &allow_es5_async_method_super_set,
             &retained_simple_console_drops,
+            if (prepared_native_source) |*prepared| prepared else null,
         ));
     var retained_console_object_references: []ast_mod.NodeIndex = &.{};
     if (can_keep_semantic_graph and opts.drop_console and hasDroppedConsoleStatement(ast_ptr)) {
@@ -10842,13 +10867,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
-            if (!self.flow and !isFlowPath(module.path) and module.module_type == .js) {
-                if (@import("../../transformer/native_noop_graph.zig").forModule(arena_alloc, module, opts) catch null) |value| {
-                    var source = value;
-                    source.owner = sem.captureOwnerToken();
-                    source.output = transformer.ast;
-                    transformer.native_noop_source = source;
-                }
+            if (prepared_native_source) |value| {
+                var source = value;
+                source.owner = sem.captureOwnerToken();
+                source.output = transformer.ast;
+                transformer.native_noop_source = source;
             }
             if (optionalNullishSource(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
                 var source = value;
@@ -10866,6 +10889,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             if (transformer.legacy_assignment_field_source) |*source| source.owner = sem.captureOwnerToken();
         }
     }
+    if (can_keep_semantic_graph and !@import("../../transformer/native_noop_graph.zig").requirementSatisfied(&transformer, if (prepared_native_source) |*prepared| prepared else null))
+        can_keep_semantic_graph = false;
     if (can_keep_semantic_graph) {
         if (selective_class_source) |*source| {
             source.owner_token = module.semantic.?.captureOwnerToken();
@@ -11250,8 +11275,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
     }
 
-    if (can_keep_semantic_graph and transformer.native_noop_source != null) {
-        const completed = if (module.semantic) |*sem|
+    if (can_keep_semantic_graph and native_certificate_required) {
+        const installed = @import("../../transformer/native_noop_graph.zig").requirementSatisfied(&transformer, if (prepared_native_source) |*prepared| prepared else null);
+        const completed = installed and if (module.semantic) |*sem|
             @import("../../transformer/native_noop_graph.zig").complete(&transformer, sem, root) catch false
         else
             false;
@@ -16212,4 +16238,13 @@ test "selective class certificate source birth ten controls before output walker
 
 test {
     _ = @import("../../transformer/selective_class_certificate_test.zig");
+}
+
+/// Test the same prepared core without synthesizing a production fallback reason.
+pub fn nativeNoopPreparedAdmissionForTest(m: *const Module, options: TransformOptions, prepared: ?*const @import("../../transformer/native_noop_graph.zig").Source) bool {
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{ .allocator = std.testing.allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false, .minify_identifiers = true };
+    var get = false;
+    var set = false;
+    return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, prepared);
 }
