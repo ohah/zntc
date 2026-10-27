@@ -425,7 +425,8 @@ fn isSupportedPlainExportAll(
 /// imports and inline type-only specifiers. An all-type-only inline declaration
 /// has no runtime edge and is admitted only when TS stripping removes it; a
 /// mixed declaration must retain a value edge under verbatim syntax or the
-/// bounded value-use proof below. Plain JavaScript value imports have no
+/// bounded value-use proof below. Attributes on an erased type-only declaration
+/// cannot change runtime graph shape. Plain JavaScript value imports have no
 /// TypeScript elision path.
 fn hasStableRuntimeImports(
     ast: *const ast_mod.Ast,
@@ -441,7 +442,7 @@ fn hasStableRuntimeImports(
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return false;
         const import = module_parser.readImportDeclExtras(ast, extra);
         if (import.is_type_only) continue;
-        if (import.phase != .none or import.attrs_len != 0) return false;
+        if (import.phase != .none) return false;
         if (import.specs_len == 0) continue;
         if (import.specs_start > ast.extra_data.items.len or
             import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
@@ -475,6 +476,7 @@ fn hasStableRuntimeImports(
             if (!has_inline_type_only_specifier) return false;
             continue;
         }
+        if (import.attrs_len != 0) return false;
         if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
     }
     return true;
@@ -551,11 +553,11 @@ test "stable runtime imports admit erased inline type-only declarations without 
             .expected = false,
         },
         .{
-            .name = "attributed inline type-only import remains outside the stable subset",
+            .name = "attributed inline type-only import has no runtime edge after type stripping",
             .source = "import { type Shape } from './types' with { type: 'json' };",
             .options = .{ .strip_types = true },
             .allow_nonverbatim = false,
-            .expected = false,
+            .expected = true,
         },
         .{
             .name = "phased inline type-only import remains outside the stable subset",

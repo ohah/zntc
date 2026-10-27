@@ -5706,6 +5706,21 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'elided',
       },
       {
+        name: 'attributed inline type-only import retains its erased graph',
+        source: [
+          "import { type Shape } from './types' with { 'resolution-mode': 'import' };",
+          'type Alias = Shape;',
+          "process.stdout.write(globalThis.__attributedInlineTypeOnlyRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'types.ts':
+            'globalThis.__attributedInlineTypeOnlyRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: 'elided',
+      },
+      {
         name: 'primitive type annotation keeps value-import identities',
         source: [
           "import { value } from './values';",
