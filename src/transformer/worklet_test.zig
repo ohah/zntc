@@ -2316,6 +2316,25 @@ fn checkWorkletSourceBirthMode(source: []const u8, expect_external_class: bool, 
                 editor.references.items[declaration_row.?] = previous_row;
                 try clone.completeClassSelfStorageMove(&t, good);
             }
+            for (0..6) |hostile| {
+                var wrong = good;
+                var wrong_origins = [_]@TypeOf(good.origins[0]){good.origins[0]};
+                switch (hostile) {
+                    0 => wrong.source_class = frame.source_class,
+                    1 => wrong.symbol_id = frame.source_self,
+                    2 => wrong.binding = frame.binding,
+                    3 => wrong.target = frame.scope,
+                    4 => {
+                        wrong_origins[0].birth.flags = .{ .declare = true, .write = true };
+                        wrong.origins = &wrong_origins;
+                    },
+                    5 => wrong.ast_owner = &foreign_ast,
+                    else => unreachable,
+                }
+                try std.testing.expectError(error.InvalidWorkletCloneOrigin, clone.completeClassSelfStorageMove(&t, wrong));
+                try clone.completeClassSelfStorageMove(&t, good);
+                try std.testing.expectEqualDeep(previous_row, editor.references.items[declaration_row.?]);
+            }
         }
     }
     if (std.mem.indexOf(u8, source, "workletClassSelf") != null) try std.testing.expect(checked_storage_tuple);
