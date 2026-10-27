@@ -5310,7 +5310,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'object type literal keeps reanalysis',
+        name: 'object type literal keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: { value: number } = value;',
@@ -5318,19 +5318,119 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
-        name: 'function type keeps reanalysis',
+        name: 'function type keeps value-import identities',
         source: [
           "import { value } from './values';",
-          'const answer: (input: number) => string = value;',
+          'const answer: <T extends number>(this: T, value: T) => T = value;',
           'process.stdout.write(String(value));',
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'object type signatures keep exact runtime identity and erase type-only imports',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'const answer: {',
+          '  value: Shape;',
+          '  method(value: Shape): Shape;',
+          '  (value: Shape): Shape;',
+          '  new (value: Shape): Shape;',
+          '  [key: string]: Shape;',
+          '  get size(): Shape;',
+          '  set size(value: Shape);',
+          '} = value;',
+          "process.stdout.write(`${value}:${globalThis.__scopedTypeImportRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__scopedTypeImportRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'constructor type keeps generic parameter scope identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: new <T extends number>(value: T) => { value: T } = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'function type scopes erase a type-only module import',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'const answer: <T extends Shape>(this: T, value: T) => Shape = value;',
+          "process.stdout.write(`${value}:${globalThis.__typeParameterShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__typeParameterShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'mapped key remapping with infer erases its type-only module import',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'const answer: { readonly [Key in keyof Shape as Key extends infer Result ? Result : never]-?: Shape[Key] } = value;',
+          "process.stdout.write(`${value}:${globalThis.__mappedShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__mappedShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'accessor signatures erase their type-only module import',
+        source: [
+          "import { value } from './values';",
+          "import { Shape } from './shape';",
+          'const answer: { get value(): Shape; set value(next: Shape); } = value;',
+          "process.stdout.write(`${value}:${globalThis.__accessorShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'shape.ts':
+            'globalThis.__accessorShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'mapped conditional infer type keeps exact value-import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer: { [Key in (number extends infer Result ? Result : never)]: number } = value;',
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5373,7 +5473,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'conditional type with infer keeps reanalysis',
+        name: 'conditional type with infer keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: number extends infer Result ? Result : never = value;',
@@ -5381,7 +5481,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
@@ -5532,7 +5632,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'mapped type keeps reanalysis',
+        name: 'mapped type keeps value-import identities',
         source: [
           "import { value } from './values';",
           "const answer: { [Key in 'value']: number } = value;",
@@ -5540,7 +5640,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {

@@ -346,6 +346,64 @@ fn isTypeErasureTag(tag: NodeTag) bool {
     return isTypeOnlyNode(tag) or ast_mod.Node.Tag.isTransparentTypeWrapper(tag);
 }
 
+fn skipImportTypeTrivia(source: []const u8, start: usize) usize {
+    var index = start;
+    while (index < source.len) {
+        if (std.ascii.isWhitespace(source[index])) {
+            index += 1;
+            continue;
+        }
+        if (source.len - index >= 2 and source[index] == '/' and source[index + 1] == '/') {
+            index += 2;
+            while (index < source.len and source[index] != '\n' and source[index] != '\r') : (index += 1) {}
+            continue;
+        }
+        if (source.len - index >= 2 and source[index] == '/' and source[index + 1] == '*') {
+            index += 2;
+            while (source.len - index >= 2 and !(source[index] == '*' and source[index + 1] == '/')) : (index += 1) {}
+            if (source.len - index < 2) return source.len;
+            index += 2;
+            continue;
+        }
+        break;
+    }
+    return index;
+}
+
+fn importTypeHasAttributes(ast: *const ast_mod.Ast, import_type: ast_mod.Node) bool {
+    // parseImportType parses but does not attach the optional second argument
+    // (`import("x", { with: ... })`) to the ts_import_type node. Inspect only
+    // that source slice so large ASTs with many import types stay linear.
+    const start: usize = import_type.span.start;
+    const end: usize = import_type.span.end;
+    if (start >= end or end > ast.source.len) return true;
+    const source = ast.source[start..end];
+    var index: usize = 0;
+    while (index < source.len and source[index] != '(') : (index += 1) {}
+    if (index == source.len) return true;
+    index = skipImportTypeTrivia(source, index + 1);
+    if (index == source.len or (source[index] != '\'' and source[index] != '"')) return true;
+    const quote = source[index];
+    index += 1;
+    var closed_string = false;
+    while (index < source.len) {
+        if (source[index] == '\\') {
+            if (index + 1 == source.len) return true;
+            index += 2;
+        } else if (source[index] == quote) {
+            index += 1;
+            closed_string = true;
+            break;
+        } else {
+            index += 1;
+        }
+    }
+    if (!closed_string) return true;
+    index = skipImportTypeTrivia(source, index);
+    if (index == source.len) return true;
+    return source[index] != ')';
+}
+
 fn isSupportedRuntimeTsEnum(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     if (node.tag != .ts_enum_declaration) return false;
     const extra = node.data.extra;
@@ -683,6 +741,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
     for (ast.nodes.items) |node| {
         if (!isTypeErasureTag(node.tag)) continue;
         found_type_erasure = true;
+        if (node.tag == .ts_import_type and importTypeHasAttributes(ast, node)) return false;
         switch (node.tag) {
             .ts_any_keyword,
             .ts_string_keyword,
@@ -703,6 +762,20 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_union_type,
             .ts_intersection_type,
             .ts_conditional_type,
+            .ts_type_literal,
+            .ts_property_signature,
+            .ts_method_signature,
+            .ts_call_signature,
+            .ts_construct_signature,
+            .ts_index_signature,
+            .ts_getter_signature,
+            .ts_setter_signature,
+            .ts_function_type,
+            .ts_constructor_type,
+            .ts_mapped_type,
+            .ts_infer_type,
+            .ts_type_parameter,
+            .ts_type_parameter_declaration,
             .ts_indexed_access_type,
             .ts_optional_type,
             .ts_rest_type,
@@ -724,6 +797,59 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
         }
     }
     return found_type_erasure;
+}
+
+test "bounded exact type erasure gate handles scoped syntax and rejects unsupported shapes" {
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        required_tag: NodeTag,
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{ .name = "type literal", .source = "const value: { value: number } = 1;", .required_tag = .ts_type_literal, .expected = true },
+        .{ .name = "property signature", .source = "const value: { value: number } = 1;", .required_tag = .ts_property_signature, .expected = true },
+        .{ .name = "method signature", .source = "const value: { read(value: number): string } = 1;", .required_tag = .ts_method_signature, .expected = true },
+        .{ .name = "call signature", .source = "const value: { (value: number): string } = 1;", .required_tag = .ts_call_signature, .expected = true },
+        .{ .name = "construct signature", .source = "const value: { new (value: number): string } = 1;", .required_tag = .ts_construct_signature, .expected = true },
+        .{ .name = "index signature", .source = "const value: { [key: string]: number } = 1;", .required_tag = .ts_index_signature, .expected = true },
+        .{ .name = "getter signature", .source = "const value: { get size(): number } = 1;", .required_tag = .ts_getter_signature, .expected = true },
+        .{ .name = "setter signature", .source = "const value: { set size(next: number); } = 1;", .required_tag = .ts_setter_signature, .expected = true },
+        .{ .name = "generic function type", .source = "const value: <T extends number>(this: T, value: T) => T = 1;", .required_tag = .ts_function_type, .expected = true },
+        .{ .name = "generic constructor type", .source = "const value: new <T extends number>(value: T) => { value: T } = 1;", .required_tag = .ts_constructor_type, .expected = true },
+        .{ .name = "mapped type", .source = "const value: { [Key in 'value']: number } = 1;", .required_tag = .ts_mapped_type, .expected = true },
+        .{ .name = "infer type", .source = "const value: number extends infer Result ? Result : never = 1;", .required_tag = .ts_infer_type, .expected = true },
+        .{ .name = "mapped type parameter", .source = "const value: { [Key in 'value']: number } = 1;", .required_tag = .ts_type_parameter, .expected = true },
+        .{ .name = "function type parameter declaration", .source = "const value: <T>(arg: T) => T = 1;", .required_tag = .ts_type_parameter_declaration, .expected = true },
+        .{ .name = "type alias declaration", .source = "type Alias = number; const value: Alias = 1;", .required_tag = .ts_type_alias_declaration, .expected = false },
+        .{ .name = "import type attributes", .source = "const value: import('./types', { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
+        .{ .name = "import type attributes after a comment", .source = "const value: import('./types' /* attributes follow */, { assert: { type: 'json' } }).Shape = 1;", .required_tag = .ts_import_type, .expected = false },
+        .{ .name = "comma inside import path", .source = "const value: import('./types,extra').Shape = 1;", .required_tag = .ts_import_type, .expected = true },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        defer scanner.deinit();
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+        var found_tag = false;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag == case.required_tag) {
+                found_tag = true;
+                break;
+            }
+        }
+        if (!found_tag) std.debug.print("required syntax tag missing in case: {s}\n", .{case.name});
+        try std.testing.expect(found_tag);
+        try std.testing.expectEqual(case.expected, canRetainTypeErasuresWithExactReferenceEdits(&parser.ast));
+    }
 }
 
 fn canRetainUsedTypeScriptImportsForIdentifierMinification(
