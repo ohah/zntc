@@ -1535,6 +1535,44 @@ pub fn makePrivateExactSyntheticRef(self: anytype, name: []const u8, raw_symbol_
     return makePrivateExactSyntheticRefAtScope(self, name, raw_symbol_id, self.current_scope);
 }
 
+/// Create a write target for a producer-selected source binding while recording
+/// its exact SymbolId and planned output ScopeId. The caller must reserve the
+/// output scope before creating the enclosing AST owner, then bind that owner.
+pub fn makeExactUserWriteTargetAtScope(
+    self: anytype,
+    symbol_id: symbol_mod.SymbolId,
+    scope: ScopeId,
+    node_span: Span,
+) !NodeIndex {
+    if (!self.semantic_edit_enabled)
+        std.debug.panic("exact user write target has no semantic editor", .{});
+    const raw_symbol_id = @backingInt(symbol_id);
+    const editor = self.semantic_editor orelse
+        std.debug.panic("exact user write target lost its semantic editor", .{});
+    if (raw_symbol_id >= editor.symbols.items.len or scope.isNone() or
+        scope.toIndex() >= editor.scopes.items.len)
+        std.debug.panic("exact user write target has an invalid SymbolId or ScopeId", .{});
+
+    const symbol = editor.symbols.items[raw_symbol_id];
+    if (symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= editor.scopes.items.len)
+        std.debug.panic("exact user write target has no declaration ScopeId", .{});
+    const name = if (symbol.synthetic_name.len > 0)
+        symbol.synthetic_name
+    else
+        self.ast.getText(symbol.name);
+    if (name.len == 0) std.debug.panic("exact user write target has no binding spelling", .{});
+
+    const name_span = try self.ast.addString(name);
+    const target = try self.ast.addNode(.{
+        .tag = .assignment_target_identifier,
+        .span = node_span,
+        .data = .{ .string_ref = name_span },
+    });
+    try self.addSyntheticRefInScope(target, symbol_id, scope, .{ .write = true });
+    try self.trackExactOutputReferenceInScope(target, raw_symbol_id, scope);
+    return target;
+}
+
 /// Reference the exact already-resolved spelling carried by a generated
 /// binding handle. Unlike makeSyntheticRefFromSpan, this does not run name
 /// collision resolution a second time.

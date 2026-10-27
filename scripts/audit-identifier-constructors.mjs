@@ -25,6 +25,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
 const scanRoot = join(root, 'src', 'transformer');
@@ -44,6 +45,8 @@ const ALLOWLIST = {
     '고유 이름을 확정한 합성 바인딩 생성 함수',
   'src/transformer/es_helpers.zig::makeExactSyntheticBindingFromSpan':
     '이미 확정된 이름 Span을 재해석하지 않는 합성 바인딩 생성 함수',
+  'src/transformer/es_helpers.zig::makeExactUserWriteTargetAtScope':
+    'producer가 고른 사용자 SymbolId와 출력 ScopeId를 생성 시점에 등록하는 write target 생성자',
   'src/transformer/es_helpers.zig::retagAssignmentTargetAsReference':
     '기존 assignment target 노드를 읽기 reference로 재사용',
   'src/transformer/es_helpers.zig::buildCapturedFunctionAssignment':
@@ -70,18 +73,14 @@ const PINNED_ALLOW_COUNTS = new Map([
   ['src/transformer/es2015_generator.zig::appendCollectedFunctionAlias', 1],
   ['src/transformer/static_class_capture.zig::makeClassSelfReference', 1],
   ['src/transformer/transformer/stage3_decorator_transform.zig::attachClassNameWrite', 1],
+  ['src/transformer/es_helpers.zig::makeExactUserWriteTargetAtScope', 1],
 ]);
 
-const PATTERNS = [
-  // `.tag = X` 와 조건식 tag 모두 잡는다(`==` 비교는 제외).
-  { re: /\.tag\s*=(?!=)[^,;]*\.identifier_reference\b/, what: 'identifier_reference 직접 생성' },
-  {
-    re: /\.tag\s*=(?!=)[^,;]*\.assignment_target_identifier\b/,
-    what: 'assignment_target_identifier 직접 생성',
-  },
-  { re: /\.tag\s*=(?!=)[^,;]*\.binding_identifier\b/, what: 'binding_identifier 직접 생성' },
-  { re: /\.tag\s*=(?!=)[^,;]*\.jsx_identifier\b/, what: 'jsx_identifier 직접 생성' },
-  { re: /\bmakeBindingIdentifier\(/, what: 'makeBindingIdentifier 직접 호출' },
+const IDENTIFIER_TAGS = [
+  'identifier_reference',
+  'assignment_target_identifier',
+  'binding_identifier',
+  'jsx_identifier',
 ];
 
 function walk(dir, out) {
@@ -138,37 +137,76 @@ function stripZigCommentsAndStrings(line, state) {
   return code;
 }
 
-const violations = [];
-const usedAllow = new Set();
-const usedAllowCounts = new Map();
-for (const file of walk(scanRoot, [])) {
-  const rel = relative(root, file);
-  const lines = readFileSync(file, 'utf8').split('\n');
+function lineAtOffset(lineStarts, offset) {
+  let low = 0;
+  let high = lineStarts.length;
+  while (low + 1 < high) {
+    const mid = (low + high) >>> 1;
+    if (lineStarts[mid] <= offset) low = mid;
+    else high = mid;
+  }
+  return low;
+}
+
+function tagExpressionEnd(source, start) {
+  let parens = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let i = start; i < source.length; i++) {
+    switch (source[i]) {
+      case '(':
+        parens++;
+        break;
+      case ')':
+        if (parens === 0) return i;
+        parens--;
+        break;
+      case '[':
+        brackets++;
+        break;
+      case ']':
+        if (brackets === 0) return i;
+        brackets--;
+        break;
+      case '{':
+        braces++;
+        break;
+      case '}':
+        if (braces === 0) return i;
+        braces--;
+        break;
+      case ',':
+      case ';':
+        if (parens === 0 && brackets === 0 && braces === 0) return i;
+        break;
+    }
+  }
+  return source.length;
+}
+
+function sourceSegments(source) {
+  const lines = source.split('\n');
   const lexical = { inBlockComment: false };
   let braceDepth = 0;
   let testBlockDepth = null;
+  const segments = [];
+  let currentLines = [];
+  let currentStartLine = 0;
+  const flush = () => {
+    if (currentLines.length === 0) return;
+    segments.push({ startLine: currentStartLine, lines: currentLines });
+    currentLines = [];
+  };
+
   lines.forEach((line, i) => {
     const code = stripZigCommentsAndStrings(line, lexical);
     const startsTest = testBlockDepth === null && braceDepth === 0 && /^\s*test\b/.test(code);
-    if (testBlockDepth === null && !startsTest) {
-      for (const { re, what } of PATTERNS) {
-        if (!re.test(code)) continue;
-        // 함수 정의 줄 자신(`fn makeBindingIdentifier(`)은 호출이 아니다.
-        if (/\bfn\s+makeBindingIdentifier\(/.test(code)) continue;
-        const key = `${rel}::${enclosingFn(lines, i)}`;
-        if (ALLOWLIST[key]) {
-          const count = (usedAllowCounts.get(key) ?? 0) + 1;
-          usedAllowCounts.set(key, count);
-          const expected = PINNED_ALLOW_COUNTS.get(key);
-          if (expected !== undefined && count > expected) {
-            violations.push(`${rel}:${i + 1} (${key}) — pinned 허용 개수 ${expected}곳 초과`);
-            continue;
-          }
-          usedAllow.add(key);
-          continue;
-        }
-        violations.push(`${rel}:${i + 1} (${key}) — ${what}`);
-      }
+    const insideTest = testBlockDepth !== null || startsTest;
+    if (insideTest) {
+      flush();
+    } else {
+      if (currentLines.length === 0) currentStartLine = i;
+      currentLines.push(code);
     }
 
     const opens = (code.match(/{/g) ?? []).length;
@@ -177,23 +215,104 @@ for (const file of walk(scanRoot, [])) {
     braceDepth += opens - closes;
     if (testBlockDepth !== null && braceDepth < testBlockDepth) testBlockDepth = null;
   });
+  flush();
+  return { segments };
 }
 
-const stale = Object.keys(ALLOWLIST).filter((k) => !usedAllow.has(k));
-const wrongPinnedCounts = [...PINNED_ALLOW_COUNTS].filter(
-  ([key, expected]) => (usedAllowCounts.get(key) ?? 0) !== expected,
-);
-for (const [key, expected] of wrongPinnedCounts) {
-  violations.push(`${key} — pinned 허용 개수 불일치 (expected ${expected}, actual ${usedAllowCounts.get(key) ?? 0})`);
+/** Scan one Zig source file, preserving function attribution and test exclusion. */
+export function scanIdentifierConstructors(
+  source,
+  rel,
+  allowlist = ALLOWLIST,
+  pinnedAllowCounts = PINNED_ALLOW_COUNTS,
+) {
+  const { segments } = sourceSegments(source);
+  const violations = [];
+  const usedAllow = new Set();
+  const usedAllowCounts = new Map();
+
+  const record = (segment, lineStarts, offset, what) => {
+    const relativeLine = lineAtOffset(lineStarts, offset);
+    const line = segment.startLine + relativeLine;
+    const key = `${rel}::${enclosingFn(segment.lines, relativeLine)}`;
+    if (allowlist[key]) {
+      const count = (usedAllowCounts.get(key) ?? 0) + 1;
+      usedAllowCounts.set(key, count);
+      const expected = pinnedAllowCounts.get(key);
+      if (expected !== undefined && count > expected) {
+        violations.push(`${rel}:${line + 1} (${key}) — pinned 허용 개수 ${expected}곳 초과`);
+        return;
+      }
+      usedAllow.add(key);
+      return;
+    }
+    violations.push(`${rel}:${line + 1} (${key}) — ${what}`);
+  };
+
+  for (const segment of segments) {
+    const segmentSource = segment.lines.join('\n');
+    const lineStarts = [0];
+    for (let i = 0; i < segmentSource.length; i++) {
+      if (segmentSource[i] === '\n') lineStarts.push(i + 1);
+    }
+
+    const tagAssignments = /\.tag\s*=(?!=|>)/g;
+    for (const assignment of segmentSource.matchAll(tagAssignments)) {
+      const expressionStart = assignment.index + assignment[0].length;
+      const expressionEnd = tagExpressionEnd(segmentSource, expressionStart);
+      const expression = segmentSource.slice(expressionStart, expressionEnd);
+      const enumLiteral = new RegExp(`\\.(${IDENTIFIER_TAGS.join('|')})\\b`, 'g');
+      for (const literal of expression.matchAll(enumLiteral)) {
+        const tag = literal[1];
+        record(segment, lineStarts, expressionStart + literal.index, `${tag} 직접 생성`);
+      }
+    }
+
+    const calls = /\bmakeBindingIdentifier\s*\(/g;
+    for (const call of segmentSource.matchAll(calls)) {
+      const prefix = segmentSource.slice(0, call.index);
+      // Function declarations are definitions, not calls to the raw helper.
+      if (/\bfn\s+$/.test(prefix)) continue;
+      record(segment, lineStarts, call.index, 'makeBindingIdentifier 직접 호출');
+    }
+  }
+
+  return { violations, usedAllow, usedAllowCounts };
 }
-if (violations.length > 0) {
-  console.error(
-    `식별자 직접 생성 ${violations.length}곳 — 분류된 생성 함수를 쓰세요 (scripts/audit-identifier-constructors.mjs 머리말 참고):`,
+
+function runAudit() {
+  const violations = [];
+  const usedAllow = new Set();
+  const usedAllowCounts = new Map();
+  for (const file of walk(scanRoot, [])) {
+    const rel = relative(root, file);
+    const result = scanIdentifierConstructors(readFileSync(file, 'utf8'), rel);
+    violations.push(...result.violations);
+    for (const key of result.usedAllow) usedAllow.add(key);
+    for (const [key, count] of result.usedAllowCounts) {
+      usedAllowCounts.set(key, (usedAllowCounts.get(key) ?? 0) + count);
+    }
+  }
+
+  const stale = Object.keys(ALLOWLIST).filter((key) => !usedAllow.has(key));
+  const wrongPinnedCounts = [...PINNED_ALLOW_COUNTS].filter(
+    ([key, expected]) => (usedAllowCounts.get(key) ?? 0) !== expected,
   );
-  for (const v of violations) console.error(`  ${v}`);
+  for (const [key, expected] of wrongPinnedCounts) {
+    violations.push(`${key} — pinned 허용 개수 불일치 (expected ${expected}, actual ${usedAllowCounts.get(key) ?? 0})`);
+  }
+  if (violations.length > 0) {
+    console.error(
+      `식별자 직접 생성 ${violations.length}곳 — 분류된 생성 함수를 쓰세요 (scripts/audit-identifier-constructors.mjs 머리말 참고):`,
+    );
+    for (const violation of violations) console.error(`  ${violation}`);
+  }
+  if (stale.length > 0) {
+    console.error(`ALLOWLIST 의 쓰이지 않는 항목(지우세요): ${stale.join(', ')}`);
+  }
+  if (violations.length > 0 || stale.length > 0) process.exit(1);
+  console.log(`identifier constructor audit OK (허용 ${usedAllow.size}곳)`);
 }
-if (stale.length > 0) {
-  console.error(`ALLOWLIST 의 쓰이지 않는 항목(지우세요): ${stale.join(', ')}`);
-}
-if (violations.length > 0 || stale.length > 0) process.exit(1);
-console.log(`identifier constructor audit OK (허용 ${usedAllow.size}곳)`);
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) runAudit();

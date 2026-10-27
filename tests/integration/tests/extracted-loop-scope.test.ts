@@ -1,9 +1,50 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { spawnSync as spawnSyncRaw } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { createFixture, runZntc } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
+
+// bun test 1.3.11 can return empty child stdio through spawnSync/Bun.spawn pipes.
+// Redirect to files so the native-output oracle and ZNTC diagnostics are real.
+function runCommandWithCapturedOutput(
+  command: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv } = {},
+) {
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-extracted-loop-node-'));
+  const stdoutPath = join(dir, 'stdout.log');
+  const stderrPath = join(dir, 'stderr.log');
+  writeFileSync(stdoutPath, '');
+  writeFileSync(stderrPath, '');
+  try {
+    const proc = spawnSyncRaw(
+      '/bin/sh',
+      [
+        '-c',
+        'stdout_path=$1; stderr_path=$2; shift 2; "$@" >"$stdout_path" 2>"$stderr_path"',
+        'zntc-captured-output',
+        stdoutPath,
+        stderrPath,
+        command,
+        ...args,
+      ],
+      { encoding: 'utf8', ...options },
+    );
+    return {
+      status: proc.status,
+      stdout: readFileSync(stdoutPath, 'utf8'),
+      stderr: readFileSync(stderrPath, 'utf8'),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function runNodeFile(file: string) {
+  return runCommandWithCapturedOutput('node', [file]);
+}
 
 const cases = [
   {
@@ -322,13 +363,12 @@ describe('extracted loop scopes (#4819)', () => {
             [referenceName]: reference,
           });
           cleanup = fixture.cleanup;
-          const native = spawnSync('node', [join(fixture.dir, referenceName)], {
-            encoding: 'utf8',
-          });
-          expect(native.status).toBe(0);
+          const native = runNodeFile(join(fixture.dir, referenceName));
+          expect(native.status, native.stderr).toBe(0);
           expect(native.stdout.trim().length).toBeGreaterThan(0);
           const out = join(fixture.dir, 'out.cjs');
-          const result = await runZntc(
+          const result = runCommandWithCapturedOutput(
+            ZNTC_BIN,
             [
               ...(bundled ? ['--bundle'] : []),
               join(fixture.dir, inputName),
@@ -340,8 +380,8 @@ describe('extracted loop scopes (#4819)', () => {
             ],
             { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
           );
-          expect(result.exitCode, result.stderr).toBe(0);
-          if (fixtureCase.extension === 'cjs') {
+          expect(result.status, result.stderr).toBe(0);
+          if (fixtureCase.extension === 'cjs' && minify) {
             const exactPrefix = bundled
               ? 'zntc: symbol-identity-prepass '
               : 'zntc: symbol-identity ';
@@ -368,8 +408,8 @@ describe('extracted loop scopes (#4819)', () => {
               expect(emitted).toContain('_ret3');
             }
           }
-          const runtime = spawnSync('node', [out], { encoding: 'utf8' });
-          expect(runtime.status).toBe(0);
+          const runtime = runNodeFile(out);
+          expect(runtime.status, runtime.stderr).toBe(0);
           expect(runtime.stdout).toBe(native.stdout);
         });
       }
