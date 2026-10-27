@@ -5676,18 +5676,34 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'elided',
       },
       {
-        name: 'inline type-only specifiers keep reanalysis',
+        name: 'mixed inline type-only specifiers retain a live runtime import',
         source: [
-          "import { value, type Shape } from './values';",
-          'type Alias = Shape;',
-          'process.stdout.write(String(value));',
+          "import { type Shape as Contract, value, unused, type Marker } from './values';",
+          'const answer: Contract & Marker = value;',
+          "process.stdout.write(`${answer}:${globalThis.__inlineTypeSpecifierEffects ? 'loaded' : 'elided'}`);",
           '',
         ].join('\n'),
         dependencies: {
-          'values.ts': 'export const value = 42; export interface Shape { value: number }\n',
+          'values.ts':
+            'globalThis.__inlineTypeSpecifierEffects = (globalThis.__inlineTypeSpecifierEffects || 0) + 1; export const value = 42; export const unused = 99; export interface Shape { value: number } export interface Marker {}\n',
+        },
+        graph: 'retained',
+        stdout: '42:loaded',
+      },
+      {
+        name: 'inline type-only imports without a runtime specifier keep the fallback',
+        source: [
+          "import { type Shape } from './types';",
+          'type Alias = Shape;',
+          "process.stdout.write(globalThis.__inlineTypeOnlyRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'types.ts':
+            'globalThis.__inlineTypeOnlyRan = true; export interface Shape { value: number }\n',
         },
         graph: 'reanalyzed',
-        stdout: '42',
+        stdout: 'elided',
       },
       {
         name: 'primitive type annotation keeps value-import identities',
