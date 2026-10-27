@@ -58,11 +58,16 @@ pub fn nodeBufferCapabilityValuesAreStable(module: *const Module) bool {
         if (node.tag == .variable_declarator) {
             const binding = ast.readExtraNode(node.data.extra, 0);
             const initializer = ast.readExtraNode(node.data.extra, 2);
-            if (!initializer.isNone() and !binding.isNone() and @backingInt(binding) < semantic.symbol_ids.len) {
-                if (semantic.symbol_ids[@backingInt(binding)]) |id| {
-                    const count = initializer_counts.getOrPut(allocator, id) catch return false;
-                    if (!count.found_existing) count.value_ptr.* = 0;
-                    count.value_ptr.* += 1;
+            if (!initializer.isNone() and !binding.isNone()) {
+                var bindings = ast_walk.bindingIdentifiers(allocator, ast, binding, .{}) catch return false;
+                defer bindings.deinit();
+                while (bindings.next() catch return false) |leaf| {
+                    if (@backingInt(leaf) >= semantic.symbol_ids.len) return false;
+                    if (semantic.symbol_ids[@backingInt(leaf)]) |id| {
+                        const count = initializer_counts.getOrPut(allocator, id) catch return false;
+                        if (!count.found_existing) count.value_ptr.* = 0;
+                        count.value_ptr.* += 1;
+                    }
                 }
             }
         }

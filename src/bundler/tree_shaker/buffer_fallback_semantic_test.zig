@@ -558,6 +558,8 @@ const dynamic_value_cases = [_]DynamicValueCase{
     .{ .source = dynamic_value_prefix ++ "B=buffer.Buffer;B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0};" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
     .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
     .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var buffer={Buffer:{from:function(value){return{toString:function(){return 'changed:'+value}}}}}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change", .no_fold = false },
+    .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var {B}={B:{from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var [B]=[{from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}]}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
     .{ .source = prefix ++ "if(" ++ condition ++ "){exports.Buffer=B}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 'DYNAMIC_FALLBACK:'}SafeBuffer.from='DYNAMIC_FALLBACK:';", .code = "", .no_fold = false },
 };
 
