@@ -113,7 +113,21 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     defer parameter_scopes.deinit(self.allocator);
     if (lower_block_scoping) {
         const unresolved = self.unresolved_references orelse return;
+        const source_ast = self.semantic_source_ast;
+        var nfe_names: ?@import("../nfe_name_environment.zig").Set = null;
+        if (source_ast) |source| nfe_names = try @import("../nfe_name_environment.zig").collect(self.allocator, .{
+            .source = source,
+            .source_node_count = self.parser_node_count,
+            .symbols = symbols,
+            .scopes = scopes,
+            .symbol_ids = self.symbol_ids.items,
+            .owners = &self.scope_owner_map,
+            .references = references,
+        });
+        defer if (nfe_names) |*names| names.deinit(self.allocator);
         table = try @import("../block_rename_table.zig").build(self.allocator, .{
+            .source_ast = source_ast,
+            .nfe_self_bindings = if (nfe_names) |*names| names else null,
             .parameter_scopes = &parameter_scopes,
             .scopes = scopes,
             .symbols = symbols,

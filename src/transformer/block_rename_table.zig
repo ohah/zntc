@@ -37,6 +37,9 @@ pub const Input = struct {
     /// parameter expressions into the body, so their outside references count
     /// for (3) as if they were in the body (#5648).
     parameter_scopes: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    /// Only actual NFE self bindings keep their native lexical name environment.
+    source_ast: ?*const @import("../parser/ast.zig").Ast = null,
+    nfe_self_bindings: ?*const @import("nfe_name_environment.zig").Set = null,
     /// 심볼 이름 텍스트 (`ast.getText(sym.name)`).
     ctx: *const anyopaque,
     nameOf: *const fn (ctx: *const anyopaque, sym: Symbol) []const u8,
@@ -131,6 +134,9 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
             const name = entry.key_ptr.*;
             const sym_idx: u32 = @intCast(entry.value_ptr.*);
             if (sym_idx >= in.symbols.len or !isHoistedLexical(in.symbols[sym_idx])) continue;
+            if (in.nfe_self_bindings) |names| {
+                if (names.contains(in.source_ast, in.symbols, in.scopes, in.references, sym_idx)) continue;
+            }
             // A block function declaration that aliases the function-scope
             // binding of the same name (#2714) is that outer binding, not a
             // block one: renaming it split the declaration from references

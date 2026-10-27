@@ -3564,10 +3564,10 @@ pub const Linker = struct {
         }
     }
 
-    /// Rename only the lexical binding that encloses a transformer-produced
-    /// explicit global reference. `reserved_globals` already makes the
-    /// top-level case part of `calculateRenames`; this covers nested scopes,
-    /// whose names are not in `name_to_owners`.
+    /// Rename each actual enclosing binding that would capture a generated
+    /// explicit global after a nearer binding is renamed. `reserved_globals`
+    /// already handles the top-level case in `calculateRenames`; this also
+    /// covers nested bindings absent from `name_to_owners`.
     fn resolveExplicitGlobalShadows(
         self: *Linker,
         name_to_owners: *const NameToOwnersMap,
@@ -3678,23 +3678,24 @@ pub const Linker = struct {
                         @fromBackingInt(@intCast(module_index)),
                         symbol_index,
                     );
-                    if (renamed_symbols.contains(symbol_raw)) break;
-                    if (self.rename_table.get(symbol_id)) |selected| {
-                        if (!std.mem.eql(u8, selected, name)) break;
-                    }
                     if (semantic.scopes[scope_index].blocksMangling()) break;
-
-                    const candidate = try self.pickConsumerShadowName(
-                        name,
-                        module_index,
-                        module,
-                        name_to_owners,
-                    );
-                    try self.assignSymbolCanonical(symbol_id, candidate);
-                    try renamed_symbols.put(self.allocator, symbol_raw, {});
-                    if (scope > 0)
-                        try self.nonminify_nested_shadow_modules.put(self.allocator, module_index, {});
-                    break;
+                    const selected = self.rename_table.get(symbol_id);
+                    const already_renamed = renamed_symbols.contains(symbol_raw) or
+                        (selected != null and !std.mem.eql(u8, selected.?, name));
+                    if (!already_renamed) {
+                        const candidate = try self.pickConsumerShadowName(
+                            name,
+                            module_index,
+                            module,
+                            name_to_owners,
+                        );
+                        try self.assignSymbolCanonical(symbol_id, candidate);
+                        try renamed_symbols.put(self.allocator, symbol_raw, {});
+                        if (scope > 0)
+                            try self.nonminify_nested_shadow_modules.put(self.allocator, module_index, {});
+                    }
+                    // A renamed self name can uncover another same-spelling
+                    // source binding. Continue only this exact marker's chain.
                 }
                 const parent = semantic.scopes[scope_index].parent;
                 if (parent.isNone()) break;
