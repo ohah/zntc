@@ -5385,6 +5385,18 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
+        name: 'template literal type annotations keep value-import identities',
+        source: [
+          "import { value } from './values';",
+          'const answer: `value-${number}` = `value-${value}`;',
+          'process.stdout.write(answer);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: 'value-42',
+      },
+      {
         name: 'indexed access type keeps reanalysis',
         source: [
           "import { value } from './values';",
@@ -5492,7 +5504,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'template literal type keeps reanalysis',
+        name: 'template literal type keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: `value-${number}` = value;',
@@ -5500,7 +5512,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
       },
       {
