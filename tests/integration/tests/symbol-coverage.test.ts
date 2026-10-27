@@ -5057,7 +5057,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('TypeScript imports retain the prepass graph only when every binding has a value use', () => {
+  test('TypeScript imports retain the prepass graph only with exact value-use or type-erasure proof', () => {
     const cases = [
       {
         name: 'all named, default, and namespace bindings have value reads',
@@ -5136,7 +5136,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         source: [
           "import { Shape } from './shape';",
           'type Alias = Shape;',
-          "process.stdout.write('ok');",
+          "process.stdout.write(globalThis.__typeOnlyImportRan ? 'loaded' : 'elided');",
           '',
         ].join('\n'),
         dependencies: {
@@ -5144,7 +5144,21 @@ describe('symbol identity coverage gate (#4819)', () => {
             'globalThis.__typeOnlyImportRan = true; export interface Shape { value: number }\n',
         },
         graph: 'reanalyzed',
-        stdout: 'ok',
+        stdout: 'elided',
+      },
+      {
+        name: 'a type-query-only import is erased while the graph is retained',
+        source: [
+          "import { value } from './values';",
+          'const answer: typeof value = 42;',
+          "process.stdout.write(globalThis.__typeQueryOnlyImportRan ? 'loaded' : 'elided');",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'globalThis.__typeQueryOnlyImportRan = true; export const value = 1;\n',
+        },
+        graph: 'retained',
+        stdout: 'elided',
       },
       {
         name: 'a namespace import read only in a type keeps reanalysis',
@@ -5344,7 +5358,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'type query keeps reanalysis',
+        name: 'type query keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: typeof value = value;',
@@ -5352,14 +5366,70 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'import type expression keeps value-import identities',
+        source: [
+          "import { value } from './values';",
+          "const answer: import('./types').Shape = value;",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'types.ts': 'export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'import type expression creates no runtime module edge',
+        source: [
+          "const shape: import('./types').Shape = { value: 42 };",
+          "process.stdout.write(`${shape.value}:${globalThis.__typeImportExpressionRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'types.ts':
+            'globalThis.__typeImportExpressionRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'literal type annotation keeps value-import identities',
+        source: [
+          "import { value } from './values';",
+          "const answer: 42 | 'ok' = value;",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'generic import type expression keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          "const answer: import('./types').Shape<string> = value;",
+          'process.stdout.write(String(value));',
+          '',
+        ].join('\n'),
+        dependencies: {
+          'values.ts': 'export const value = 42;\n',
+          'types.ts': 'export interface Shape<T> { value: T }\n',
+        },
         graph: 'reanalyzed',
         stdout: '42',
       },
       {
-        name: 'import type expression keeps reanalysis',
+        name: 'import type expression with attributes keeps reanalysis',
         source: [
           "import { value } from './values';",
-          "const answer: import('./types').Shape = value;",
+          "const answer: import('./types', { assert: { type: 'json' } }).Shape = value;",
           'process.stdout.write(String(value));',
           '',
         ].join('\n'),
