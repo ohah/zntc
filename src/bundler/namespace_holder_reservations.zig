@@ -3,8 +3,10 @@ const std = @import("std");
 const SpinLock = @import("../util/spin_lock.zig").SpinLock;
 
 pub const NamespaceHolderReservations = struct {
+    const NameRole = enum { input, derived };
+
     allocator: std.mem.Allocator,
-    names: std.StringHashMapUnmanaged(void) = .empty,
+    names: std.StringHashMapUnmanaged(NameRole) = .empty,
     mutex: SpinLock = .{},
 
     pub fn init(allocator: std.mem.Allocator) NamespaceHolderReservations {
@@ -19,12 +21,23 @@ pub const NamespaceHolderReservations = struct {
     }
 
     pub fn reserve(self: *NamespaceHolderReservations, name: []const u8) !void {
+        try self.reserveAs(name, .input);
+    }
+
+    pub fn reserveDerived(self: *NamespaceHolderReservations, name: []const u8) !void {
+        try self.reserveAs(name, .derived);
+    }
+
+    fn reserveAs(self: *NamespaceHolderReservations, name: []const u8, role: NameRole) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.names.contains(name)) return;
+        if (self.names.getPtr(name)) |existing| {
+            if (role == .input) existing.* = .input;
+            return;
+        }
         const owned = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned);
-        try self.names.put(self.allocator, owned, {});
+        try self.names.put(self.allocator, owned, role);
     }
 
     /// Snapshot actual selected names, including unified nested Phase B output.
@@ -48,7 +61,7 @@ pub const NamespaceHolderReservations = struct {
             mutable.ns_cache_mutex.lock();
             defer mutable.ns_cache_mutex.unlock();
             var shared = linker.ns_shared_var_names.keyIterator();
-            while (shared.next()) |name| try self.reserve(name.*);
+            while (shared.next()) |name| try self.reserveDerived(name.*);
         }
         var globals = linker.reserved_globals.keyIterator();
         while (globals.next()) |name| try self.reserve(name.*);
@@ -96,9 +109,14 @@ pub const NamespaceHolderReservations = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         var digest: u64 = 0;
-        var keys = self.names.keyIterator();
-        while (keys.next()) |key| digest ^= std.hash.Wyhash.hash(0x4e53484f4c444552, key.*);
-        return std.hash.Wyhash.hash(self.names.count(), std.mem.asBytes(&digest));
+        var input_count: u64 = 0;
+        var entries = self.names.iterator();
+        while (entries.next()) |entry| {
+            if (entry.value_ptr.* != .input) continue;
+            input_count += 1;
+            digest ^= std.hash.Wyhash.hash(0x4e53484f4c444552, entry.key_ptr.*);
+        }
+        return std.hash.Wyhash.hash(input_count, std.mem.asBytes(&digest));
     }
 
     /// Atomically reserves a fresh holder, returning a separate caller-owned name.
@@ -121,7 +139,7 @@ pub const NamespaceHolderReservations = struct {
             }
             const reserved = try self.allocator.dupe(u8, candidate);
             errdefer self.allocator.free(reserved);
-            try self.names.put(self.allocator, reserved, {});
+            try self.names.put(self.allocator, reserved, .derived);
             return candidate;
         }
     }
@@ -238,7 +256,7 @@ test "namespace holder hygiene reservation fingerprint freezes cache authority b
     try std.testing.expectEqual(immutable, right.initialFingerprint());
     const generated = try left.allocate(a, "/source/a.mjs", "/source/dep.mjs");
     defer a.free(generated);
-    try std.testing.expect(immutable != left.initialFingerprint());
+    try std.testing.expectEqual(immutable, left.initialFingerprint());
     try right.reserve("new_source_binding");
     try std.testing.expect(immutable != right.initialFingerprint());
 }
@@ -266,4 +284,23 @@ test "namespace holder hygiene exact path owner families stay disjoint" {
     try std.testing.expect(!std.mem.eql(u8, first, second));
     try std.testing.expect(std.mem.indexOf(u8, first, "_ns") == null);
     try std.testing.expect(std.mem.indexOf(u8, first, "_t") == null);
+}
+
+test "namespace holder hygiene input provenance dominates a same-spelled derived name" {
+    const a = std.testing.allocator;
+    var derived_first = NamespaceHolderReservations.init(a);
+    defer derived_first.deinit();
+    var input_first = NamespaceHolderReservations.init(a);
+    defer input_first.deinit();
+    const empty = derived_first.initialFingerprint();
+    try derived_first.reserveDerived("dep_ns");
+    try std.testing.expectEqual(empty, derived_first.initialFingerprint());
+    try derived_first.reserve("dep_ns");
+    const promoted = derived_first.initialFingerprint();
+    try std.testing.expect(promoted != empty);
+    try input_first.reserve("dep_ns");
+    try input_first.reserveDerived("dep_ns");
+    try std.testing.expectEqual(promoted, input_first.initialFingerprint());
+    try std.testing.expectEqual(@as(usize, 1), derived_first.names.count());
+    try std.testing.expectEqual(@as(usize, 1), input_first.names.count());
 }
