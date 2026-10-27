@@ -1183,12 +1183,13 @@ function exactSchemaProblems(identity: string): string[] {
       problems.push('unexpected exact report field ' + field);
       continue;
     }
-    const valuePattern =
-      field === 'legacy_debt_fingerprint' || field === 'schema_fingerprint'
-        ? /^[0-9a-fA-F]+$/
-        : /^\d+$/;
+    const isFingerprintField =
+      field === 'legacy_debt_fingerprint' || field === 'schema_fingerprint';
+    const valuePattern = isFingerprintField ? /^[0-9a-fA-F]+$/ : /^\d+$/;
     if (!valuePattern.test(value)) {
       problems.push('malformed exact report value ' + field + '=' + value);
+    } else if (!isFingerprintField && !Number.isSafeInteger(Number(value))) {
+      problems.push('exact report value ' + field + '=' + value + ' is not a safe integer');
     }
   }
 
@@ -2824,6 +2825,19 @@ describe('symbol identity coverage gate (#4819)', () => {
     ).toContain(
       `malformed exact identity observation generated_scope_owners_checked=${oversizedObservation}`,
     );
+    const numericExactFields = [...EXACT_SCHEMA_FIELDS].filter(
+      (field) => field !== 'legacy_debt_fingerprint' && field !== 'schema_fingerprint',
+    );
+    const unsafeExactInteger = '9007199254740992';
+    for (const field of numericExactFields) {
+      const value = complete.match(new RegExp(`(?:^| )${field}=(\\d+)(?: |$)`))?.[1];
+      expect(value, `${field} must occur in the complete exact report`).toBeDefined();
+      const mutated = complete.replace(`${field}=${value}`, `${field}=${unsafeExactInteger}`);
+      expect(
+        exactSchemaProblems(mutated),
+        `${field} must reject an unsafe exact-report integer`,
+      ).toContain(`exact report value ${field}=${unsafeExactInteger} is not a safe integer`);
+    }
     expect(
       exactSchemaProblems(
         complete.replace(' generated_bindings=1', ' generated_bindings=1 generated_bindings=0'),
