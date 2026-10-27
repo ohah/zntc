@@ -584,6 +584,8 @@ pub fn emitWithTreeShaking(
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
 ) !EmitResult {
+    var holder_reservations = @import("namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
+    defer holder_reservations.deinit();
     // N RFC (#3267) audit: 빌드 시작 시 누적기 reset, return 직전 dump.
     // `ZNTC_DEBUG=dead_toplevel_audit` 활성 시 module-level dead candidate count + size 출력.
     @import("../transformer/minify.zig").resetDeadToplevelAudit();
@@ -926,10 +928,16 @@ pub fn emitWithTreeShaking(
         hit_mask[i] = true;
     }
 
-    const options_hash: u64 = if (options.compiled_cache != null)
-        cache_mod.computeOptionsHash(options)
-    else
-        0;
+    // Namespace holder names also depend on collision reservations outside a
+    // module's direct dependency chain. Freeze this before metadata workers or
+    // cached shared-namespace restoration mutate the emission registry.
+    const options_hash: u64 = if (options.compiled_cache != null) blk: {
+        if (linker) |l| try holder_reservations.seed(l);
+        const base_hash = cache_mod.computeOptionsHash(options);
+        const seed_hash = holder_reservations.initialFingerprint();
+        const inputs = [_]u64{ base_hash, seed_hash };
+        break :blk std.hash.Wyhash.hash(0x4e53434143484531, std.mem.asBytes(&inputs));
+    } else 0;
 
     // #4535: non-dev 증분 캐시 키에 접을 provider emit fingerprint 테이블 (ModuleIndex → fp).
     // dev 는 모듈을 registry(path-id)로 래핑해 provider 변경이 소비자 emit 바이트를 안 바꾸므로
@@ -1002,6 +1010,7 @@ pub fn emitWithTreeShaking(
     // 참고: 0.15 의 Thread.Pool 은 --jobs 미반영(항상 병렬, #3966)이었으나, 0.16 은 io 의
     // async_limit 을 따르고 진입점이 --jobs 를 거기에 반영하므로(#4004) emit 도 --jobs=1
     // (.nothing)이면 inline=순차가 된다. determinism 은 index 슬롯으로 무관(#3564).
+    if (linker) |l| try holder_reservations.seed(l);
     const use_pool = sorted.items.len >= 2;
     if (use_pool) {
         // #4007: 모듈당 group.async 는 0.16 std.Io.Group 의 per-task dispatch 비용을 모듈 수만큼
@@ -1018,7 +1027,7 @@ pub fn emitWithTreeShaking(
         var s: usize = 0;
         while (s < total) {
             const e = @min(s + chunk, total);
-            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, emit_errors, s, e });
+            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, emit_errors, &holder_reservations, s, e });
             s = e;
         }
         group.await(io) catch {};
@@ -1027,7 +1036,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch |err| blk: {
+            results[i].code = emitModuleWithHolderReservations(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls, &holder_reservations) catch |err| blk: {
                 emit_errors[i] = err;
                 break :blk null;
             };
@@ -1965,6 +1974,7 @@ fn emitRangeThread(
     shaker: ?*const TreeShaker,
     results: []CompiledModule,
     emit_errors: []?anyerror,
+    holder_reservations: *@import("namespace_holder_reservations.zig").NamespaceHolderReservations,
     lo: usize,
     hi: usize,
 ) void {
@@ -1974,7 +1984,7 @@ fn emitRangeThread(
         const m = sorted_items[i];
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-        results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch |err| blk: {
+        results[i].code = emitModuleWithHolderReservations(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls, holder_reservations) catch |err| blk: {
             emit_errors[i] = err;
             break :blk null;
         };
@@ -1999,6 +2009,26 @@ pub fn emitModule(
     fn_map_json_out: ?*?[]const u8,
     entry_chain_out: ?*?[]const u8,
     shared_ns_decls_out: ?*[]const CompiledModule.SharedNsDecl,
+) !?[]const u8 {
+    return emitModuleWithHolderReservations(allocator, module, options, linker, is_entry, used_export_names, shaker, helpers_out, mappings_out, names_out, preamble_lines_out, fn_map_json_out, entry_chain_out, shared_ns_decls_out, null);
+}
+
+pub fn emitModuleWithHolderReservations(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    options: *const EmitOptions,
+    linker: ?*const Linker,
+    is_entry: bool,
+    used_export_names: ?[]const []const u8,
+    shaker: ?*const TreeShaker,
+    helpers_out: ?*RuntimeHelpers,
+    mappings_out: ?*?[]const SourceMap.Mapping,
+    names_out: ?*[]const []const u8,
+    preamble_lines_out: ?*u32,
+    fn_map_json_out: ?*?[]const u8,
+    entry_chain_out: ?*?[]const u8,
+    shared_ns_decls_out: ?*[]const CompiledModule.SharedNsDecl,
+    holder_reservations: ?*@import("namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -2200,7 +2230,7 @@ pub fn emitModule(
         else
             null;
         // ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 ast와 일치)
-        var md = try l.buildMetadataForAst(
+        var md = try l.buildMetadataForAstWithHolderReservations(
             transformer.ast,
             module.index.toU32(),
             is_entry,
@@ -2209,6 +2239,7 @@ pub fn emitModule(
             // (#4587 [3]) storage rename 은 output.exports 가 named 모드일 때만 — codegen
             // `.pm_cjs_storage`·끝-skip·소비자 게이트와 동일 값.
             options.output_exports == .auto or options.output_exports == .named,
+            holder_reservations,
         );
         // transformer가 전파한 symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {

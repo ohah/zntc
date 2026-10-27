@@ -5092,6 +5092,7 @@ pub const Linker = struct {
     const metadata_mod = @import("linker/metadata.zig");
     pub const buildSkipNodes = metadata_mod.buildSkipNodes;
     pub const buildMetadataForAst = metadata_mod.buildMetadataForAst;
+    pub const buildMetadataForAstWithHolderReservations = metadata_mod.buildMetadataForAstWithHolderReservations;
     pub const buildRequireRewrites = metadata_mod.buildRequireRewrites;
     pub const buildFinalExports = metadata_mod.buildFinalExports;
     pub const selectedFinalImportLocal = metadata_mod.selectedFinalImportLocal;

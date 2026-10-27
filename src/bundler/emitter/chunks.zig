@@ -80,6 +80,7 @@ fn emitChunkModuleRange(
     with_sourcemap: bool,
     initialized_namespaces: *const std.AutoHashMapUnmanaged(SymbolID, void),
     results: []ChunkModuleEmitResult,
+    holder_reservations: *@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
     lo: usize,
     hi: usize,
 ) void {
@@ -101,7 +102,7 @@ fn emitChunkModuleRange(
             const namespace = SymbolID{ .module = module.index, .inner = symbol };
             if (initialized_namespaces.contains(namespace)) module_options.preinitialized_esm_namespace = namespace;
         }
-        results[i].code = emitModule(
+        results[i].code = parent.emitModuleWithHolderReservations(
             allocator,
             module,
             &module_options,
@@ -116,6 +117,7 @@ fn emitChunkModuleRange(
             null,
             null,
             null,
+            holder_reservations,
         ) catch |err| {
             results[i].err = err;
             continue;
@@ -1678,6 +1680,11 @@ fn emitChunksImpl(
             try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
 
+        var holder_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(allocator);
+        defer holder_reservations.deinit();
+        if (linker) |l| try holder_reservations.seed(l);
+        for (occupied.items) |name| try holder_reservations.reserve(name);
+
         // Helper-import aliases must agree with body references after this
         // chunk's final names are selected. Generate the ESM import block now,
         // then place it at its original prologue offset before the saved
@@ -1857,6 +1864,7 @@ fn emitChunksImpl(
                         chunk_sm != null,
                         &initialized_namespaces,
                         module_results,
+                        &holder_reservations,
                         start,
                         end,
                     });
@@ -1876,6 +1884,7 @@ fn emitChunksImpl(
                     chunk_sm != null,
                     &initialized_namespaces,
                     module_results,
+                    &holder_reservations,
                     0,
                     batch_mods.len,
                 );

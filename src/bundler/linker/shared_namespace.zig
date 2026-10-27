@@ -109,6 +109,22 @@ pub fn getSharedNamespaceGlobalName(
 /// canonical→cross-chunk-global 매핑**을 한다(이미 resolved 된 `rb.canonical` 로 시작하는 점만 다름).
 /// 게이트/전역명 키/synthetic 형식을 바꾸면 **양쪽 같이** 고쳐야 namespace-멤버와 named-import 가
 /// 어긋나지 않는다(#4101/#4492/#4502 계열 드리프트). 통합 헬퍼화는 후속.
+fn selectedPmNamespaceGetter(self: *const Linker, importer: u32, source: u32, exp: NsExportPair) std.mem.Allocator.Error!?[]const u8 {
+    if (!self.graph.preserve_modules or exp.owned or exp.cjs_interop != null or exp.ns_target_mod != null) return null;
+    const canonical = self.resolveExportChainUncached(@fromBackingInt(source), exp.exported) orelse return null;
+    const actual = self.ordinaryCanonicalImportTarget(canonical) orelse return null;
+    if (!actual.provider_symbol.isValid() or actual.provider_symbol.semanticIndex() == null or
+        actual.provider_symbol.moduleIndex() != canonical.module_index or
+        !self.isCrossChunkConsumer(importer, canonical.module_index.toU32())) return null;
+    const target = self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name) orelse return null;
+    switch (target.role) {
+        .binding => if (!try @import("identifier_name.zig").isBindingName(self.allocator, target.text, Linker.isReservedName)) return null,
+        .namespace_member_expression => if (target.text.len == 0 or !std.unicode.utf8ValidateSlice(target.text)) return null,
+    }
+    // Borrowed only until the caller immediately copies it into its owned getter literal.
+    return target.text;
+}
+
 fn crossChunkNsMemberName(
     self: *const Linker,
     consumer_mod: u32,
@@ -152,12 +168,13 @@ pub fn registerNamespaceRewrites(
     /// null 으로 시작, 첫 호출에서 lazy build. caller 가 `defer if (cache) |*c| c.deinit()`.
     /// per-thread — emit thread 마다 별도 buildMetadataForAst → 별도 cache (caller stack frame).
     nested_bindings_cache: *?std.StringHashMapUnmanaged(void),
+    holder_reservations: *@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
     force_inline: bool,
     force_target_init: bool,
     importer_mod_idx: u32,
     symbol_id: u32,
     target_mod_idx: u32,
-    var_name: []const u8,
+    _: []const u8,
 ) WrapperNameError!?[]const u8 {
     var scope = profile.begin(.metadata_register_ns_rewrites);
     defer scope.end();
@@ -329,19 +346,23 @@ pub fn registerNamespaceRewrites(
                 cached
             else blk: {
                 if (self.useSharedNsInline(target)) {
-                    const ns_var_name = try appendSharedNsInlineEntry(self, ns_inline_list, null, target, &seen_exports);
+                    const ns_var_name = try appendSharedNsInlineEntry(self, ns_inline_list, null, target, &seen_exports, holder_reservations);
                     try ns_target_to_var.put(self.allocator, target, ns_var_name);
                     break :blk ns_var_name;
                 }
-                const fresh = try makeUniqueNsVarName(self, exp.exported, &seen_exports);
-                try ns_target_to_var.put(self.allocator, target, fresh);
+                const fresh = try holder_reservations.allocate(self.allocator, self.getModule(importer_mod_idx).?.path, self.getModule(target).?.path);
+                var transferred = false;
+                errdefer if (!transferred) self.allocator.free(fresh);
                 // 비-shared 경로 — 리터럴은 importer 의 self-preamble(= importer 청크) 로 들어간다.
                 const obj_str = try buildInlineObjectStr(self, importer_mod_idx, target, 0);
+                errdefer if (!transferred) self.allocator.free(obj_str);
                 try ns_inline_list.append(self.allocator, .{
                     .symbol_id = null,
                     .object_literal = obj_str,
                     .var_name = fresh,
                 });
+                transferred = true;
+                try ns_target_to_var.put(self.allocator, target, fresh);
                 break :blk fresh;
             };
             // inner_map 은 ns_inline_list.entry.var_name pointer 를 borrow — ns_inline
@@ -379,16 +400,32 @@ pub fn registerNamespaceRewrites(
     var inline_name: ?[]const u8 = null;
     if (force_inline or has_shadow) {
         if (self.useSharedNsInline(target_mod_idx)) {
-            inline_name = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
+            inline_name = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports, holder_reservations);
         } else {
             // 비-shared 경로 — importer self-preamble(= importer 청크) 이 emitter.
-            const obj_str = try buildInlineObjectStr(self, importer_mod_idx, target_mod_idx, 0);
-            const ns_var_name = try makeUniqueNsVarName(self, var_name, &seen_exports);
-            try ns_inline_list.append(self.allocator, .{
+            const cached = ns_target_to_var.get(target_mod_idx);
+            const ns_var_name = if (cached) |name|
+                try self.allocator.dupe(u8, name)
+            else
+                try holder_reservations.allocate(self.allocator, self.getModule(importer_mod_idx).?.path, self.getModule(target_mod_idx).?.path);
+            const obj_str = (if (cached != null)
+                self.allocator.dupe(u8, "")
+            else
+                buildInlineObjectStr(self, importer_mod_idx, target_mod_idx, 0)) catch |err| {
+                self.allocator.free(ns_var_name);
+                return err;
+            };
+            ns_inline_list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
                 .var_name = ns_var_name,
-            });
+            }) catch |err| {
+                self.allocator.free(obj_str);
+                self.allocator.free(ns_var_name);
+                return err;
+            };
+            // The list owns both strings after append. The cache only borrows.
+            if (cached == null) try ns_target_to_var.put(self.allocator, target_mod_idx, ns_var_name);
             inline_name = ns_var_name;
         }
     }
@@ -432,7 +469,7 @@ pub fn ensureSharedNsVar(
     var seen_exports: std.StringHashMapUnmanaged(void) = .empty;
     defer seen_exports.deinit(self.allocator);
     for (exports.items) |e| try seen_exports.put(self.allocator, e.exported, {});
-    return getOrCreateSharedNamespaceVar(self, target_mod_idx, &seen_exports);
+    return getOrCreateSharedNamespaceVar(self, target_mod_idx, &seen_exports, null);
 }
 
 /// shared namespace cache 에 declaration-only entry 추가. `getOrCreateSharedNamespaceVar`
@@ -445,12 +482,17 @@ fn appendSharedNsInlineEntry(
     symbol_id: ?u32,
     target_mod_idx: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
+    reservations: *@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) WrapperNameError![]const u8 {
-    const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, seen_exports);
+    const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, seen_exports, reservations);
+    const owned_name = try self.allocator.dupe(u8, ns_var_name);
+    errdefer self.allocator.free(owned_name);
+    const owned_empty = try self.allocator.dupe(u8, "");
+    errdefer self.allocator.free(owned_empty);
     try ns_inline_list.append(self.allocator, .{
         .symbol_id = symbol_id,
-        .object_literal = try self.allocator.dupe(u8, ""),
-        .var_name = try self.allocator.dupe(u8, ns_var_name),
+        .object_literal = owned_empty,
+        .var_name = owned_name,
         .shared_target_mod_idx = target_mod_idx,
     });
     return ns_var_name;
@@ -460,7 +502,12 @@ fn getOrCreateSharedNamespaceVar(
     self: *const Linker,
     target_mod_idx: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
+    reservations: ?*@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
 ) WrapperNameError![]const u8 {
+    var local_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(self.allocator);
+    defer local_reservations.deinit();
+    const holder_reservations = reservations orelse &local_reservations;
+    if (reservations == null) try holder_reservations.seed(self);
     const mutable_self = @constCast(self);
 
     mutable_self.ns_cache_mutex.lock();
@@ -474,6 +521,7 @@ fn getOrCreateSharedNamespaceVar(
     // 이 시점(computeCrossChunkLinks/metadata)엔 청크 컨텍스트가 없을 수도 있어 sentinel 키로
     // 캐시된다. splitting emit 은 appendSharedNamespacePreambleFiltered 가 청크-확정 이름으로
     // 재빌드하므로 여기 값은 단일 번들 / 증분 persist 용 스냅샷이다 (#4502).
+    const owner = self.getModule(target_mod_idx) orelse return error.MissingWrapperSymbol;
     const object_literal = try buildInlineObjectStr(self, target_mod_idx, target_mod_idx, 0);
     errdefer self.allocator.free(object_literal);
     const base_name = try makeSharedNamespaceBaseName(self, target_mod_idx);
@@ -489,16 +537,21 @@ fn getOrCreateSharedNamespaceVar(
 
     try ensureNsBaseRank(mutable_self);
     const rank = mutable_self.ns_base_rank.get(target_mod_idx) orelse 0;
-    const fresh = try makeUniqueSharedNsVarNameLocked(mutable_self, base_name, rank, seen_exports);
+    const fresh = try makeUniqueSharedNsVarNameLocked(mutable_self, base_name, rank, seen_exports, holder_reservations, owner.path);
     errdefer self.allocator.free(fresh);
-    try mutable_self.ns_shared_inline_order.append(self.allocator, target_mod_idx);
-    errdefer _ = mutable_self.ns_shared_inline_order.pop();
-    try mutable_self.ns_shared_inline_cache.put(self.allocator, target_mod_idx, .{
-        .var_name = fresh,
-        .object_literal = object_literal,
-    });
-    try mutable_self.ns_shared_var_names.put(self.allocator, fresh, {});
+    try publishSharedNamespace(mutable_self, target_mod_idx, fresh, object_literal);
     return fresh;
+}
+
+/// Caller holds ns_cache_mutex and has checked the exact target cache miss.
+/// Ownership moves only on success; the caller retains both strings on error.
+fn publishSharedNamespace(self: *Linker, target: u32, name: []const u8, object: []const u8) std.mem.Allocator.Error!void {
+    try self.ns_shared_var_names.put(self.allocator, name, {});
+    errdefer _ = self.ns_shared_var_names.remove(name);
+    try self.ns_shared_inline_order.append(self.allocator, target);
+    errdefer _ = self.ns_shared_inline_order.pop();
+    // Publish the owning cache last, after all fallible auxiliary mutations.
+    try self.ns_shared_inline_cache.put(self.allocator, target, .{ .var_name = name, .object_literal = object });
 }
 
 pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) WrapperNameError!void {
@@ -836,8 +889,12 @@ pub fn ensureNsBaseRank(self: *Linker) std.mem.Allocator.Error!void {
     const n: u32 = @intCast(self.graph.moduleCount());
     var idx: u32 = 0;
     while (idx < n) : (idx += 1) {
-        const base = try makeSharedNamespaceBaseName(self, idx);
-        defer self.allocator.free(base);
+        const raw_base = try makeSharedNamespaceBaseName(self, idx);
+        defer self.allocator.free(raw_base);
+        // Rank the exact spelling the shared producer will emit. JSX preserve
+        // folds foo/Foo to the same component-safe base before adding `_ns`.
+        const base = try jsxSafeNsBase(self, raw_base);
+        defer if (base.ptr != raw_base.ptr) self.allocator.free(base);
         const gop = try counts.getOrPut(self.allocator, base);
         if (!gop.found_existing) {
             gop.key_ptr.* = try self.allocator.dupe(u8, base);
@@ -930,12 +987,14 @@ fn jsxSafeNsBase(self: *const Linker, base: []const u8) std.mem.Allocator.Error!
 
 /// rank 0 → `{base}_ns`, rank N>0 → `{base}_ns_{N+1}` (예: `core_ns`, `core_ns_2`).
 /// rank 가 target 의 module_index 로 결정되므로 병렬 materialize 순서와 무관 (#3966).
-/// 잔여 충돌(target 자체 export 와 동명 등 희소 케이스)은 결정적으로 증가.
+/// Primary 충돌은 exact target path 전용 family로 분리하여 다른 rank를 침범하지 않는다.
 fn makeUniqueSharedNsVarNameLocked(
     self: *Linker,
     base: []const u8,
     rank: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
+    reservations: ?*@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
+    owner_path: []const u8,
 ) std.mem.Allocator.Error![]const u8 {
     // JSX preserve 에서 태그 자리에 남을 수 있으므로 컴포넌트로 해석되는 형태로 정규화.
     const jsx_base = try jsxSafeNsBase(self, base);
@@ -945,13 +1004,18 @@ fn makeUniqueSharedNsVarNameLocked(
         try std.fmt.allocPrint(self.allocator, "{s}_ns", .{jsx_base})
     else
         try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ jsx_base, rank + 1 });
-    if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
+    if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate) and
+        !(if (reservations) |r| r.contains(candidate) else false)) return candidate;
 
-    var i: usize = if (rank == 0) 2 else rank + 2;
-    while (true) : (i += 1) {
+    self.allocator.free(candidate);
+    const owner_name = try @import("../namespace_holder_reservations.zig").sharedOwnerBase(self.allocator, owner_path);
+    defer self.allocator.free(owner_name);
+    var suffix: usize = 1;
+    while (true) : (suffix += 1) {
+        candidate = if (suffix == 1) try self.allocator.dupe(u8, owner_name) else try std.fmt.allocPrint(self.allocator, "{s}__{d}", .{ owner_name, suffix });
+        if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate) and
+            !(if (reservations) |r| r.contains(candidate) else false)) return candidate;
         self.allocator.free(candidate);
-        candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ jsx_base, i });
-        if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
     }
 }
 
@@ -1136,7 +1200,8 @@ pub fn buildInlineObjectStr(
             // source 는 **namespace 소스(target_mod_idx = 배럴)** — decl_mod_idx(=exp.init_mod, 정의
             // 모듈)로 뿌리내리면 renamed re-export(`max as maximum`)에서 canonical 이 outer 명(`maximum`)
             // 을 못 따라간다(code-review). main 평탄화 경로와 동일하게 target 에서 chain 해석.
-            const gmember = (try crossChunkNsMemberName(self, emitter_mod_idx, target_mod_idx, exp.exported, &owned_member_exprs)) orelse exp.local;
+            const gmember = (try selectedPmNamespaceGetter(self, emitter_mod_idx, target_mod_idx, exp)) orelse
+                (try crossChunkNsMemberName(self, emitter_mod_idx, target_mod_idx, exp.exported, &owned_member_exprs)) orelse exp.local;
             if (try allocNamespaceGetterValue(self, exp, gmember)) |value| {
                 defer self.allocator.free(value);
                 try buf.appendSlice(self.allocator, value);
@@ -1433,17 +1498,17 @@ test "#3966: rank → 결정적 ns var 이름 (rank 0 base_ns, rank N base_ns_{N
     // 같은 base("core") 의 rank 0/1/2 → core_ns / core_ns_2 / core_ns_3.
     // 발급 순서를 일부러 rank 역순(2→0→1)으로 호출해도 rank 만으로 이름이
     // 결정됨을 검증 (materialize 순서 무관성 = #3966 핵심).
-    const n2 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 2, &seen);
+    const n2 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 2, &seen, null, "/c/core.mjs");
     defer a.free(n2);
     try std.testing.expectEqualStrings("core_ns_3", n2);
     try linker.ns_shared_var_names.put(a, n2, {});
 
-    const n0 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 0, &seen);
+    const n0 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 0, &seen, null, "/a/core.mjs");
     defer a.free(n0);
     try std.testing.expectEqualStrings("core_ns", n0);
     try linker.ns_shared_var_names.put(a, n0, {});
 
-    const n1 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 1, &seen);
+    const n1 = try makeUniqueSharedNsVarNameLocked(&linker, "core", 1, &seen, null, "/b/core.mjs");
     defer a.free(n1);
     try std.testing.expectEqualStrings("core_ns_2", n1);
 }
@@ -1459,10 +1524,62 @@ test "#3966: target 자체 export 와 동명 충돌 시 결정적 증가" {
 
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     defer seen.deinit(a);
-    // 모듈이 `x_ns` 라는 이름을 직접 export → rank 0 후보(x_ns) 충돌 → x_ns_2 로 증가.
+    // 모듈이 `x_ns`를 직접 export하면 rank 0 후보 대신 exact owner family를 쓴다.
     try seen.put(a, "x_ns", {});
 
-    const got = try makeUniqueSharedNsVarNameLocked(&linker, "x", 0, &seen);
+    const got = try makeUniqueSharedNsVarNameLocked(&linker, "x", 0, &seen, null, "/x.mjs");
     defer a.free(got);
-    try std.testing.expectEqualStrings("x_ns_2", got);
+    try std.testing.expectEqualStrings("_zntc_shared_p2f782e6d6a73", got);
+}
+
+test "namespace holder hygiene shared publication rolls back every allocation failure" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try @import("../test_helpers.zig").writeFile(tmp.dir, "one.mjs", "export const value=1;");
+    try @import("../test_helpers.zig").writeFile(tmp.dir, "two.mjs", "export const value=2;");
+    const first_path = try @import("../test_helpers.zig").absPath(&tmp, "one.mjs");
+    defer a.free(first_path);
+    const second_path = try @import("../test_helpers.zig").absPath(&tmp, "two.mjs");
+    defer a.free(second_path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    const first = try graph.addModule(std.testing.io, first_path);
+    const second = try graph.addModule(std.testing.io, second_path);
+    try std.testing.checkAllAllocationFailures(a, struct {
+        fn run(alloc: std.mem.Allocator, g: *@import("../graph.zig").ModuleGraph, one: u32, two: u32) !void {
+            var linker = Linker.init(alloc, g, .esm);
+            defer linker.deinit();
+            const name = try alloc.dupe(u8, "first_namespace");
+            var first_owned = false;
+            defer if (!first_owned) alloc.free(name);
+            const object = try alloc.dupe(u8, "{value:1}");
+            defer if (!first_owned) alloc.free(object);
+            publishSharedNamespace(&linker, one, name, object) catch |err| {
+                try std.testing.expectEqual(@as(usize, 0), linker.ns_shared_var_names.count());
+                try std.testing.expectEqual(@as(usize, 0), linker.ns_shared_inline_order.items.len);
+                try std.testing.expectEqual(@as(usize, 0), linker.ns_shared_inline_cache.count());
+                return err;
+            };
+            first_owned = true;
+            const next_name = try alloc.dupe(u8, "second_namespace");
+            var second_owned = false;
+            defer if (!second_owned) alloc.free(next_name);
+            const next_object = try alloc.dupe(u8, "{value:2}");
+            defer if (!second_owned) alloc.free(next_object);
+            publishSharedNamespace(&linker, two, next_name, next_object) catch |err| {
+                try std.testing.expectEqual(@as(usize, 1), linker.ns_shared_var_names.count());
+                try std.testing.expectEqual(@as(usize, 1), linker.ns_shared_inline_order.items.len);
+                try std.testing.expectEqual(@as(usize, 1), linker.ns_shared_inline_cache.count());
+                const prior = linker.ns_shared_inline_cache.get(one).?;
+                try std.testing.expect(prior.var_name.ptr == name.ptr);
+                try std.testing.expect(prior.object_literal.ptr == object.ptr);
+                return err;
+            };
+            second_owned = true;
+            try std.testing.expectEqual(@as(usize, 2), linker.ns_shared_inline_cache.count());
+        }
+    }.run, .{ &graph, first.toU32(), second.toU32() });
 }
