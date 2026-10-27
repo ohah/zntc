@@ -5462,8 +5462,23 @@ test "PM barrel import target actual source canonical selected export tuple" {
     try linker.putConsumerImportLocal(sym.canonical_module, sym.name, "invalid.member");
     try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
     try linker.putConsumerImportLocal(sym.canonical_module, sym.name, selected);
+    corrupt = valid_pair;
+    corrupt.owned = true;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.cjs_interop = canonical;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    corrupt = valid_pair;
+    corrupt.ns_target_mod = canonical.module_index.toU32();
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), corrupt));
+    // The typed role remains authoritative even if its current text is a
+    // valid lexical name. Grammar validation alone cannot replace it.
+    const stored = linker.consumer_import_local.getPtr(sym.canonical_module).?.getPtr(sym.name).?;
+    stored.role = .namespace_member_expression;
+    try std.testing.expectEqual(@as(?[]const u8, null), try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair));
+    stored.role = .binding;
     try std.testing.expectEqualStrings(selected, (try linker.selectedFinalImportLocal(barrel.index.toU32(), valid_pair)).?);
-    std.debug.print("PM barrel target hostile=10 restored=1 sourceSID={d} providerSID={d}\n", .{ sid, provider_sid });
+    std.debug.print("PM barrel target hostile=14 restored=1 sourceSID={d} providerSID={d}\n", .{ sid, provider_sid });
 }
 
 test "PM barrel import target normalized reexport preserves source record provider roles" {
@@ -5521,6 +5536,7 @@ test "PM barrel import target normalized reexport preserves source record provid
     for (pairs.items) |pair| {
         if (std.mem.eql(u8, pair.exported, "default")) {
             const handle = pair.canonical_import orelse return error.MissingNormalizedBarrelHandle;
+            try std.testing.expect(!pair.owned and pair.cjs_interop == null and pair.ns_target_mod == null);
             try std.testing.expect(handle.provider_symbol.moduleIndex() != m.index);
             try std.testing.expect(handle.provider_symbol.semanticIndex() != null);
             try std.testing.expect(@import("../symbol.zig").SymbolRef.eql(handle.provider_symbol, pair.binding_symbol));

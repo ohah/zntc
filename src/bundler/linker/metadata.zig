@@ -1910,6 +1910,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
 /// case (e.g. namespace inline literal 의 안전한 식별자) 시 ownership 을 caller
 /// 로 이전 — LinkingMetadata.deinit 시 free.
 pub fn selectedFinalImportLocal(self: *const Linker, module_index: u32, pair: NsExportPair) !?[]const u8 {
+    // Owned/interop/namespace expressions follow their original ownership
+    // transfer and materialization paths, never this borrowed binding path.
+    if (pair.owned or pair.cjs_interop != null or pair.ns_target_mod != null) return null;
     const handle = pair.canonical_import orelse return null;
     if (handle.canonical.synthetic_member != null) return null;
     const canonical = self.resolveExportChain(@fromBackingInt(@intCast(module_index)), pair.exported, 0) orelse return null;
