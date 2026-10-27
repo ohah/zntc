@@ -209,6 +209,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
         try @import("../native_constructor_timing.zig").projectCoordinates(self, root);
         try @import("../native_arguments.zig").publish(self, root);
         try @import("../worklet_class_clone.zig").publish(self, root);
+        try @import("../virtual_helper_provider_certificate.zig").beforeBinder(self, root);
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 

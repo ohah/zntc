@@ -111,6 +111,9 @@ pub const PluginFailure = struct {
 /// 이전에는 threadlocal 두 개로 같은 데이터를 흘렸지만 thread-safety/생명주기/계약
 /// 추적 모두 명시 out-param 이 깔끔.
 pub const HookContext = struct {
+    /// Only the actual winning load return may consume this constructor
+    /// witness. A null hook cannot leave it for a later provider.
+    runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
     /// hook 이 `error.PluginFailed` 를 반환할 때 metadata 가 들어간다.
     /// 성공 path 에서는 null. caller 가 consume (addPluginFailureDiag) 또는
     /// `deinit()` 으로 해제 책임.
@@ -485,16 +488,35 @@ pub const PluginRunner = struct {
     /// load: first 모드 — 첫 번째 non-null 반환값 사용.
     /// 모든 플러그인이 null을 반환하면 null (파일 시스템에서 읽기).
     /// 성공 시 `hook_ctx.source_maps` 에 plugin 이 채운 source map chain 이 들어 있다.
+    pub const LoadOutcome = struct {
+        result: LoadResult,
+        winning_plugin: Plugin,
+        plugin_index: usize,
+        runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin,
+    };
+
     pub fn runLoad(
         self: *const PluginRunner,
         path: []const u8,
         allocator: std.mem.Allocator,
         hook_ctx: *HookContext,
     ) PluginError!?LoadResult {
-        for (self.plugins) |p| {
+        const outcome = try self.runLoadWithOrigin(path, allocator, hook_ctx);
+        return if (outcome) |loaded| loaded.result else null;
+    }
+
+    /// Preserve the actual first non-null hook, not a guessed plugin position.
+    pub fn runLoadWithOrigin(
+        self: *const PluginRunner,
+        path: []const u8,
+        allocator: std.mem.Allocator,
+        hook_ctx: *HookContext,
+    ) PluginError!?LoadOutcome {
+        for (self.plugins, 0..) |p, index| {
             if (p.load) |hook| {
+                hook_ctx.runtime_helper_source = null;
                 if (try hook(p.context, path, allocator, hook_ctx)) |result| {
-                    return result;
+                    return .{ .result = result, .winning_plugin = p, .plugin_index = index, .runtime_helper_source = hook_ctx.runtime_helper_source };
                 }
             }
         }

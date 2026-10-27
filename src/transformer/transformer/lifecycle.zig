@@ -196,6 +196,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.tracked_runtime_helper_ref_index.deinit(self.allocator);
     self.runtime_helper_import_bindings.deinit(self.allocator);
     self.selective_class_applications.deinit(self.allocator);
+    self.virtual_provider_visits.deinit(self.allocator);
     self.native_private_field_applications.deinit(self.allocator);
     self.optional_nullish_applications.deinit(self.allocator);
     self.class_initializer_frames.deinit(self.allocator);

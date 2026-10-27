@@ -231,6 +231,9 @@ pub const Transformer = struct {
     optional_nullish_published_root: ?NodeIndex = null,
     optional_nullish_capture: ?*@import("optional_nullish_composition.zig").Capture = null,
     optional_nullish_applications: std.ArrayListUnmanaged(@import("optional_nullish_composition.zig").Application) = .empty,
+    virtual_provider_source: ?@import("virtual_helper_provider_certificate.zig").Source = null,
+    virtual_provider_visits: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    virtual_provider_before_binder_root: NodeIndex = .none,
     native_private_field_source: ?@import("native_private_field_certificate.zig").Source = null,
     native_private_field_applications: std.ArrayListUnmanaged(@import("native_private_field_certificate.zig").Applied) = .empty,
     legacy_assignment_field_source: ?@import("legacy_assignment_field_certificate.zig").Source = null,
@@ -1163,7 +1166,12 @@ pub const Transformer = struct {
         // The naming call evaluates in the enclosing scope, not in the
         // function/class whose value has just been lowered.
         self.current_scope = saved_scope;
-        return @import("parameter_environment.zig").preserveInferredName(self, idx, new_idx);
+        const final_result = try @import("parameter_environment.zig").preserveInferredName(self, idx, new_idx);
+        @import("virtual_helper_provider_certificate.zig").recordVisit(self, idx, final_result) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => @panic("provider visit lost its exact source/result domain"),
+        };
+        return final_result;
     }
 
     const node_dispatch_mod = @import("transformer/node_dispatch.zig");

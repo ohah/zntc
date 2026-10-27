@@ -105,6 +105,7 @@ pub fn shouldRunLoad(self: anytype, path: []const u8) bool {
 }
 
 pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.PluginRunner) LoadHookResult {
+    module.runtime_helper_source = null;
     const plugin_runner = runner orelse return .skipped;
     if (!shouldRunLoad(self, module.path)) return .skipped;
 
@@ -116,7 +117,7 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
     // this.resolve (PR4): load hook 에 ResolveCache 전달 (순수 path resolution, race 없음).
     // this.emitFile (PR5): load hook 에 EmitStore 전달.
     var hook_ctx: plugin_mod.HookContext = .{ .resolve_cache = @ptrCast(self.resolve_cache), .emit_store = self.emit_store };
-    const load_result = plugin_runner.runLoad(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
+    const load_result = plugin_runner.runLoadWithOrigin(module.path, tmp_arena.allocator(), &hook_ctx) catch |err| switch (err) {
         error.PluginFailed => {
             graph_diagnostics.addPluginFailureDiag(self, hook_ctx.failure, module.path, Span.EMPTY, .resolve);
             module_mod.destroyParseArena(self.allocator, tmp_arena);
@@ -130,7 +131,10 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
         },
     };
 
-    if (load_result) |plugin_result| {
+    if (load_result) |outcome| {
+        const plugin_result = outcome.result;
+        if (hook_ctx.source_maps == null or hook_ctx.source_maps.?.len == 0)
+            module.runtime_helper_source = runtime_helper_modules.acceptWinningLoad(outcome, &self.helper_plugin_opts);
         module.parse_arena = tmp_arena;
         const arena_alloc = tmp_arena.allocator();
         const load_source_maps = hook_ctx.source_maps orelse &.{};
@@ -243,6 +247,9 @@ pub fn runTransformForModule(
             }
         }
         module.source = result;
+        // Even an equal-byte or in-place user transform is a new source
+        // producer, not the winning builtin constructor.
+        module.runtime_helper_source = null;
         return .applied;
     }
     return .skipped;
