@@ -228,6 +228,7 @@ pub const Transformer = struct {
     computed_object_helper_source: ?@import("computed_object_helper_authority.zig").Source = null,
     computed_object_helper_applications: std.ArrayListUnmanaged(@import("computed_object_helper_authority.zig").Application) = .empty,
     native_noop_source: ?@import("native_noop_graph.zig").Source = null,
+    native_noop_copy_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     native_noop_copies: std.ArrayListUnmanaged(@import("native_noop_graph.zig").Copy) = .empty,
     native_noop_invalid: bool = false,
     native_noop_before_binder: bool = false,

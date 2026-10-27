@@ -7590,7 +7590,7 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_set,
         );
     const native_noop_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
-        @import("../../transformer/native_noop_graph.zig").sourcePlan(self.allocator, ast, semantic, options) catch null
+        @import("../../transformer/native_noop_graph.zig").forModule(self.allocator, module, options) catch null
     else
         null;
     defer if (native_noop_source) |source| source.deinit(self.allocator);
@@ -10843,7 +10843,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
             if (!self.flow and !isFlowPath(module.path) and module.module_type == .js) {
-                if (@import("../../transformer/native_noop_graph.zig").sourcePlan(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
+                if (@import("../../transformer/native_noop_graph.zig").forModule(arena_alloc, module, opts) catch null) |value| {
                     var source = value;
                     source.owner = sem.captureOwnerToken();
                     source.output = transformer.ast;

@@ -451,8 +451,14 @@ const NativeFixture = struct {
         var sem: sem_mod.ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .node_scope_provenance = analyzer.node_scope_provenance, .symbol_ids = analyzer.symbol_ids.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .references = analyzer.references.items, .class_self_symbol_map = analyzer.class_self_symbol_map, .helper_scope_map = analyzer.helper_scope_map };
         _ = sem.captureOwnerToken();
         const options: @import("transformer.zig").TransformOptions = .{ .unsupported = @import("compat.zig").fromESTarget(.es2020) };
-        var plan = (try Native.sourcePlan(a, tree, &sem, options)) orelse return error.MissingNativeSource;
-        var t = try Transformer.init(a, tree, options);
+        const holder = try a.create(sem_mod.Module);
+        holder.* = sem_mod.Module.init(@fromBackingInt(@as(u32, 0)), "native.mjs");
+        holder.source = text;
+        holder.module_type = .js;
+        holder.ast = tree.*;
+        holder.semantic = sem;
+        var plan = (try Native.forModule(a, holder, options)) orelse return error.MissingNativeSource;
+        var t = try Transformer.init(a, &holder.ast.?, options);
         try t.initSymbolIds(sem.symbol_ids);
         t.symbols = sem.symbols.items;
         t.references = sem.references;
@@ -599,4 +605,67 @@ test "native no-op graph native assignment access modes follow actual parent ope
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
     }
+}
+
+test "native no-op graph native hardening keeps module domains metadata and copy indices exact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try NativeFixture.init(a, inputs[2]);
+    const foreign = try NativeFixture.init(a, inputs[2]);
+    try std.testing.expect(try Native.complete(&f.t, &f.sem, f.root));
+    const rows = try a.dupe(symbol.Reference, f.sem.references);
+    const copies = try a.dupe(Native.Copy, f.t.native_noop_copies.items);
+    const original_domain = f.t.semantic_source_ast;
+    f.t.semantic_source_ast = foreign.t.semantic_source_ast;
+    try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    f.t.semantic_source_ast = original_domain;
+    inline for (.{ "is_typescript", "has_jsx", "has_jsx_key_after_spread", "has_decorator", "has_flow_enum_declaration" }) |field| {
+        const source_ast = @constCast(f.t.native_noop_source.?.ast);
+        const prior_source = @field(source_ast, field);
+        @field(source_ast, field) = !prior_source;
+        try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        @field(source_ast, field) = prior_source;
+        const prior_output = @field(f.t.ast, field);
+        @field(f.t.ast, field) = !prior_output;
+        try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        @field(f.t.ast, field) = prior_output;
+    }
+    const frame = f.t.native_noop_source.?.module_frame.?;
+    const original_module = @constCast(frame.pointer);
+    f.t.native_noop_source.?.module_frame.?.pointer = foreign.t.native_noop_source.?.module_frame.?.pointer;
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    f.t.native_noop_source.?.module_frame = frame;
+    const original_records = original_module.import_records;
+    const record = try a.alloc(@import("../bundler/types.zig").ImportRecord, 1);
+    record[0] = .{ .source_node = .none, .specifier = "./foreign.cjs", .kind = .require, .span = .{ .start = 0, .end = 0 } };
+    original_module.import_records = record;
+    try std.testing.expect((try Native.forModule(a, original_module, f.t.options)) == null);
+    try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    original_module.import_records = original_records;
+    const original_bindings = original_module.import_bindings;
+    // Only the forbidden nonempty count is observed; no fabricated binding is read.
+    original_module.import_bindings = try a.alloc(@typeInfo(@TypeOf(original_bindings)).pointer.child, 1);
+    try std.testing.expect((try Native.forModule(a, original_module, f.t.options)) == null);
+    try std.testing.expect(!try Native.beforeBinder(&f.t, f.root));
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    original_module.import_bindings = original_bindings;
+    const key = @backingInt(f.t.native_noop_copies.items[0].source);
+    const index = f.t.native_noop_copy_index.get(key).?;
+    try std.testing.expect(f.t.native_noop_copy_index.remove(key));
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    try f.t.native_noop_copy_index.put(a, key, (index + 1) % f.t.native_noop_copies.items.len);
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    try f.t.native_noop_copy_index.put(a, key, index);
+    try f.t.native_noop_copies.append(a, f.t.native_noop_copies.items[0]);
+    try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+    _ = f.t.native_noop_copies.pop();
+    for (rows, f.sem.references) |x, y| try std.testing.expect(std.meta.eql(x, y));
+    for (copies, f.t.native_noop_copies.items) |x, y| try std.testing.expect(std.meta.eql(x, y));
+    try std.testing.expect(try Native.beforeBinder(&f.t, f.root));
+    try std.testing.expect(try Native.complete(&f.t, &f.sem, f.root));
 }

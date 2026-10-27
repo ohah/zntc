@@ -8,17 +8,36 @@ const module = @import("../bundler/module.zig");
 const Options = @import("transformer.zig").TransformOptions;
 const N = ast.NodeIndex;
 pub const Owner = struct { node: N, scope: u32 };
+pub const Metadata = struct {
+    typescript: bool,
+    jsx: bool,
+    jsx_key_after_spread: bool,
+    decorators: bool,
+    flow_enum: bool,
+    fn capture(tree: *const ast.Ast) Metadata {
+        return .{ .typescript = tree.is_typescript, .jsx = tree.has_jsx, .jsx_key_after_spread = tree.has_jsx_key_after_spread, .decorators = tree.has_decorator, .flow_enum = tree.has_flow_enum_declaration };
+    }
+};
+pub const ModuleFrame = struct { pointer: *const module.Module, index: @import("../bundler/types.zig").ModuleIndex };
 pub const Source = struct {
     ast: *const ast.Ast,
     output: ?*const ast.Ast = null,
     owner: module.SemanticOwnerToken = .unassigned,
     root: N,
+    metadata: Metadata,
+    module_frame: ?ModuleFrame = null,
+    node_mask: []const bool,
+    reference_indices: []const ?usize,
+    owner_scopes: []const ?u32,
     nodes: []const u32,
     references: []const symbols.Reference,
     symbols: []const symbols.Symbol,
     scopes: []const scope.Scope,
     owners: []const Owner,
     pub fn deinit(self: Source, a: std.mem.Allocator) void {
+        a.free(self.node_mask);
+        a.free(self.reference_indices);
+        a.free(self.owner_scopes);
         a.free(self.nodes);
         a.free(self.references);
         a.free(self.symbols);
@@ -32,6 +51,7 @@ pub const Copy = struct {
     source_ast: *const ast.Ast,
     output_ast: *const ast.Ast,
     owner: module.SemanticOwnerToken,
+    source_function: N = .none,
     function: N = .none,
     function_scope: scope.ScopeId = .none,
 };
@@ -95,12 +115,31 @@ pub fn sourcePlan(a: std.mem.Allocator, tree: *const ast.Ast, sem: *const module
         if (node.tag == .logical_expression and node.data.binary.flags == @backingInt(@import("../lexer/token.zig").Kind.question2)) native = true;
     }
     if (!native) return null;
+    const node_mask = try a.alloc(bool, tree.nodes.items.len);
+    defer if (!transferred) a.free(node_mask);
+    @memset(node_mask, false);
+    for (nodes) |raw| node_mask[raw] = true;
+    const reference_indices = try a.alloc(?usize, tree.nodes.items.len);
+    defer if (!transferred) a.free(reference_indices);
+    @memset(reference_indices, null);
+    for (sem.references, 0..) |ref, i| {
+        if (ref.flags.declare or ref.node_index.isNone()) continue;
+        const raw = @backingInt(ref.node_index);
+        if (raw >= reference_indices.len or reference_indices[raw] != null) return null;
+        reference_indices[raw] = i;
+    }
+    const owner_scopes = try a.alloc(?u32, tree.nodes.items.len);
+    defer if (!transferred) a.free(owner_scopes);
+    @memset(owner_scopes, null);
     var owners: std.ArrayListUnmanaged(Owner) = .empty;
     errdefer owners.deinit(a);
     var it = sem.scope_owner_map.iterator();
     while (it.next()) |entry| {
-        if (std.mem.indexOfScalar(u32, nodes, entry.key_ptr.*) != null)
-            try owners.append(a, .{ .node = @fromBackingInt(entry.key_ptr.*), .scope = entry.value_ptr.* });
+        const raw = entry.key_ptr.*;
+        if (raw < node_mask.len and node_mask[raw]) {
+            owner_scopes[raw] = entry.value_ptr.*;
+            try owners.append(a, .{ .node = @fromBackingInt(raw), .scope = entry.value_ptr.* });
+        }
     }
     const refs = try a.dupe(symbols.Reference, sem.references);
     errdefer a.free(refs);
@@ -110,12 +149,36 @@ pub fn sourcePlan(a: std.mem.Allocator, tree: *const ast.Ast, sem: *const module
     errdefer a.free(scopes);
     const owned = try owners.toOwnedSlice(a);
     transferred = true;
-    return .{ .ast = tree, .root = root, .nodes = nodes, .references = refs, .symbols = syms, .scopes = scopes, .owners = owned };
+    return .{ .ast = tree, .root = root, .metadata = Metadata.capture(tree), .node_mask = node_mask, .reference_indices = reference_indices, .owner_scopes = owner_scopes, .nodes = nodes, .references = refs, .symbols = syms, .scopes = scopes, .owners = owned };
+}
+/// Capture the actual original module graph, rather than inferring it from AST tags.
+pub fn forModule(a: std.mem.Allocator, m: *const module.Module, opts: Options) !?Source {
+    if (m.ast == null or m.semantic == null or m.import_records.len != 0 or m.import_bindings.len != 0) return null;
+    var source = (try sourcePlan(a, &m.ast.?, &m.semantic.?, opts)) orelse return null;
+    source.module_frame = .{ .pointer = m, .index = m.index };
+    return source;
+}
+fn moduleValid(source: Source) bool {
+    const frame = source.module_frame orelse return false;
+    const m = frame.pointer;
+    return m.index == frame.index and m.ast != null and m.semantic != null and
+        &m.ast.? == source.ast and m.semantic.?.owner_token == source.owner and
+        m.import_records.len == 0 and m.import_bindings.len == 0;
+}
+fn appendCopy(self: anytype, copy: Copy) !void {
+    const slot = try self.native_noop_copy_index.getOrPut(self.allocator, @backingInt(copy.source));
+    if (slot.found_existing) {
+        self.native_noop_invalid = true;
+        return;
+    }
+    errdefer _ = self.native_noop_copy_index.remove(@backingInt(copy.source));
+    slot.value_ptr.* = self.native_noop_copies.items.len;
+    try self.native_noop_copies.append(self.allocator, copy);
 }
 pub fn record(self: anytype, input: N, output: N) !void {
     const source = self.native_noop_source orelse return;
-    if (input.isNone() or std.mem.indexOfScalar(u32, source.nodes, @backingInt(input)) == null) return;
-    try self.native_noop_copies.append(self.allocator, .{ .source = input, .output = output, .source_ast = source.ast, .output_ast = self.ast, .owner = source.owner });
+    if (input.isNone() or @backingInt(input) >= source.node_mask.len or !source.node_mask[@backingInt(input)]) return;
+    try appendCopy(self, .{ .source = input, .output = output, .source_ast = source.ast, .output_ast = self.ast, .owner = source.owner });
 }
 fn equal(comptime T: type, a: []const T, b: []const T) bool {
     if (a.len != b.len) return false;
@@ -123,12 +186,9 @@ fn equal(comptime T: type, a: []const T, b: []const T) bool {
     return true;
 }
 fn mapped(self: anytype, source: N) ?N {
-    var found: ?N = null;
-    for (self.native_noop_copies.items) |copy| if (copy.source == source) {
-        if (found != null) return null;
-        found = copy.output;
-    };
-    return found;
+    const index = self.native_noop_copy_index.get(@backingInt(source)) orelse return null;
+    if (index >= self.native_noop_copies.items.len or self.native_noop_copies.items[index].source != source) return null;
+    return self.native_noop_copies.items[index].output;
 }
 fn payloadSame(a: *const ast.Ast, x: ast.Node, b: *const ast.Ast, y: ast.Node) bool {
     if (x.tag != y.tag or !std.meta.eql(x.span, y.span)) return false;
@@ -155,17 +215,19 @@ fn payloadSame(a: *const ast.Ast, x: ast.Node, b: *const ast.Ast, y: ast.Node) b
 }
 const Pair = struct { input: N, output: N };
 fn shape(self: anytype, source: Source, root: N) !bool {
-    if (self.native_noop_invalid) return false;
-    for (self.native_noop_copies.items) |copy| {
+    if (self.native_noop_invalid or self.native_noop_copies.items.len != self.native_noop_copy_index.count()) return false;
+    for (self.native_noop_copies.items, 0..) |copy, index| {
+        if (self.native_noop_copy_index.get(@backingInt(copy.source)) != index or copy.source.isNone() or copy.output.isNone() or
+            @backingInt(copy.source) >= source.ast.nodes.items.len or @backingInt(copy.output) >= self.ast.nodes.items.len) return false;
         if (copy.source_ast != source.ast or copy.output_ast != self.ast or copy.owner != source.owner) return false;
         if (!copy.function.isNone()) {
             if (@backingInt(copy.function) >= self.ast.nodes.items.len) return false;
             const function = self.ast.getNode(copy.function);
             if (function.tag != .function_declaration or self.ast.readExtraNode(function.data.extra, ast.FunctionExtra.params) != copy.output) return false;
             if (self.outputOwnedScope(copy.function) != copy.function_scope) return false;
-            const original_fn = for (self.native_noop_copies.items) |producer| {
-                if (producer.output == copy.function and source.ast.getNode(producer.source).tag == .function_declaration) break producer.source;
-            } else return false;
+            const original_fn = copy.source_function;
+            if (original_fn.isNone() or @backingInt(original_fn) >= source.ast.nodes.items.len or
+                source.ast.getNode(original_fn).tag != .function_declaration or mapped(self, original_fn) != copy.function) return false;
             if (source.ast.readExtraNode(source.ast.getNode(original_fn).data.extra, ast.FunctionExtra.params) != copy.source) return false;
         }
     }
@@ -186,12 +248,9 @@ fn shape(self: anytype, source: Source, root: N) !bool {
             continue;
         }
         try seen.put(self.allocator, @backingInt(pair.input), @backingInt(pair.output));
-        var record_count: usize = 0;
-        for (self.native_noop_copies.items) |copy| if (copy.source == pair.input) {
-            if (copy.output != pair.output) return false;
-            record_count += 1;
-        };
-        if (record_count > 1 or (record_count == 0 and pair.input != pair.output)) return false;
+        if (mapped(self, pair.input)) |known| {
+            if (known != pair.output) return false;
+        } else if (pair.input != pair.output) return false;
         const input = source.ast.getNode(pair.input);
         const output = self.ast.getNode(pair.output);
         if (!payloadSame(source.ast, input, self.ast, output)) return false;
@@ -211,7 +270,8 @@ fn shape(self: anytype, source: Source, root: N) !bool {
 /// Called before the generic binder. It only observes the current creator graph.
 pub fn beforeBinder(self: anytype, root: N) !bool {
     const source = self.native_noop_source orelse return false;
-    if (source.output != self.ast or source.ast == self.ast or source.owner == .unassigned) return false;
+    if (source.output != self.ast or source.ast == self.ast or source.ast != self.semantic_source_ast or source.owner == .unassigned or !moduleValid(source) or
+        !std.meta.eql(source.metadata, Metadata.capture(source.ast)) or !std.meta.eql(source.metadata, Metadata.capture(self.ast))) return false;
     const refs = if (self.semantic_editor) |*e| e.references.items else self.references;
     const syms = if (self.semantic_editor) |*e| e.symbols.items else self.symbols;
     const scopes = if (self.semantic_editor) |*e| e.scopes.items else self.scopes;
@@ -238,7 +298,9 @@ pub fn beforeBinder(self: anytype, root: N) !bool {
 }
 pub fn complete(self: anytype, sem: *const module.ModuleSemanticData, root: N) !bool {
     const source = self.native_noop_source orelse return false;
-    if (!self.native_noop_before_binder or self.native_noop_before_binder_root != root or sem.owner_token != source.owner or source.output != self.ast) return false;
+    if (!self.native_noop_before_binder or self.native_noop_before_binder_root != root or sem.owner_token != source.owner or source.output != self.ast or
+        source.ast != self.semantic_source_ast or !moduleValid(source) or
+        !std.meta.eql(source.metadata, Metadata.capture(source.ast)) or !std.meta.eql(source.metadata, Metadata.capture(self.ast))) return false;
     if (!equal(symbols.Reference, source.references, sem.references) or !equal(symbols.Symbol, source.symbols, sem.symbols.items) or !equal(scope.Scope, source.scopes, sem.scopes)) return false;
     for (source.owners) |owner| {
         const node = mapped(self, owner.node) orelse owner.node;
@@ -256,21 +318,17 @@ pub fn agree(self: anytype, node: N, id: u32, use_scope: scope.ScopeId, flags: s
     if (source.output != self.ast or source.owner == .unassigned) return error.InvalidNode;
     const sealed = self.native_noop_before_binder_root orelse return error.InvalidNode;
     if (mapped(self, source.root) != sealed) return error.InvalidNode;
-    var known: ?symbols.Reference = null;
-    for (source.references) |ref| {
-        if (ref.flags.declare or ref.node_index != node) continue;
-        if (known != null) return error.InvalidNode;
-        known = ref;
-    }
-    const ref = known orelse return other;
+    if (@backingInt(node) >= source.reference_indices.len) return other;
+    const index = source.reference_indices[@backingInt(node)] orelse return other;
+    if (index >= source.references.len) return error.InvalidNode;
+    const ref = source.references[index];
+    if (ref.flags.declare or ref.node_index != node) return error.InvalidNode;
     if (@backingInt(ref.symbol_id) != id or ref.scope_id != use_scope or !std.meta.eql(ref.flags, flags)) return error.InvalidNode;
     if (mapped(self, node) != node) return error.InvalidNode;
-    var record_count: usize = 0;
-    for (self.native_noop_copies.items) |copy| if (copy.source == node) {
-        if (copy.source_ast != source.ast or copy.output_ast != self.ast or copy.owner != source.owner or copy.output != node) return error.InvalidNode;
-        record_count += 1;
-    };
-    if (record_count != 1) return error.InvalidNode;
+    const copy_index = self.native_noop_copy_index.get(@backingInt(node)) orelse return error.InvalidNode;
+    if (copy_index >= self.native_noop_copies.items.len) return error.InvalidNode;
+    const copy = self.native_noop_copies.items[copy_index];
+    if (copy.source != node or copy.source_ast != source.ast or copy.output_ast != self.ast or copy.owner != source.owner or copy.output != node) return error.InvalidNode;
     const result: @import("transformer.zig").StatementPublication = .{ .symbol_id = ref.symbol_id, .scope = ref.scope_id, .stmt = ref.stmt_idx, .scope_stmt = ref.scope_stmt_idx };
     if (other) |prior| if (!std.meta.eql(prior, result)) return error.InvalidNode;
     return result;
@@ -279,25 +337,17 @@ pub fn agree(self: anytype, node: N, id: u32, use_scope: scope.ScopeId, flags: s
 /// The function visitor owns this formal wrapper, including empty native lists.
 pub fn recordFunctionFormals(self: anytype, original: N, function: N, old_params: N, new_params: N) !void {
     const source = self.native_noop_source orelse return;
-    if (original.isNone() or std.mem.indexOfScalar(u32, source.nodes, @backingInt(original)) == null) return;
+    if (original.isNone() or @backingInt(original) >= source.node_mask.len or !source.node_mask[@backingInt(original)]) return;
     const source_fn = source.ast.getNode(original);
     if (source_fn.tag != .function_declaration) {
         self.native_noop_invalid = true;
         return;
     }
     const source_params = source.ast.readExtraNode(source_fn.data.extra, ast.FunctionExtra.params);
-    var planned_scope: ?scope.ScopeId = null;
-    for (source.owners) |owner| if (owner.node == original) {
-        if (planned_scope != null) {
-            self.native_noop_invalid = true;
-            return;
-        }
-        planned_scope = @fromBackingInt(owner.scope);
-    };
-    const function_scope = planned_scope orelse {
+    const function_scope: scope.ScopeId = @fromBackingInt(source.owner_scopes[@backingInt(original)] orelse {
         self.native_noop_invalid = true;
         return;
-    };
+    });
     const actual_fn = self.ast.getNode(function);
     const refs = if (self.semantic_editor) |*e| e.references.items else self.references;
     const syms = if (self.semantic_editor) |*e| e.symbols.items else self.symbols;
@@ -324,5 +374,5 @@ pub fn recordFunctionFormals(self: anytype, original: N, function: N, old_params
         self.native_noop_invalid = true;
         return;
     }
-    try self.native_noop_copies.append(self.allocator, .{ .source = source_params, .output = new_params, .source_ast = source.ast, .output_ast = self.ast, .owner = source.owner, .function = function, .function_scope = function_scope });
+    try appendCopy(self, .{ .source = source_params, .output = new_params, .source_ast = source.ast, .output_ast = self.ast, .owner = source.owner, .source_function = original, .function = function, .function_scope = function_scope });
 }
