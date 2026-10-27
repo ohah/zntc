@@ -92,11 +92,19 @@ function walk(dir, out) {
   return out;
 }
 
-// line index 위로 올라가며 가장 가까운 `fn name(` 선언을 찾는다(여러 줄 선언도 첫 줄에 이름이 있음).
+// 뒤로 스캔해 brace scope 안에 있는 가장 가까운 `fn name(` 선언을 찾는다.
+// 닫힌 함수를 지난 top-level 변수에 이전 함수의 ALLOWLIST 를 빌려주면 안 된다.
 function enclosingFn(lines, i) {
+  let enclosingDepth = 0;
   for (let j = i; j >= 0; j--) {
     const m = lines[j].match(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
-    if (m) return m[1];
+    const functionBodyOnLine = m !== null && lines[j].indexOf('{', m.index + m[0].length) !== -1;
+    if (m && (enclosingDepth < 0 || j === i || (enclosingDepth === 0 && functionBodyOnLine)))
+      return m[1];
+    for (let k = lines[j].length - 1; k >= 0; k--) {
+      if (lines[j][k] === '}') enclosingDepth++;
+      else if (lines[j][k] === '{') enclosingDepth--;
+    }
   }
   return '<top>';
 }
@@ -184,6 +192,47 @@ function tagExpressionEnd(source, start) {
   return source.length;
 }
 
+function identifierTagAliases(segmentSource, segment, lineStarts) {
+  const aliases = new Map();
+  const bindings = new Map();
+  const declarations = /\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b[^=;\n]*=/g;
+  const identifierTag = new RegExp(`\\.(${IDENTIFIER_TAGS.join('|')})\\b`);
+  for (const declaration of segmentSource.matchAll(declarations)) {
+    const name = declaration[1];
+    const initializerStart = declaration.index + declaration[0].length;
+    const initializerEnd = tagExpressionEnd(segmentSource, initializerStart);
+    const initializer = segmentSource.slice(initializerStart, initializerEnd).trim();
+    const line = lineAtOffset(lineStarts, declaration.index);
+    const fn = enclosingFn(segment.lines, line);
+    const key = `${fn}::${name}`;
+    const bindingRows = bindings.get(key) ?? [];
+    bindingRows.push({ offset: declaration.index });
+    bindings.set(key, bindingRows);
+    const directTag = initializer.match(identifierTag)?.[1];
+    const sourceAlias = initializer.match(/^([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
+    const sourceKey = sourceAlias === undefined ? undefined : `${fn}::${sourceAlias}`;
+    const sourceBinding =
+      sourceKey === undefined
+        ? undefined
+        : (bindings.get(sourceKey)?.findLast((binding) => binding.offset < declaration.index) ??
+          bindings.get(`<top>::${sourceAlias}`)?.at(-1));
+    const aliasTag =
+      directTag ??
+      (sourceKey === undefined || sourceBinding === undefined
+        ? undefined
+        : (aliases.get(sourceKey)?.findLast((alias) => alias.offset === sourceBinding.offset)
+            ?.tag ??
+          aliases
+            .get(`<top>::${sourceAlias}`)
+            ?.findLast((alias) => alias.offset === sourceBinding.offset)?.tag));
+    if (aliasTag === undefined) continue;
+    const entries = aliases.get(key) ?? [];
+    entries.push({ tag: aliasTag, offset: declaration.index });
+    aliases.set(key, entries);
+  }
+  return { aliases, bindings };
+}
+
 function sourceSegments(source) {
   const lines = source.split('\n');
   const lexical = { inBlockComment: false };
@@ -255,6 +304,7 @@ export function scanIdentifierConstructors(
     for (let i = 0; i < segmentSource.length; i++) {
       if (segmentSource[i] === '\n') lineStarts.push(i + 1);
     }
+    const identifierTagAliasesByScope = identifierTagAliases(segmentSource, segment, lineStarts);
 
     const tagAssignments = /\.tag\s*=(?!=|>)/g;
     for (const assignment of segmentSource.matchAll(tagAssignments)) {
@@ -262,9 +312,37 @@ export function scanIdentifierConstructors(
       const expressionEnd = tagExpressionEnd(segmentSource, expressionStart);
       const expression = segmentSource.slice(expressionStart, expressionEnd);
       const enumLiteral = new RegExp(`\\.(${IDENTIFIER_TAGS.join('|')})\\b`, 'g');
+      let foundIdentifierTag = false;
       for (const literal of expression.matchAll(enumLiteral)) {
         const tag = literal[1];
         record(segment, lineStarts, expressionStart + literal.index, `${tag} 직접 생성`);
+        foundIdentifierTag = true;
+      }
+      if (!foundIdentifierTag) {
+        const aliasName = expression.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
+        if (aliasName !== undefined) {
+          const line = lineAtOffset(lineStarts, assignment.index);
+          const fn = enclosingFn(segment.lines, line);
+          const localKey = `${fn}::${aliasName}`;
+          const localBinding = identifierTagAliasesByScope.bindings
+            .get(localKey)
+            ?.findLast((entry) => entry.offset < assignment.index);
+          const globalBinding =
+            localBinding === undefined
+              ? identifierTagAliasesByScope.bindings.get(`<top>::${aliasName}`)?.at(-1)
+              : undefined;
+          const binding = localBinding ?? globalBinding;
+          const aliasKey = localBinding === undefined ? `<top>::${aliasName}` : localKey;
+          const alias =
+            binding === undefined
+              ? undefined
+              : identifierTagAliasesByScope.aliases
+                  .get(aliasKey)
+                  ?.findLast((entry) => entry.offset === binding.offset);
+          if (alias !== undefined) {
+            record(segment, lineStarts, expressionStart, `${alias.tag} 간접 식별자 태그 직접 생성`);
+          }
+        }
       }
     }
 
@@ -299,7 +377,9 @@ function runAudit() {
     ([key, expected]) => (usedAllowCounts.get(key) ?? 0) !== expected,
   );
   for (const [key, expected] of wrongPinnedCounts) {
-    violations.push(`${key} — pinned 허용 개수 불일치 (expected ${expected}, actual ${usedAllowCounts.get(key) ?? 0})`);
+    violations.push(
+      `${key} — pinned 허용 개수 불일치 (expected ${expected}, actual ${usedAllowCounts.get(key) ?? 0})`,
+    );
   }
   if (violations.length > 0) {
     console.error(
