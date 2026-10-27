@@ -194,12 +194,20 @@ fn findHomeWriteReference(
     return error.MissingHomeWriteReference;
 }
 
+fn buildActiveHomeProto(transformer: *Transformer, home: ObjectSuperHomeIdentity, span: @import("../lexer/token.zig").Span) !NodeIndex {
+    const saved = object_super.enterMethod(transformer, home);
+    defer object_super.leaveMethod(transformer, saved);
+    return object_super.buildHomeProto(transformer, home, span);
+}
+
 fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_super.Home.Wrap) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var scanner = try Scanner.init(allocator, source);
+    // Both same-spelling homes must come from the immutable parser domain.
+    const input = try std.fmt.allocPrint(allocator, "{s};({{}});", .{source});
+    var scanner = try Scanner.init(allocator, input);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     const program = try parser.parse();
@@ -224,6 +232,20 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     }
     const scope = owner_scope orelse return error.MissingOwnerFunctionScope;
     const span = parser.ast.getNode(program).span;
+    var source_home: ?NodeIndex = null;
+    var other_source_home: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .object_expression) continue;
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (node.data.list.len == 0) other_source_home = idx;
+        var members = parser.ast.iterateExtraList(node.data.list);
+        while (members.next()) |member| {
+            if (parser.ast.getNode(member).tag == .method_definition and source_home == null) source_home = idx;
+        }
+    }
+    const producer = source_home orelse return error.MissingSourceHome;
+    const other_producer = other_source_home orelse return error.MissingOtherSourceHome;
+    try std.testing.expect(producer != other_producer);
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -246,12 +268,12 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     const home_counter_index = transformer.temp_var_counter - 1;
     const home_temp_producer_id = transformer.temp_producer_id_by_counter.get(home_counter_index) orelse
         return error.MissingHomeTempProducerId;
-    const home_identity = ObjectSuperHomeIdentity{ .producer_node = program, .span = home_span };
-    const first_proto = try object_super.buildHomeProto(&transformer, home_identity, span);
+    const home_identity = ObjectSuperHomeIdentity{ .producer_node = producer, .span = home_span };
+    const first_proto = try buildActiveHomeProto(&transformer, home_identity, span);
     const first_ref = transformer.object_super_home_references.items[
         transformer.object_super_home_references.items.len - 1
     ].node;
-    const second_proto = try object_super.buildHomeProto(&transformer, home_identity, span);
+    const second_proto = try buildActiveHomeProto(&transformer, home_identity, span);
     const second_ref = transformer.object_super_home_references.items[
         transformer.object_super_home_references.items.len - 1
     ].node;
@@ -276,14 +298,8 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
     if (home_wrap != .assign) {
         // Deliberately reuse the exact name span under a distinct producer.
         // Deferred reference grouping must follow the producer NodeIndex.
-        const empty_members = try transformer.ast.addNodeList(&.{});
-        const other_producer = try transformer.ast.addNode(.{
-            .tag = .object_expression,
-            .span = span,
-            .data = .{ .list = empty_members },
-        });
         const other_identity = ObjectSuperHomeIdentity{ .producer_node = other_producer, .span = home_span };
-        const other_proto = try object_super.buildHomeProto(&transformer, other_identity, span);
+        const other_proto = try buildActiveHomeProto(&transformer, other_identity, span);
         other_home_identity = other_identity;
         other_home_proto = other_proto;
         other_home_ref = transformer.object_super_home_references.items[
@@ -447,8 +463,8 @@ test "#6004 object-super home identity follows its object expression node" {
     object_super.leaveMethod(&transformer, outer_saved);
     try std.testing.expect(transformer.current_super_home_object == null);
 
-    _ = try object_super.buildHomeProto(&transformer, first_method_home, parser.ast.getNode(producer_nodes[0]).span);
-    _ = try object_super.buildHomeProto(&transformer, second_method_home, parser.ast.getNode(producer_nodes[1]).span);
+    _ = try buildActiveHomeProto(&transformer, first_method_home, parser.ast.getNode(producer_nodes[0]).span);
+    _ = try buildActiveHomeProto(&transformer, second_method_home, parser.ast.getNode(producer_nodes[1]).span);
     try std.testing.expectEqual(@as(usize, 2), transformer.object_super_home_references.items.len);
     try std.testing.expectEqual(producer_nodes[0], transformer.object_super_home_references.items[0].producer_node);
     try std.testing.expectEqual(producer_nodes[1], transformer.object_super_home_references.items[1].producer_node);
