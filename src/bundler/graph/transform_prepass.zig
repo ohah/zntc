@@ -669,10 +669,11 @@ fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
         !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
 }
 
-/// Primitive TypeScript keywords erase no bindings, references, or scopes.
-/// Other erased type nodes can carry semantic edges, so keep them on reanalysis
-/// until those edges have an explicit identity edit.
-fn canRetainOnlyPrimitiveTypeErasures(ast: *const ast_mod.Ast) bool {
+/// Primitive TypeScript keywords and containers/combinations made only from
+/// those keywords erase no bindings, references, or scopes. Other type nodes
+/// may carry semantic edges, so keep them on reanalysis until those edges have
+/// an explicit identity edit.
+fn canRetainIdentityFreeTypeErasures(ast: *const ast_mod.Ast) bool {
     var found_type_erasure = false;
     for (ast.nodes.items) |node| {
         if (!isTypeErasureTag(node.tag)) continue;
@@ -691,6 +692,10 @@ fn canRetainOnlyPrimitiveTypeErasures(ast: *const ast_mod.Ast) bool {
             .ts_object_keyword,
             .ts_bigint_keyword,
             .ts_intrinsic_keyword,
+            .ts_array_type,
+            .ts_tuple_type,
+            .ts_union_type,
+            .ts_parenthesized_type,
             => {},
             else => return false,
         }
@@ -715,7 +720,7 @@ fn canRetainUsedTypeScriptImportsForIdentifierMinification(
     return minify_identifiers and module.module_type.isTypeScript() and ast.is_typescript and
         !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
         options.strip_types and !found_non_type_transform and
-        (!found_transform or canRetainOnlyPrimitiveTypeErasures(ast)) and
+        (!found_transform or canRetainIdentityFreeTypeErasures(ast)) and
         !has_dropped_labeled_statement and !has_mapped_import_split and
         everyTypeScriptImportBindingHasValueUse(self, module, ast, true);
 }
