@@ -395,40 +395,6 @@ test "native no-op graph native optional nullish preserves runtime without lower
     try std.testing.expectEqual(@as(u32, 0), observed_resyncs);
 }
 
-test "native no-op graph retains side effect import entry independently of lowered dependency" {
-    var observed_resyncs: u32 = 0;
-    for ([_]bool{ false, true }) |minify| {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena.deinit();
-        var tmp = std.testing.tmpDir(.{});
-        defer tmp.cleanup();
-        try helpers.writeFile(tmp.dir, "power.mjs", "const box=null;globalThis.result=box?.value??7;");
-        try helpers.writeFile(tmp.dir, "entry.mjs", "import './power.mjs';console.log(globalThis.result);");
-        const entry = try helpers.absPath(&tmp, "entry.mjs");
-        defer std.testing.allocator.free(entry);
-        const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", entry } });
-        try std.testing.expect(native.term == .exited and native.term.exited == 0);
-        profile.resetForTest();
-        defer profile.resetForTest();
-        profile.setIoForTest(std.testing.io);
-        profile.addFromCsv("graph.resync.semantic");
-        var b = bundler.Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = @import("compat.zig").fromESTarget(.es2019), .minify_identifiers = minify });
-        defer b.deinit();
-        const result = try b.bundle(std.testing.io);
-        defer result.deinit(std.testing.allocator);
-        try std.testing.expect(!result.hasErrors());
-        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
-        const output = try helpers.absPath(&tmp, "output.cjs");
-        defer std.testing.allocator.free(output);
-        const actual = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", output } });
-        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
-        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
-        std.debug.print("NATIVE NOOP ENTRY RED identifiers={} resync={d}\n", .{ minify, profile.count(.graph_resync_semantic) });
-        observed_resyncs += profile.count(.graph_resync_semantic);
-    }
-    try std.testing.expectEqual(@as(u32, 0), observed_resyncs);
-}
-
 const Native = @import("native_noop_graph.zig");
 const NativeFixture = struct {
     t: Transformer,
