@@ -2277,6 +2277,48 @@ fn checkWorkletSourceBirthMode(source: []const u8, expect_external_class: bool, 
         checked += 1;
     }
     try std.testing.expect(checked > 0);
+    var checked_storage_tuple = false;
+    if (!unsupported.class) {
+        const clone = @import("worklet_class_clone.zig");
+        const frame = t.plugins.worklet.class_factories.items[0];
+        const storage = editor.symbols.items[@backingInt(frame.target_self)].scope_id;
+        if (storage != frame.target_scope and editor.scopes.items[frame.target_scope.toIndex()].parent == storage) {
+            const binding = t.ast.readExtraNode(t.ast.getNode(frame.target_class).data.extra, @import("../parser/ast.zig").ClassExtra.name);
+            checked_storage_tuple = true;
+            const good = (try clone.prepareClassSelfStorageMove(&t, frame.target_class, binding, frame.target_self, storage)).?;
+            defer a.free(good.origins);
+            try clone.completeClassSelfStorageMove(&t, good);
+            const original = t.plugins.worklet.class_reference_origins.get(@backingInt(binding)).?;
+            var foreign_ast = t.ast.*;
+            const actual_ast = t.ast;
+            var declaration_row: ?usize = null;
+            for (editor.references.items, 0..) |row, index| if (row.flags.declare and row.declaration_node_index == binding) {
+                declaration_row = index;
+            };
+            try std.testing.expect(declaration_row != null);
+            const previous_row = editor.references.items[declaration_row.?];
+            for (0..6) |hostile| {
+                var selected_binding = binding;
+                var selected_id = frame.target_self;
+                var selected_scope = storage;
+                switch (hostile) {
+                    0 => selected_id = frame.source_self,
+                    1 => selected_scope = frame.scope,
+                    2 => selected_binding = frame.binding,
+                    3 => t.ast = &foreign_ast,
+                    4 => t.plugins.worklet.class_reference_origins.getPtr(@backingInt(binding)).?.flags = .{ .declare = true, .write = true },
+                    5 => editor.references.items[declaration_row.?].declaration_node_index = frame.binding,
+                    else => unreachable,
+                }
+                try std.testing.expectError(error.InvalidWorkletCloneOrigin, clone.prepareClassSelfStorageMove(&t, frame.target_class, selected_binding, selected_id, selected_scope));
+                t.ast = actual_ast;
+                t.plugins.worklet.class_reference_origins.getPtr(@backingInt(binding)).?.* = original;
+                editor.references.items[declaration_row.?] = previous_row;
+                try clone.completeClassSelfStorageMove(&t, good);
+            }
+        }
+    }
+    if (std.mem.indexOf(u8, source, "workletClassSelf") != null) try std.testing.expect(checked_storage_tuple);
     if (name_hostiles) {
         const clone = @import("worklet_class_clone.zig");
         const frame = t.plugins.worklet.class_factories.items[0];
@@ -2356,4 +2398,8 @@ test "worklet class clone lowered fragments remain exact after real Pass2" {
 
 test "worklet class clone name environment rejects foreign SID kind and parent" {
     try checkWorkletSourceBirthMode(worklet_class_birth_sources[4], false, compat.fromESTarget(.es5), false, true);
+}
+
+test "worklet class clone native wrapper storage preserves exact creator tuple" {
+    try checkWorkletSourceBirth("class Clazz{__workletClass=true;static{globalThis.workletClassSelf=Clazz}static self(){\"worklet\";return Clazz}}const observed=Clazz;Clazz=null;", false, compat.fromESTarget(.es2015));
 }

@@ -474,6 +474,78 @@ pub fn handoffSimpleParameterDeclarations(self: anytype, function: ast.NodeIndex
     }
 }
 
+pub const ClassSelfStorageMove = struct {
+    ast_owner: *ast.Ast,
+    factory: usize,
+    source_class: ast.NodeIndex,
+    binding: ast.NodeIndex,
+    symbol_id: symbol.SymbolId,
+    before: @import("../semantic/scope.zig").ScopeId,
+    target: @import("../semantic/scope.zig").ScopeId,
+    origins: []const Origin,
+    const Origin = struct { node: u32, birth: state.WorkletClassReferenceOrigin };
+};
+
+/// The class lowerer has selected this exact cloned class-self storage, before
+/// moving the symbol. Uses keep their own scopes; only declaration carriers
+/// follow the same selected binding's storage transition.
+pub fn prepareClassSelfStorageMove(self: anytype, class: ast.NodeIndex, binding: ast.NodeIndex, id: symbol.SymbolId, target: @import("../semantic/scope.zig").ScopeId) !?ClassSelfStorageMove {
+    if (!self.semantic_edit_enabled) return null;
+    const editor = &self.semantic_editor.?;
+    for (self.plugins.worklet.class_factories.items, 0..) |factory, index| {
+        if (factory.target_class != class) continue;
+        if (@backingInt(id) >= editor.symbols.items.len or factory.target_scope.isNone() or factory.target_scope.toIndex() >= editor.scopes.items.len) return error.InvalidWorkletCloneOrigin;
+        const old = editor.symbols.items[@backingInt(id)].scope_id;
+        if (factory.ast_owner != self.ast or factory.target_self != id or self.class_self_symbol_map.get(@backingInt(class)) != @backingInt(id) or
+            self.outputOwnedScope(class) != factory.target_scope or target.isNone() or target.toIndex() >= editor.scopes.items.len or
+            editor.scopes.items[target.toIndex()].kind != .function or editor.scopes.items[factory.target_scope.toIndex()].parent != target or
+            editor.scopes.items[target.toIndex()].parent != factory.scope or self.ast.getNode(binding).tag != .binding_identifier)
+            return error.InvalidWorkletCloneOrigin;
+        var origins: std.ArrayList(ClassSelfStorageMove.Origin) = .empty;
+        errdefer origins.deinit(self.allocator);
+        var entries = self.plugins.worklet.class_reference_origins.iterator();
+        while (entries.next()) |entry| {
+            const birth = entry.value_ptr.*;
+            if (birth.factory != index or birth.symbol != id or !birth.flags.declare) continue;
+            if (birth.scope != old or entry.key_ptr.* != @backingInt(binding) or
+                entry.key_ptr.* >= editor.symbol_ids.items.len or editor.symbol_ids.items[entry.key_ptr.*] != @backingInt(id)) return error.InvalidWorkletCloneOrigin;
+            var count: usize = 0;
+            for (editor.references.items) |row| {
+                if (@backingInt(row.declaration_node_index) != entry.key_ptr.* or !row.flags.declare) continue;
+                if (row.symbol_id != id or row.scope_id != old or !std.meta.eql(row.flags, birth.flags)) return error.InvalidWorkletCloneOrigin;
+                count += 1;
+            }
+            if (count != 1) return error.InvalidWorkletCloneOrigin;
+            try origins.append(self.allocator, .{ .node = entry.key_ptr.*, .birth = birth });
+        }
+        if (origins.items.len == 0) return error.InvalidWorkletCloneOrigin;
+        return .{ .ast_owner = self.ast, .factory = index, .source_class = class, .binding = binding, .symbol_id = id, .before = old, .target = target, .origins = try origins.toOwnedSlice(self.allocator) };
+    }
+    return null;
+}
+
+pub fn completeClassSelfStorageMove(self: anytype, move: ClassSelfStorageMove) !void {
+    const editor = &self.semantic_editor.?;
+    if (move.ast_owner != self.ast or move.factory >= self.plugins.worklet.class_factories.items.len or
+        self.plugins.worklet.class_factories.items[move.factory].target_class != move.source_class or
+        self.plugins.worklet.class_factories.items[move.factory].target_self != move.symbol_id or
+        self.getSymbolIdAt(move.binding) != @as(?u32, @backingInt(move.symbol_id)) or
+        editor.symbols.items[@backingInt(move.symbol_id)].scope_id != move.target) return error.InvalidWorkletCloneOrigin;
+    if (move.origins.len != 1) return error.InvalidWorkletCloneOrigin;
+    const original = move.origins[0];
+    const current = self.plugins.worklet.class_reference_origins.get(original.node) orelse return error.MissingWorkletCloneOrigin;
+    if (!std.meta.eql(current, original.birth) or current.scope != move.before) return error.InvalidWorkletCloneOrigin;
+    var count: usize = 0;
+    for (editor.references.items) |row| {
+        if (!row.flags.declare or row.symbol_id != move.symbol_id) continue;
+        if (row.declaration_node_index != move.binding or row.scope_id != move.target or !std.meta.eql(row.flags, original.birth.flags)) return error.InvalidWorkletCloneOrigin;
+        count += 1;
+    }
+    if (count != 1) return error.InvalidWorkletCloneOrigin;
+    if (@backingInt(move.binding) != original.node) return error.InvalidWorkletCloneOrigin;
+    self.plugins.worklet.class_reference_origins.getPtr(original.node).?.scope = move.target;
+}
+
 /// A consumer may preserve only an actual published tuple. Missing worklet
 /// publication is an error, never a general waiver for an existing row.
 pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Error!?@import("transformer.zig").StatementPublication {

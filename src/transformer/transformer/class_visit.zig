@@ -785,7 +785,18 @@ pub fn prepareClassExprWrapperScope(self: *Transformer, source_idx: NodeIndex) E
         std.debug.panic("private helper class expression has no source scope", .{});
     const wrapper_scope = try self.reserveGeneratedFunctionScope(self.outputScopeParent(class_scope));
     try self.reparentGeneratedScope(class_scope, wrapper_scope);
-    if (self.current_class_self_symbol_id) |id| try self.moveSymbolToOutputScope(id, wrapper_scope);
+    if (self.current_class_self_symbol_id) |id| {
+        const class_binding = self.ast.readExtraNode(self.ast.getNode(source_idx).data.extra, ast_mod.ClassExtra.name);
+        const worklet = @import("../worklet_class_clone.zig");
+        const move = worklet.prepareClassSelfStorageMove(self, source_idx, class_binding, @fromBackingInt(id), wrapper_scope) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => std.debug.panic("class expression worklet storage preflight rejected: {s}", .{@errorName(err)}),
+        };
+        defer if (move) |known| self.allocator.free(known.origins);
+        try self.moveSymbolToOutputScope(id, wrapper_scope);
+        if (move) |known| worklet.completeClassSelfStorageMove(self, known) catch |err|
+            std.debug.panic("class expression worklet storage handoff rejected: {s}", .{@errorName(err)});
+    }
     return wrapper_scope;
 }
 
