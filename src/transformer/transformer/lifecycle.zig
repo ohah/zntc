@@ -198,6 +198,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.selective_class_applications.deinit(self.allocator);
     self.virtual_provider_visits.deinit(self.allocator);
     self.native_private_field_applications.deinit(self.allocator);
+    self.native_noop_copy_index.deinit(self.allocator);
     self.native_noop_copies.deinit(self.allocator);
     self.optional_nullish_applications.deinit(self.allocator);
     self.class_initializer_frames.deinit(self.allocator);
