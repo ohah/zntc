@@ -6059,3 +6059,64 @@ test "namespace holder hygiene ranks the actual JSX normalized primary base" {
     try std.testing.expect(std.mem.startsWith(u8, first, "Foo_ns"));
     try std.testing.expect(std.mem.startsWith(u8, second, "Foo_ns"));
 }
+
+test "namespace holder hygiene same Linker warm cache keeps immutable input footprint" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './dep.mjs';console.log(Reflect.get(ns,'value'));");
+    const input = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(input);
+    var resolve_cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph.init(a, &resolve_cache);
+    defer graph.deinit();
+    graph.incremental_mode = true;
+    try graph.build(std.testing.io, &.{input});
+    var linker = Linker.init(a, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    linker.populateImportSymbols();
+    var output_cache = @import("compiled_cache.zig").CompiledOutputCache.init(a);
+    defer output_cache.deinit();
+    const opts: @import("emitter.zig").EmitOptions = .{ .format = .cjs, .compiled_cache = &output_cache };
+    var first_output: ?[]u8 = null;
+    defer if (first_output) |text| a.free(text);
+    var first_key: u64 = 0;
+    for (0..2) |pass| {
+        const result = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &opts, &linker, null);
+        defer result.deinit(a);
+        const stats = output_cache.takeStats();
+        std.debug.print("namespace holder hygiene same-Linker pass={d} hits={d} misses={d} skipped={d} key={x} registry={d} renames={d} unified={d} reserved={d}\n", .{ pass, stats.hits, stats.misses, stats.skipped, output_cache.last_options_hash, linker.ns_shared_var_names.count(), linker.rename_table.map.count(), if (linker.unified_result) |u| u.renames.count() else @as(u32, 0), linker.reserved_globals.count() });
+        var registry = linker.ns_shared_var_names.keyIterator();
+        while (registry.next()) |borrowed| {
+            const name = try a.dupe(u8, borrowed.*);
+            defer a.free(name);
+            var in_rename = false;
+            var names = linker.rename_table.map.valueIterator();
+            while (names.next()) |value| if (std.mem.eql(u8, value.*, name)) {
+                in_rename = true;
+                break;
+            };
+            var in_unified = false;
+            if (linker.unified_result) |*u| {
+                var values = u.renames.valueIterator();
+                while (values.next()) |value| if (std.mem.eql(u8, value.*, name)) {
+                    in_unified = true;
+                    break;
+                };
+            }
+            std.debug.print("namespace holder hygiene same-Linker generated={s} rename={any} unified={any} reserved={any}\n", .{ name, in_rename, in_unified, linker.reserved_globals.contains(name) });
+        }
+        if (pass == 0) {
+            first_key = output_cache.last_options_hash;
+            first_output = try a.dupe(u8, result.output);
+        } else {
+            try std.testing.expectEqualStrings(first_output.?, result.output);
+            try std.testing.expectEqual(first_key, output_cache.last_options_hash);
+            try std.testing.expect(stats.hits >= 2);
+        }
+    }
+}
