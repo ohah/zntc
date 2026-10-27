@@ -321,6 +321,8 @@ fn checkFunctionExpressionPayload(source: []const u8, flags: u32, mode: enum { j
     const start: usize = node.data.extra;
     try testing.expectEqual(@as(usize, 5), parser.ast.extra_data.items.len - start);
     const original = parser.ast.extra_data.items[start..][0..5];
+    try testing.expectEqual(Node.Tag.formal_parameters, parser.ast.getNode(@fromBackingInt(@intCast(original[1]))).tag);
+    try testing.expectEqual(Node.Tag.block_statement, parser.ast.getNode(@fromBackingInt(@intCast(original[2]))).tag);
     try testing.expectEqual(flags & ast_mod.FunctionFlags.is_async, original[3] & ast_mod.FunctionFlags.is_async);
     try testing.expectEqual(std.mem.startsWith(u8, source, "function*"), (original[3] & ast_mod.FunctionFlags.is_generator) != 0);
     const return_type: ast_mod.NodeIndex = @fromBackingInt(@intCast(original[4]));
@@ -393,7 +395,7 @@ test "function expression owned payload full program visitor runtime ten" {
     const Transformer = @import("../transformer/transformer.zig").Transformer;
     const cases = [_][]const u8{
         "const f=function(){return 2};console.log(f());",
-        "const f=function named(a){return a};console.log(f(2));",
+        "const f=function named(a){return a ? named(a-1)+1 : 0};console.log(f(2));",
         "const f=function(){return 2}, sentinel=99;console.log(f());",
         "const o={f:function(){return 2}};console.log(o.f());",
         "const f=function(){return function named(){return 2}};console.log(f()());",
