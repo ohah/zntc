@@ -710,6 +710,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_parenthesized_type,
             .ts_template_literal_type,
             .ts_type_reference,
+            .ts_type_parameter_instantiation,
             .ts_qualified_name,
             .ts_type_query,
             // Literal type nodes, including the parsed module-specifier type
