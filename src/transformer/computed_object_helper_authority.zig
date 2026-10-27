@@ -409,6 +409,7 @@ test "computed object helper authority refuses unrecorded class helper demand at
 test "computed object helper authority retains ten actual bundler applications without resync" {
     const helpers = @import("../bundler/test_helpers.zig");
     const profile = @import("../profile.zig");
+    const expected_catalog_providers = [_]usize{ 2, 2, 3, 2, 1, 1, 2, 2, 2, 2 };
     for (inputs, 0..) |text, index| {
         for ([_]bool{ false, true }) |minify| {
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -419,10 +420,10 @@ test "computed object helper authority retains ten actual bundler applications w
             const entry = try helpers.absPath(&tmp, "entry.mjs");
             defer std.testing.allocator.free(entry);
             // Inspect immediately after Graph.build, before linker callsites can
-            // capture any other owner token. Only the computed source producer
-            // captures a token for these no-import/no-class fixtures; the full
-            // resync semantic literal resets it to .unassigned. This is a bounded
-            // ownership witness, not a general retained-mode equivalence.
+            // capture any other owner token. For the no-import/no-class source
+            // module this witnesses the computed source producer; a full resync
+            // resets it to .unassigned. Provider witnesses are checked separately.
+            // This is bounded ownership evidence, not a general equivalence.
             var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
             defer cache.deinit();
             var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
@@ -436,6 +437,37 @@ test "computed object helper authority retains ten actual bundler applications w
             try std.testing.expect(source_module.transform_cache.?.runtime_helpers.public_field);
             try std.testing.expect(source_module.transform_cache.?.helper_ref_nodes.len != 0);
             try std.testing.expect(source_module.semantic != null and source_module.semantic.?.owner_token != .unassigned);
+            var catalog_providers: usize = 0;
+            var public_field_provider = false;
+            var property_key_provider = false;
+            var keep_names_provider = false;
+            for (0..graph.modules.len) |module_index| {
+                const provider = graph.modules.at(module_index);
+                if (provider.runtime_helper_source) |origin| {
+                    catalog_providers += 1;
+                    const expected_path: []const u8 = switch (origin.catalog) {
+                        .public_field => blk: {
+                            public_field_provider = true;
+                            break :blk @import("../runtime_helper_modules.zig").ID_PREFIX ++ "public-field";
+                        },
+                        .to_property_key => blk: {
+                            property_key_provider = true;
+                            break :blk @import("../runtime_helper_modules.zig").ID_PREFIX ++ "to-property-key";
+                        },
+                        .keep_names => blk: {
+                            keep_names_provider = true;
+                            break :blk @import("../runtime_helper_modules.zig").ID_PREFIX ++ "keep-names";
+                        },
+                    };
+                    try std.testing.expectEqualStrings(expected_path, provider.path);
+                    try std.testing.expect(provider.semantic != null and provider.semantic.?.owner_token != .unassigned);
+                    try std.testing.expect(provider.transform_cache != null and !provider.transform_cache.?.runtime_helpers.hasAny());
+                }
+            }
+            try std.testing.expectEqual(expected_catalog_providers[index], catalog_providers);
+            try std.testing.expect(public_field_provider);
+            try std.testing.expectEqual(index != 4 and index != 5, property_key_provider);
+            try std.testing.expectEqual(index == 2, keep_names_provider);
             profile.resetForTest();
             defer profile.resetForTest();
             profile.setIoForTest(std.testing.io);
@@ -451,17 +483,19 @@ test "computed object helper authority retains ten actual bundler applications w
             const result = try bundler.bundle(std.testing.io);
             defer result.deinit(std.testing.allocator);
             try std.testing.expect(!result.hasErrors());
-            // Sealed a4/557 baseline independently observes source=1 plus
-            // these pre-existing virtual-provider resyncs (public-field,
-            // to-property-key, and case2 keep-names). Preserve that debt and
-            // require exactly one fewer resync; never report aggregate zero.
-            const provider_resyncs = [_]u32{ 2, 2, 3, 2, 1, 1, 2, 2, 2, 2 };
-            const old_total = provider_resyncs[index] + 1;
+            const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", "-e", text } });
+            const runtime = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            try std.testing.expect(native.term == .exited and runtime.term == .exited);
+            try std.testing.expectEqual(@as(u8, 0), native.term.exited);
+            try std.testing.expectEqual(@as(u8, 0), runtime.term.exited);
+            try std.testing.expectEqualStrings(native.stdout, runtime.stdout);
+            // The computed source and these three independently certified
+            // catalog providers now retain their graphs. Any other helper or
+            // source fallback still makes this exact aggregate-zero check fail.
             const actual = profile.count(.graph_resync_semantic);
-            if (actual != provider_resyncs[index])
-                std.debug.print("computed helper actual prepass index={d} minify={any} old_total={d} expected_provider={d} actual_total={d}\n", .{ index, minify, old_total, provider_resyncs[index], actual });
-            try std.testing.expectEqual(provider_resyncs[index], actual);
-            try std.testing.expectEqual(@as(u32, 1), old_total - actual);
+            if (actual != 0)
+                std.debug.print("computed helper index={d} ids={any} providers={d} resync={d}\n", .{ index, minify, catalog_providers, actual });
+            try std.testing.expectEqual(@as(u32, 0), actual);
         }
     }
 }
