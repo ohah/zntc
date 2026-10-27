@@ -320,7 +320,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     self.in_formal_parameters = false;
 
     // TS 리턴 타입 어노테이션
-    _ = try self.tryParseReturnType();
+    const return_type = try self.tryParseReturnType();
     self.has_simple_params = self.checkSimpleParams(scratch_top);
     try self.checkDuplicateParams(scratch_top);
     const body = try self.parseFunctionBodyExpr();
@@ -340,6 +340,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     _ = try self.ast.addExtra(@backingInt(params_node));
     _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(flags);
+    _ = try self.ast.addExtra(@backingInt(return_type));
 
     return try self.ast.addNode(.{
         .tag = .function_expression,
