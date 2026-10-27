@@ -1758,6 +1758,84 @@ fn isNamespaceBodyBlock(
     return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
 }
 
+fn statementRequiresLexicalScopeOwner(ast: *const Ast, raw: u32) bool {
+    var current = raw;
+    // Follow only declaration wrappers. Bound malformed cyclic ASTs without
+    // imposing a nesting limit on valid chains of labeled statements.
+    for (0..ast.nodes.items.len) |_| {
+        if (current >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[current];
+        switch (node.tag) {
+            .variable_declaration => {
+                if (node.data.extra >= ast.extra_data.items.len) return true;
+                return ast.variableDeclarationKind(node).isLexical();
+            },
+            .function_declaration,
+            .class_declaration,
+            .ts_enum_declaration,
+            .flow_enum_declaration,
+            .ts_module_declaration,
+            .ts_import_equals_declaration,
+            .import_declaration,
+            => return true,
+            .flow_component_wrapper => {
+                // The wrapper's synthetic binding is a lexical const declaration.
+                const extra: usize = node.data.extra;
+                if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra < 2) return true;
+                current = ast.extra_data.items[extra + 1];
+            },
+            .export_named_declaration => {
+                if (node.data.extra >= ast.extra_data.items.len) return true;
+                current = ast.extra_data.items[node.data.extra];
+            },
+            .export_default_declaration => {
+                current = @backingInt(node.data.unary.operand);
+                if (current == @backingInt(NodeIndex.none)) return true;
+            },
+            .labeled_statement => {
+                current = @backingInt(node.data.binary.right);
+                if (current == @backingInt(NodeIndex.none)) return true;
+            },
+            else => return false,
+        }
+        if (current == @backingInt(NodeIndex.none)) return false;
+    }
+    return true;
+}
+
+fn statementListRequiresLexicalScopeOwner(ast: *const Ast, list: ast_mod.NodeList) bool {
+    const start: usize = list.start;
+    const len: usize = list.len;
+    if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return true;
+    for (ast.extra_data.items[start .. start + len]) |raw| {
+        if (statementRequiresLexicalScopeOwner(ast, raw)) return true;
+    }
+    return false;
+}
+
+fn generatedOwnerlessScopeRequiresOwner(ast: *const Ast, raw: u32, tag: Node.Tag) bool {
+    if (raw >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[raw];
+    return switch (tag) {
+        .program, .block_statement => statementListRequiresLexicalScopeOwner(ast, node.data.list),
+        .for_statement => blk: {
+            const extra = node.data.extra;
+            if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) break :blk true;
+            const init_raw = ast.extra_data.items[extra];
+            if (init_raw == @backingInt(NodeIndex.none)) break :blk false;
+            if (init_raw >= ast.nodes.items.len) break :blk true;
+            break :blk statementRequiresLexicalScopeOwner(ast, init_raw);
+        },
+        .for_in_statement, .for_of_statement, .for_await_of_statement => blk: {
+            const left = node.data.ternary.a;
+            if (left.isNone()) break :blk true;
+            if (@backingInt(left) >= ast.nodes.items.len) break :blk true;
+            break :blk statementRequiresLexicalScopeOwner(ast, @backingInt(left));
+        },
+        else => false,
+    };
+}
+
 fn canonicalNamespaceBodyOwner(
     ast: *const Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3669,7 +3747,21 @@ fn checkExactImpl(
             // wrappers with no fresh semantic scope. Class, switch, catch, and
             // function nodes always establish a semantic boundary.
             if (is_generated and (tag == .program or tag == .block_statement or tag == .for_statement or
-                tag == .for_in_statement or tag == .for_of_statement or tag == .for_await_of_statement)) continue;
+                tag == .for_in_statement or tag == .for_of_statement or tag == .for_await_of_statement))
+            {
+                if (generatedOwnerlessScopeRequiresOwner(ast, raw, tag)) {
+                    recordScopeOwnerMismatch(
+                        &report,
+                        raw,
+                        tag,
+                        "missing-owner-for-lexical-declaration",
+                        null,
+                        expected_kind,
+                        null,
+                    );
+                }
+                continue;
+            }
             recordScopeOwnerMismatch(&report, raw, tag, "missing-owner", null, expected_kind, null);
             continue;
         };
@@ -8129,6 +8221,171 @@ test "exact identity audit rejects appended scopes without a reachable AST owner
     );
     try std.testing.expect(wrong_owner_kind.scope_owner_mismatch >= 1);
     try std.testing.expect(!wrong_owner_kind.isClean());
+}
+
+test "exact identity audit rejects ownerless generated scopes that require lexical bindings" {
+    const Case = struct {
+        source: []const u8,
+        owner_tag: Node.Tag,
+        binding_name: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "{ let value = 1; }", .owner_tag = .block_statement, .binding_name = "value" },
+        .{ .source = "{ const value = 1; }", .owner_tag = .block_statement, .binding_name = "value" },
+        .{ .source = "{ function value() {} }", .owner_tag = .block_statement, .binding_name = "value" },
+        .{ .source = "{ class value {} }", .owner_tag = .block_statement, .binding_name = "value" },
+        .{ .source = "{ a: b: c: d: e: f: g: h: i: j: function value() {} }", .owner_tag = .block_statement, .binding_name = "value" },
+        .{ .source = "for (let value = 0;;) {}", .owner_tag = .for_statement, .binding_name = "value" },
+        .{ .source = "for (let value of []) {}", .owner_tag = .for_of_statement, .binding_name = "value" },
+        .{ .source = "for (const value in {}) {}", .owner_tag = .for_in_statement, .binding_name = "value" },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        const root = try parser.parse();
+        const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+        var sem = Analyzer.init(allocator, &parser.ast);
+        try sem.analyze();
+        try std.testing.expectEqual(@as(usize, 0), sem.errors.items.len);
+
+        var owner_node: ?u32 = null;
+        var owner_scope: ?u32 = null;
+        var owners = sem.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.key_ptr.* >= parser.ast.nodes.items.len or entry.value_ptr.* >= sem.scope_maps.items.len) continue;
+            if (parser.ast.nodes.items[entry.key_ptr.*].tag != case.owner_tag) continue;
+            if (sem.scope_maps.items[entry.value_ptr.*].get(case.binding_name) == null) continue;
+            owner_node = entry.key_ptr.*;
+            owner_scope = entry.value_ptr.*;
+            break;
+        }
+        const owner = owner_node orelse return error.MissingLexicalScopeOwner;
+        const scope = owner_scope orelse return error.MissingLexicalScope;
+        const parent_scope = sem.scopes.items[scope].parent.toIndex();
+        const owner_map = &sem.scope_maps.items[scope];
+        const binding_symbol = owner_map.get(case.binding_name) orelse return error.MissingLexicalSymbol;
+
+        // Simulate a graph corruption where the AST retains a lexical owner
+        // but the binding and any reads are incorrectly attached to its parent.
+        _ = owner_map.remove(case.binding_name);
+        try sem.scope_maps.items[parent_scope].put(allocator, case.binding_name, binding_symbol);
+        sem.symbols.items[binding_symbol].scope_id = @fromBackingInt(parent_scope);
+        sem.symbols.items[binding_symbol].origin_scope = @fromBackingInt(parent_scope);
+        for (sem.references.items) |*reference| {
+            if (@backingInt(reference.symbol_id) == binding_symbol) {
+                reference.scope_id = @fromBackingInt(parent_scope);
+            }
+        }
+        _ = sem.scope_owner_map.remove(owner);
+
+        const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const empty_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        const report = try checkExactWithScopeBoundary(
+            allocator,
+            &parser.ast,
+            root,
+            0,
+            sem.symbol_ids.items,
+            sem.symbols.items,
+            sem.scopes.items,
+            sem.scope_maps.items,
+            &sem.scope_owner_map,
+            sem.references.items,
+            &.{},
+            &.{},
+            &empty_nodes,
+            &empty_nodes,
+            &empty_origins,
+            sem.scopes.items.len,
+        );
+        try std.testing.expectEqual(@as(usize, 1), report.scope_owner_mismatch);
+        try std.testing.expectEqualStrings(
+            "missing-owner-for-lexical-declaration",
+            report.first_scope_owner_mismatch.?.issue,
+        );
+        try std.testing.expect(!report.isClean());
+    }
+}
+
+test "exact identity audit permits ownerless generated wrappers without lexical bindings" {
+    const cases = [_]struct { source: []const u8, owner_tag: Node.Tag }{
+        .{ .source = "{ var value = 1; }", .owner_tag = .block_statement },
+        .{ .source = "{}", .owner_tag = .block_statement },
+        .{ .source = "for (;;) {}", .owner_tag = .for_statement },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        const root = try parser.parse();
+        const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+        var sem = Analyzer.init(allocator, &parser.ast);
+        try sem.analyze();
+        try std.testing.expectEqual(@as(usize, 0), sem.errors.items.len);
+
+        var owner: ?u32 = null;
+        var owners = sem.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.key_ptr.* < parser.ast.nodes.items.len and
+                parser.ast.nodes.items[entry.key_ptr.*].tag == case.owner_tag)
+            {
+                owner = entry.key_ptr.*;
+                break;
+            }
+        }
+        _ = sem.scope_owner_map.remove(owner orelse return error.MissingStructuralOwner);
+
+        const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        const empty_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        const report = try checkExactWithScopeBoundary(
+            allocator,
+            &parser.ast,
+            root,
+            0,
+            sem.symbol_ids.items,
+            sem.symbols.items,
+            sem.scopes.items,
+            sem.scope_maps.items,
+            &sem.scope_owner_map,
+            sem.references.items,
+            &.{},
+            &.{},
+            &empty_nodes,
+            &empty_nodes,
+            &empty_origins,
+            sem.scopes.items.len,
+        );
+        try std.testing.expectEqual(@as(usize, 0), report.scope_owner_mismatch);
+        try std.testing.expect(report.isClean());
+    }
+}
+
+test "generated lexical-scope detection fails closed on malformed declaration wrappers" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    const malformed_wrapper = try ast.addNode(.{
+        .tag = .flow_component_wrapper,
+        .span = .EMPTY,
+        .data = .{ .extra = std.math.maxInt(u32) },
+    });
+    try std.testing.expect(statementRequiresLexicalScopeOwner(&ast, @backingInt(malformed_wrapper)));
+
+    const malformed_block = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = .{ .start = std.math.maxInt(u32), .len = 1 } },
+    });
+    try std.testing.expect(generatedOwnerlessScopeRequiresOwner(&ast, @backingInt(malformed_block), .block_statement));
 }
 
 test "exact identity audit rejects over-strict lexical scopes at ten nesting depths" {
