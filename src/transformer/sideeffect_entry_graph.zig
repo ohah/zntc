@@ -21,6 +21,16 @@ const Meta = struct {
 pub const Import = struct { declaration: N, literal: N, slot: usize, fields: [6]u32 };
 pub const Copy = struct { source: N, output: N, source_domain: *const ast.Ast, output_domain: *const ast.Ast, owner: module.SemanticOwnerToken };
 pub const ImportEvent = struct { source: N, output: N, literal: N, fields: [6]u32 };
+/// A local phase-execution witness, never semantic authority or cache data.
+pub const MetadataSeal = struct {
+    source_view: *const ast.Ast,
+    input_domain: *const ast.Ast,
+    output_domain: *const ast.Ast,
+    module_pointer: *const module.Module,
+    module_index: types.ModuleIndex,
+    root: N,
+    owner: module.SemanticOwnerToken,
+};
 const Facts = struct {
     exports_kind: @FieldType(module.Module, "exports_kind"),
     wrap_kind: @FieldType(module.Module, "wrap_kind"),
@@ -420,4 +430,29 @@ pub fn afterMetadata(self: anytype, m: *const module.Module, root: N) !bool {
         if (!sameRecord(original, actual, event.literal)) return false;
     }
     return true;
+}
+
+/// Validate first. A rejected publication leaves the prior seal and graph intact.
+pub fn publishMetadataCompletion(self: anytype, m: *const module.Module, root: N) !bool {
+    if (!try afterMetadata(self, m, root)) return false;
+    const source = self.entry_graph_source orelse return false;
+    self.entry_graph_metadata_seal = .{
+        .source_view = source.view,
+        .input_domain = source.input_domain,
+        .output_domain = self.ast,
+        .module_pointer = m,
+        .module_index = m.index,
+        .root = root,
+        .owner = source.owner,
+    };
+    return true;
+}
+/// A stale seal cannot authorize changed metadata or a foreign current domain.
+pub fn metadataRequirementSatisfied(self: anytype, m: *const module.Module, root: N) !bool {
+    const source = self.entry_graph_source orelse return false;
+    const seal = self.entry_graph_metadata_seal orelse return false;
+    if (seal.source_view != source.view or seal.input_domain != source.input_domain or
+        seal.output_domain != self.ast or seal.module_pointer != m or seal.module_index != m.index or
+        seal.root != root or seal.owner != source.owner) return false;
+    return afterMetadata(self, m, root);
 }

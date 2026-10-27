@@ -238,6 +238,7 @@ pub const Transformer = struct {
     entry_graph_invalid: bool = false,
     entry_graph_before_binder: bool = false,
     entry_graph_before_binder_root: ?NodeIndex = null,
+    entry_graph_metadata_seal: ?@import("sideeffect_entry_graph.zig").MetadataSeal = null,
     native_noop_before_binder: bool = false,
     native_noop_before_binder_root: ?NodeIndex = null,
     optional_nullish_source: ?@import("optional_nullish_composition.zig").Source = null,
