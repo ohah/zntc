@@ -21801,7 +21801,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           name: 'inline-type',
           importLine: "import { Header, type unused } from './dep';",
           flag: '--verbatim-module-syntax',
-          expectedMode: 'reanalyzed',
+          expectedMode: 'retained',
         },
       ]) {
         writeFileSync(
