@@ -669,12 +669,42 @@ fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
         !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
 }
 
+/// Primitive TypeScript keywords erase no bindings, references, or scopes.
+/// Other erased type nodes can carry semantic edges, so keep them on reanalysis
+/// until those edges have an explicit identity edit.
+fn canRetainOnlyPrimitiveTypeErasures(ast: *const ast_mod.Ast) bool {
+    var found_type_erasure = false;
+    for (ast.nodes.items) |node| {
+        if (!isTypeErasureTag(node.tag)) continue;
+        found_type_erasure = true;
+        switch (node.tag) {
+            .ts_any_keyword,
+            .ts_string_keyword,
+            .ts_boolean_keyword,
+            .ts_number_keyword,
+            .ts_never_keyword,
+            .ts_unknown_keyword,
+            .ts_null_keyword,
+            .ts_undefined_keyword,
+            .ts_void_keyword,
+            .ts_symbol_keyword,
+            .ts_object_keyword,
+            .ts_bigint_keyword,
+            .ts_intrinsic_keyword,
+            => {},
+            else => return false,
+        }
+    }
+    return found_type_erasure;
+}
+
 fn canRetainUsedTypeScriptImportsForIdentifierMinification(
     self: anytype,
     module: *const Module,
     ast: *const ast_mod.Ast,
     options: TransformOptions,
     found_transform: bool,
+    found_non_type_transform: bool,
     has_dropped_labeled_statement: bool,
     has_mapped_import_split: bool,
 ) bool {
@@ -684,7 +714,9 @@ fn canRetainUsedTypeScriptImportsForIdentifierMinification(
         false;
     return minify_identifiers and module.module_type.isTypeScript() and ast.is_typescript and
         !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
-        !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split and
+        options.strip_types and !found_non_type_transform and
+        (!found_transform or canRetainOnlyPrimitiveTypeErasures(ast)) and
+        !has_dropped_labeled_statement and !has_mapped_import_split and
         everyTypeScriptImportBindingHasValueUse(self, module, ast, true);
 }
 
@@ -7381,6 +7413,7 @@ fn canKeepPrepassSemanticGraph(
             ast,
             options,
             false,
+            false,
             has_dropped_labeled_statement,
             has_mapped_import_split,
         );
@@ -7408,6 +7441,9 @@ fn canKeepPrepassSemanticGraph(
         safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var found_transform = found_other_transform or retained_define_references or retained_simple_console_drops;
+    // Type erasure is the only transform currently admitted by the TS import
+    // gate. Track all other transforms separately and keep each one fail-closed.
+    var found_non_type_transform = found_transform;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
         if (scope.subtree_has_direct_eval) {
@@ -7431,12 +7467,14 @@ fn canKeepPrepassSemanticGraph(
             .flow_match_expression => {
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             // Flow enum bindings and member initializer references already
             // have exact parser identities; lowering preserves those edges.
             .flow_enum_declaration => {
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .flow_enum_member => {},
             // The forwardRef helper binding and its call reference are added
@@ -7444,12 +7482,14 @@ fn canKeepPrepassSemanticGraph(
             .flow_component_wrapper => {
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             // `export =` lowers to `module.exports = ...`; parser and AST scans
             // both preserve that CommonJS graph signal before and after lowering.
             .ts_export_assignment => {
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .ts_import_equals_declaration => {
                 const local_supported = isSupportedLocalImportEquals(ast, node);
@@ -7457,6 +7497,7 @@ fn canKeepPrepassSemanticGraph(
                 if (!local_supported and !external_supported) return false;
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .export_all_declaration => {
                 const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(raw_node_idx))));
@@ -7467,6 +7508,7 @@ fn canKeepPrepassSemanticGraph(
                 if (!isSupportedPlainExportAll(ast, node_idx, top_level_mask)) return false;
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             // These constructs can alter the import/export graph or create
             // dynamic-name environments independently of Flow match lowering.
@@ -7492,11 +7534,13 @@ fn canKeepPrepassSemanticGraph(
                 if (!isSupportedRuntimeTsEnum(ast, node)) return false;
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .ts_module_declaration => {
                 if (node.data.binary.flags != 0) return false;
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .for_of_statement => {
                 if (options.unsupported.for_of and !safe_graph_subset) return false;
@@ -7505,6 +7549,7 @@ fn canKeepPrepassSemanticGraph(
                 // bindings in their scopes. Preserve that exact graph.
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .class_declaration, .class_expression => {
                 // The audited subset validates top-level and direct function-body
@@ -7519,6 +7564,7 @@ fn canKeepPrepassSemanticGraph(
                 // helper, class reference, and scopes are tracked.
                 found_transform = true;
                 found_other_transform = true;
+                found_non_type_transform = true;
             },
             .identifier_reference => {
                 const raw_name = ast.identifierNameText(node);
@@ -7571,6 +7617,7 @@ fn canKeepPrepassSemanticGraph(
             ast,
             options,
             found_transform,
+            found_non_type_transform,
             has_dropped_labeled_statement,
             has_mapped_import_split,
         );

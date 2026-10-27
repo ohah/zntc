@@ -5158,11 +5158,23 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'type erasure elsewhere in the entry keeps reanalysis',
+        name: 'primitive type annotation keeps value-import identities',
         source: [
           "import { value } from './values';",
           'const answer: number = value;',
           'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'composite type erasure keeps reanalysis',
+        source: [
+          "import { value } from './values';",
+          'const answer: number[] = [value];',
+          'process.stdout.write(String(answer[0]));',
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
