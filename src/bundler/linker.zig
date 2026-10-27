@@ -201,6 +201,9 @@ pub const ExternalParamNames = struct {
 const HMR_RUNTIME_INTERNAL_ROWS = @import("module.zig").HMR_RUNTIME_INTERNAL_ROWS;
 
 pub const Linker = struct {
+    pub const ConsumerImportRole = enum { binding, namespace_member_expression };
+    pub const ConsumerImportTarget = struct { text: []const u8, role: ConsumerImportRole };
+
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
     /// 필드를 대체. populate* 계열이 `moduleAtMut` 로 mutate 하므로 non-const.
@@ -296,7 +299,7 @@ pub const Linker = struct {
     /// (`canonical module → export명 → 소비자 로컬명`)에 적어 두면 buildMetadataForAst 의
     /// effective_target 이 읽어 body 참조를 같은 이름(`tag$3`)으로 맞춘다. 값은 이 맵 소유(dupe).
     /// 청크마다 `clearConsumerImportLocal` 로 리셋(다른 소비자는 다른 deconflict).
-    consumer_import_local: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged([]const u8)) = .empty,
+    consumer_import_local: std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged(ConsumerImportTarget)) = .empty,
 
     /// computeRenames 동안만 사는 메모이즈: `module_index → 그 모듈의 nested scope(scope 0 제외)
     /// 바인딩 이름 union set`. `hasNestedBinding` 이 후보(`name$N`)마다 모듈의 모든 scope_maps 를
@@ -1640,7 +1643,7 @@ pub const Linker = struct {
         while (consumer_imports.next()) |names| {
             var values = names.valueIterator();
             while (values.next()) |name| {
-                if (std.mem.eql(u8, name.*, candidate)) return true;
+                if (std.mem.eql(u8, name.text, candidate)) return true;
             }
         }
 
@@ -4549,18 +4552,47 @@ pub const Linker = struct {
     /// key 는 `(canonical_module, export_name)` — import 블록이 그 sym 을 소비자-로컬로 deconflict
     /// 한 이름(예 `tag$3`). `export_name` 키는 borrow(sym.name, bundle 수명).
     pub fn putConsumerImportLocal(self: *Linker, module_index: u32, export_name: []const u8, local_name: []const u8) !void {
+        try self.putConsumerImportTarget(module_index, export_name, local_name, .binding);
+    }
+
+    /// Only the live-import producer builds this expression from its actual
+    /// namespace holder and export key; consumers do not infer roles from text.
+    pub fn putConsumerImportMember(self: *Linker, module_index: u32, export_name: []const u8, namespace_name: []const u8, property_name: []const u8) !void {
+        const names = @import("linker/identifier_name.zig");
+        if (!try names.isBindingName(self.allocator, namespace_name, isReservedName) or
+            !std.unicode.utf8ValidateSlice(property_name)) return error.InvalidConsumerImportMember;
+        const access = if (names.isIdentifierName(property_name))
+            try std.fmt.allocPrint(self.allocator, ".{s}", .{property_name})
+        else
+            try @import("linker/preamble_writer.zig").allocMemberAccess(self.allocator, property_name);
+        defer self.allocator.free(access);
+        const expression = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ namespace_name, access });
+        defer self.allocator.free(expression);
+        try self.putConsumerImportTarget(module_index, export_name, expression, .namespace_member_expression);
+    }
+
+    fn putConsumerImportTarget(self: *Linker, module_index: u32, export_name: []const u8, text: []const u8, role: ConsumerImportRole) !void {
+        const dup = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(dup);
         const gop = try self.consumer_import_local.getOrPut(self.allocator, module_index);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        const dup = try self.allocator.dupe(u8, local_name);
-        if (try gop.value_ptr.fetchPut(self.allocator, export_name, dup)) |old| {
-            self.allocator.free(old.value);
+        errdefer if (!gop.found_existing) {
+            gop.value_ptr.deinit(self.allocator);
+            _ = self.consumer_import_local.remove(module_index);
+        };
+        if (try gop.value_ptr.fetchPut(self.allocator, export_name, .{ .text = dup, .role = role })) |old| {
+            self.allocator.free(old.value.text);
         }
     }
 
-    /// (#4572) consumer-local import 이름 조회. 없으면 null.
-    pub fn getConsumerImportLocal(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
+    pub fn getConsumerImportTarget(self: *const Linker, module_index: u32, export_name: []const u8) ?ConsumerImportTarget {
         const inner = self.consumer_import_local.get(module_index) orelse return null;
         return inner.get(export_name);
+    }
+
+    /// Compatibility projection for existing import-emission callers.
+    pub fn getConsumerImportLocal(self: *const Linker, module_index: u32, export_name: []const u8) ?[]const u8 {
+        return if (self.getConsumerImportTarget(module_index, export_name)) |target| target.text else null;
     }
 
     /// (#4572) per-chunk 리셋 — 다음 청크 import 블록 전에 owned value 해제.
@@ -4568,7 +4600,7 @@ pub const Linker = struct {
         var it = self.consumer_import_local.valueIterator();
         while (it.next()) |inner| {
             var vit = inner.valueIterator();
-            while (vit.next()) |v| self.allocator.free(v.*);
+            while (vit.next()) |v| self.allocator.free(v.text);
             inner.deinit(self.allocator);
         }
         self.consumer_import_local.clearRetainingCapacity();

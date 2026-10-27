@@ -656,7 +656,7 @@ fn requireShimNameInUse(candidate: []const u8, modules: []const *const Module, l
         while (consumer_imports.next()) |names| {
             var values = names.valueIterator();
             while (values.next()) |name| {
-                if (std.mem.eql(u8, name.*, candidate)) return true;
+                if (std.mem.eql(u8, name.text, candidate)) return true;
             }
         }
     }
