@@ -768,6 +768,7 @@ fn canMangleWithTransformSemanticAfterEdit(
         transformer,
         root,
         null,
+        null,
     );
 }
 
@@ -777,6 +778,7 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
     runtime_import_equals_graph_proof: ?bool,
+    runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot,
 ) bool {
     const facts = collectAstFacts(parser.allocator, &parser.ast) catch return false;
     const may_admit_erased_const_enum = facts.has_lenient_const_enum_runtime_syntax and
@@ -792,8 +794,15 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
         facts.has_declaration_level_type_import and
-        onlyErasableTypeImports(&parser.ast) and
-        erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
+        ((onlyErasableTypeImports(&parser.ast) and
+            erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
+            (onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+                parser.allocator,
+                &parser.ast,
+                transformer.parser_node_count,
+            ) and
+                erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root) and
+                plainNamedRuntimeImportsHaveExactOutputIdentity(transformer, root, runtime_import_identity_snapshot)));
     const may_admit_erased_ambient_namespace_import_equals = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
         erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(transformer, root);
@@ -816,9 +825,9 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
 }
 
 /// Reuse a transform graph for erased imports only after proving that none of
-/// their exact identities or decoded local names survive in output. The
-/// TypeScript standalone caller accepts declaration-level imports and separate
-/// inline-only type imports, but keeps runtime imports and attributes on fallback.
+/// their exact identities or decoded local names survive in output. TypeScript
+/// additionally has a narrow mixed case for fully erased type imports beside
+/// separately declared plain named runtime imports whose source identities survive.
 fn onlyErasableTypeImports(ast: *const Ast) bool {
     var found_import = false;
     for (ast.nodes.items) |node| {
@@ -836,6 +845,225 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
     return found_import;
 }
 
+/// A declaration-level type import may share a source file with separate plain
+/// named value imports. Inline type specifiers inside a value import, default or
+/// namespace imports, side-effect imports, attributes, and phases remain on the
+/// conservative reanalysis path.
+fn onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    source_count: u32,
+) bool {
+    if (source_count == 0 or source_count > ast.nodes.items.len) return false;
+    var found_type_import = false;
+    var found_runtime_import = false;
+    for (ast.nodes.items[0..source_count]) |node| {
+        if (node.tag != .import_declaration) continue;
+        if (node.data.extra >= ast.extra_data.items.len or
+            ast.extra_data.items.len - node.data.extra < 6) return false;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import_decl.phase != .none or import_decl.attrs_len != 0 or
+            import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
+
+        if (import_decl.is_type_only or importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) {
+            found_type_import = found_type_import or import_decl.is_type_only;
+            continue;
+        }
+
+        found_runtime_import = true;
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+            );
+            if (spec_idx.isNone() or @backingInt(spec_idx) >= ast.nodes.items.len) return false;
+            const spec = ast.getNode(spec_idx);
+            if (spec.tag != .import_specifier or spec.data.binary.flags != 0 or
+                spec.data.binary.left.isNone() or spec.data.binary.right.isNone() or
+                @backingInt(spec.data.binary.left) >= ast.nodes.items.len or
+                @backingInt(spec.data.binary.right) >= ast.nodes.items.len) return false;
+        }
+    }
+    return found_type_import and found_runtime_import and importLocalNamesAreUnique(allocator, ast, source_count);
+}
+
+fn importLocalNamesAreUnique(allocator: std.mem.Allocator, ast: *const Ast, source_count: u32) bool {
+    if (source_count == 0 or source_count > ast.nodes.items.len) return false;
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    defer names.deinit(allocator);
+    for (ast.nodes.items[0..source_count]) |node| {
+        if (node.tag != .import_declaration) continue;
+        if (node.data.extra >= ast.extra_data.items.len or ast.extra_data.items.len - node.data.extra < 6)
+            return false;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+            );
+            if (spec_idx.isNone() or @backingInt(spec_idx) >= ast.nodes.items.len) return false;
+            const spec = ast.getNode(spec_idx);
+            const local_span = switch (spec.tag) {
+                .import_default_specifier, .import_namespace_specifier => spec.span,
+                .import_specifier => blk: {
+                    const local_idx = spec.data.binary.right;
+                    if (local_idx.isNone() or @backingInt(local_idx) >= ast.nodes.items.len) return false;
+                    const local = ast.getNode(local_idx);
+                    if (local.tag != .identifier_reference) return false;
+                    break :blk local.span;
+                },
+                else => return false,
+            };
+            if (!isValidSourceTextSpan(ast, local_span)) return false;
+            const name = Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(local_span)) catch return false;
+            if (name.len == 0 or names.contains(name)) return false;
+            names.put(allocator, name, {}) catch return false;
+        }
+    }
+    return names.count() != 0;
+}
+
+const RuntimeImportSpecifierIdentity = struct {
+    specifier_index: ast_mod.NodeIndex,
+    specifier_node: ast_mod.Node,
+    imported_index: ast_mod.NodeIndex,
+    imported_node: ast_mod.Node,
+    local_index: ast_mod.NodeIndex,
+    local_node: ast_mod.Node,
+    symbol_id: u32,
+    symbol_scope: @import("semantic/scope.zig").ScopeId,
+    symbol_name: @import("lexer/token.zig").Span,
+    symbol_declaration: @import("lexer/token.zig").Span,
+};
+
+const RuntimeImportDeclarationIdentity = struct {
+    span: @import("lexer/token.zig").Span,
+    source_index: ast_mod.NodeIndex,
+    source_node: ast_mod.Node,
+    specifiers: []const RuntimeImportSpecifierIdentity,
+};
+
+const RuntimeImportReferenceIdentity = struct {
+    reference: @import("semantic/symbol.zig").Reference,
+    node: ast_mod.Node,
+};
+
+const RuntimeImportIdentitySnapshot = struct {
+    declarations: []const RuntimeImportDeclarationIdentity,
+    references: []const RuntimeImportReferenceIdentity,
+};
+
+/// Capture exact source identities before the standalone transformer takes
+/// ownership of and mutates the parser AST. This is intentionally limited to
+/// the narrow mixed-import proof so ordinary transpilation pays no cost.
+fn capturePlainNamedRuntimeImportIdentitySnapshot(
+    allocator: std.mem.Allocator,
+    parser: *const Parser,
+    analyzer: *const SemanticAnalyzer,
+) error{OutOfMemory}!?RuntimeImportIdentitySnapshot {
+    const ast = &parser.ast;
+    if (!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+        allocator,
+        ast,
+        @intCast(ast.nodes.items.len),
+    )) return null;
+
+    var declarations: std.ArrayListUnmanaged(RuntimeImportDeclarationIdentity) = .empty;
+    defer declarations.deinit(allocator);
+    var runtime_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer runtime_symbol_ids.deinit(allocator);
+
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .import_declaration) continue;
+        if (node.data.extra >= ast.extra_data.items.len or ast.extra_data.items.len - node.data.extra < 6)
+            return null;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import_decl.is_type_only or importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) continue;
+        if (!isValidSourceTextSpan(ast, node.span) or import_decl.source.isNone() or
+            @backingInt(import_decl.source) >= ast.nodes.items.len or
+            import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return null;
+
+        const source_index = import_decl.source;
+        const source_node = ast.getNode(source_index);
+        if (source_node.tag != .string_literal or !isValidSourceTextSpan(ast, source_node.span)) return null;
+
+        var specifiers: std.ArrayListUnmanaged(RuntimeImportSpecifierIdentity) = .empty;
+        defer specifiers.deinit(allocator);
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const specifier_index: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+            );
+            if (specifier_index.isNone() or @backingInt(specifier_index) >= ast.nodes.items.len) return null;
+            const specifier_node = ast.getNode(specifier_index);
+            if (specifier_node.tag != .import_specifier or specifier_node.data.binary.flags != 0) return null;
+            const imported_index = specifier_node.data.binary.left;
+            const local_index = specifier_node.data.binary.right;
+            if (imported_index.isNone() or local_index.isNone() or
+                @backingInt(imported_index) >= ast.nodes.items.len or
+                @backingInt(local_index) >= ast.nodes.items.len) return null;
+            const imported_node = ast.getNode(imported_index);
+            const local_node = ast.getNode(local_index);
+            if ((imported_node.tag != .identifier_reference and imported_node.tag != .string_literal) or
+                local_node.tag != .identifier_reference or !isValidSourceTextSpan(ast, local_node.span) or
+                !isValidSourceTextSpan(ast, imported_node.span)) return null;
+            if (@backingInt(local_index) >= analyzer.symbol_ids.items.len) return null;
+            const local_symbol_id = analyzer.symbol_ids.items[@backingInt(local_index)] orelse return null;
+            if (local_symbol_id >= analyzer.symbols.items.len) return null;
+            const symbol = analyzer.symbols.items[local_symbol_id];
+            if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+                symbol.scope_id.toIndex() >= analyzer.scopes.items.len or
+                symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
+                symbol.declaration_span.start < node.span.start or
+                symbol.declaration_span.end > node.span.end or
+                symbol.declaration_span.end <= symbol.declaration_span.start or
+                runtime_symbol_ids.contains(local_symbol_id)) return null;
+            runtime_symbol_ids.put(allocator, local_symbol_id, {}) catch return error.OutOfMemory;
+            specifiers.append(allocator, .{
+                .specifier_index = specifier_index,
+                .specifier_node = specifier_node,
+                .imported_index = imported_index,
+                .imported_node = imported_node,
+                .local_index = local_index,
+                .local_node = local_node,
+                .symbol_id = local_symbol_id,
+                .symbol_scope = symbol.scope_id,
+                .symbol_name = symbol.name,
+                .symbol_declaration = symbol.declaration_span,
+            }) catch return error.OutOfMemory;
+        }
+        declarations.append(allocator, .{
+            .span = node.span,
+            .source_index = source_index,
+            .source_node = source_node,
+            .specifiers = try specifiers.toOwnedSlice(allocator),
+        }) catch return error.OutOfMemory;
+        _ = raw;
+    }
+    if (declarations.items.len == 0 or runtime_symbol_ids.count() == 0) return null;
+
+    var references: std.ArrayListUnmanaged(RuntimeImportReferenceIdentity) = .empty;
+    defer references.deinit(allocator);
+    for (analyzer.references.items) |reference| {
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (!runtime_symbol_ids.contains(symbol_id) or !reference.isValueUse()) continue;
+        if (reference.node_index.isNone() or @backingInt(reference.node_index) >= ast.nodes.items.len) return null;
+        const node = ast.getNode(reference.node_index);
+        if ((node.tag != .identifier_reference and node.tag != .assignment_target_identifier) or
+            reference.scope_id.isNone() or reference.scope_id.toIndex() >= analyzer.scopes.items.len) return null;
+        references.append(allocator, .{ .reference = reference, .node = node }) catch return error.OutOfMemory;
+    }
+
+    return .{
+        .declarations = try declarations.toOwnedSlice(allocator),
+        .references = try references.toOwnedSlice(allocator),
+    };
+}
+
 /// Lenient JavaScript mode rejects every import declaration by default. Reuse
 /// the transform graph only for an erased type-only import, or when a value-form
 /// import is structurally inside an erased ambient namespace. In either case,
@@ -843,6 +1071,21 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
+) bool {
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, false);
+}
+
+fn erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, true);
+}
+
+fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    type_imports_only: bool,
 ) bool {
     const ast = transformer.ast;
     const source_count = transformer.parser_node_count;
@@ -898,13 +1141,15 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
             @backingInt(import_decl.source) >= source_count or
-            output_nodes.contains(@intCast(raw))) return false;
+            import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start) return false;
         const source_node = ast.getNode(import_decl.source);
         if (source_node.tag != .string_literal or !isValidSourceTextSpan(ast, source_node.span) or
             source_node.span.start < node.span.start or
             source_node.span.end > node.span.end or source_node.span.end <= source_node.span.start) return false;
 
         const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
+        if (type_imports_only and !import_decl.is_type_only and !inline_type_only) continue;
+        if (output_nodes.contains(@intCast(raw))) return false;
         var inside_erased_ambient_namespace = false;
         if (!import_decl.is_type_only and !inline_type_only) {
             if (!ambient_namespace_import_proofs_initialized) {
@@ -1003,6 +1248,179 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
         if (import_names.contains(output_name)) return false;
     }
     return true;
+}
+
+/// Prove that every separate named runtime import remains the same source-backed
+/// import after transformation, and that its local binding and every surviving
+/// value reference still use the exact source SymbolId and reference ScopeId.
+fn plainNamedRuntimeImportsHaveExactOutputIdentity(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    maybe_snapshot: ?RuntimeImportIdentitySnapshot,
+) bool {
+    const snapshot = maybe_snapshot orelse return false;
+    const output_ast = transformer.ast;
+    const source_count = transformer.parser_node_count;
+    if (root.isNone() or source_count == 0 or source_count > output_ast.nodes.items.len or
+        source_count > transformer.symbol_ids.items.len or snapshot.declarations.len == 0) return false;
+
+    const output_reachable = ast_walk.collectReachableNodeIndicesFrom(
+        transformer.allocator,
+        output_ast,
+        root,
+    ) catch return false;
+    defer transformer.allocator.free(output_reachable);
+    var output_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_nodes.deinit(transformer.allocator);
+    for (output_reachable) |raw| output_nodes.put(transformer.allocator, raw, {}) catch return false;
+
+    const output_references = reference_walk.collectIdentifierReferences(
+        transformer.allocator,
+        output_ast,
+        root,
+    ) catch return false;
+    defer transformer.allocator.free(output_references);
+    var output_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_reference_nodes.deinit(transformer.allocator);
+    for (output_references) |reference| {
+        output_reference_nodes.put(
+            transformer.allocator,
+            @backingInt(reference),
+            {},
+        ) catch return false;
+    }
+
+    var runtime_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer runtime_symbol_ids.deinit(transformer.allocator);
+    var matched_output_imports: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer matched_output_imports.deinit(transformer.allocator);
+    for (snapshot.declarations) |source_import| {
+        if (source_import.specifiers.len == 0 or !isValidSourceTextSpan(output_ast, source_import.span)) return false;
+        var output_import: ?ast_mod.NodeIndex = null;
+        for (output_reachable) |output_raw| {
+            const candidate_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_raw));
+            const candidate = output_ast.getNode(candidate_idx);
+            if (candidate.tag != .import_declaration or !std.meta.eql(candidate.span, source_import.span)) continue;
+            if (output_import != null) return false;
+            output_import = candidate_idx;
+        }
+        const output_import_idx = output_import orelse return false;
+        const output_import_raw = @backingInt(output_import_idx);
+        const output_import_node = output_ast.getNode(output_import_idx);
+        if (output_import_node.data.extra >= output_ast.extra_data.items.len or
+            output_ast.extra_data.items.len - output_import_node.data.extra < 6) return false;
+        const output_decl = module_parser.readImportDeclExtras(output_ast, output_import_node.data.extra);
+        if (output_decl.is_type_only or output_decl.phase != .none or output_decl.attrs_len != 0 or
+            output_decl.specs_len != source_import.specifiers.len or
+            output_decl.source != source_import.source_index or output_decl.specs_start > output_ast.extra_data.items.len or
+            output_decl.specs_len > output_ast.extra_data.items.len - output_decl.specs_start or
+            output_decl.attrs_start > output_ast.extra_data.items.len or
+            output_decl.attrs_len > output_ast.extra_data.items.len - output_decl.attrs_start or
+            !output_nodes.contains(@backingInt(source_import.source_index)) or
+            !sameNodeValue(source_import.source_node, output_ast.getNode(source_import.source_index))) return false;
+        if (matched_output_imports.contains(output_import_raw)) return false;
+        matched_output_imports.put(transformer.allocator, output_import_raw, {}) catch return false;
+        var i: usize = 0;
+        while (i < source_import.specifiers.len) : (i += 1) {
+            const spec_identity = source_import.specifiers[i];
+            const source_spec_raw = @backingInt(spec_identity.specifier_index);
+            const output_spec_raw = output_ast.extra_data.items[output_decl.specs_start + i];
+            if (source_spec_raw >= source_count or source_spec_raw != output_spec_raw or
+                !output_nodes.contains(source_spec_raw) or
+                !sameNodeValue(spec_identity.specifier_node, output_ast.getNode(spec_identity.specifier_index)) or
+                !output_nodes.contains(@backingInt(spec_identity.imported_index)) or
+                !output_nodes.contains(@backingInt(spec_identity.local_index)) or
+                !sameNodeValue(spec_identity.imported_node, output_ast.getNode(spec_identity.imported_index)) or
+                !sameNodeValue(spec_identity.local_node, output_ast.getNode(spec_identity.local_index))) return false;
+
+            const local_name = Scanner.decodeIdentifierEscapesAlloc(
+                transformer.allocator,
+                output_ast.getText(spec_identity.local_node.span),
+            ) catch return false;
+            if (local_name.len == 0 or !isValidSourceTextSpan(output_ast, spec_identity.local_node.span)) return false;
+            const local_raw = @backingInt(spec_identity.local_index);
+            const symbol_id = transformer.symbol_ids.items[local_raw] orelse return false;
+            if (symbol_id != spec_identity.symbol_id) return false;
+            if (symbol_id >= transformer.symbols.len) return false;
+            const symbol = transformer.symbols[symbol_id];
+            const scope_idx = symbol.scope_id.toIndex();
+            if (symbol.kind != .import_binding or symbol.scope_id != spec_identity.symbol_scope or
+                scope_idx >= transformer.scopes.len or scope_idx >= transformer.scope_maps.len or
+                transformer.scope_maps[scope_idx].get(local_name) != @as(?usize, @intCast(symbol_id)) or
+                !std.meta.eql(symbol.name, spec_identity.symbol_name) or
+                !std.meta.eql(symbol.declaration_span, spec_identity.symbol_declaration) or
+                runtime_symbol_ids.contains(symbol_id)) return false;
+            runtime_symbol_ids.put(transformer.allocator, symbol_id, {}) catch return false;
+        }
+    }
+    if (runtime_symbol_ids.count() == 0 or matched_output_imports.count() != snapshot.declarations.len) return false;
+
+    var output_import_count: usize = 0;
+    for (output_reachable) |raw| {
+        if (output_ast.getNode(@fromBackingInt(@intCast(raw))).tag != .import_declaration) continue;
+        output_import_count += 1;
+        if (!matched_output_imports.contains(raw)) return false;
+    }
+    if (output_import_count != matched_output_imports.count()) return false;
+
+    for (output_references) |reference_idx| {
+        const raw = @backingInt(reference_idx);
+        if (raw >= transformer.symbol_ids.items.len) return false;
+        const symbol_id = transformer.symbol_ids.items[raw] orelse continue;
+        if (!runtime_symbol_ids.contains(symbol_id)) continue;
+        if (raw >= source_count) return false;
+        var matching_rows: usize = 0;
+        for (transformer.references) |reference| {
+            if (reference.node_index != reference_idx or @backingInt(reference.symbol_id) != symbol_id or
+                !reference.isValueUse()) continue;
+            if (reference.scope_id.isNone() or reference.scope_id.toIndex() >= transformer.scopes.len) return false;
+            for (snapshot.references) |source_reference| {
+                if (source_reference.reference.node_index == reference_idx and
+                    @backingInt(source_reference.reference.symbol_id) == symbol_id and
+                    std.meta.eql(source_reference.reference, reference) and
+                    sameNodeValue(source_reference.node, output_ast.getNode(reference_idx)))
+                {
+                    matching_rows += 1;
+                }
+            }
+        }
+        if (matching_rows != 1) return false;
+    }
+
+    for (snapshot.references) |source_reference| {
+        const reference = source_reference.reference;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= source_count or !output_nodes.contains(raw) or
+            !output_reference_nodes.contains(raw) or
+            transformer.symbol_ids.items[raw] != @as(?u32, @intCast(@backingInt(reference.symbol_id))) or
+            !sameNodeValue(source_reference.node, output_ast.getNode(reference.node_index))) return false;
+        var matching_rows: usize = 0;
+        for (transformer.references) |current| {
+            if (current.node_index == reference.node_index and
+                @backingInt(current.symbol_id) == @backingInt(reference.symbol_id) and
+                current.isValueUse() and std.meta.eql(current, reference)) matching_rows += 1;
+        }
+        if (matching_rows != 1) return false;
+    }
+
+    for (transformer.references) |reference| {
+        if (!runtime_symbol_ids.contains(@backingInt(reference.symbol_id)) or !reference.isValueUse()) continue;
+        var matching_source_rows: usize = 0;
+        for (snapshot.references) |source_reference| {
+            if (std.meta.eql(source_reference.reference, reference)) matching_source_rows += 1;
+        }
+        if (matching_source_rows != 1) return false;
+    }
+    return true;
+}
+
+fn sameNodeValue(expected: ast_mod.Node, actual: ast_mod.Node) bool {
+    if (expected.tag != actual.tag or !std.meta.eql(expected.span, actual.span)) return false;
+    return switch (expected.tag) {
+        .identifier_reference, .string_literal, .assignment_target_identifier => std.meta.eql(expected.data.string_ref, actual.data.string_ref),
+        .import_specifier => std.meta.eql(expected.data.binary, actual.data.binary),
+        else => false,
+    };
 }
 
 fn importDeclarationHasOnlyInlineTypeSpecifiers(
@@ -2818,6 +3236,16 @@ fn transpileWithCallbackInternal(
     // 위 `defer parser.ast.dumpStringInternStatsIfEnabled()` 가 stats 를 dump 하므로
     // 여기서 별도 defer 불필요 — parser.ast 와 transformer.ast 가 같은 instance.
     const pre_transform_scope_count = if (analyzer_storage) |*analyzer| analyzer.scopes.items.len else 0;
+    var runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot = null;
+    if (options.minify_identifiers and parser.source_mode == .ts) {
+        if (analyzer_storage) |*analyzer| {
+            runtime_import_identity_snapshot = capturePlainNamedRuntimeImportIdentitySnapshot(
+                arena_alloc,
+                &parser,
+                analyzer,
+            ) catch return error.OutOfMemory;
+        }
+    }
     var transformer = try Transformer.initFromOwnedAst(arena_alloc, &parser.ast, effective_opts);
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIdsOwned(analyzer.ast, analyzer.symbol_ids.items) catch return error.TransformError;
@@ -3058,6 +3486,7 @@ fn transpileWithCallbackInternal(
             &transformer,
             root,
             runtime_import_equals_graph_proof,
+            runtime_import_identity_snapshot,
         )) {
             mangle_uses_transform_semantic = true;
             mangle_analyzer = &analyzer_storage.?;
@@ -5658,6 +6087,319 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     _ = try attributed_inline_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), attributed_inline_parser.errors.items.len);
     try std.testing.expect(!onlyErasableTypeImports(&attributed_inline_parser.ast));
+}
+
+test "#6193 erased declaration type imports preserve separate runtime import identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Shape } from './types'; " ++
+        "import { runtimeValue as amount } from './values'; " ++
+        "function read(): number { return amount; } console.log(read());";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const source_facts = try collectAstFacts(allocator, &parser.ast);
+    try std.testing.expect(source_facts.has_declaration_level_type_import);
+    try std.testing.expect(onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+        allocator,
+        &parser.ast,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+
+    var duplicate_import_scanner = try Scanner.init(
+        allocator,
+        "import type { Shape as Shared } from './types'; " ++
+            "import { runtimeValue as Shared } from './values';",
+    );
+    var duplicate_import_parser = Parser.init(allocator, &duplicate_import_scanner);
+    duplicate_import_parser.configureFromExtension(".ts");
+    _ = try duplicate_import_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), duplicate_import_parser.errors.items.len);
+    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+        allocator,
+        &duplicate_import_parser.ast,
+        @intCast(duplicate_import_parser.ast.nodes.items.len),
+    ));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    const runtime_import_identity_snapshot = (try capturePlainNamedRuntimeImportIdentitySnapshot(
+        allocator,
+        &parser,
+        &analyzer,
+    )) orelse return error.MissingRuntimeImportIdentitySnapshot;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
+        minify,
+        &parser,
+        &transformer,
+        output_root,
+        null,
+        runtime_import_identity_snapshot,
+    ));
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
+
+    var runtime_local: ?ast_mod.NodeIndex = null;
+    var erased_type_local: ?ast_mod.NodeIndex = null;
+    var erased_type_source: ?ast_mod.NodeIndex = null;
+    for (parser.ast.nodes.items[0..transformer.parser_node_count]) |node| {
+        if (node.tag != .import_declaration) continue;
+        const import_decl = module_parser.readImportDeclExtras(&parser.ast, node.data.extra);
+        const specifier: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(parser.ast.extra_data.items[import_decl.specs_start]),
+        );
+        const specifier_node = parser.ast.getNode(specifier);
+        const local = if (specifier_node.tag == .import_specifier)
+            specifier_node.data.binary.right
+        else
+            specifier;
+        if (import_decl.is_type_only) {
+            erased_type_local = local;
+            erased_type_source = import_decl.source;
+        } else {
+            runtime_local = local;
+        }
+    }
+    const runtime_local_idx = runtime_local orelse return error.MissingRuntimeImportLocal;
+    const erased_type_local_idx = erased_type_local orelse return error.MissingDeclarationTypeImportLocal;
+    const erased_type_source_idx = erased_type_source orelse return error.MissingDeclarationTypeImportSource;
+    const runtime_symbol = transformer.symbol_ids.items[@backingInt(runtime_local_idx)] orelse
+        return error.MissingRuntimeImportSymbol;
+    const erased_type_symbol = transformer.symbol_ids.items[@backingInt(erased_type_local_idx)] orelse
+        return error.MissingDeclarationTypeImportSymbol;
+
+    var runtime_reference: ?usize = null;
+    for (transformer.references, 0..) |reference, index| {
+        if (@backingInt(reference.symbol_id) == runtime_symbol and reference.isValueUse()) {
+            runtime_reference = index;
+            break;
+        }
+    }
+    const runtime_reference_index = runtime_reference orelse return error.MissingRuntimeImportReference;
+    const original_references = transformer.references;
+    const mutable_references = try allocator.dupe(@import("semantic/symbol.zig").Reference, original_references);
+    transformer.references = mutable_references;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        null,
+    ));
+    const original_reference = mutable_references[runtime_reference_index];
+    mutable_references[runtime_reference_index].symbol_id = @fromBackingInt(@intCast(erased_type_symbol));
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_references[runtime_reference_index] = original_reference;
+
+    const runtime_reference_raw = @backingInt(original_reference.node_index);
+    const original_reference_node = transformer.ast.getNode(original_reference.node_index);
+    const original_reference_symbol = transformer.symbol_ids.items[runtime_reference_raw];
+    transformer.symbol_ids.items[runtime_reference_raw] = erased_type_symbol;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[runtime_reference_raw] = original_reference_symbol;
+
+    const original_binding_symbol = transformer.symbol_ids.items[@backingInt(runtime_local_idx)];
+    transformer.symbol_ids.items[@backingInt(runtime_local_idx)] = erased_type_symbol;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[@backingInt(runtime_local_idx)] = original_binding_symbol;
+
+    const original_symbol = transformer.symbols[runtime_symbol];
+    if (transformer.scopes.len < 2) return error.MissingAlternativeRuntimeImportScope;
+    const alternative_scope = @as(u32, if (original_symbol.scope_id.toIndex() == 0) 1 else 0);
+    const mutable_specifier_identities = @constCast(runtime_import_identity_snapshot.declarations[0].specifiers);
+    const original_snapshot_symbol_id = mutable_specifier_identities[0].symbol_id;
+    mutable_specifier_identities[0].symbol_id = erased_type_symbol;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_specifier_identities[0].symbol_id = original_snapshot_symbol_id;
+
+    const original_snapshot_symbol_scope = mutable_specifier_identities[0].symbol_scope;
+    mutable_specifier_identities[0].symbol_scope = @fromBackingInt(@intCast(alternative_scope));
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_specifier_identities[0].symbol_scope = original_snapshot_symbol_scope;
+
+    @constCast(transformer.symbols)[runtime_symbol].scope_id = @fromBackingInt(@intCast(alternative_scope));
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    @constCast(transformer.symbols)[runtime_symbol] = original_symbol;
+
+    const original_reference_scope = mutable_references[runtime_reference_index].scope_id;
+    const alternative_reference_scope = @as(u32, if (original_reference_scope.toIndex() == 0) 1 else 0);
+    mutable_references[runtime_reference_index].scope_id = @fromBackingInt(@intCast(alternative_reference_scope));
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_references[runtime_reference_index].scope_id = original_reference_scope;
+
+    const mutable_reference_identities = @constCast(runtime_import_identity_snapshot.references);
+    const original_snapshot_reference_scope = mutable_reference_identities[0].reference.scope_id;
+    mutable_reference_identities[0].reference.scope_id = @fromBackingInt(@intCast(alternative_reference_scope));
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_reference_identities[0].reference.scope_id = original_snapshot_reference_scope;
+
+    const reachable_before_import_mutations = try ast_walk.collectReachableNodeIndicesFrom(
+        allocator,
+        transformer.ast,
+        output_root,
+    );
+    defer allocator.free(reachable_before_import_mutations);
+    var output_runtime_import: ?ast_mod.NodeIndex = null;
+    for (reachable_before_import_mutations) |raw| {
+        const idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const node = transformer.ast.getNode(idx);
+        if (node.tag != .import_declaration or
+            !std.meta.eql(node.span, runtime_import_identity_snapshot.declarations[0].span)) continue;
+        output_runtime_import = idx;
+        break;
+    }
+    const output_runtime_import_idx = output_runtime_import orelse return error.MissingOutputRuntimeImport;
+    const output_runtime_import_node = transformer.ast.getNode(output_runtime_import_idx);
+    const runtime_import_extra = output_runtime_import_node.data.extra;
+    const original_output_import_span = output_runtime_import_node.span;
+    transformer.ast.nodes.items[@backingInt(output_runtime_import_idx)].span =
+        parser.ast.getNode(erased_type_source_idx).span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[@backingInt(output_runtime_import_idx)].span = original_output_import_span;
+
+    const runtime_specs_start = transformer.ast.extra_data.items[runtime_import_extra];
+    const original_runtime_spec = transformer.ast.extra_data.items[runtime_specs_start];
+    transformer.ast.extra_data.items[runtime_specs_start] = @backingInt(erased_type_local_idx);
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[runtime_specs_start] = original_runtime_spec;
+
+    const original_runtime_phase = transformer.ast.extra_data.items[runtime_import_extra + 3];
+    transformer.ast.extra_data.items[runtime_import_extra + 3] = 1;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[runtime_import_extra + 3] = original_runtime_phase;
+
+    const original_runtime_source = transformer.ast.extra_data.items[runtime_import_extra + 2];
+    transformer.ast.extra_data.items[runtime_import_extra + 2] = @backingInt(erased_type_source_idx);
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[runtime_import_extra + 2] = original_runtime_source;
+
+    const runtime_source_idx = runtime_import_identity_snapshot.declarations[0].source_index;
+    const original_runtime_source_node = transformer.ast.getNode(runtime_source_idx);
+    transformer.ast.nodes.items[@backingInt(runtime_source_idx)].span =
+        parser.ast.getNode(erased_type_source_idx).span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[@backingInt(runtime_source_idx)] = original_runtime_source_node;
+
+    const runtime_specifier_identity = runtime_import_identity_snapshot.declarations[0].specifiers[0];
+    const original_runtime_specifier_node = transformer.ast.getNode(runtime_specifier_identity.specifier_index);
+    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.specifier_index)].span =
+        runtime_specifier_identity.local_node.span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.specifier_index)] = original_runtime_specifier_node;
+
+    const original_runtime_imported_node = transformer.ast.getNode(runtime_specifier_identity.imported_index);
+    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.imported_index)].span =
+        runtime_specifier_identity.local_node.span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.imported_index)] = original_runtime_imported_node;
+
+    const original_local_node = transformer.ast.getNode(runtime_local_idx);
+    transformer.ast.nodes.items[@backingInt(runtime_local_idx)].span = original_reference_node.span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[@backingInt(runtime_local_idx)] = original_local_node;
+
+    transformer.ast.nodes.items[runtime_reference_raw].span =
+        transformer.ast.getNode(runtime_local_idx).span;
+    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[runtime_reference_raw] = original_reference_node;
+    transformer.references = original_references;
 }
 
 test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic graph" {
