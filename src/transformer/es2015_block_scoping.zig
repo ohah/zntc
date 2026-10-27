@@ -795,9 +795,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 }) },
             });
             const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{formal}), span);
-
-            const variable_name = try self.ast.addString(if (value.synthetic_name.len > 0) value.synthetic_name else self.ast.getText(value.name));
-            const target = try self.ast.addNode(.{ .tag = .assignment_target_identifier, .span = span, .data = .{ .string_ref = variable_name } });
+            const function_scope = try self.reserveGeneratedFunctionScope(owner_scope);
+            const target = try es_helpers.makeExactUserWriteTargetAtScope(
+                self,
+                variable,
+                function_scope,
+                span,
+            );
             const param_ref = try es_helpers.makeIdentifierRefFromSpan(self, param_name_span);
             const assignment = try es_helpers.makeAssignStmt(self, target, param_ref, span, 0);
             const body = try self.ast.addNode(.{
@@ -808,10 +812,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const declaration = try self.addExtraNode(.function_declaration, span, &.{
                 @backingInt(setter_binding), @backingInt(params), @backingInt(body), 0, none,
             });
-            const function_scope = try self.addGeneratedFunctionScope(owner_scope, declaration);
+            try self.bindReservedFunctionOwner(function_scope, declaration);
             const param_symbol = try self.declareSyntheticInScope(param_binding, span, .parameter, function_scope) orelse
                 @panic("ordinary loop Annex B setter parameter lost its exact SymbolId");
-            try self.addSyntheticRefInScope(target, variable, function_scope, .{ .write = true });
             try self.addSyntheticRefInScope(param_ref, param_symbol, function_scope, .{ .read = true });
             try self.annex_b_loop_setters.put(self.allocator, @backingInt(variable), declaration);
             try self.generator_function_storage_scopes.put(self.allocator, @backingInt(function_scope), {});
