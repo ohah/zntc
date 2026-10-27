@@ -89,7 +89,21 @@ pub fn isGraphSafePrimitiveDefineValue(value: []const u8) bool {
 
 pub fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
     if (defines.len == 0) return false;
+    var scratch_arena = std.heap.ArenaAllocator.init(ast.allocator);
+    defer scratch_arena.deinit();
+    var module_specifier_names = std.DynamicBitSet.initEmpty(scratch_arena.allocator(), ast.nodes.items.len) catch return true;
     for (ast.nodes.items) |node| {
+        if (node.tag != .import_specifier and node.tag != .export_specifier) continue;
+        const children = [_]NodeIndex{ node.data.binary.left, node.data.binary.right };
+        for (children) |child| {
+            if (child.isNone()) continue;
+            const raw = @backingInt(child);
+            if (@as(usize, raw) >= ast.nodes.items.len) return true;
+            module_specifier_names.set(raw);
+        }
+    }
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (module_specifier_names.isSet(raw)) continue;
         if (matchedDefineValue(ast, node, defines) != null) return true;
     }
     return false;
