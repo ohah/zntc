@@ -669,10 +669,10 @@ fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
         !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
 }
 
-/// Primitive TypeScript keywords and containers/combinations made only from
-/// those keywords erase no bindings, references, or scopes. Other type nodes
-/// may carry semantic edges, so keep them on reanalysis until those edges have
-/// an explicit identity edit.
+/// Primitive TypeScript keywords and structural wrappers/combinations made
+/// only from those keywords erase no bindings, references, or scopes. Other
+/// type nodes may carry semantic edges, so keep them on reanalysis until those
+/// edges have an explicit identity edit.
 fn canRetainIdentityFreeTypeErasures(ast: *const ast_mod.Ast) bool {
     var found_type_erasure = false;
     for (ast.nodes.items) |node| {
@@ -695,6 +695,10 @@ fn canRetainIdentityFreeTypeErasures(ast: *const ast_mod.Ast) bool {
             .ts_array_type,
             .ts_tuple_type,
             .ts_union_type,
+            .ts_intersection_type,
+            .ts_optional_type,
+            .ts_rest_type,
+            .ts_type_operator,
             .ts_parenthesized_type,
             => {},
             else => return false,
