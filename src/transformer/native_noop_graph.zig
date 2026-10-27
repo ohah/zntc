@@ -158,6 +158,32 @@ pub fn forModule(a: std.mem.Allocator, m: *const module.Module, opts: Options) !
     source.module_frame = .{ .pointer = m, .index = m.index };
     return source;
 }
+/// Admission runs before owner binding: validate the actual original module
+/// and source domain, without manufacturing a semantic owner for preparation.
+pub fn preparedMatches(source: *const Source, m: *const module.Module) bool {
+    const frame = source.module_frame orelse return false;
+    return frame.pointer == m and frame.index == m.index and m.ast != null and m.semantic != null and
+        source.ast == &m.ast.? and source.output == null and source.owner == .unassigned and
+        std.meta.eql(source.metadata, Metadata.capture(&m.ast.?)) and
+        m.import_records.len == 0 and m.import_bindings.len == 0;
+}
+/// Once admission chose this prepared frame, a missing installation or lost
+/// late certificate must force the existing fallback, not skip completion.
+pub fn requirementSatisfied(self: anytype, prepared: ?*const Source) bool {
+    const expected = prepared orelse return true;
+    const installed = self.native_noop_source orelse return false;
+    return installed.ast == expected.ast and installed.root == expected.root and
+        std.meta.eql(installed.metadata, expected.metadata) and std.meta.eql(installed.module_frame, expected.module_frame) and
+        installed.output == self.ast and installed.ast == self.semantic_source_ast and
+        installed.owner != .unassigned and moduleValid(installed) and
+        sameStorage(installed.nodes, expected.nodes) and sameStorage(installed.references, expected.references) and
+        sameStorage(installed.symbols, expected.symbols) and sameStorage(installed.scopes, expected.scopes) and
+        sameStorage(installed.owners, expected.owners) and sameStorage(installed.node_mask, expected.node_mask) and
+        sameStorage(installed.reference_indices, expected.reference_indices) and sameStorage(installed.owner_scopes, expected.owner_scopes);
+}
+fn sameStorage(a: anytype, b: @TypeOf(a)) bool {
+    return a.ptr == b.ptr and a.len == b.len;
+}
 fn moduleValid(source: Source) bool {
     const frame = source.module_frame orelse return false;
     const m = frame.pointer;

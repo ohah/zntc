@@ -635,3 +635,49 @@ test "native no-op graph native hardening keeps module domains metadata and copy
     try std.testing.expect(try Native.beforeBinder(&f.t, f.root));
     try std.testing.expect(try Native.complete(&f.t, &f.sem, f.root));
 }
+
+test "native no-op graph native failed source allocation supplies no admission alternative" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const fixture = try NativeFixture.init(a, inputs[0]);
+    const m = fixture.t.native_noop_source.?.module_frame.?.pointer;
+    const prepared = (try Native.forModule(std.testing.allocator, m, fixture.t.options)) orelse return error.MissingNativeSource;
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(Native.preparedMatches(&prepared, m));
+    const prepass = @import("../bundler/graph/transform_prepass.zig");
+    try std.testing.expect(prepass.nativeNoopPreparedAdmissionForTest(m, fixture.t.options, &prepared));
+    try std.testing.expect(!prepass.nativeNoopPreparedAdmissionForTest(m, fixture.t.options, null));
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const unavailable: ?Native.Source = Native.forModule(failing.allocator(), m, fixture.t.options) catch |err| blk: {
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        break :blk null;
+    };
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expect(unavailable == null);
+    try std.testing.expect(!prepass.nativeNoopPreparedAdmissionForTest(m, fixture.t.options, if (unavailable) |*source| source else null));
+}
+
+test "native no-op graph native required installation and late snapshot identity never fail open" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var fixture = try NativeFixture.init(a, inputs[2]);
+    const original = fixture.t.native_noop_source.?;
+    const rows = try a.dupe(symbol.Reference, fixture.sem.references);
+    try std.testing.expect(Native.requirementSatisfied(&fixture.t, &original));
+    fixture.t.native_noop_source = null;
+    try std.testing.expect(!Native.requirementSatisfied(&fixture.t, &original));
+    try std.testing.expect(!try Native.complete(&fixture.t, &fixture.sem, fixture.root));
+    fixture.t.native_noop_source = original;
+    inline for (.{ "nodes", "references", "symbols", "scopes", "owners", "node_mask", "reference_indices", "owner_scopes" }) |field| {
+        const prior = @field(original, field);
+        @field(fixture.t.native_noop_source.?, field) = try a.dupe(@typeInfo(@TypeOf(prior)).pointer.child, prior);
+        // Same values/domain/root, but not the one owned capture admission chose.
+        try std.testing.expect(!Native.requirementSatisfied(&fixture.t, &original));
+        @field(fixture.t.native_noop_source.?, field) = prior;
+    }
+    for (rows, fixture.sem.references) |x, y| try std.testing.expect(std.meta.eql(x, y));
+    try std.testing.expect(Native.requirementSatisfied(&fixture.t, &original));
+    try std.testing.expect(try Native.complete(&fixture.t, &fixture.sem, fixture.root));
+}
