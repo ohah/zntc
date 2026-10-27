@@ -41,6 +41,7 @@ pub const es_helpers = @import("es_helpers.zig");
 pub const minify = @import("minify.zig");
 
 test {
+    _ = @import("nfe_name_environment_test.zig");
     _ = @import("loop_body_scope_semantic_test.zig");
     _ = @import("for_await_wrapper_scope_semantic_test.zig");
     _ = @import("for_in_control_scope_semantic_test.zig");
