@@ -3179,6 +3179,40 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('standalone attributed declaration-level type imports retain the graph only after exact erasure', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-attributed-declaration-type-import-'));
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        "import type { Shape } from './types' with { 'resolution-mode': 'import' };",
+        'type Alias = Shape;',
+        'const shape: Alias = { value: 42 };',
+        'console.log(shape.value);',
+        '',
+      ].join('\n'),
+    );
+    try {
+      const result = runCoverage(input, TARGETS[0], dir, true);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(transpileGraphModeProblems(result.stderr, true, 'retained'), result.stderr).toEqual(
+        [],
+      );
+
+      const output = readFileSync(join(dir, 'out.js'), 'utf8');
+      expect(output).not.toContain('import type');
+      expect(output).not.toContain('resolution-mode');
+      expect(output).not.toContain('./types');
+      const actual = runNode([join(dir, 'out.js')]);
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('all oracle fixtures retain exact identity accounting in legacy .unknown mode', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-matrix-'));
     const expectedParseFailures = new Set(LENIENT_UNKNOWN_PARSE_DIAGNOSTICS.keys());
