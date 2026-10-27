@@ -25,11 +25,12 @@ test "object builtin producer fallback keeps fresh globals and source declaratio
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const source = "function f(Object){var k='x',p={value:3},o={__proto__:p,get[k](){return super.value}};return o.x+Object.keep}console.log(f({keep:1}))";
+    const source = "function f(Object){var k='x',p={value:3},o={__proto__:p,get[k](){return super.value}};return o.x+Object.keep}console.log(f({keep:1}));Object;";
     var scanner = try Scanner.init(a, source);
     var parser = Parser.init(a, &scanner);
     _ = try parser.parse();
     var initial = Analyzer.init(a, &parser.ast);
+    initial.collect_unresolved_reference_nodes = true;
     try initial.analyze();
     var binding: NodeIndex = .none;
     for (parser.ast.nodes.items, 0..) |node, raw| {
@@ -57,6 +58,14 @@ test "object builtin producer fallback keeps fresh globals and source declaratio
     try std.testing.expect(std.meta.activeTag(context.use_scope) == .deferred_until_reanalysis);
     try std.testing.expect(!t.record_explicit_global_references);
     try std.testing.expect(t.synthetic_idents == null);
+    var wrong_scope = context;
+    const source_parameter_scope = initial.symbols.items[old_sid].scope_id;
+    try std.testing.expect(source_parameter_scope != context.source_owner_scope.?);
+    wrong_scope.source_owner_scope = source_parameter_scope;
+    try std.testing.expectError(error.InvalidNode, builtin.makeReference(&t, wrong_scope));
+    wrong_scope = context;
+    wrong_scope.use_scope = .{ .output = source_parameter_scope };
+    try std.testing.expectError(error.InvalidNode, builtin.makeReference(&t, wrong_scope));
     const output_root = try t.transform();
     const marked = try t.ownedExplicitGlobalRefNodes(a);
     var objects: usize = 0;
@@ -67,6 +76,25 @@ test "object builtin producer fallback keeps fresh globals and source declaratio
         try std.testing.expect(raw >= t.symbol_ids.items.len or t.symbol_ids.items[raw] == null);
     }
     try std.testing.expectEqual(@as(usize, 2), objects);
+    const fresh: NodeIndex = @fromBackingInt(@intCast(marked[0]));
+    try builtin.validateBornReference(&t, context, t.parser_node_count, fresh);
+    try std.testing.expectError(error.InvalidNode, builtin.validateBornReference(&t, context, t.parser_node_count, .none));
+    try std.testing.expectError(error.InvalidNode, builtin.validateBornReference(&t, context, t.parser_node_count, @fromBackingInt(@intCast(t.ast.nodes.items.len))));
+    var source_external: NodeIndex = .none;
+    var unresolved = initial.unresolved_reference_nodes.keyIterator();
+    while (unresolved.next()) |raw| {
+        if (std.mem.eql(u8, parser.ast.getText(parser.ast.nodes.items[raw.*].span), "Object")) source_external = @fromBackingInt(@intCast(raw.*));
+    }
+    try std.testing.expect(!source_external.isNone());
+    try std.testing.expectError(error.InvalidNode, builtin.validateBornReference(&t, context, t.parser_node_count, source_external));
+    const old_ids_len = t.symbol_ids.items.len;
+    try t.symbol_ids.resize(a, t.ast.nodes.items.len);
+    @memset(t.symbol_ids.items[old_ids_len..], null);
+    t.symbol_ids.items[@backingInt(fresh)] = old_sid;
+    try std.testing.expectError(error.InvalidNode, builtin.validateBornReference(&t, context, t.parser_node_count, fresh));
+    t.symbol_ids.items[@backingInt(fresh)] = null;
+    try builtin.validateBornReference(&t, context, t.parser_node_count, fresh);
+    try std.testing.expectEqual(old_sid, t.symbol_ids.items[@backingInt(binding)].?);
     var output = Analyzer.init(a, t.ast);
     output.explicit_global_ref_nodes = marked;
     output.collect_unresolved_reference_nodes = true;

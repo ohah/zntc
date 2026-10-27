@@ -155,9 +155,18 @@ pub fn makeReference(self: *Transformer, context: Context) Error!NodeIndex {
     try self.explicit_global_reference_nodes.ensureUnusedCapacity(self.allocator, 1);
     const first_fresh = self.ast.nodes.items.len;
     const reference = try helpers.makeGlobalRef(self, "Object");
-    const raw = @backingInt(reference);
-    if (raw < first_fresh or self.ast.getNode(reference).tag != .identifier_reference or
-        (raw < self.symbol_ids.items.len and self.symbol_ids.items[raw] != null)) return error.InvalidNode;
-    self.explicit_global_reference_nodes.putAssumeCapacity(raw, {});
+    try validateBornReference(self, context, first_fresh, reference);
+    self.explicit_global_reference_nodes.putAssumeCapacity(@backingInt(reference), {});
     return reference;
+}
+
+/// Read-only birth validation also accepts hostile test/API inputs. Do not
+/// dereference a sentinel or an out-of-bounds index before rejecting it.
+pub fn validateBornReference(self: *const Transformer, context: Context, first_fresh: usize, reference: NodeIndex) Error!void {
+    try validate(self, context);
+    if (reference.isNone() or @backingInt(reference) >= self.ast.nodes.items.len or first_fresh > self.ast.nodes.items.len) return error.InvalidNode;
+    const raw = @backingInt(reference);
+    if (raw < first_fresh) return error.InvalidNode;
+    if (self.ast.getNode(reference).tag != .identifier_reference) return error.InvalidNode;
+    if (raw < self.symbol_ids.items.len and self.symbol_ids.items[raw] != null) return error.InvalidNode;
 }
