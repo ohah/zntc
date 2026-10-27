@@ -706,7 +706,14 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_type_operator,
             .ts_parenthesized_type,
             .ts_type_reference,
+            .ts_qualified_name,
             .ts_type_query,
+            // Literal type nodes, including the parsed module-specifier type
+            // inside `import("module").Type`, carry no runtime identity.
+            .ts_literal_type,
+            // `import("module").Type` exists only in erased type syntax; unlike
+            // an ImportExpression it creates no runtime module edge or binding.
+            .ts_import_type,
             => {},
             else => return false,
         }
