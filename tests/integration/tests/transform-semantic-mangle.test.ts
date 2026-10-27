@@ -948,6 +948,152 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(reference.stdout);
   });
 
+  test('standalone TypeScript reuses the transform graph for erased declaration-level type imports', async () => {
+    const retainedCases = [
+      {
+        name: 'named type import',
+        source: `import type { Item } from './types'; const item: Item = { value: 3 }; console.log(item.value);`,
+        expected: '3',
+      },
+      {
+        name: 'aliased type import and local alias',
+        source: `import type { Item as Model } from './types'; type Alias = Model; const item: Alias = { value: 4 }; console.log(item.value + 1);`,
+        expected: '5',
+      },
+      {
+        name: 'default type import',
+        source: `import type Item from './default-types'; const item: Item = { value: 5 }; console.log(item.value);`,
+        expected: '5',
+      },
+      {
+        name: 'namespace type import',
+        source: `import type * as Types from './types'; const item: Types.Item = { value: 6 }; console.log(item.value);`,
+        expected: '6',
+      },
+      {
+        name: 'multiple imported names in an intersection',
+        source: `import type { Item, Flag } from './types'; type Combined = Item & Flag; const item: Combined = { value: 7, flag: true }; console.log(item.value + Number(item.flag));`,
+        expected: '8',
+      },
+      {
+        name: 'generic constraint and inferred object',
+        source: `import type { Item } from './types'; function read<T extends Item>(value: T): number { const result: number = value.value; return result; } console.log(read({ value: 9 }));`,
+        expected: '9',
+      },
+      {
+        name: 'interface extends imported type',
+        source: `import type { Base } from './types'; interface Local extends Base { extra: number } const item: Local = { value: 10, extra: 1 }; console.log(item.value + item.extra);`,
+        expected: '11',
+      },
+      {
+        name: 'class implements imported type',
+        source: `import type { Shape } from './types'; class Value implements Shape { value = 12; } console.log(new Value().value);`,
+        expected: '12',
+      },
+      {
+        name: 'type assertion and satisfies',
+        source: `import type { Item } from './types'; const item = ({ value: 13 } as Item) satisfies Item; console.log(item.value);`,
+        expected: '13',
+      },
+      {
+        name: 'indexed access type',
+        source: `import type { Item } from './types'; type ItemValue = Item['value']; const value: ItemValue = 14; console.log(value);`,
+        expected: '14',
+      },
+    ] as const;
+    const fixture = await createFixture({
+      ...Object.fromEntries(retainedCases.map((item, index) => [`case-${index}.ts`, item.source])),
+      'types.ts': `export interface Item { value: number } export interface Flag { flag: boolean } export interface Base { value: number } export interface Shape { value: number }`,
+      'default-types.ts': 'export default interface Item { value: number }',
+      'values.mjs': 'export const runtimeValue = 2;',
+      'effects.mjs': 'globalThis.__typeImportEffect = 3;',
+      'mixed-import.ts': `import type { Item } from './types'; import { runtimeValue } from './values.mjs'; const item: Item = { value: runtimeValue }; console.log(item.value);`,
+      'mixed-inline-import.ts': `import type { Item } from './types'; import { type Flag } from './types'; const item: Item & Flag = { value: 8, flag: false }; console.log(item.value + Number(item.flag));`,
+      'mixed-side-effect-import.ts': `import type { Item } from './types'; import './effects.mjs'; const item: Item = { value: globalThis.__typeImportEffect }; console.log(item.value + 1);`,
+      'type-import-used-as-value.ts': `import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);`,
+      'type-import-name-shadowed-by-runtime-binding.ts': `import type { Model } from './types'; function read(Model: number) { const value: Model = Model + 1; return value; } console.log(read(4));`,
+      'type-import-with-attributes.ts': `import type { Item } from './types' with { "resolution-mode": "import" }; const item: Item = { value: 15 }; console.log(item.value);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const cases = [
+      ...retainedCases.map((item, index) => ({
+        name: item.name,
+        file: `case-${index}.ts`,
+        expected: item.expected,
+        graph: 'retained' as const,
+      })),
+      {
+        name: 'declaration-level type import mixed with a runtime import',
+        file: 'mixed-import.ts',
+        expected: '2',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'declaration-level and inline type imports mixed together',
+        file: 'mixed-inline-import.ts',
+        expected: '8',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'declaration-level type import mixed with a side-effect import',
+        file: 'mixed-side-effect-import.ts',
+        expected: '4',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'erased imported binding still used as a runtime reference',
+        file: 'type-import-used-as-value.ts',
+        expected: '21',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'erased imported name collides with an emitted runtime binding',
+        file: 'type-import-name-shadowed-by-runtime-binding.ts',
+        expected: '5',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'declaration-level type import with import attributes',
+        file: 'type-import-with-attributes.ts',
+        expected: '15',
+        graph: 'reanalyzed' as const,
+      },
+    ];
+
+    for (const [index, item] of cases.entries()) {
+      const input = join(fixture.dir, item.file);
+      const output = join(fixture.dir, `output-${index}.mjs`);
+      const result = await runZntc(
+        [input, '-o', output, '--target=esnext', '--minify-identifiers'],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        },
+      );
+      expect(result.exitCode, `${item.name}: ${result.stderr}`).toBe(0);
+      const mode = result.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-transpile-mode ') && line.includes(input),
+        );
+      expect(mode, item.name).toContain(`semantic_graph=${item.graph}`);
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes(input));
+      expect(identity, `${item.name}: ${result.stderr}`).toBeDefined();
+      expect(identity, item.name).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity, `${item.name}: ${counter}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted, item.name).not.toContain('import type');
+      const transformed = await runNode(output);
+      expect(transformed.stderr, item.name).toBe('');
+      expect(transformed.stdout.trim(), item.name).toBe(item.expected);
+    }
+  });
+
   test('type-erased TypeScript CommonJS output reserves wrapper names', async () => {
     const fixture = await createFixture({
       'dependency.cjs': 'exports.value = 8;\n',
