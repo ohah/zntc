@@ -4962,6 +4962,143 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('plain JavaScript non-verbatim value imports retain their graph under identifier minification', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-js-import-minify-identifiers-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    const sideEffect = (exportText: string) =>
+      [
+        'globalThis.__zntcImportEvaluations = (globalThis.__zntcImportEvaluations || 0) + 1;',
+        exportText,
+        '',
+      ].join('\n');
+    writeFileSync(
+      input,
+      [
+        "import { value as namedValue } from './named.js';",
+        "import defaultValue from './default.js';",
+        "import * as namespace from './namespace.js';",
+        "import { unusedValue } from './unused.js';",
+        "import unusedDefault from './unused-default.js';",
+        "import * as unusedNamespace from './unused-namespace.js';",
+        "import './side-effect.js';",
+        "import { usedValue, unusedSibling } from './mixed.js';",
+        "import { firstValue } from './duplicate.js';",
+        "import { secondValue } from './duplicate.js';",
+        'globalThis.__zntcImportResult = namedValue + defaultValue + namespace.value + usedValue + firstValue + secondValue;',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(dir, 'named.js'), sideEffect('export const value = 10;'));
+    writeFileSync(join(dir, 'default.js'), sideEffect('export default 20;'));
+    writeFileSync(join(dir, 'namespace.js'), sideEffect('export const value = 12;'));
+    writeFileSync(join(dir, 'unused.js'), sideEffect('export const unusedValue = 1;'));
+    writeFileSync(join(dir, 'unused-default.js'), sideEffect('export default 1;'));
+    writeFileSync(join(dir, 'unused-namespace.js'), sideEffect('export const value = 1;'));
+    writeFileSync(join(dir, 'side-effect.js'), sideEffect(''));
+    writeFileSync(
+      join(dir, 'mixed.js'),
+      sideEffect('export const usedValue = 3; export const unusedSibling = 100;'),
+    );
+    writeFileSync(
+      join(dir, 'duplicate.js'),
+      sideEffect('export const firstValue = 5; export const secondValue = 6;'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.js:'),
+      );
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.js:'),
+      );
+      expect(identity, proc.stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const runtime = spawnSync(
+        'node',
+        [
+          '-e',
+          `globalThis.__zntcImportResult = 0; globalThis.__zntcImportEvaluations = 0; require(${JSON.stringify(output)}); process.stdout.write(JSON.stringify({ value: globalThis.__zntcImportResult, evaluations: globalThis.__zntcImportEvaluations }) + '\\n');`,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('{"value":56,"evaluations":9}\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('non-verbatim TypeScript value imports keep semantic reanalysis under identifier minification', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-ts-import-minify-identifiers-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(input, ["import { value } from './dep';", 'console.log(value);', ''].join('\n'));
+    writeFileSync(join(dir, 'dep.ts'), 'export const value: number = 42;\n');
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.ts:'),
+      );
+      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const identity = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.ts:'),
+      );
+      expect(identity, proc.stderr).toBeDefined();
+      expect(exactSchemaProblems(identity ?? ''), identity).toEqual([]);
+
+      const runtime = spawnSync('node', [output], { cwd: dir, encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('no-op decorator metadata retains the bundled TypeScript graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-empty-decorator-metadata-'));
     const input = join(dir, 'entry.ts');

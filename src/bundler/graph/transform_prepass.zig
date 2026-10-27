@@ -421,10 +421,10 @@ fn isSupportedPlainExportAll(
 }
 
 /// Keeping the semantic graph is safe only when the transform leaves each
-/// runtime import's module-graph shape unchanged. Ordinary unused named
-/// imports can be elided, and inline type-only specifiers can be removed, so
-/// runtime imports require verbatim syntax except for the plain-JavaScript
-/// console-drop subset proved below.
+/// runtime import's module-graph shape unchanged. TypeScript can elide unused
+/// imports and inline type-only specifiers, so those imports require verbatim
+/// syntax except for the bounded cases proved below. Plain JavaScript value
+/// imports have no TypeScript elision path.
 fn hasStableRuntimeImports(
     ast: *const ast_mod.Ast,
     options: TransformOptions,
@@ -635,6 +635,83 @@ fn droppedLabelBodiesPreserveDynamicEnvironment(
             spanIsWithinDroppedBody(outer_bodies, symbol.declaration_span)) return false;
     }
     return true;
+}
+
+fn canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    found_transform: bool,
+    has_dropped_labeled_statement: bool,
+    has_mapped_import_split: bool,
+) bool {
+    const minify_identifiers = if (comptime @hasField(@TypeOf(self.*), "minify_identifiers"))
+        self.minify_identifiers
+    else
+        false;
+    return minify_identifiers and module.module_type == .js and !ast.is_typescript and
+        !self.flow and !isFlowPath(module.path) and !options.minify_syntax and
+        !found_transform and !has_dropped_labeled_statement and !has_mapped_import_split;
+}
+
+test "plain JavaScript identifier-import retention rejects unsafe gates" {
+    const allocator = std.testing.allocator;
+    var ast = ast_mod.Ast.init(allocator, "");
+    defer ast.deinit();
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "entry.js");
+    module.module_type = .js;
+    const Context = struct {
+        minify_identifiers: bool = true,
+        flow: bool = false,
+    };
+    const Case = struct {
+        name: []const u8,
+        minify_identifiers: bool = true,
+        module_type: @TypeOf(module.module_type) = .js,
+        ast_is_typescript: bool = false,
+        flow: bool = false,
+        path: []const u8 = "entry.js",
+        minify_syntax: bool = false,
+        found_transform: bool = false,
+        dropped_label: bool = false,
+        mapped_import_split: bool = false,
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{ .name = "plain JavaScript identifier minification", .expected = true },
+        .{ .name = "identifier minification disabled", .minify_identifiers = false, .expected = false },
+        .{ .name = "TypeScript module", .module_type = .ts, .expected = false },
+        .{ .name = "JSX module", .module_type = .jsx, .expected = false },
+        .{ .name = "TypeScript AST", .ast_is_typescript = true, .expected = false },
+        .{ .name = "Flow option", .flow = true, .expected = false },
+        .{ .name = "Flow file path", .path = "entry.js.flow", .expected = false },
+        .{ .name = "syntax minification", .minify_syntax = true, .expected = false },
+        .{ .name = "graph-changing transform", .found_transform = true, .expected = false },
+        .{ .name = "label deletion", .dropped_label = true, .expected = false },
+        .{ .name = "mapped import split", .mapped_import_split = true, .expected = false },
+    };
+    var context: Context = .{};
+    var options: TransformOptions = .{};
+    for (cases) |case| {
+        context.minify_identifiers = case.minify_identifiers;
+        context.flow = case.flow;
+        module.module_type = case.module_type;
+        module.path = case.path;
+        ast.is_typescript = case.ast_is_typescript;
+        options.minify_syntax = case.minify_syntax;
+        const actual = canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
+            &context,
+            &module,
+            &ast,
+            options,
+            case.found_transform,
+            case.dropped_label,
+            case.mapped_import_split,
+        );
+        if (actual != case.expected) std.debug.print("case failed: {s}\n", .{case.name});
+        try std.testing.expectEqual(case.expected, actual);
+    }
 }
 
 /// Direct eval cannot inspect declarations that are retained outside a
@@ -7270,14 +7347,28 @@ fn canKeepPrepassSemanticGraph(
     if (!hasSupportedTopLevelExportDeclarations(module, has_mapped_import_split)) return false;
     const allow_mapped_runtime_imports = has_mapped_import_split and
         canRetainMappedRuntimeImports(self, module, ast);
-    const allow_nonverbatim_javascript_imports = allow_mapped_runtime_imports or canRetainPlainJavaScriptImportsForConsoleDrop(
-        self,
-        module,
-        ast,
-        options,
-        retained_simple_console_drops,
-    );
-    if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_javascript_imports)) return false;
+    const possible_plain_javascript_imports_for_identifier_minification =
+        canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
+            self,
+            module,
+            ast,
+            options,
+            false,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
+    const allow_plain_javascript_imports_for_console_drop =
+        canRetainPlainJavaScriptImportsForConsoleDrop(
+            self,
+            module,
+            ast,
+            options,
+            retained_simple_console_drops,
+        );
+    const allow_nonverbatim_imports_before_transform_scan = allow_mapped_runtime_imports or
+        possible_plain_javascript_imports_for_identifier_minification or
+        allow_plain_javascript_imports_for_console_drop;
+    if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_before_transform_scan)) return false;
 
     const safe_styled_components = options.styled_components;
     // `drop_debugger` removes a statement with no binding or reference edges,
@@ -7430,6 +7521,28 @@ fn canKeepPrepassSemanticGraph(
             else => {},
         }
     }
+    // Identifier-only minification changes local spellings but does not edit
+    // ordinary JavaScript import declarations. Unlike TypeScript, JavaScript
+    // has no unused/type-only import elision path. Keep this admission narrow:
+    // syntax edits, graph-changing transforms, label deletion, and mapped path
+    // splits retain their independently audited gates below.
+    const unchanged_plain_javascript_imports_for_identifier_minification =
+        canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
+            self,
+            module,
+            ast,
+            options,
+            found_transform,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
+    const allow_nonverbatim_imports_after_transform_scan = allow_mapped_runtime_imports or
+        unchanged_plain_javascript_imports_for_identifier_minification or
+        allow_plain_javascript_imports_for_console_drop;
+    if (!options.verbatim_module_syntax and
+        allow_nonverbatim_imports_before_transform_scan != allow_nonverbatim_imports_after_transform_scan and
+        !hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_after_transform_scan)) return false;
+
     // If the exhaustive preflight found no lowering or plugin edits, the
     // parser's graph is already the exact graph for this module. Retaining it
     // avoids an otherwise unnecessary semantic rescan for ordinary JavaScript

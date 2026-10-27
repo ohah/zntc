@@ -26,6 +26,60 @@ describe('identifier constructor source audit', () => {
     expect(result.violations.join('\n')).toContain('makeBindingIdentifier 직접 호출');
   });
 
+  test('rejects identifier tags assigned through a later variable write', () => {
+    const source = `
+const Tag = enum { none, identifier_reference, binding_identifier };
+fn reassignedTag() void {
+  var tag: Tag = .none;
+  tag = .identifier_reference;
+  const node = .{ .tag = tag };
+  _ = node;
+}
+fn reassignedAliasChain() void {
+  var sourceTag: Tag = .none;
+  var tag: Tag = .none;
+  sourceTag = .binding_identifier;
+  tag = sourceTag;
+  const node = .{ .tag = tag };
+  _ = node;
+}
+fn conditionalWrite(flag: bool) void {
+  var tag: Tag = .none;
+  if (flag) {
+    tag = .identifier_reference;
+  } else {
+    tag = .none;
+  }
+  const node = .{ .tag = tag };
+  _ = node;
+}
+fn overwrittenBySafeTag() void {
+  var tag: Tag = .identifier_reference;
+  tag = .none;
+  const node = .{ .tag = tag };
+  _ = node;
+}
+fn tagWriteAfterUse() void {
+  var tag: Tag = .none;
+  const node = .{ .tag = tag };
+  tag = .identifier_reference;
+  _ = node;
+}
+`;
+    const result = scanIdentifierConstructors(
+      source,
+      'src/transformer/reassigned_tag.zig',
+      {},
+      new Map(),
+    );
+
+    expect(result.violations, result.violations.join('\n')).toHaveLength(3);
+    expect(result.violations.join('\n')).toContain(
+      'identifier_reference 간접 식별자 태그 직접 생성',
+    );
+    expect(result.violations.join('\n')).toContain('binding_identifier 간접 식별자 태그 직접 생성');
+  });
+
   test('ignores constructor-shaped text and test-only AST fixtures', () => {
     const source = `
 fn safe() void {
