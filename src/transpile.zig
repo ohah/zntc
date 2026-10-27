@@ -81,6 +81,9 @@ const TransformPlan = struct {
 const AstFacts = struct {
     /// `import_declaration` 노드 존재 여부. binding-lite elision 가능성 판정.
     has_import_declaration: bool = false,
+    /// Declaration-level `import type` changes the source graph but must be
+    /// absent from output before the standalone TypeScript path can reuse it.
+    has_declaration_level_type_import: bool = false,
     /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
     has_non_named_import: bool = false,
     /// The legacy lenient source mode silently accepts TypeScript syntax. Its
@@ -169,7 +172,11 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
             facts.has_typescript_syntax = true;
         }
         switch (node.tag) {
-            .import_declaration => facts.has_import_declaration = true,
+            .import_declaration => {
+                facts.has_import_declaration = true;
+                const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+                if (import_decl.is_type_only) facts.has_declaration_level_type_import = true;
+            },
             .import_default_specifier,
             .import_namespace_specifier,
             => facts.has_non_named_import = true,
@@ -780,8 +787,12 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     const may_admit_erased_ambient_global_namespace = facts.has_lenient_ambient_global_namespace and
         !facts.has_lenient_unhandled_runtime_syntax and
         erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(transformer, root);
-    const may_admit_erased_imports = parser.source_mode == .js_lenient and
+    const may_admit_erased_js_imports = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_import_declaration and
+        erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
+    const may_admit_erased_ts_declaration_type_imports = parser.source_mode == .ts and
+        facts.has_declaration_level_type_import and
+        onlyDeclarationLevelTypeImports(&parser.ast) and
         erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_ambient_namespace_import_equals = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
@@ -790,16 +801,36 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
         (runtime_import_equals_graph_proof orelse
             runtimeImportEqualsBindingsHaveExactOutputIdentity(transformer, root));
-    return canMangleWithTransformFacts(
+    const can_mangle = canMangleWithTransformFacts(
         options,
         parser,
         facts,
         may_admit_erased_const_enum,
         may_admit_erased_ambient_string_module,
         may_admit_erased_ambient_global_namespace,
-        may_admit_erased_imports,
+        may_admit_erased_js_imports or may_admit_erased_ts_declaration_type_imports,
         may_admit_erased_ambient_namespace_import_equals or may_admit_runtime_import_equals,
     );
+    return can_mangle and (parser.source_mode != .ts or
+        !facts.has_declaration_level_type_import or may_admit_erased_ts_declaration_type_imports);
+}
+
+/// Reuse a transform graph for erased imports only after proving that none of
+/// their exact identities or decoded local names survive in output. The
+/// TypeScript standalone caller adds a narrower declaration-level-only guard.
+fn onlyDeclarationLevelTypeImports(ast: *const Ast) bool {
+    var found_import = false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        found_import = true;
+        if (node.data.extra >= ast.extra_data.items.len or
+            ast.extra_data.items.len - node.data.extra < 6) return false;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (!import_decl.is_type_only or import_decl.phase != .none or import_decl.attrs_len != 0 or
+            import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
+    }
+    return found_import;
 }
 
 /// Lenient JavaScript mode rejects every import declaration by default. Reuse
@@ -5442,6 +5473,106 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     _ = try accessor_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), accessor_parser.errors.items.len);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
+}
+
+test "#6193 TypeScript declaration-level type imports require exact output erasure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Shape } from './types'; type Alias = Shape; " ++
+        "const shape: Alias = { value: 3 }; function read(input: Shape): number { " ++
+        "const output: number = input.value; return output; } console.log(read(shape));";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .ts);
+    const source_facts = try collectAstFacts(allocator, &parser.ast);
+    try std.testing.expect(source_facts.has_declaration_level_type_import);
+    try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
+    try std.testing.expect(onlyDeclarationLevelTypeImports(&parser.ast));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    // The original source tree still contains the import and must not prove
+    // output erasure merely because the parser mode is TypeScript.
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, source_root));
+
+    var import_local: ?ast_mod.NodeIndex = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count]) |node| {
+        if (node.tag != .import_declaration) continue;
+        const import_decl = module_parser.readImportDeclExtras(transformer.ast, node.data.extra);
+        const specifier: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(transformer.ast.extra_data.items[import_decl.specs_start]),
+        );
+        const specifier_node = transformer.ast.getNode(specifier);
+        import_local = specifier_node.data.binary.right;
+        break;
+    }
+    const import_local_idx = import_local orelse return error.MissingDeclarationTypeImportLocal;
+    const imported_symbol = transformer.symbol_ids.items[@backingInt(import_local_idx)] orelse
+        return error.MissingDeclarationTypeImportSymbol;
+    const output_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+    defer allocator.free(output_reachable);
+    var output_read: ?ast_mod.NodeIndex = null;
+    for (output_reachable) |raw| {
+        const index: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        const node = transformer.ast.getNode(index);
+        if (node.tag == .identifier_reference and std.mem.eql(u8, transformer.ast.getText(node.span), "shape")) {
+            output_read = index;
+            break;
+        }
+    }
+    const output_read_idx = output_read orelse return error.MissingOutputShapeReference;
+    const original_output_symbol = transformer.symbol_ids.items[@backingInt(output_read_idx)];
+    transformer.symbol_ids.items[@backingInt(output_read_idx)] = imported_symbol;
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.symbol_ids.items[@backingInt(output_read_idx)] = original_output_symbol;
+
+    // A generated or edited reference can carry a different SymbolId while
+    // still spelling the erased import's name. The textual collision check
+    // must independently reject that output graph too.
+    const original_output_span = transformer.ast.getNode(output_read_idx).span;
+    transformer.ast.nodes.items[@backingInt(output_read_idx)].span =
+        transformer.ast.getNode(import_local_idx).span;
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(output_read_idx)].span = original_output_span;
+
+    var inline_scanner = try Scanner.init(allocator, "import { type Shape } from './types'; const value: Shape = { value: 4 };");
+    var inline_parser = Parser.init(allocator, &inline_scanner);
+    inline_parser.configureFromExtension(".ts");
+    _ = try inline_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), inline_parser.errors.items.len);
+    const inline_facts = try collectAstFacts(allocator, &inline_parser.ast);
+    try std.testing.expect(!inline_facts.has_declaration_level_type_import);
+    try std.testing.expect(!onlyDeclarationLevelTypeImports(&inline_parser.ast));
 }
 
 test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic graph" {
