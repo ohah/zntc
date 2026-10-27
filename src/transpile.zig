@@ -790,9 +790,9 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     const may_admit_erased_js_imports = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_import_declaration and
         erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
-    const may_admit_erased_ts_declaration_type_imports = parser.source_mode == .ts and
+    const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
         facts.has_declaration_level_type_import and
-        onlyDeclarationLevelTypeImports(&parser.ast) and
+        onlyErasableTypeImports(&parser.ast) and
         erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_ambient_namespace_import_equals = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
@@ -808,17 +808,18 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         may_admit_erased_const_enum,
         may_admit_erased_ambient_string_module,
         may_admit_erased_ambient_global_namespace,
-        may_admit_erased_js_imports or may_admit_erased_ts_declaration_type_imports,
+        may_admit_erased_js_imports or may_admit_erased_ts_type_imports,
         may_admit_erased_ambient_namespace_import_equals or may_admit_runtime_import_equals,
     );
     return can_mangle and (parser.source_mode != .ts or
-        !facts.has_declaration_level_type_import or may_admit_erased_ts_declaration_type_imports);
+        !facts.has_declaration_level_type_import or may_admit_erased_ts_type_imports);
 }
 
 /// Reuse a transform graph for erased imports only after proving that none of
 /// their exact identities or decoded local names survive in output. The
-/// TypeScript standalone caller adds a narrower declaration-level-only guard.
-fn onlyDeclarationLevelTypeImports(ast: *const Ast) bool {
+/// TypeScript standalone caller accepts declaration-level imports and separate
+/// inline-only type imports, but keeps runtime imports and attributes on fallback.
+fn onlyErasableTypeImports(ast: *const Ast) bool {
     var found_import = false;
     for (ast.nodes.items) |node| {
         if (node.tag != .import_declaration) continue;
@@ -826,7 +827,9 @@ fn onlyDeclarationLevelTypeImports(ast: *const Ast) bool {
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
-        if (!import_decl.is_type_only or import_decl.phase != .none or import_decl.attrs_len != 0 or
+        if ((!import_decl.is_type_only and
+            !importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) or
+            import_decl.phase != .none or import_decl.attrs_len != 0 or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
     }
@@ -5528,7 +5531,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     const source_facts = try collectAstFacts(allocator, &parser.ast);
     try std.testing.expect(source_facts.has_declaration_level_type_import);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
-    try std.testing.expect(onlyDeclarationLevelTypeImports(&parser.ast));
+    try std.testing.expect(onlyErasableTypeImports(&parser.ast));
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     defer analyzer.deinit();
@@ -5607,7 +5610,37 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     try std.testing.expectEqual(@as(usize, 0), inline_parser.errors.items.len);
     const inline_facts = try collectAstFacts(allocator, &inline_parser.ast);
     try std.testing.expect(!inline_facts.has_declaration_level_type_import);
-    try std.testing.expect(!onlyDeclarationLevelTypeImports(&inline_parser.ast));
+    try std.testing.expect(onlyErasableTypeImports(&inline_parser.ast));
+
+    var inline_alias_scanner = try Scanner.init(
+        allocator,
+        "import { type Shape as Alias } from './types'; const value: Alias = { value: 5 };",
+    );
+    var inline_alias_parser = Parser.init(allocator, &inline_alias_scanner);
+    inline_alias_parser.configureFromExtension(".ts");
+    _ = try inline_alias_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), inline_alias_parser.errors.items.len);
+    try std.testing.expect(onlyErasableTypeImports(&inline_alias_parser.ast));
+
+    var mixed_runtime_scanner = try Scanner.init(
+        allocator,
+        "import type { Item } from './types'; import { type Flag, runtimeValue } from './values';",
+    );
+    var mixed_runtime_parser = Parser.init(allocator, &mixed_runtime_scanner);
+    mixed_runtime_parser.configureFromExtension(".ts");
+    _ = try mixed_runtime_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), mixed_runtime_parser.errors.items.len);
+    try std.testing.expect(!onlyErasableTypeImports(&mixed_runtime_parser.ast));
+
+    var attributed_inline_scanner = try Scanner.init(
+        allocator,
+        "import type { Item } from './types'; import { type Flag } from './types' with { \"resolution-mode\": \"import\" };",
+    );
+    var attributed_inline_parser = Parser.init(allocator, &attributed_inline_scanner);
+    attributed_inline_parser.configureFromExtension(".ts");
+    _ = try attributed_inline_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), attributed_inline_parser.errors.items.len);
+    try std.testing.expect(!onlyErasableTypeImports(&attributed_inline_parser.ast));
 }
 
 test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic graph" {

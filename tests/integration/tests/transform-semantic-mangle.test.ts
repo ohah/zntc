@@ -992,6 +992,16 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         expected: '12',
       },
       {
+        name: 'aliased inline-only type import beside declaration-level type import',
+        source: `import type { Item } from './types'; import { type Flag as Trait } from './types'; const item: Item & Trait = { value: 16, flag: true }; console.log(item.value + Number(item.flag));`,
+        expected: '17',
+      },
+      {
+        name: 'multiple separate inline-only type imports',
+        source: `import type { Item } from './types'; import { type Flag as FirstFlag } from './types'; import { type Flag as SecondFlag } from './types'; const item: Item & FirstFlag & SecondFlag = { value: 18, flag: true }; console.log(item.value + Number(item.flag));`,
+        expected: '19',
+      },
+      {
         name: 'type assertion and satisfies',
         source: `import type { Item } from './types'; const item = ({ value: 13 } as Item) satisfies Item; console.log(item.value);`,
         expected: '13',
@@ -1010,10 +1020,13 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'effects.mjs': 'globalThis.__typeImportEffect = 3;',
       'mixed-import.ts': `import type { Item } from './types'; import { runtimeValue } from './values.mjs'; const item: Item = { value: runtimeValue }; console.log(item.value);`,
       'mixed-inline-import.ts': `import type { Item } from './types'; import { type Flag } from './types'; const item: Item & Flag = { value: 8, flag: false }; console.log(item.value + Number(item.flag));`,
+      'inline-only-import.ts': `import { type Flag } from './types'; const item: Flag = { flag: true }; console.log(Number(item.flag));`,
+      'inline-type-import-mixed-with-value.ts': `import type { Item } from './types'; import { type Flag, runtimeValue } from './values.mjs'; const item: Item & Flag = { value: 8, flag: false }; console.log(item.value + Number(item.flag) + runtimeValue);`,
       'mixed-side-effect-import.ts': `import type { Item } from './types'; import './effects.mjs'; const item: Item = { value: globalThis.__typeImportEffect }; console.log(item.value + 1);`,
       'type-import-used-as-value.ts': `import type { Shape } from './types'; globalThis.Shape = 21; console.log(Shape);`,
       'type-import-name-shadowed-by-runtime-binding.ts': `import type { Model } from './types'; function read(Model: number) { const value: Model = Model + 1; return value; } console.log(read(4));`,
       'type-import-with-attributes.ts': `import type { Item } from './types' with { "resolution-mode": "import" }; const item: Item = { value: 15 }; console.log(item.value);`,
+      'inline-type-import-with-attributes.ts': `import type { Item } from './types'; import { type Flag } from './types' with { "resolution-mode": "import" }; const item: Item & Flag = { value: 12, flag: true }; console.log(item.value + Number(item.flag));`,
     });
     cleanup = fixture.cleanup;
 
@@ -1034,6 +1047,18 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         name: 'declaration-level and inline type imports mixed together',
         file: 'mixed-inline-import.ts',
         expected: '8',
+        graph: 'retained' as const,
+      },
+      {
+        name: 'inline-only imports independently retain the graph',
+        file: 'inline-only-import.ts',
+        expected: '1',
+        graph: 'retained' as const,
+      },
+      {
+        name: 'inline-only type and runtime value in one import declaration',
+        file: 'inline-type-import-mixed-with-value.ts',
+        expected: '10',
         graph: 'reanalyzed' as const,
       },
       {
@@ -1058,6 +1083,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         name: 'declaration-level type import with import attributes',
         file: 'type-import-with-attributes.ts',
         expected: '15',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'inline-only type import with import attributes',
+        file: 'inline-type-import-with-attributes.ts',
+        expected: '13',
         graph: 'reanalyzed' as const,
       },
     ];
