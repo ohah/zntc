@@ -1252,9 +1252,18 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .import_specifier => blk: {
             if ((node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) break :blk NodeIndex.none;
             if (self.shouldElideImportSpecifier(idx, node)) break :blk NodeIndex.none;
-            break :blk self.visitBinaryNode(idx);
+            // ModuleExportName and its local binding are declaration names,
+            // not expression references. Visiting the shorthand node as an
+            // identifier reference lets define rewrite the imported name
+            // and can emit an import for a nonexistent export.
+            break :blk self.copyNodeDirect(idx);
         },
-        .export_specifier => if ((node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) .none else self.visitBinaryNode(idx),
+        .export_specifier => if ((node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0)
+            .none
+        else
+            // ModuleExportName and its local target are declaration edges.
+            // Defines apply to runtime expressions, never to exported names.
+            self.copyNodeDirect(idx),
         // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
         .import_default_specifier,
         .import_namespace_specifier,

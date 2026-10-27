@@ -41,6 +41,42 @@ test "define matching preserves the first matching entry" {
     );
 }
 
+test "define-use census ignores static import and export names" {
+    const Case = struct {
+        source: []const u8,
+        key: []const u8,
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{ .source = "import { BUILD } from 'dep';", .key = "BUILD", .expected = false },
+        .{ .source = "import { BUILD as localBuild } from 'dep'; console.log(localBuild);", .key = "BUILD", .expected = false },
+        .{ .source = "import { build as BUILD } from 'dep'; console.log(BUILD);", .key = "BUILD", .expected = true },
+        .{ .source = "const BUILD = 'source'; export { BUILD as publicBuild };", .key = "BUILD", .expected = false },
+        .{ .source = "const build = 'source'; export { build as BUILD };", .key = "BUILD", .expected = false },
+        .{ .source = "const build = 'source'; export { build as BUILD }; console.log(BUILD);", .key = "BUILD", .expected = true },
+        .{ .source = "const BUILD = 'source'; export { BUILD as publicBuild }; console.log(BUILD);", .key = "BUILD", .expected = true },
+    };
+    const ast_uses_define = @import("transformer/define.zig").astUsesDefine;
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        defer scanner.deinit();
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".js");
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+        const defines = [_]transformer_mod.DefineEntry{.{
+            .key = case.key,
+            .value = "\"production\"",
+        }};
+        try std.testing.expectEqual(case.expected, ast_uses_define(&parser.ast, &defines));
+    }
+}
+
 test "define primitive graph safety accepts only exact values" {
     const is_safe = @import("transformer/define.zig").isGraphSafePrimitiveDefineValue;
     const safe_values = [_][]const u8{ "true", "false", "null", "undefined" };

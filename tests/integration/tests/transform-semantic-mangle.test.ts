@@ -1120,7 +1120,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         name: 'declaration-level type import with import attributes',
         file: 'type-import-with-attributes.ts',
         expected: '15',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'inline-only type import with import attributes',
@@ -1988,6 +1988,9 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'global.js': `console.log(__BUILD__);`,
       'dep.js': `export const __BUILD__ = 'source';`,
       'import.js': `import { __BUILD__ } from './dep.js'; console.log(__BUILD__);`,
+      'export-local.js': `const __BUILD__ = 'source'; export { __BUILD__ as publicBuild }; console.log(__BUILD__);`,
+      'export-name.js': `const build = 'source'; export { build as __BUILD__ }; console.log(build);`,
+      'export-name-use.js': `const build = 'source'; export { build as __BUILD__ }; console.log(__BUILD__);`,
       'member.js': `const options = { env: { NODE: 'source' } }; console.log(options.env.NODE);`,
       'non-string.js': `const __BUILD__ = 'source'; console.log(__BUILD__);`,
       'dynamic.js': `const __BUILD__ = 'source'; eval('console.log(__BUILD__)'); console.log(__BUILD__);`,
@@ -2023,6 +2026,30 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         flags: ['--verbatim-module-syntax'],
         mode: 'reanalyzed' as const,
         expected: 'production',
+      },
+      {
+        file: 'export-local.js',
+        define: '--define:__BUILD__="production"',
+        flags: [],
+        mode: 'retained' as const,
+        expected: 'production',
+        expectedExport: ['publicBuild', 'source'] as const,
+      },
+      {
+        file: 'export-name.js',
+        define: '--define:__BUILD__="production"',
+        flags: [],
+        mode: 'none' as const,
+        expected: 'source',
+        expectedExport: ['__BUILD__', 'source'] as const,
+      },
+      {
+        file: 'export-name-use.js',
+        define: '--define:__BUILD__="production"',
+        flags: [],
+        mode: 'reanalyzed' as const,
+        expected: 'production',
+        expectedExport: ['__BUILD__', 'source'] as const,
       },
       {
         file: 'member.js',
@@ -2066,7 +2093,11 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
       );
       expect(result.exitCode, `${item.file}: ${result.stderr}`).toBe(0);
-      const identity = expectPrepassGraph(result.stderr, item.file, item.mode);
+      const identity =
+        item.mode === 'none' ? '' : expectPrepassGraph(result.stderr, item.file, item.mode);
+      if (item.mode === 'none') {
+        expect(result.stderr).not.toContain('zntc: symbol-identity-prepass-mode ');
+      }
       if (item.mode === 'retained') {
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(identity, item.file).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
@@ -2075,6 +2106,20 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       const execution = await runNode(output);
       expect(execution.stderr, item.file).toBe('');
       expect(execution.stdout, item.file).toBe(item.expected);
+      if (item.expectedExport) {
+        const [name, expectedExport] = item.expectedExport;
+        const exported = spawnSyncRaw(
+          'node',
+          [
+            '-e',
+            `const output = require(${JSON.stringify(output)}); process.stdout.write(String(output[${JSON.stringify(name)}]));`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(exported.status, item.file).toBe(0);
+        expect(exported.stderr, item.file).toBe('');
+        expect(exported.stdout.trim().split(/\r?\n/).at(-1), item.file).toBe(expectedExport);
+      }
     }
   });
 
@@ -2945,18 +2990,18 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(importedResult.stderr).toBe('');
     expect(importedResult.stdout.trim()).toBe('3');
 
-    const mixedImport = await bundle('typed-mixed-import.ts', 'typed-mixed-import-fallback', [
+    const mixedImport = await bundle('typed-mixed-import.ts', 'typed-mixed-import-retained', [
       '--verbatim-module-syntax',
     ]);
-    expectPrepassGraph(mixedImport.stderr, 'typed-mixed-import.ts', 'reanalyzed');
+    expectPrepassGraph(mixedImport.stderr, 'typed-mixed-import.ts', 'retained');
     const mixedImportResult = await runNode(mixedImport.output);
     expect(mixedImportResult.stderr).toBe('');
     expect(mixedImportResult.stdout.trim()).toBe('9 4');
 
-    const inlineImport = await bundle('typed-inline-import.ts', 'typed-inline-import-fallback', [
+    const inlineImport = await bundle('typed-inline-import.ts', 'typed-inline-import-retained', [
       '--verbatim-module-syntax',
     ]);
-    expectPrepassGraph(inlineImport.stderr, 'typed-inline-import.ts', 'reanalyzed');
+    expectPrepassGraph(inlineImport.stderr, 'typed-inline-import.ts', 'retained');
     const inlineImportResult = await runNode(inlineImport.output);
     expect(inlineImportResult.stderr).toBe('');
     expect(inlineImportResult.stdout.trim()).toBe('INLINE_TYPE_IMPORT_SIDE_EFFECT\n4');
@@ -3490,17 +3535,23 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     await run('mixed-named.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
     await run('mixed-query.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
 
+    const retainedTypeErasureCases = [
+      ['alias-type.ts', '5'],
+      ['literal-type.ts', '5'],
+      ['mapped-type.ts', '5'],
+      ['template-type.ts', '7'],
+      ['function-type.ts', '5'],
+      ['predicate-type.ts', 'true'],
+    ] as const;
+    for (const [entry, expected] of retainedTypeErasureCases) {
+      await run(entry, 'retained', expected);
+    }
+
     const conservativeCases = [
-      ['alias-type.ts', '5', []],
-      ['literal-type.ts', '5', []],
-      ['mapped-type.ts', '5', []],
-      ['template-type.ts', '7', []],
-      ['function-type.ts', '5', []],
       ['enum-lowering.ts', '7', []],
       ['namespace-lowering.ts', '7', []],
       ['class-lowering.ts', '7', ['--target=es5']],
       ['syntax-minify.ts', '5', ['--minify-syntax']],
-      ['predicate-type.ts', 'true', []],
     ] as const;
     for (const [entry, expected, options] of conservativeCases) {
       await run(entry, 'reanalyzed', expected, [...options]);
@@ -3611,7 +3662,11 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       expect(providerIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
     }
     expectPrepassGraph(result.stderr, 'barrel.ts', 'retained');
-    expectPrepassGraph(result.stderr, 'entry.ts', 'reanalyzed');
+    const entryIdentity = expectPrepassGraph(result.stderr, 'entry.ts', 'retained');
+    expect(entryIdentity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(entryIdentity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
 
     const transformed = await runNode(output);
     expect(transformed.stderr).toBe('');
