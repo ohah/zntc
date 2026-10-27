@@ -7589,6 +7589,11 @@ fn canKeepPrepassSemanticGraph(
             &retainable_async_method_super_get,
             &retainable_async_method_super_set,
         );
+    const native_noop_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
+        @import("../../transformer/native_noop_graph.zig").sourcePlan(self.allocator, ast, semantic, options) catch null
+    else
+        null;
+    defer if (native_noop_source) |source| source.deinit(self.allocator);
     const uses_define = define_mod.astUsesDefine(ast, options.define);
     const retained_define_references = uses_define and canRetainGraphForDefineReferences(
         self.allocator,
@@ -7619,7 +7624,7 @@ fn canKeepPrepassSemanticGraph(
     // producer; metadata rescan supplies the new source edges without replacing
     // the module-local semantic owner.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators) or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast) and
@@ -7877,7 +7882,7 @@ fn canKeepPrepassSemanticGraph(
     // parser's graph is already the exact graph for this module. Retaining it
     // avoids an otherwise unnecessary semantic rescan for ordinary JavaScript
     // (including identifier-only minification, which happens after this pass).
-    const unchanged_graph_is_safe = !options.unsupported.hasAny() and
+    const unchanged_graph_is_safe = (!options.unsupported.hasAny() or native_noop_source != null) and
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
@@ -10837,6 +10842,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
+            if (!self.flow and !isFlowPath(module.path) and module.module_type == .js) {
+                if (@import("../../transformer/native_noop_graph.zig").sourcePlan(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
+                    var source = value;
+                    source.owner = sem.captureOwnerToken();
+                    source.output = transformer.ast;
+                    transformer.native_noop_source = source;
+                }
+            }
             if (optionalNullishSource(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
                 var source = value;
                 source.owner = sem.captureOwnerToken();
@@ -10913,7 +10926,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -11235,6 +11248,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             true,
         ) catch null;
         can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
+    }
+
+    if (can_keep_semantic_graph and transformer.native_noop_source != null) {
+        const completed = if (module.semantic) |*sem|
+            @import("../../transformer/native_noop_graph.zig").complete(&transformer, sem, root) catch false
+        else
+            false;
+        const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;
+        can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
     }
 
     if (can_keep_semantic_graph and transformer.optional_nullish_source != null) {

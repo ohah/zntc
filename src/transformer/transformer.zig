@@ -227,6 +227,11 @@ pub const Transformer = struct {
     pending_deferred_super_class_plan: ?@import("deferred_super_class_lowering.zig").Plan = null,
     computed_object_helper_source: ?@import("computed_object_helper_authority.zig").Source = null,
     computed_object_helper_applications: std.ArrayListUnmanaged(@import("computed_object_helper_authority.zig").Application) = .empty,
+    native_noop_source: ?@import("native_noop_graph.zig").Source = null,
+    native_noop_copies: std.ArrayListUnmanaged(@import("native_noop_graph.zig").Copy) = .empty,
+    native_noop_invalid: bool = false,
+    native_noop_before_binder: bool = false,
+    native_noop_before_binder_root: ?NodeIndex = null,
     optional_nullish_source: ?@import("optional_nullish_composition.zig").Source = null,
     optional_nullish_published_root: ?NodeIndex = null,
     optional_nullish_capture: ?*@import("optional_nullish_composition.zig").Capture = null,
@@ -1171,6 +1176,7 @@ pub const Transformer = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => @panic("provider visit lost its exact source/result domain"),
         };
+        try @import("native_noop_graph.zig").record(self, idx, final_result);
         return final_result;
     }
 

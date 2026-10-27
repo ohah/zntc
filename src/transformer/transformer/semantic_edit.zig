@@ -1467,7 +1467,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
                 return error.InvalidNode;
         }
-        const publication = try @import("../native_arrow_statement_publication.zig").agree(self, @backingInt(reference.node), try @import("../class_initializer_publication.zig").agree(self, @backingInt(reference.node), try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags), reference.flags), reference.flags);
+        const prior_publication = try @import("../native_arrow_statement_publication.zig").agree(self, @backingInt(reference.node), try @import("../class_initializer_publication.zig").agree(self, @backingInt(reference.node), try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags), reference.flags), reference.flags);
+        const publication = try @import("../native_noop_graph.zig").agree(self, reference.node, resolved_id, reference.scope, reference.flags, prior_publication);
         if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
             std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
             return error.InvalidNode;
@@ -1982,12 +1983,12 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
 }
 
 fn generatedReferenceFlags(parent: Node, child: NodeIndex, child_tag: Node.Tag) ReferenceFlags {
-    if (child_tag == .assignment_target_identifier) return .{ .write = true };
     if (parent.tag == .assignment_expression and parent.data.binary.left == child) {
         const op: token_mod.Kind = @fromBackingInt(@intCast(parent.data.binary.flags));
         return if (op.isCompoundAssignment()) .{ .read = true, .write = true } else .{ .write = true };
     }
     if (parent.tag == .update_expression) return .{ .read = true, .write = true };
+    if (child_tag == .assignment_target_identifier) return .{ .write = true };
     return .{ .read = true };
 }
 
