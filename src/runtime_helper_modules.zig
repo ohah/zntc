@@ -51,12 +51,8 @@ pub const ID_PREFIX = "\x00zntc:runtime/";
 pub const EXTERNAL_PREFIX = "runtime-";
 
 /// helper module 의 source 빌드 옵션. plugin context 로 전달.
-pub const SourceOptions = struct {
-    minify: bool = false,
-    es5: bool = false,
-    /// `__toESM`, `__toCommonJS`, `__export` 등 RN/Hermes 호환 configurable variant.
-    configurable_exports: bool = false,
-};
+pub const SourceOptions = @import("runtime_helper_source_origin.zig").SourceOptions;
+const source_origin = @import("runtime_helper_source_origin.zig");
 
 pub const InteropFlavor = enum { to_esm, wrapped };
 
@@ -487,7 +483,7 @@ fn loadHook(
     ctx: ?*anyopaque,
     path: []const u8,
     allocator: std.mem.Allocator,
-    _: *plugin_mod.HookContext,
+    hook_context: *plugin_mod.HookContext,
 ) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (!isVirtualId(path)) return null;
     const short = path[ID_PREFIX.len..];
@@ -498,6 +494,15 @@ fn loadHook(
     else
         &default_opts;
     const contents = try buildSource(allocator, m, opts.*);
+    if (catalogFor(m)) |catalog| hook_context.runtime_helper_source = .{
+        .catalog = catalog,
+        .catalog_descriptor = @ptrCast(m),
+        .body_hash = @import("util/wyhash.zig").hashU64(selectedBody(m.body, opts.*).bytes),
+        .variant = selectedBody(m.body, opts.*).variant,
+        .requested = opts.*,
+        .contents = contents,
+        .contents_hash = @import("util/wyhash.zig").hashU64(contents),
+    };
     return .{ .contents = contents };
 }
 
@@ -514,22 +519,66 @@ fn findModule(short: []const u8) ?*const HelperModule {
 
 /// 옵션 조합에 따른 body variant 선택. variant 가 정의되지 않은 옵션은 plain/min 으로
 /// fallback — 호출자가 module 의 helper 종류와 무관하게 같은 옵션 set 을 사용 가능.
-fn pickBody(body: BodyVariants, opts: SourceOptions) []const u8 {
+const SelectedBody = struct { bytes: []const u8, variant: source_origin.Variant };
+fn selectedBody(body: BodyVariants, opts: SourceOptions) SelectedBody {
     if (opts.configurable_exports) {
         if (opts.minify) {
-            if (body.configurable_min) |b| return b;
+            if (body.configurable_min) |b| return .{ .bytes = b, .variant = .configurable_min };
         } else {
-            if (body.configurable) |b| return b;
+            if (body.configurable) |b| return .{ .bytes = b, .variant = .configurable };
         }
     }
     if (opts.es5) {
         if (opts.minify) {
-            if (body.es5_min) |b| return b;
+            if (body.es5_min) |b| return .{ .bytes = b, .variant = .es5_min };
         } else {
-            if (body.es5) |b| return b;
+            if (body.es5) |b| return .{ .bytes = b, .variant = .es5 };
         }
     }
-    return if (opts.minify) body.min else body.plain;
+    return if (opts.minify) .{ .bytes = body.min, .variant = .min } else .{ .bytes = body.plain, .variant = .plain };
+}
+fn pickBody(body: BodyVariants, opts: SourceOptions) []const u8 {
+    return selectedBody(body, opts).bytes;
+}
+fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
+    const known = [_]struct { short: []const u8, catalog: source_origin.Catalog }{
+        .{ .short = "public-field", .catalog = .public_field },
+        .{ .short = "to-property-key", .catalog = .to_property_key },
+        .{ .short = "keep-names", .catalog = .keep_names },
+    };
+    for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
+    return null;
+}
+fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
+    return findModule(switch (catalog) {
+        .public_field => "public-field",
+        .to_property_key => "to-property-key",
+        .keep_names => "keep-names",
+    }).?;
+}
+
+/// The actual winning constructor, selected variant and exact result contents
+/// must agree. Plugin names and virtual paths are not evidence of this role.
+pub fn matchesConstructedSource(origin: source_origin.Origin, options: SourceOptions, contents: []const u8) bool {
+    const descriptor = moduleForCatalog(origin.catalog);
+    const body = selectedBody(descriptor.body, options);
+    return origin.catalog_descriptor == @as(*const anyopaque, @ptrCast(descriptor)) and
+        origin.body_hash == @import("util/wyhash.zig").hashU64(body.bytes) and
+        std.meta.eql(origin.requested, options) and origin.variant == body.variant and
+        source_origin.matchesContents(origin, contents);
+}
+
+pub fn acceptWinningLoad(outcome: plugin_mod.PluginRunner.LoadOutcome, options: *const SourceOptions) ?source_origin.Origin {
+    const origin = outcome.runtime_helper_source orelse return null;
+    const actual = outcome.winning_plugin;
+    if (actual.load != loadHook or actual.context != @as(?*anyopaque, @ptrCast(@constCast(options))) or
+        origin.catalog_descriptor != @as(*const anyopaque, @ptrCast(moduleForCatalog(origin.catalog))) or
+        origin.body_hash != @import("util/wyhash.zig").hashU64(selectedBody(moduleForCatalog(origin.catalog).body, options.*).bytes) or
+        !std.meta.eql(origin.requested, options.*) or origin.variant != selectedBody(moduleForCatalog(origin.catalog).body, options.*).variant or
+        origin.contents.ptr != outcome.result.contents.ptr or origin.contents.len != outcome.result.contents.len or
+        @import("util/wyhash.zig").hashU64(outcome.result.contents) != origin.contents_hash or
+        outcome.result.loader != null or outcome.result.module_type != null or outcome.result.meta != null or outcome.result.synthetic_named_exports != null) return null;
+    return origin;
 }
 
 fn buildSource(allocator: std.mem.Allocator, m: *const HelperModule, opts: SourceOptions) ![]const u8 {

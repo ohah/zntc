@@ -10771,9 +10771,22 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         @import("../../transformer/selective_class_certificate.zig").sourcePlan(arena_alloc, ast_ptr, semantic, opts) catch null
     else
         null;
+    const provider_source = if (module.runtime_helper_source) |loaded| blk: {
+        const semantic = if (module.semantic) |*value| value else break :blk null;
+        break :blk @import("../../transformer/virtual_helper_provider_certificate.zig").capture(
+            arena_alloc,
+            ast_ptr,
+            semantic,
+            loaded,
+            module.source,
+            self.helper_plugin_opts,
+            opts,
+            self.worklet_transform or self.codegen_transform or hasAstTransformHooks(self.plugins) or hasAstTransformHooks(merged_plugins) or module.plugin_source_maps.len != 0,
+        ) catch null;
+    } else null;
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
-        canKeepPrepassSemanticGraph(
+        (provider_source != null or canKeepPrepassSemanticGraph(
             self,
             module,
             opts,
@@ -10781,7 +10794,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             &allow_es5_async_method_super_get,
             &allow_es5_async_method_super_set,
             &retained_simple_console_drops,
-        );
+        ));
     var retained_console_object_references: []ast_mod.NodeIndex = &.{};
     if (can_keep_semantic_graph and opts.drop_console and hasDroppedConsoleStatement(ast_ptr)) {
         if (collectRetainedConsoleObjectReferences(arena_alloc, ast_ptr)) |references| {
@@ -10885,11 +10898,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             };
         }
     }
+    if (provider_source) |source| {
+        @import("../../transformer/virtual_helper_provider_certificate.zig").activate(&transformer, source) catch |err| switch (err) {
+            error.OutOfMemory => return,
+            else => @panic("provider source domain no longer matches its winning constructor"),
+        };
+    }
     transformer.line_offsets = module.line_offsets;
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or transformer.optional_nullish_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -11235,6 +11254,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (can_keep_semantic_graph and transformer.legacy_assignment_field_source != null) {
         const completed = if (module.semantic) |*sem|
             @import("../../transformer/legacy_assignment_field_certificate.zig").complete(&transformer, sem, root) catch false
+        else
+            false;
+        const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;
+        can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
+    }
+
+    if (can_keep_semantic_graph and transformer.virtual_provider_source != null) {
+        const completed = if (module.semantic) |*semantic|
+            @import("../../transformer/virtual_helper_provider_certificate.zig").complete(&transformer, semantic, module.source, root) catch false
         else
             false;
         const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;

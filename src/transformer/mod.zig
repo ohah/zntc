@@ -178,3 +178,7 @@ test {
 test {
     _ = @import("optional_nullish_composition_test.zig");
 }
+
+test {
+    _ = @import("virtual_helper_provider_semantic_test.zig");
+}
