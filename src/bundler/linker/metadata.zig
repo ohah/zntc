@@ -508,6 +508,26 @@ pub fn buildMetadataForAst(
     /// codegen `.pm_cjs_storage`·끝-skip·소비자 ns-access 게이트와 **동일** 값이어야 정합.
     output_produces_named: bool,
 ) !LinkingMetadata {
+    return buildMetadataForAstWithHolderReservations(self, ast, module_index, is_entry, override_symbol_ids, format, output_produces_named, null);
+}
+
+pub fn buildMetadataForAstWithHolderReservations(
+    self: *const Linker,
+    ast: *const Ast,
+    module_index: u32,
+    is_entry: bool,
+    override_symbol_ids: ?[]const ?u32,
+    format: types.Format,
+    /// (#4587 [3]) output.exports 가 named export 를 내는 모드(auto/named)인지. `none`/`default_`
+    /// 면 preserve-modules CJS exports-as-storage rename 을 억제해 `exports.X` 누출을 막는다.
+    /// codegen `.pm_cjs_storage`·끝-skip·소비자 ns-access 게이트와 **동일** 값이어야 정합.
+    output_produces_named: bool,
+    reservations: ?*@import("../namespace_holder_reservations.zig").NamespaceHolderReservations,
+) !LinkingMetadata {
+    var local_reservations = @import("../namespace_holder_reservations.zig").NamespaceHolderReservations.init(self.allocator);
+    defer local_reservations.deinit();
+    const holder_reservations = reservations orelse &local_reservations;
+    if (reservations == null) try holder_reservations.seed(self);
     var scope = @import("../../profile.zig").begin(.metadata);
     defer scope.end();
 
@@ -1204,6 +1224,7 @@ pub fn buildMetadataForAst(
                     &owned_nested_renames,
                     &ns_target_to_var,
                     &nested_bindings_cache,
+                    holder_reservations,
                     force_inline,
                     false,
                     module_index,
@@ -1288,6 +1309,7 @@ pub fn buildMetadataForAst(
                                                 &owned_nested_renames,
                                                 &ns_target_to_var,
                                                 &nested_bindings_cache,
+                                                holder_reservations,
                                                 nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(import_sym_id), module_index, ib.local_name),
                                                 false,
                                                 module_index,
@@ -1321,6 +1343,7 @@ pub fn buildMetadataForAst(
                                     &owned_nested_renames,
                                     &ns_target_to_var,
                                     &nested_bindings_cache,
+                                    holder_reservations,
                                     nsForceInline(self, ast, override_symbol_ids orelse sem.symbol_ids, @intCast(imp_sym), module_index, ib.local_name),
                                     true,
                                     module_index,

@@ -56,3 +56,7 @@ comptime {
 test {
     _ = @import("bundler_test/barrel_import_target.zig");
 }
+
+test {
+    _ = @import("bundler_test/namespace_holder_hygiene.zig");
+}

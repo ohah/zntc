@@ -5942,3 +5942,120 @@ test "runtime helper CJS factory scope zero shadows rename the exact provider" {
         try std.testing.expectEqualDeep(symbols_before, entry.semantic.?.symbols.items);
     }
 }
+
+test "namespace holder hygiene reserves the actual selected nested binding before holder allocation" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "export const value=7;export function read(){return this.value}");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './dep.mjs';function check(inside){return Reflect.get(ns,'value')+inside}console.log(check(3));");
+    var result = try buildAndLink(a, &tmp, "entry.mjs");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    result.linker.populateImportSymbols();
+    const importer = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingNamespaceImporter;
+    const target = findModuleIdx(result.graph, "dep.mjs") orelse return error.MissingNamespaceTarget;
+    const module = result.graph.getModule(importer).?;
+    const provider = result.graph.getModule(target).?;
+    const sem = module.semantic orelse return error.MissingNamespaceSemantic;
+    var parameter: ?u32 = null;
+    for (sem.scope_maps[1..]) |scope| {
+        if (scope.get("inside")) |sid| {
+            try std.testing.expect(parameter == null);
+            parameter = @intCast(sid);
+        }
+    }
+    const actual_parameter = parameter orelse return error.MissingNamespaceParameter;
+    try std.testing.expect(sem.symbols.items[actual_parameter].scope_id.toIndex() > 0);
+    const selected = try @import("namespace_holder_reservations.zig").ownerBase(a, module.path, provider.path);
+    defer a.free(selected);
+    try result.linker.rename_table.put(a, bundler_symbol.SymbolID.make(importer, actual_parameter), selected);
+    try result.linker.nonminify_nested_shadow_modules.put(a, importer.toU32(), {});
+    var metadata = try buildMetadataForModule(&result, importer.toU32(), true);
+    defer metadata.deinit();
+    try std.testing.expectEqualStrings(selected, metadata.renames.get(actual_parameter).?);
+    const ns = module.import_bindings[0].local_symbol.semanticIndex() orelse return error.MissingNamespaceSourceImport;
+    const holder = metadata.ns_inline_objects.get(ns) orelse return error.MissingNamespaceHolder;
+    try std.testing.expect(!std.mem.eql(u8, holder.var_name, selected));
+    const expected = try std.fmt.allocPrint(a, "{s}_2", .{selected});
+    defer a.free(expected);
+    try std.testing.expectEqualStrings(expected, holder.var_name);
+    var cg = @import("../codegen/codegen.zig").Codegen.initWithOptions(a, &module.ast.?, .{ .linking_metadata = &metadata });
+    defer cg.deinit();
+    const root = module.ast.?.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@intCast(module.ast.?.nodes.items.len - 1)));
+    const output = try cg.generate(root);
+    const actual_formal = try std.fmt.allocPrint(a, "check({s})", .{selected});
+    defer a.free(actual_formal);
+    try std.testing.expect(std.mem.indexOf(u8, output, actual_formal) != null);
+    const actual_call = try std.fmt.allocPrint(a, "Reflect.get({s},", .{holder.var_name});
+    defer a.free(actual_call);
+    try std.testing.expect(std.mem.indexOf(u8, output, actual_call) != null);
+}
+
+test "namespace holder hygiene reuses one declaration with distinct source identities and owned names" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as left from './dep.mjs';import*as right from './dep.mjs';console.log(left===right);");
+    var result = try buildAndLink(a, &tmp, "entry.mjs");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    result.linker.populateImportSymbols();
+    const importer = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingNamespaceImporter;
+    const module = result.graph.getModule(importer).?;
+    try std.testing.expectEqual(@as(usize, 2), module.import_bindings.len);
+    const left = module.import_bindings[0].local_symbol.semanticIndex() orelse return error.MissingNamespaceLeft;
+    const right = module.import_bindings[1].local_symbol.semanticIndex() orelse return error.MissingNamespaceRight;
+    try std.testing.expect(left != right);
+    const sem = module.semantic.?;
+    const left_before = sem.symbols.items[left];
+    const right_before = sem.symbols.items[right];
+    var metadata = try buildMetadataForModule(&result, importer.toU32(), true);
+    defer metadata.deinit();
+    const first = metadata.ns_inline_objects.get(left) orelse return error.MissingNamespaceLeftHolder;
+    const second = metadata.ns_inline_objects.get(right) orelse return error.MissingNamespaceRightHolder;
+    try std.testing.expectEqualStrings(first.var_name, second.var_name);
+    try std.testing.expect(first.var_name.ptr != second.var_name.ptr);
+    try std.testing.expect(first.object_literal.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), second.object_literal.len);
+    try std.testing.expectEqualStrings(first.var_name, metadata.renames.get(left).?);
+    try std.testing.expectEqualStrings(second.var_name, metadata.renames.get(right).?);
+    const declaration = try std.fmt.allocPrint(a, "var {s} =", .{first.var_name});
+    defer a.free(declaration);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, metadata.cjs_import_preamble.?, declaration));
+    try std.testing.expectEqualDeep(left_before, sem.symbols.items[left]);
+    try std.testing.expectEqualDeep(right_before, sem.symbols.items[right]);
+    std.debug.print("namespace holder hygiene source_sids=2 entries=2 declarations=1 independent_names=true\n", .{});
+}
+
+test "namespace holder hygiene ranks the actual JSX normalized primary base" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "a");
+    try tmp.dir.createDirPath(std.testing.io, "b");
+    try writeFile(tmp.dir, "a/foo.mjs", "export const value=1;");
+    try writeFile(tmp.dir, "b/Foo.mjs", "export const value=2;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as lower from './a/foo.mjs';import*as upper from './b/Foo.mjs';console.log(lower,upper);");
+    var result = try buildAndLink(a, &tmp, "entry.mjs");
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    result.graph.jsx_runtime = .preserve;
+    result.linker.ns_base_rank_built = false;
+    result.linker.ns_base_rank.clearRetainingCapacity();
+    try result.linker.ensureNsBaseRank();
+    const lower = findModuleIdx(result.graph, "foo.mjs").?;
+    const upper = findModuleIdx(result.graph, "Foo.mjs").?;
+    const lower_rank = result.linker.ns_base_rank.get(lower.toU32()) orelse 0;
+    const upper_rank = result.linker.ns_base_rank.get(upper.toU32()) orelse 0;
+    try std.testing.expect(lower_rank != upper_rank);
+    const first = try result.linker.ensureSharedNsVar(upper);
+    const second = try result.linker.ensureSharedNsVar(lower);
+    try std.testing.expect(!std.mem.eql(u8, first, second));
+    try std.testing.expect(std.mem.startsWith(u8, first, "Foo_ns"));
+    try std.testing.expect(std.mem.startsWith(u8, second, "Foo_ns"));
+}
