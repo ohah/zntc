@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { spawnSync as spawnSyncRaw } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { transpile } from '../../../packages/core/index';
-import { createFixture, runNode, runZntc } from './helpers';
+import { createFixture, runNode, runZntc, ZNTC_BIN } from './helpers';
 
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
@@ -3230,6 +3231,212 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const transformed = await runNode(output);
     expect(transformed.stderr).toBe('');
     expect(transformed.stdout.trim()).toBe('4 outer');
+  });
+
+  test('bundler retains exact graph for source type-only import elision', async () => {
+    const fixture = await createFixture({
+      'types.ts': [
+        'export interface Shape { value: number }',
+        "console.log('TYPE_PROVIDER_SIDE_EFFECT')",
+      ].join('\n'),
+      'default-types.ts': [
+        'export default interface Shape { value: number }',
+        "console.log('DEFAULT_PROVIDER_SIDE_EFFECT')",
+      ].join('\n'),
+      'values.ts': [
+        'export const token = 4',
+        'export function getValue() { return 7 }',
+        "console.log('VALUE_PROVIDER_SIDE_EFFECT')",
+      ].join('\n'),
+      'named-only.ts': [
+        "import { Shape } from './types.ts'",
+        "import { token as unused } from './values.ts'",
+        'function read(value: Shape) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'mixed-named.ts': [
+        "import { Shape, getValue } from './values.ts'",
+        'function read(value: Shape) { return value.value + getValue() }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'namespace-type.ts': [
+        "import * as Types from './types.ts'",
+        'function read(value: Types.Shape) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'default-type.ts': [
+        "import Shape from './default-types.ts'",
+        'function read(value: Shape) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'query-type.ts': [
+        "import { token } from './values.ts'",
+        'function read(value: typeof token) { return value }',
+        'console.log(read(5))',
+      ].join('\n'),
+      'import-type.ts': [
+        "function read(value: import('./types.ts').Shape) { return value.value }",
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'nested-type.ts': [
+        "import { Shape as Payload } from './types.ts'",
+        'function count(values: (Payload | undefined)[]) { return values.length }',
+        'console.log(count([{ value: 5 }]))',
+      ].join('\n'),
+      'mixed-query.ts': [
+        "import { token, getValue } from './values.ts'",
+        'function read(value: typeof token) { return value + getValue() }',
+        'console.log(read(5))',
+      ].join('\n'),
+      'alias-type.ts': [
+        "import { Shape } from './types.ts'",
+        'type Alias = Shape',
+        'function read(value: Alias) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'literal-type.ts': [
+        "import { Shape } from './types.ts'",
+        'function read(value: { shape: Shape }) { return value.shape.value }',
+        'console.log(read({ shape: { value: 5 } }))',
+      ].join('\n'),
+      'mapped-type.ts': [
+        "import { Shape } from './types.ts'",
+        'type Copy<T> = { [K in keyof T]: T[K] }',
+        'function read(value: Copy<Shape>) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'template-type.ts': [
+        "import { Shape } from './types.ts'",
+        'function read(value: `shape-${string}`) { return value.length }',
+        "console.log(read('shape-5'))",
+      ].join('\n'),
+      'function-type.ts': [
+        "import { Shape } from './types.ts'",
+        'const read: (value: Shape) => number = value => value.value',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'enum-lowering.ts': [
+        "import { Shape } from './types.ts'",
+        'enum Mode { Value = 2 }',
+        'function read(value: Shape) { return value.value + Mode.Value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'namespace-lowering.ts': [
+        "import { Shape } from './types.ts'",
+        'namespace Values { export const value = 2 }',
+        'function read(value: Shape) { return value.value + Values.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'class-lowering.ts': [
+        "import { Shape } from './types.ts'",
+        'class Box { value = 2 }',
+        'function read(value: Shape) { return value.value + new Box().value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'syntax-minify.ts': [
+        "import { Shape } from './types.ts'",
+        'function read(value: Shape) { return value.value }',
+        'console.log(read({ value: 5 }))',
+      ].join('\n'),
+      'predicate-type.ts': [
+        "import { Shape } from './types.ts'",
+        "function isShape(value: unknown): value is Shape { return typeof value === 'object' && value !== null }",
+        'console.log(isShape({ value: 5 }))',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    const runCommand = (command: string, args: string[], stem: string) => {
+      const stdoutPath = join(fixture.dir, `${stem}.stdout`);
+      const stderrPath = join(fixture.dir, `${stem}.stderr`);
+      const proc = spawnSyncRaw(
+        '/bin/sh',
+        [
+          '-c',
+          'stdout_path=$1; stderr_path=$2; shift 2; "$@" >"$stdout_path" 2>"$stderr_path"',
+          'zntc-type-only-capture',
+          stdoutPath,
+          stderrPath,
+          command,
+          ...args,
+        ],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      return {
+        exitCode: proc.status ?? -1,
+        stdout: readFileSync(stdoutPath, 'utf8'),
+        stderr: readFileSync(stderrPath, 'utf8'),
+      };
+    };
+
+    const run = async (
+      entry: string,
+      mode: 'retained' | 'reanalyzed',
+      expected: string,
+      options: string[] = [],
+      expectProviderPathToBeAbsent = false,
+    ) => {
+      const output = join(fixture.dir, `${entry}.cjs`);
+      const result = runCommand(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          join(fixture.dir, entry),
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          '--minify-identifiers',
+          ...options,
+        ],
+        `${entry}.compile`,
+      );
+      expect(result.exitCode, `${entry}: ${result.stderr}`).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, entry, mode);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity, `${entry}: ${counter}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      expect(identity, entry).toMatch(/clean=1(?:\s|$)/);
+      const emitted = readFileSync(output, 'utf8');
+      if (expectProviderPathToBeAbsent) expect(emitted, entry).not.toContain('./types.ts');
+      const execution = runCommand('node', [output], `${entry}.runtime`);
+      expect(execution.stderr, entry).toBe('');
+      expect(execution.stdout.trim(), entry).toBe(expected);
+    };
+
+    for (const [entry, expected] of [
+      ['named-only.ts', '5'],
+      ['namespace-type.ts', '5'],
+      ['default-type.ts', '5'],
+      ['query-type.ts', '5'],
+      ['import-type.ts', '5'],
+      ['nested-type.ts', '1'],
+    ] as const) {
+      await run(entry, 'retained', expected, [], true);
+    }
+    await run('mixed-named.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
+    await run('mixed-query.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
+
+    const conservativeCases = [
+      ['alias-type.ts', '5', []],
+      ['literal-type.ts', '5', []],
+      ['mapped-type.ts', '5', []],
+      ['template-type.ts', '7', []],
+      ['function-type.ts', '5', []],
+      ['enum-lowering.ts', '7', []],
+      ['namespace-lowering.ts', '7', []],
+      ['class-lowering.ts', '7', ['--target=es5']],
+      ['syntax-minify.ts', '5', ['--minify-syntax']],
+      ['predicate-type.ts', 'true', []],
+    ] as const;
+    for (const [entry, expected, options] of conservativeCases) {
+      await run(entry, 'reanalyzed', expected, [...options]);
+    }
   });
 
   test('bundler retains top-level local and source re-export aliases', async () => {
