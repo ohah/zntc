@@ -422,9 +422,11 @@ fn isSupportedPlainExportAll(
 
 /// Keeping the semantic graph is safe only when the transform leaves each
 /// runtime import's module-graph shape unchanged. TypeScript can elide unused
-/// imports and inline type-only specifiers, so those imports require verbatim
-/// syntax except for the bounded cases proved below. Plain JavaScript value
-/// imports have no TypeScript elision path.
+/// imports and inline type-only specifiers. An all-type-only inline declaration
+/// has no runtime edge and is admitted only when TS stripping removes it; a
+/// mixed declaration must retain a value edge under verbatim syntax or the
+/// bounded value-use proof below. Plain JavaScript value imports have no
+/// TypeScript elision path.
 fn hasStableRuntimeImports(
     ast: *const ast_mod.Ast,
     options: TransformOptions,
@@ -441,11 +443,11 @@ fn hasStableRuntimeImports(
         if (import.is_type_only) continue;
         if (import.phase != .none or import.attrs_len != 0) return false;
         if (import.specs_len == 0) continue;
-        if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
         if (import.specs_start > ast.extra_data.items.len or
             import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
 
         var has_runtime_specifier = false;
+        var has_inline_type_only_specifier = false;
         for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |raw_spec_idx| {
             if (raw_spec_idx >= ast.nodes.items.len) return false;
             const specifier = ast.nodes.items[raw_spec_idx];
@@ -454,9 +456,11 @@ fn hasStableRuntimeImports(
                 .import_specifier => {
                     if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) {
                         // Explicit inline `type` specifiers are removed by TS
-                        // stripping. Keep this declaration only when another
-                        // value specifier preserves its runtime module edge.
-                        if (!ast.is_typescript or !options.strip_types) return false;
+                        // stripping. Require the exact known flag shape before
+                        // treating the specifier as type-only.
+                        if (specifier.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY or
+                            !ast.is_typescript or !options.strip_types) return false;
+                        has_inline_type_only_specifier = true;
                         continue;
                     }
                     has_runtime_specifier = true;
@@ -464,15 +468,19 @@ fn hasStableRuntimeImports(
                 else => return false,
             }
         }
-        // An all-type-only inline import has no runtime edge. Its source record
-        // is elided, so do not retain this declaration under the mixed-import
-        // proof above.
-        if (!has_runtime_specifier) return false;
+        if (!has_runtime_specifier) {
+            // No source record survives for an all-type-only inline import.
+            // Keep the original graph only when the parser and transform
+            // options prove that TS stripping removes the declaration.
+            if (!has_inline_type_only_specifier) return false;
+            continue;
+        }
+        if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
     }
     return true;
 }
 
-test "stable runtime imports preserve mixed inline type-only specifiers only with a value edge" {
+test "stable runtime imports admit erased inline type-only declarations without a value edge" {
     const Parser = @import("../../parser/parser.zig").Parser;
     const Case = struct {
         name: []const u8,
@@ -480,6 +488,7 @@ test "stable runtime imports preserve mixed inline type-only specifiers only wit
         options: TransformOptions,
         allow_nonverbatim: bool,
         is_typescript: bool = true,
+        corrupt_type_only_specifier_flags: bool = false,
         expected: bool,
     };
     const cases = [_]Case{
@@ -505,10 +514,61 @@ test "stable runtime imports preserve mixed inline type-only specifiers only wit
             .expected = true,
         },
         .{
-            .name = "inline type-only specifiers without a runtime edge",
+            .name = "inline type-only specifier without a runtime edge",
             .source = "import { type Shape } from './types';",
             .options = .{ .strip_types = true },
-            .allow_nonverbatim = true,
+            .allow_nonverbatim = false,
+            .expected = true,
+        },
+        .{
+            .name = "multiple aliased inline type-only specifiers without runtime edges",
+            .source = "import { type Shape as Contract, type Marker } from './types';",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
+            .expected = true,
+        },
+        .{
+            .name = "inline type-only specifier without type stripping",
+            .source = "import { type Shape } from './types';",
+            .options = .{ .strip_types = false },
+            .allow_nonverbatim = false,
+            .expected = false,
+        },
+        .{
+            .name = "inline type-only specifier outside a TypeScript AST",
+            .source = "import { type Shape } from './types';",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
+            .is_typescript = false,
+            .expected = false,
+        },
+        .{
+            .name = "inline type-only specifier with an unknown flag bit",
+            .source = "import { type Shape } from './types';",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
+            .corrupt_type_only_specifier_flags = true,
+            .expected = false,
+        },
+        .{
+            .name = "attributed inline type-only import remains outside the stable subset",
+            .source = "import { type Shape } from './types' with { type: 'json' };",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
+            .expected = false,
+        },
+        .{
+            .name = "phased inline type-only import remains outside the stable subset",
+            .source = "import defer { type Shape } from './types';",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
+            .expected = false,
+        },
+        .{
+            .name = "default runtime binding beside an inline type-only import needs its proof",
+            .source = "import value from './values'; import { type Shape } from './types';",
+            .options = .{ .strip_types = true },
+            .allow_nonverbatim = false,
             .expected = false,
         },
         .{
@@ -541,6 +601,27 @@ test "stable runtime imports preserve mixed inline type-only specifiers only wit
             .expected = true,
         },
         .{
+            .name = "ordinary default import with verbatim syntax",
+            .source = "import value from './values';",
+            .options = .{ .verbatim_module_syntax = true },
+            .allow_nonverbatim = false,
+            .expected = true,
+        },
+        .{
+            .name = "ordinary namespace import with verbatim syntax",
+            .source = "import * as values from './values';",
+            .options = .{ .verbatim_module_syntax = true },
+            .allow_nonverbatim = false,
+            .expected = true,
+        },
+        .{
+            .name = "ordinary side-effect import keeps its runtime module edge",
+            .source = "import './effects';",
+            .options = .{ .verbatim_module_syntax = true },
+            .allow_nonverbatim = false,
+            .expected = true,
+        },
+        .{
             .name = "attributed runtime import remains outside the stable subset",
             .source = "import { value, type Shape } from './values' with { type: 'json' };",
             .options = .{ .strip_types = true, .verbatim_module_syntax = true },
@@ -559,6 +640,17 @@ test "stable runtime imports preserve mixed inline type-only specifiers only wit
         defer parser.deinit();
         _ = try parser.parse();
         if (!case.is_typescript) parser.ast.is_typescript = false;
+        if (case.corrupt_type_only_specifier_flags) {
+            var corrupted = false;
+            for (parser.ast.nodes.items) |*node| {
+                if (node.tag != .import_specifier or
+                    (node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) continue;
+                node.data.binary.flags |= 2;
+                corrupted = true;
+                break;
+            }
+            try std.testing.expect(corrupted);
+        }
         if (parser.errors.items.len != 0) std.debug.print("invalid stable import case: {s}\n", .{case.name});
         try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
         try std.testing.expectEqual(

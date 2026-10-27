@@ -5691,7 +5691,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42:loaded',
       },
       {
-        name: 'inline type-only imports without a runtime specifier keep the fallback',
+        name: 'inline type-only imports without a runtime specifier retain their erased graph',
         source: [
           "import { type Shape } from './types';",
           'type Alias = Shape;',
@@ -5702,7 +5702,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'types.ts':
             'globalThis.__inlineTypeOnlyRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: 'elided',
       },
       {
