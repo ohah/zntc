@@ -106,6 +106,7 @@ pub fn shouldRunLoad(self: anytype, path: []const u8) bool {
 
 pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.PluginRunner) LoadHookResult {
     module.runtime_helper_source = null;
+    module.runtime_helper_cache_source = null;
     const plugin_runner = runner orelse return .skipped;
     if (!shouldRunLoad(self, module.path)) return .skipped;
 
@@ -250,6 +251,7 @@ pub fn runTransformForModule(
         // Even an equal-byte or in-place user transform is a new source
         // producer, not the winning builtin constructor.
         module.runtime_helper_source = null;
+        module.runtime_helper_cache_source = null;
         return .applied;
     }
     return .skipped;

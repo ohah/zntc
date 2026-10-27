@@ -19,6 +19,8 @@ pub const Source = struct {
     syntax: ast.Ast,
     output_domain: *const ast.Ast,
     origin: origin_mod.Origin,
+    input_source: []const u8,
+    input_source_hash: u64,
     owner: module.SemanticOwnerToken,
     root: NodeIndex,
     nodes: []const u32,
@@ -99,14 +101,91 @@ fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transfor
     return true;
 }
 
+/// Record only the exact pair just installed by tryDiskLoadHit. The decoder
+/// result's stack object is used to prove backing identity, never retained.
+pub fn recordInstalledDiskSource(current: *module.Module, restored: *const @import("../bundler/module_codec.zig").DeserializedModule, options: helpers.SourceOptions) bool {
+    if (current.runtime_helper_cache_source != null) return false;
+    const loaded = current.runtime_helper_source orelse return false;
+    const arena = current.parse_arena orelse return false;
+    const tree = if (current.ast) |*value| value else return false;
+    const semantic = if (current.semantic) |*value| value else return false;
+    if (!helpers.matchesConstructedSource(loaded, options, current.source) or
+        !std.meta.eql(tree.*, restored.ast) or !std.meta.eql(semantic.*, restored.semantic) or
+        semantic.owner_token != .unassigned or tree.nodes.items.len == 0 or
+        !std.mem.eql(u8, current.source, tree.source)) return false;
+    const root = tree.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1))));
+    if (@backingInt(root) >= tree.nodes.items.len or tree.getNode(root).tag != .program) return false;
+    const decoded_hash = @import("../util/wyhash.zig").hashU64(tree.source);
+    if (decoded_hash != loaded.contents_hash) return false;
+    // All fallible/identity checks precede the current graph owner and one
+    // publication. Never adopt an owner token from an unrelated cached graph.
+    const owner = semantic.captureOwnerToken();
+    if (owner == .unassigned) return false;
+    current.runtime_helper_cache_source = .{
+        .module_domain = current,
+        .ast_domain = tree,
+        .semantic_domain = semantic,
+        .arena_domain = arena,
+        .constructor = loaded,
+        .winning_source = current.source,
+        .decoded_source = tree.source,
+        .decoded_hash = decoded_hash,
+        .owner = owner,
+        .root = root,
+        .cache_key = current.disk_cache_key,
+        .nodes = tree.nodes.items,
+        .extras = tree.extra_data.items,
+        .strings = tree.string_table.items,
+        .symbols = semantic.symbols.items,
+        .scopes = semantic.scopes,
+        .scope_maps = semantic.scope_maps,
+        .references = semantic.references,
+        .symbol_ids = semantic.symbol_ids,
+        .scope_owners = semantic.scope_owner_map,
+    };
+    return true;
+}
+
+const CacheInput = struct { current: *const module.Module, copy: module.RuntimeHelperCacheSource };
+fn matchesCacheInput(input: CacheInput, tree: *const ast.Ast, semantic: *const module.ModuleSemanticData, loaded: origin_mod.Origin, options: helpers.SourceOptions, contents: []const u8) bool {
+    const current = input.current;
+    const copy = input.copy;
+    const root = tree.transformed_root orelse if (tree.nodes.items.len > 0) @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1)))) else return false;
+    if (@backingInt(root) >= tree.nodes.items.len or tree.getNode(root).tag != .program) return false;
+    return copy.module_domain == current and copy.ast_domain == tree and copy.semantic_domain == semantic and
+        current.parse_arena != null and current.parse_arena.? == copy.arena_domain and
+        copy.owner != .unassigned and semantic.owner_token == copy.owner and copy.cache_key == current.disk_cache_key and copy.root == root and
+        std.meta.eql(copy.nodes, tree.nodes.items) and std.meta.eql(copy.extras, tree.extra_data.items) and std.meta.eql(copy.strings, tree.string_table.items) and
+        std.meta.eql(copy.symbols, semantic.symbols.items) and std.meta.eql(copy.scopes, semantic.scopes) and std.meta.eql(copy.scope_maps, semantic.scope_maps) and
+        std.meta.eql(copy.references, semantic.references) and std.meta.eql(copy.symbol_ids, semantic.symbol_ids) and std.meta.eql(copy.scope_owners, semantic.scope_owner_map) and
+        std.meta.eql(copy.constructor, loaded) and current.runtime_helper_source != null and std.meta.eql(current.runtime_helper_source.?, loaded) and
+        std.meta.eql(copy.winning_source, contents) and helpers.matchesConstructedSource(loaded, options, contents) and
+        std.meta.eql(copy.decoded_source, tree.source) and @import("../util/wyhash.zig").hashU64(tree.source) == copy.decoded_hash and
+        copy.decoded_hash == loaded.contents_hash;
+}
+
+pub fn captureFromModule(a: std.mem.Allocator, current: *module.Module, source_options: helpers.SourceOptions, options: @import("transformer.zig").TransformOptions, has_external_ast_producer: bool) Error!?Source {
+    const tree = if (current.ast) |*value| value else return null;
+    const semantic = if (current.semantic) |*value| value else return null;
+    const loaded = current.runtime_helper_source orelse return null;
+    const cache_input: ?CacheInput = if (current.runtime_helper_cache_source) |copy| .{ .current = current, .copy = copy } else null;
+    return captureInput(a, tree, semantic, loaded, current.source, source_options, options, has_external_ast_producer, cache_input);
+}
+
 /// Only a winning builtin constructor may reach this call site. Revalidate its
 /// source bytes against both the Module and parsed AST after all load/transform
 /// stages. An AST hook is a separate producer even when it leaves equal bytes.
 pub fn capture(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.ModuleSemanticData, loaded: origin_mod.Origin, module_source: []const u8, source_options: helpers.SourceOptions, options: @import("transformer.zig").TransformOptions, has_external_ast_producer: bool) Error!?Source {
+    return captureInput(a, tree, semantic, loaded, module_source, source_options, options, has_external_ast_producer, null);
+}
+
+fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.ModuleSemanticData, loaded: origin_mod.Origin, module_source: []const u8, source_options: helpers.SourceOptions, options: @import("transformer.zig").TransformOptions, has_external_ast_producer: bool, cache_input: ?CacheInput) Error!?Source {
+    const source_witness = origin_mod.matchesContents(loaded, tree.source) or
+        (if (cache_input) |input| matchesCacheInput(input, tree, semantic, loaded, source_options, module_source) else false);
     if (has_external_ast_producer or !options.strip_types or options.minify_syntax or options.react_refresh or options.emotion or options.styled_components or
         options.drop_console or options.drop_debugger or options.drop_labels.len != 0 or options.hasMappedImportToSplit(tree) or
         @import("transformer/define.zig").astUsesDefine(tree, options.define) or
-        !helpers.matchesConstructedSource(loaded, source_options, module_source) or !origin_mod.matchesContents(loaded, tree.source)) return null;
+        !helpers.matchesConstructedSource(loaded, source_options, module_source) or !source_witness) return null;
     for (options.plugins) |plugin| if (plugin.transform != null or plugin.onFunction != null or plugin.visitor != null or plugin.autoWorkletCallees.len != 0) return null;
     const root = tree.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1))));
     const nodes = try walk.collectReachableNodeIndicesFrom(a, tree, root);
@@ -125,6 +204,8 @@ pub fn capture(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mod
         .syntax = tree.*,
         .output_domain = undefined,
         .origin = loaded,
+        .input_source = tree.source,
+        .input_source_hash = @import("../util/wyhash.zig").hashU64(tree.source),
         .owner = semantic.captureOwnerToken(),
         .root = root,
         .nodes = nodes,
@@ -262,7 +343,7 @@ fn owned(self: anytype, view: View, raw: u32) ?u32 {
     return if (view.owners) |map| map.get(raw) else if (self.outputOwnedScope(@fromBackingInt(raw))) |id| @backingInt(id) else null;
 }
 fn validate(self: anytype, source: Source, view: View, root: NodeIndex) Error!void {
-    if (source.owner == .unassigned or source.output_domain != self.ast or source.source_domain != self.semantic_source_ast or !origin_mod.matchesContents(source.origin, self.ast.source) or self.runtime_helpers.hasAny() or self.runtime_helper_import_bindings.count() != 0 or view.symbols.len != source.symbols.len or view.scopes.len != source.scopes.len) return invalid();
+    if (source.owner == .unassigned or source.output_domain != self.ast or source.source_domain != self.semantic_source_ast or (!std.meta.eql(source.input_source, self.ast.source) or @import("../util/wyhash.zig").hashU64(self.ast.source) != source.input_source_hash) or self.runtime_helpers.hasAny() or self.runtime_helper_import_bindings.count() != 0 or view.symbols.len != source.symbols.len or view.scopes.len != source.scopes.len) return invalid();
     for (source.symbols, view.symbols) |before, after| {
         // Ref/write counters may include dead copied rows. Compare storage and
         // instantiation identity here; live reference multiplicity is checked below.

@@ -499,3 +499,198 @@ test "virtual provider no-demand and syntax or regexp work keep existing paths" 
         if (index == 0) try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic)) else try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
     }
 }
+
+test "virtual provider actual winning load disk source copy preserves current graph" {
+    const test_helpers = @import("../bundler/test_helpers.zig");
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try test_helpers.writeFile(tmp.dir, "entry.mjs", public_cases[0].source);
+    const entry = try test_helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const cache = try test_helpers.absPath(&tmp, "cache");
+    defer std.testing.allocator.free(cache);
+    var counts: [2]u32 = .{ 0, 0 };
+    for (0..2) |phase| {
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+        var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = @import("compat.zig").fromESTarget(.es5), .disk_cache_dir = cache });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        counts[phase] = profile.count(.graph_resync_semantic);
+        std.debug.print("provider-warm-copy phase={d} semanticResync={d}\n", .{ phase, counts[phase] });
+    }
+    try std.testing.expectEqual(@as(u32, 0), counts[0]);
+    try std.testing.expectEqual(@as(u32, 0), counts[1]);
+}
+
+fn expectCachedCapture(a: std.mem.Allocator, current: *@import("../bundler/module.zig").Module, source_options: helpers.SourceOptions, expected: bool) !void {
+    const options: @import("transformer.zig").TransformOptions = .{ .unsupported = @import("compat.zig").fromESTarget(.es5), .emit_runtime_helper_imports = true };
+    const capture = try @import("virtual_helper_provider_certificate.zig").captureFromModule(a, current, source_options, options, false);
+    try std.testing.expectEqual(expected, capture != null);
+}
+
+test "virtual provider disk-copy actual producer rejects foreign ownership and restores atomically" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Plugin = @import("../bundler/plugin.zig").Plugin;
+    const Runner = @import("../bundler/plugin.zig").PluginRunner;
+    const module_mod = @import("../bundler/module.zig");
+    const certificate = @import("virtual_helper_provider_certificate.zig");
+    const source_options: helpers.SourceOptions = .{ .es5 = true };
+    const plugins = [_]Plugin{helpers.makePlugin(&source_options)};
+    const runner = Runner.init(&plugins);
+    const id = helpers.ID_PREFIX ++ "public-field";
+    var hook: @import("../bundler/plugin.zig").HookContext = .{};
+    const winning = (try runner.runLoadWithOrigin(id, a, &hook)).?;
+    const origin = helpers.acceptWinningLoad(winning, &source_options).?;
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, winning.result.contents);
+    scanner.is_module = true;
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.is_module = true;
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    const semantic: module_mod.ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .node_scope_provenance = analyzer.node_scope_provenance, .symbol_ids = analyzer.symbol_ids.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .references = analyzer.references.items, .class_self_symbol_map = analyzer.class_self_symbol_map, .helper_scope_map = analyzer.helper_scope_map };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cache_path = try @import("../bundler/test_helpers.zig").absPath(&tmp, "cache");
+    defer std.testing.allocator.free(cache_path);
+    var store = try @import("../bundler/disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_path);
+    defer store.deinit();
+    const key: u64 = 0x4819;
+    try store.store(std.testing.io, std.testing.allocator, key, &parser.ast, &semantic);
+    const restored = (try store.load(std.testing.io, std.testing.allocator, a, key)).?;
+    const foreign_pair = (try store.load(std.testing.io, std.testing.allocator, a, key)).?;
+    var current = module_mod.Module.init(@fromBackingInt(@intCast(0)), id);
+    current.module_type = .js;
+    current.source = winning.result.contents;
+    current.runtime_helper_source = origin;
+    current.ast = restored.ast;
+    current.semantic = restored.semantic;
+    current.parse_arena = &arena;
+    current.disk_cache_key = key;
+    try std.testing.expect(current.ast.?.source.ptr != current.source.ptr);
+    try expectCachedCapture(a, &current, source_options, false);
+    try std.testing.expect(!certificate.recordInstalledDiskSource(&current, &foreign_pair, source_options));
+    try std.testing.expectEqual(module_mod.SemanticOwnerToken.unassigned, current.semantic.?.owner_token);
+    try std.testing.expect(current.runtime_helper_cache_source == null);
+    const original_ast = current.ast;
+    const original_semantic = current.semantic;
+    const original_source = current.source;
+    const initial_scopes = try a.dupe(@import("../semantic/scope.zig").Scope, current.semantic.?.scopes);
+    const initial_rows = try a.dupe(symbol.Reference, current.semantic.?.references);
+    try std.testing.expect(!certificate.recordInstalledDiskSource(&current, &restored, .{ .es5 = false }));
+    for (0..6) |mutation| {
+        switch (mutation) {
+            0 => current.runtime_helper_source = null,
+            1 => current.runtime_helper_source.?.variant = .min,
+            2 => current.source = try a.dupe(u8, current.source),
+            3 => current.ast.?.source = try a.dupe(u8, current.ast.?.source),
+            4 => current.semantic = foreign_pair.semantic,
+            5 => current.ast = foreign_pair.ast,
+            else => unreachable,
+        }
+        const accepted = certificate.recordInstalledDiskSource(&current, &restored, source_options);
+        current.ast = original_ast;
+        current.semantic = original_semantic;
+        current.source = original_source;
+        current.runtime_helper_source = origin;
+        try std.testing.expect(!accepted);
+        try std.testing.expect(current.runtime_helper_cache_source == null);
+        try std.testing.expectEqual(module_mod.SemanticOwnerToken.unassigned, current.semantic.?.owner_token);
+        try std.testing.expectEqualDeep(initial_scopes, current.semantic.?.scopes);
+        try std.testing.expectEqualDeep(initial_rows, current.semantic.?.references);
+    }
+    try std.testing.expect(certificate.recordInstalledDiskSource(&current, &restored, source_options));
+    try expectCachedCapture(a, &current, source_options, true);
+    const saved_copy = current.runtime_helper_cache_source;
+    const saved_owner = current.semantic.?.owner_token;
+    const saved_scopes = try a.dupe(@import("../semantic/scope.zig").Scope, current.semantic.?.scopes);
+    const saved_rows = try a.dupe(symbol.Reference, current.semantic.?.references);
+    try std.testing.expect(!certificate.recordInstalledDiskSource(&current, &foreign_pair, source_options));
+    try std.testing.expect(std.meta.eql(saved_copy, current.runtime_helper_cache_source));
+    try std.testing.expectEqual(saved_owner, current.semantic.?.owner_token);
+    try expectCachedCapture(a, &current, source_options, true);
+
+    var foreign_hook: @import("../bundler/plugin.zig").HookContext = .{};
+    const foreign_winner = (try runner.runLoadWithOrigin(id, a, &foreign_hook)).?;
+    var other = module_mod.Module.init(@fromBackingInt(@intCast(1)), id);
+    other.module_type = .js;
+    other.source = foreign_winner.result.contents;
+    other.runtime_helper_source = helpers.acceptWinningLoad(foreign_winner, &source_options).?;
+    other.ast = foreign_pair.ast;
+    other.semantic = foreign_pair.semantic;
+    other.parse_arena = &arena;
+    other.disk_cache_key = key;
+    try std.testing.expect(certificate.recordInstalledDiskSource(&other, &foreign_pair, source_options));
+    try expectCachedCapture(a, &other, source_options, true);
+    try std.testing.expect(saved_owner != other.semantic.?.owner_token);
+
+    const pending_pair = (try store.load(std.testing.io, std.testing.allocator, a, key)).?;
+    var foreign_owner_pair = pending_pair;
+    foreign_owner_pair.semantic.owner_token = other.semantic.?.owner_token;
+    var pending_hook: @import("../bundler/plugin.zig").HookContext = .{};
+    const pending_winner = (try runner.runLoadWithOrigin(id, a, &pending_hook)).?;
+    var pending = module_mod.Module.init(@fromBackingInt(@intCast(2)), id);
+    pending.module_type = .js;
+    pending.source = pending_winner.result.contents;
+    pending.runtime_helper_source = helpers.acceptWinningLoad(pending_winner, &source_options).?;
+    pending.ast = foreign_owner_pair.ast;
+    pending.semantic = foreign_owner_pair.semantic;
+    pending.parse_arena = &arena;
+    pending.disk_cache_key = key;
+    try std.testing.expect(!certificate.recordInstalledDiskSource(&pending, &foreign_owner_pair, source_options));
+    try std.testing.expect(pending.runtime_helper_cache_source == null);
+    try std.testing.expectEqual(other.semantic.?.owner_token, pending.semantic.?.owner_token);
+    try std.testing.expectEqualDeep(initial_scopes, pending.semantic.?.scopes);
+    try std.testing.expectEqualDeep(initial_rows, pending.semantic.?.references);
+    pending.semantic = pending_pair.semantic;
+    try std.testing.expect(certificate.recordInstalledDiskSource(&pending, &pending_pair, source_options));
+    try expectCachedCapture(a, &pending, source_options, true);
+    try std.testing.expect(pending.semantic.?.owner_token != other.semantic.?.owner_token);
+    var another_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer another_arena.deinit();
+    const saved_current_semantic = current.semantic;
+    for (0..12) |mutation| {
+        switch (mutation) {
+            0 => current.runtime_helper_cache_source = null,
+            1 => current.runtime_helper_cache_source = other.runtime_helper_cache_source,
+            2 => current.runtime_helper_cache_source.?.ast_domain = &other.ast.?,
+            3 => current.runtime_helper_cache_source.?.semantic_domain = &other.semantic.?,
+            4 => current.runtime_helper_cache_source.?.owner = other.semantic.?.owner_token,
+            5 => current.runtime_helper_cache_source.?.arena_domain = &another_arena,
+            6 => current.runtime_helper_cache_source.?.root = @fromBackingInt(@intCast(0)),
+            7 => current.runtime_helper_cache_source.?.cache_key ^= 1,
+            8 => current.source = try a.dupe(u8, current.source),
+            9 => current.ast.?.source = try a.dupe(u8, current.ast.?.source),
+            10 => {
+                current.ast = other.ast;
+                current.ast.?.source = restored.ast.source;
+            },
+            11 => {
+                current.semantic = other.semantic;
+                current.semantic.?.owner_token = saved_owner;
+            },
+            else => unreachable,
+        }
+        try expectCachedCapture(a, &current, source_options, false);
+        current.runtime_helper_cache_source = saved_copy;
+        current.source = original_source;
+        current.ast = original_ast;
+        current.semantic = saved_current_semantic;
+        try std.testing.expectEqual(saved_owner, current.semantic.?.owner_token);
+        try std.testing.expectEqualDeep(saved_scopes, current.semantic.?.scopes);
+        try std.testing.expectEqualDeep(saved_rows, current.semantic.?.references);
+        try expectCachedCapture(a, &current, source_options, true);
+    }
+}

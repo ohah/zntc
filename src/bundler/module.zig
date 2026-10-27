@@ -444,6 +444,32 @@ pub const RuntimeHelperImportOutputBinding = struct {
     output_name_hint: []const u8,
 };
 
+/// One actual disk-loader installation of a current winning builtin source.
+/// Borrowed from this Module's parse arena; never serialized or reconstructed
+/// from a virtual path. Stack addresses of the decoder result are not retained.
+pub const RuntimeHelperCacheSource = struct {
+    module_domain: *const Module,
+    ast_domain: *const Ast,
+    semantic_domain: *const ModuleSemanticData,
+    arena_domain: *const std.heap.ArenaAllocator,
+    constructor: @import("../runtime_helper_source_origin.zig").Origin,
+    winning_source: []const u8,
+    decoded_source: []const u8,
+    decoded_hash: u64,
+    owner: SemanticOwnerToken,
+    root: @import("../parser/ast.zig").NodeIndex,
+    cache_key: u64,
+    nodes: []const @import("../parser/ast.zig").Node,
+    extras: []const u32,
+    strings: []const u8,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    references: []const Reference,
+    symbol_ids: []const ?u32,
+    scope_owners: std.AutoHashMapUnmanaged(u32, u32),
+};
+
 pub const TransformCache = struct {
     /// transformer 가 set 한 RuntimeHelpers 비트맵.
     /// emitter 의 chunk-level helper preamble 결정에 사용.
@@ -560,6 +586,7 @@ pub const Module = struct {
     source: []const u8,
     /// Borrowed from this module's actual winning builtin load constructor.
     runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
+    runtime_helper_cache_source: ?RuntimeHelperCacheSource = null,
     /// JS plugin load/transform 이 반환한 Source Map V3 JSON chain.
     /// 순서는 transform 실행 순서이며 parse_arena 가 backing 을 소유한다.
     plugin_source_maps: []const []const u8 = &.{},
