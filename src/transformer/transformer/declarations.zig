@@ -368,6 +368,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         none,
     });
 
+    try @import("../native_noop_graph.zig").recordFunctionFormals(self, source_idx, result, params_idx_old, new_params_node);
+
     try @import("../worklet_class_clone.zig").transferFactoryFunctionOwner(self, source_idx, result);
 
     // Plugin dispatch: onFunction (AST 훅)

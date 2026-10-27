@@ -210,6 +210,10 @@ pub fn transform(self: anytype) Error!NodeIndex {
         try @import("../native_arguments.zig").publish(self, root);
         try @import("../worklet_class_clone.zig").publish(self, root);
         try @import("../virtual_helper_provider_certificate.zig").beforeBinder(self, root);
+        if (self.native_noop_source != null) {
+            self.native_noop_before_binder = @import("../native_noop_graph.zig").beforeBinder(self, root) catch false;
+            if (self.native_noop_before_binder) self.native_noop_before_binder_root = root;
+        }
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 

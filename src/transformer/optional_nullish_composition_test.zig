@@ -359,3 +359,244 @@ test "optional nullish composition keeps ordinary controls and mixed unsafe sour
         try std.testing.expect(plan == null);
     }
 }
+
+test "native no-op graph native optional nullish preserves runtime without lowering births" {
+    var observed_resyncs: u32 = 0;
+    for (inputs, 0..) |source, index| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", entry } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+        var b = bundler.Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = @import("compat.zig").fromESTarget(.es2020), .minify_identifiers = minify });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const resyncs = profile.count(.graph_resync_semantic);
+        observed_resyncs += resyncs;
+        std.debug.print("NATIVE NOOP RED case={d} identifiers={} resync={d}\n", .{ index, minify, resyncs });
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", output } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    };
+    // Execute every native control before reporting the admission failure.
+    try std.testing.expectEqual(@as(u32, 0), observed_resyncs);
+}
+
+test "native no-op graph retains side effect import entry independently of lowered dependency" {
+    var observed_resyncs: u32 = 0;
+    for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "power.mjs", "const box=null;globalThis.result=box?.value??7;");
+        try helpers.writeFile(tmp.dir, "entry.mjs", "import './power.mjs';console.log(globalThis.result);");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", entry } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+        var b = bundler.Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = @import("compat.zig").fromESTarget(.es2019), .minify_identifiers = minify });
+        defer b.deinit();
+        const result = try b.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+        const output = try helpers.absPath(&tmp, "output.cjs");
+        defer std.testing.allocator.free(output);
+        const actual = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", output } });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        std.debug.print("NATIVE NOOP ENTRY RED identifiers={} resync={d}\n", .{ minify, profile.count(.graph_resync_semantic) });
+        observed_resyncs += profile.count(.graph_resync_semantic);
+    }
+    try std.testing.expectEqual(@as(u32, 0), observed_resyncs);
+}
+
+const Native = @import("native_noop_graph.zig");
+const NativeFixture = struct {
+    t: Transformer,
+    sem: sem_mod.ModuleSemanticData,
+    root: ast_mod.NodeIndex,
+    fn init(a: std.mem.Allocator, text: []const u8) !NativeFixture {
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, text);
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        const tree = try a.create(ast_mod.Ast);
+        tree.* = parser.ast;
+        const analyzer = try a.create(@import("../semantic/analyzer.zig").SemanticAnalyzer);
+        analyzer.* = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, tree);
+        analyzer.is_module = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
+        var sem: sem_mod.ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .node_scope_provenance = analyzer.node_scope_provenance, .symbol_ids = analyzer.symbol_ids.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .references = analyzer.references.items, .class_self_symbol_map = analyzer.class_self_symbol_map, .helper_scope_map = analyzer.helper_scope_map };
+        _ = sem.captureOwnerToken();
+        const options: @import("transformer.zig").TransformOptions = .{ .unsupported = @import("compat.zig").fromESTarget(.es2020) };
+        var plan = (try Native.sourcePlan(a, tree, &sem, options)) orelse return error.MissingNativeSource;
+        var t = try Transformer.init(a, tree, options);
+        try t.initSymbolIds(sem.symbol_ids);
+        t.symbols = sem.symbols.items;
+        t.references = sem.references;
+        t.scopes = sem.scopes;
+        t.scope_maps = sem.scope_maps;
+        t.scope_owner_map = sem.scope_owner_map;
+        t.node_scope_provenance = sem.node_scope_provenance;
+        t.class_self_symbol_map = sem.class_self_symbol_map;
+        t.helper_scope_map = sem.helper_scope_map;
+        t.unresolved_references = &analyzer.unresolved_references;
+        t.semantic_edit_enabled = true;
+        plan.owner = sem.owner_token;
+        plan.output = t.ast;
+        t.native_noop_source = plan;
+        const root = try t.transform();
+        if (try t.finishSemanticEdit()) |edit| sem.applyEdit(edit);
+        return .{ .t = t, .sem = sem, .root = root };
+    }
+};
+
+test "native no-op graph native authority rejects foreign domains and changed source tuples without healing" {
+    for (inputs) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var f = try NativeFixture.init(a, text);
+        try std.testing.expect(f.t.native_noop_before_binder);
+        try std.testing.expect(try Native.complete(&f.t, &f.sem, f.root));
+        try std.testing.expectEqual(@as(usize, 0), f.t.optional_nullish_applications.items.len);
+        try std.testing.expectEqual(@as(usize, 0), f.t.temp_symbols_by_producer_id.count());
+        try std.testing.expectEqual(f.t.native_noop_source.?.symbols.len, f.sem.symbols.items.len);
+        const before = try a.dupe(symbol.Reference, f.sem.references);
+        const original = f.t.native_noop_source.?;
+        const foreign = try NativeFixture.init(a, text);
+        f.t.native_noop_source.?.output = foreign.t.ast;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        f.t.native_noop_source = original;
+        f.t.native_noop_source.?.owner = foreign.sem.owner_token;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        f.t.native_noop_source = original;
+        f.t.native_noop_source.?.ast = foreign.t.native_noop_source.?.ast;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        f.t.native_noop_source = original;
+        const copies = &f.t.native_noop_copies;
+        try std.testing.expect(copies.items.len > 0);
+        const saved_copy = copies.items[0];
+        copies.items[0].output = f.root;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        copies.items[0] = saved_copy;
+        try copies.append(a, saved_copy);
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        _ = copies.pop();
+        const member = for (copies.items) |copy| {
+            const node = f.t.ast.getNode(copy.output);
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) break copy.output;
+        } else return error.MissingNativeMember;
+        const extra = f.t.ast.getNode(member).data.extra;
+        const saved_flags = f.t.ast.extra_data.items[extra + 2];
+        f.t.ast.extra_data.items[extra + 2] ^= ast_mod.MemberFlags.optional_chain;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        f.t.ast.extra_data.items[extra + 2] = saved_flags;
+        const saved_member = f.t.ast.getNode(member);
+        f.t.ast.nodes.items[@backingInt(member)].tag = if (saved_member.tag == .static_member_expression) .computed_member_expression else .static_member_expression;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        f.t.ast.nodes.items[@backingInt(member)] = saved_member;
+        const row_index = for (f.sem.references, 0..) |ref, i| {
+            if (!ref.flags.declare and !ref.node_index.isNone()) break i;
+        } else return error.MissingNativeRead;
+        const rows = @constCast(f.sem.references);
+        const saved_row = rows[row_index];
+        rows[row_index].scope_id = .none;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        rows[row_index] = saved_row;
+        if (f.sem.scopes.len > 1) {
+            rows[row_index].scope_id = @fromBackingInt(if (@backingInt(saved_row.scope_id) == 0) @as(u32, 1) else @as(u32, 0));
+            try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+            rows[row_index] = saved_row;
+        }
+        rows[row_index].flags.write = !rows[row_index].flags.write;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        rows[row_index] = saved_row;
+        rows[row_index].stmt_idx += 1;
+        try std.testing.expect(!try Native.complete(&f.t, &f.sem, f.root));
+        rows[row_index] = saved_row;
+        for (before, f.sem.references) |x, y| try std.testing.expect(std.meta.eql(x, y));
+        try std.testing.expect(try Native.complete(&f.t, &f.sem, f.root));
+    }
+}
+
+test "native no-op graph native source boundaries exclude dynamic and actual lowering" {
+    const excluded = [_][]const u8{
+        "const box={value:3};console.log(eval('box')?.value??7);",
+        "class C{static value;static{this.value=7}}console.log(C?.value??0);",
+        "let x=null;x??=7;console.log(x?.value??7);",
+        "const f=()=>3;console.log(f?.()??7);",
+        "import './dependency.mjs';const box=null;console.log(box?.value??7);",
+    };
+    for (excluded) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        try std.testing.expectError(error.MissingNativeSource, NativeFixture.init(arena.allocator(), text));
+    }
+}
+
+test "native no-op graph native assignment access modes follow actual parent operations" {
+    const operations = [_][]const u8{ "counter=4", "counter+=2", "counter++", "++counter", "counter--", "--counter" };
+    for (operations, 0..) |operation, operation_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = try std.fmt.allocPrint(a, "let counter=3;const box={{value:1}};function run(){{{s};return box?.value??7}}console.log(run(),counter);", .{operation});
+        var fixture = try NativeFixture.init(a, source);
+        try std.testing.expect(fixture.t.native_noop_before_binder);
+        try std.testing.expect(try Native.complete(&fixture.t, &fixture.sem, fixture.root));
+        var writes: usize = 0;
+        for (fixture.sem.references) |ref| if (ref.flags.write and !ref.flags.declare) {
+            writes += 1;
+            try std.testing.expectEqual(operation_index != 0, ref.flags.read);
+        };
+        try std.testing.expectEqual(@as(usize, 1), writes);
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", source);
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        for ([_]bool{ false, true }) |minify| {
+            profile.resetForTest();
+            defer profile.resetForTest();
+            profile.setIoForTest(std.testing.io);
+            profile.addFromCsv("graph.resync.semantic");
+            var b = bundler.Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node, .format = .cjs, .unsupported = @import("compat.zig").fromESTarget(.es2020), .minify_identifiers = minify });
+            defer b.deinit();
+            const result = try b.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+            try helpers.writeFile(tmp.dir, "output.cjs", result.output);
+            const output = try helpers.absPath(&tmp, "output.cjs");
+            defer std.testing.allocator.free(output);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
