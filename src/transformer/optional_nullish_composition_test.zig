@@ -97,6 +97,9 @@ const Fixture = struct {
         const source_count = sem.symbols.items.len;
         const root = try t.transform();
         sem.applyEdit((try t.finishSemanticEdit()).?);
+        // Missing birth records are a failed factory contract, not permission
+        // for tests to index a nonexistent application and crash.
+        try std.testing.expectEqual(source.inputs.len, t.optional_nullish_applications.items.len);
         if (publish) try std.testing.expect(try Cert.publishPositions(&t, &sem, root));
         return .{ .t = t, .sem = sem, .root = root, .source_count = source_count };
     }
