@@ -1999,6 +1999,29 @@ pub fn buildFinalExports(
                 continue;
             }
         }
+        if (p.canonical_import) |handle| {
+            // Only the current export's actual resolved ordinary provider may
+            // consume this chunk's already-selected lexical import local.
+            const current = self.resolveExportChain(@fromBackingInt(@intCast(module_index)), p.exported, 0);
+            if (current) |canonical| {
+                if (canonical.module_index == handle.canonical.module_index and
+                    std.mem.eql(u8, canonical.export_name, handle.canonical.export_name) and
+                    canonical.synthetic_member == null and
+                    self.isCrossChunkConsumer(module_index, canonical.module_index.toU32()))
+                {
+                    if (self.ordinaryCanonicalImportTarget(canonical)) |actual| {
+                        if (@import("../symbol.zig").SymbolRef.eql(actual.provider_symbol, handle.provider_symbol)) {
+                            if (self.getConsumerImportTarget(canonical.module_index.toU32(), canonical.export_name)) |target| {
+                                if (target.role == .binding and try @import("identifier_name.zig").isBindingName(self.allocator, target.text, isReservedName)) {
+                                    entries.appendAssumeCapacity(.{ .local = target.text, .exported = p.exported });
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (p.owned) {
             try owned_strings.append(self.allocator, p.local);
             p.owned = false;

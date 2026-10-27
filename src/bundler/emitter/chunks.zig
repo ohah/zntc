@@ -5360,3 +5360,76 @@ test "PM plain import alias owned target roles reject invalid member inputs atom
     try std.testing.expect(linker.getConsumerImportTarget(0, "value").?.role == .namespace_member_expression);
     try std.testing.expectEqualStrings("holder.값", linker.getConsumerImportLocal(0, "value").?);
 }
+test "PM barrel import target actual source canonical selected export tuple" {
+    const helper = @import("../test_helpers.zig");
+    const fixture = @import("../bundler_test/plain_import_alias_fixtures.zig").candidates[7];
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helper.writeFile(tmp.dir, "entry.mjs", fixture.entry);
+    try helper.writeFile(tmp.dir, "dep.mjs", fixture.dep);
+    try helper.writeFile(tmp.dir, "barrel.mjs", fixture.barrel.?);
+    const path = try helper.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &.{path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = true });
+    var cg = try chunk_mod.generatePreserveModulesChunks(std.testing.allocator, &graph, &.{path}, null);
+    defer cg.deinit();
+    linker.module_to_chunk = cg.module_to_chunk;
+    defer linker.module_to_chunk = null;
+    var entry: ?*const Module = null;
+    var it = graph.modulesIterator();
+    while (it.next()) |m| if (std.mem.eql(u8, m.path, path)) {
+        entry = m;
+        break;
+    };
+    const em = entry orelse return error.MissingBarrelEntry;
+    try std.testing.expectEqual(@as(usize, 1), em.import_bindings.len);
+    const source = em.import_bindings[0];
+    const sid = source.local_symbol.semanticIndex() orelse return error.MissingBarrelSourceSID;
+    const physical = em.import_records[source.import_record_index].resolved;
+    const barrel = graph.getModule(physical) orelse return error.MissingPhysicalBarrel;
+    const canonical = linker.resolveExportChain(physical, source.imported_name, 0) orelse return error.MissingBarrelCanonical;
+    const provider = graph.getModule(canonical.module_index) orelse return error.MissingBarrelProvider;
+    const eb = provider.findExportBinding(canonical.export_name) orelse return error.MissingBarrelProviderBinding;
+    const provider_sid = provider.exportBindingSemanticIndex(eb.*) orelse return error.MissingBarrelProviderSID;
+    const sym = chunk_mod.CrossChunkSym{ .canonical_module = canonical.module_index.toU32(), .name = canonical.export_name };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    var natural: std.StringHashMapUnmanaged(void) = .empty;
+    var aliases: std.ArrayList([]const u8) = .empty;
+    const selected = try std.testing.allocator.dupe(u8, try deconflictedConsumerLocal(&linker, sym, crossChunkBindingName(&linker, sym), linker.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null, barrel.index.toU32(), a, &used, &natural, &aliases));
+    defer std.testing.allocator.free(selected);
+    const target = linker.getConsumerImportTarget(sym.canonical_module, sym.name) orelse return error.MissingBarrelSelected;
+    var occupied: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (occupied.items) |name| std.testing.allocator.free(name);
+        occupied.deinit(std.testing.allocator);
+    }
+    try snapshotConsumerLocals(std.testing.allocator, &used, &occupied);
+    used.clearRetainingCapacity();
+    natural.clearRetainingCapacity();
+    try linker.computeRenamesForModules(&.{barrel.index}, occupied.items);
+    var owned: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (owned.items) |s| std.testing.allocator.free(s);
+        owned.deinit(std.testing.allocator);
+    }
+    const entries = (try linker.buildFinalExports(true, barrel.index.toU32(), barrel.export_bindings, &owned)) orelse return error.MissingBarrelFinalExports;
+    defer std.testing.allocator.free(entries);
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    std.debug.print("PM barrel record kind={s} symbolTag={s} symbolModule={d} localCheckedSID={?d} localAnchor={?d} recordIndex={?d} providerTag={s} providerModule={d}\n", .{ @tagName(barrel.export_bindings[0].kind), @tagName(std.meta.activeTag(barrel.export_bindings[0].symbol)), barrel.export_bindings[0].symbol.moduleIndex().toU32(), barrel.exportBindingSemanticIndex(barrel.export_bindings[0]), if (barrel.export_bindings[0].local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, barrel.export_bindings[0].import_record_index, @tagName(std.meta.activeTag(eb.symbol)), eb.symbol.moduleIndex().toU32() });
+    const output = try @import("entry_exports.zig").emitCjsEntryExports(std.testing.allocator, entries, .auto, null);
+    defer std.testing.allocator.free(output);
+    std.debug.print("PM barrel tuple sourceModule={d} sourceSID={d} sourceAnchor={?d} physical={d}/{s} canonical={d}/{s} providerSID={d} barrelSourceImports={d} barrelExportSID={?d} selected={s} role={s} finalLocal={s} output={s}\n", .{ em.index.toU32(), sid, if (source.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, physical.toU32(), source.imported_name, canonical.module_index.toU32(), canonical.export_name, provider_sid, barrel.import_bindings.len, barrel.export_bindings[0].symbol.semanticIndex(), selected, @tagName(target.role), entries[0].local, output });
+    try std.testing.expectEqualStrings(selected, entries[0].local);
+}
