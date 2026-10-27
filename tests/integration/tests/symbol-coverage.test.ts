@@ -5582,6 +5582,134 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42:elided',
       },
       {
+        name: 'as wrapper keeps the runtime value import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer = value as number;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'as wrapper erases its type-only imported module edge',
+        source: [
+          "import { Shape } from './shape';",
+          'const answer = {} as Shape;',
+          "process.stdout.write(`${typeof answer}:${globalThis.__asShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts': 'globalThis.__asShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: 'object:elided',
+      },
+      {
+        name: 'satisfies wrapper keeps the runtime value import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer = value satisfies number;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'satisfies wrapper erases its type-only imported module edge',
+        source: [
+          "import { Shape } from './shape';",
+          'const answer = { value: 42 } satisfies Shape;',
+          "process.stdout.write(`${answer.value}:${globalThis.__satisfiesShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__satisfiesShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'non-null wrapper preserves the outer import beside a shadowing parameter',
+        source: [
+          "import { value } from './values';",
+          'function read(value?: number) { return value!; }',
+          'process.stdout.write(`${read(7)}:${value}`);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '7:42',
+      },
+      {
+        name: 'non-null wrapper preserves an imported receiver through a member read',
+        source: [
+          "import { value } from './values';",
+          'const answer = value!.toFixed(0);',
+          'process.stdout.write(answer);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value: number | undefined = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'angle-bracket assertion preserves the runtime value import identity',
+        source: [
+          "import { value } from './values';",
+          'const answer = <number>value;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'angle-bracket assertion erases its type-only imported module edge',
+        source: [
+          "import { Shape } from './shape';",
+          'const answer = <Shape>{ value: 42 };',
+          "process.stdout.write(`${answer.value}:${globalThis.__assertionShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__assertionShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'nested as and satisfies wrappers preserve the same imported reference',
+        source: [
+          "import { value } from './values';",
+          'const answer = (value as number) satisfies number;',
+          'process.stdout.write(String(answer));',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'nested non-null and assertion wrappers keep shadowed and imported identities distinct',
+        source: [
+          "import { value } from './values';",
+          'const read = (value: number | undefined) => (value! as number);',
+          'process.stdout.write(`${read(7)}:${value}`);',
+          '',
+        ].join('\n'),
+        dependencies: { 'values.ts': 'export const value = 42;\n' },
+        graph: 'retained',
+        stdout: '7:42',
+      },
+      {
         name: 'conditional type keeps value-import identities',
         source: [
           "import { value } from './values';",
