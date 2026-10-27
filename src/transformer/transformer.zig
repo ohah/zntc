@@ -231,6 +231,13 @@ pub const Transformer = struct {
     native_noop_copy_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     native_noop_copies: std.ArrayListUnmanaged(@import("native_noop_graph.zig").Copy) = .empty,
     native_noop_invalid: bool = false,
+    entry_graph_source: ?@import("sideeffect_entry_graph.zig").Source = null,
+    entry_graph_copy_index: std.AutoHashMapUnmanaged(u32, usize) = .empty,
+    entry_graph_copies: std.ArrayListUnmanaged(@import("sideeffect_entry_graph.zig").Copy) = .empty,
+    entry_graph_imports: std.ArrayListUnmanaged(@import("sideeffect_entry_graph.zig").ImportEvent) = .empty,
+    entry_graph_invalid: bool = false,
+    entry_graph_before_binder: bool = false,
+    entry_graph_before_binder_root: ?NodeIndex = null,
     native_noop_before_binder: bool = false,
     native_noop_before_binder_root: ?NodeIndex = null,
     optional_nullish_source: ?@import("optional_nullish_composition.zig").Source = null,
@@ -1178,6 +1185,7 @@ pub const Transformer = struct {
             else => @panic("provider visit lost its exact source/result domain"),
         };
         try @import("native_noop_graph.zig").record(self, idx, final_result);
+        try @import("sideeffect_entry_graph.zig").recordVisit(self, idx, final_result);
         return final_result;
     }
 

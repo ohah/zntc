@@ -214,6 +214,10 @@ pub fn transform(self: anytype) Error!NodeIndex {
             self.native_noop_before_binder = @import("../native_noop_graph.zig").beforeBinder(self, root) catch false;
             if (self.native_noop_before_binder) self.native_noop_before_binder_root = root;
         }
+        if (self.entry_graph_source != null) {
+            self.entry_graph_before_binder = @import("../sideeffect_entry_graph.zig").beforeBinder(self, root) catch false;
+            if (self.entry_graph_before_binder) self.entry_graph_before_binder_root = root;
+        }
         try self.bindOutputScopesAndReferences(root, self.programScope());
     }
 

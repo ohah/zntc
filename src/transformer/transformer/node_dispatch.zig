@@ -825,7 +825,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .property_definition => self.visitPropertyDefinition(idx, node),
         .object_property => self.visitObjectProperty(node),
         .formal_parameter => self.visitFormalParameter(node),
-        .import_declaration => self.visitImportDeclaration(node),
+        .import_declaration => blk: {
+            const output = try self.visitImportDeclaration(node);
+            try @import("../sideeffect_entry_graph.zig").recordImport(self, idx, output);
+            break :blk output;
+        },
         .export_named_declaration => self.visitExportNamedDeclaration(node),
         .export_default_declaration => self.visitExportDefaultDeclaration(node),
         .export_all_declaration => self.visitExportAllDeclaration(node),

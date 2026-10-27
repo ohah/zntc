@@ -186,3 +186,7 @@ test {
 test {
     _ = @import("object_builtin_reference_test.zig");
 }
+
+test {
+    _ = @import("sideeffect_entry_graph_test.zig");
+}

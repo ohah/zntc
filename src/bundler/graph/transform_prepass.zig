@@ -7685,7 +7685,12 @@ fn canKeepPrepassSemanticGraph(
     else
         null;
     defer if (source) |owned| owned.deinit(self.allocator);
-    return canKeepPrepassSemanticGraphPrepared(self, module, options, plugins, allow_es5_async_method_super_get, allow_es5_async_method_super_set, retained_simple_console_drops_out, if (source) |*prepared| prepared else null);
+    const entry_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
+        @import("../../transformer/sideeffect_entry_graph.zig").forModule(self.allocator, module, options) catch null
+    else
+        null;
+    defer if (entry_source) |owned| owned.deinit(self.allocator);
+    return canKeepPrepassSemanticGraphPrepared(self, module, options, plugins, allow_es5_async_method_super_get, allow_es5_async_method_super_set, retained_simple_console_drops_out, if (source) |*prepared| prepared else null, if (entry_source) |*prepared| prepared else null);
 }
 
 fn canKeepPrepassSemanticGraphPrepared(
@@ -7697,6 +7702,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     allow_es5_async_method_super_set: *bool,
     retained_simple_console_drops_out: ?*bool,
     prepared_native_source: ?*const @import("../../transformer/native_noop_graph.zig").Source,
+    prepared_entry_source: ?*const @import("../../transformer/sideeffect_entry_graph.zig").Source,
 ) bool {
     allow_es5_async_method_super_get.* = false;
     allow_es5_async_method_super_set.* = false;
@@ -7755,6 +7761,10 @@ fn canKeepPrepassSemanticGraphPrepared(
         if (@import("../../transformer/native_noop_graph.zig").preparedMatches(prepared, module)) prepared else null
     else
         null;
+    const entry_source = if (prepared_entry_source) |prepared|
+        if (@import("../../transformer/sideeffect_entry_graph.zig").preparedMatches(prepared, module)) prepared else null
+    else
+        null;
     const uses_define = define_mod.astUsesDefine(ast, options.define);
     const retained_define_references = uses_define and canRetainGraphForDefineReferences(
         self.allocator,
@@ -7785,7 +7795,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // producer; metadata rescan supplies the new source edges without replacing
     // the module-local semantic owner.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null) or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null and entry_source == null) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast) and
@@ -8043,7 +8053,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // parser's graph is already the exact graph for this module. Retaining it
     // avoids an otherwise unnecessary semantic rescan for ordinary JavaScript
     // (including identifier-only minification, which happens after this pass).
-    const unchanged_graph_is_safe = (!options.unsupported.hasAny() or native_noop_source != null) and
+    const unchanged_graph_is_safe = (!options.unsupported.hasAny() or native_noop_source != null or entry_source != null) and
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
@@ -10962,6 +10972,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     else
         null;
     const native_certificate_required = prepared_native_source != null;
+    const prepared_entry_source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
+        @import("../../transformer/sideeffect_entry_graph.zig").forModule(arena_alloc, module, opts) catch null
+    else
+        null;
+    const entry_certificate_required = prepared_entry_source != null;
     var can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         (provider_source != null or canKeepPrepassSemanticGraphPrepared(
@@ -10973,6 +10988,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             &allow_es5_async_method_super_set,
             &retained_simple_console_drops,
             if (prepared_native_source) |*prepared| prepared else null,
+            if (prepared_entry_source) |*prepared| prepared else null,
         ));
     var retained_console_object_references: []ast_mod.NodeIndex = &.{};
     if (can_keep_semantic_graph and opts.drop_console and hasDroppedConsoleStatement(ast_ptr)) {
@@ -11017,6 +11033,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                 source.output = transformer.ast;
                 transformer.native_noop_source = source;
             }
+            if (prepared_entry_source) |source| {
+                transformer.entry_graph_source = @import("../../transformer/sideeffect_entry_graph.zig").activate(source, &transformer, module);
+            }
             if (optionalNullishSource(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
                 var source = value;
                 source.owner = sem.captureOwnerToken();
@@ -11034,6 +11053,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         }
     }
     if (can_keep_semantic_graph and !@import("../../transformer/native_noop_graph.zig").requirementSatisfied(&transformer, if (prepared_native_source) |*prepared| prepared else null))
+        can_keep_semantic_graph = false;
+    if (can_keep_semantic_graph and !@import("../../transformer/sideeffect_entry_graph.zig").requirementSatisfied(&transformer, if (prepared_entry_source) |*prepared| prepared else null))
         can_keep_semantic_graph = false;
     if (can_keep_semantic_graph) {
         if (selective_class_source) |*source| {
@@ -11095,7 +11116,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -11419,6 +11440,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
     }
 
+    if (can_keep_semantic_graph and entry_certificate_required) {
+        const installed = @import("../../transformer/sideeffect_entry_graph.zig").requirementSatisfied(&transformer, if (prepared_entry_source) |*prepared| prepared else null);
+        const completed = installed and if (module.semantic) |*sem|
+            @import("../../transformer/sideeffect_entry_graph.zig").complete(&transformer, sem, root) catch false
+        else
+            false;
+        const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;
+        can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
+    }
+
     if (can_keep_semantic_graph and native_certificate_required) {
         const installed = @import("../../transformer/native_noop_graph.zig").requirementSatisfied(&transformer, if (prepared_native_source) |*prepared| prepared else null);
         const completed = installed and if (module.semantic) |*sem|
@@ -11604,6 +11635,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             }
             return;
         };
+        // Only the post-rescan proof authorizes publishing retained entry audits.
+        const entry_metadata_completed = if (entry_certificate_required)
+            @import("../../transformer/sideeffect_entry_graph.zig").afterMetadata(&transformer, module, root) catch false
+        else
+            true;
+        if (!entry_metadata_completed) {
+            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
+                auditPrepassExactIfEnabled(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, debug_symbol_coverage, false);
+            }
+            return;
+        }
         if (self.transform_options_base.minify_syntax) {
             if (module.semantic) |semantic| {
                 // Syntax minification can change statement-use information
@@ -16390,5 +16432,5 @@ pub fn nativeNoopPreparedAdmissionForTest(m: *const Module, options: TransformOp
     const context = .{ .allocator = std.testing.allocator, .flow = false, .worklet_transform = false, .plugins = &[_]Plugin{}, .styled_components = false, .emotion = false, .minify_identifiers = true };
     var get = false;
     var set = false;
-    return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, prepared);
+    return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, prepared, null);
 }
