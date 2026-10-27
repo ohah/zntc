@@ -2160,3 +2160,109 @@ fn checkWorkletClassOwnedIdentity(is_module: bool) !void {
         try publication.publishChecked(&transformer, root);
     }
 }
+
+test "worklet class clone ten source owners publish before output walker" {
+    const sources = [_][]const u8{
+        "class Clazz{__workletClass=true;method(value){return value}}",
+        "const outside=42;class Clazz{__workletClass=true;method(value=outside){const local=value;return local}}",
+        "const outside=42;class Clazz{__workletClass=true;method(){const local=outside;return(function named(){return local})()}}",
+        "class Clazz{__workletClass=true;method(value){return(()=>arguments[0])()}}",
+        "const outside=42;class Clazz{__workletClass=true;method(){class Inner{read(){return outside}}return new Inner().read()}}",
+        "const outside=42;class Clazz{__workletClass=true;get value(){'worklet';return outside}}",
+        "const outside=42;class Clazz{__workletClass=true;set value(value){'worklet';this.stored=value+outside}}",
+        "const outside=42;class Clazz{__workletClass=true;value=()=>outside;method(){return this.value()}}",
+        "const outside=42;class Clazz{__workletClass=true;static read(){return [outside,Clazz]}}",
+        "const outside='answer';class Clazz{__workletClass=true;[outside](){return Clazz}}",
+    };
+    for (sources) |source| try checkWorkletSourceBirth(source, false);
+}
+
+fn checkWorkletSourceBirth(source: []const u8, expect_external_class: bool) !void {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const coordinates = @import("../semantic/statement_coordinates.zig");
+    const scope_utils = @import("output_scope_test_utils.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = Analyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var t = try transformer_mod.Transformer.init(a, &parser.ast, .{ .plugins = &plugins, .jsx_filename = "owned-ten.mjs" });
+    try t.initSymbolIds(analyzer.symbol_ids.items);
+    t.symbols = analyzer.symbols.items;
+    t.class_self_symbol_map = analyzer.class_self_symbol_map;
+    t.references = analyzer.references.items;
+    t.scopes = analyzer.scopes.items;
+    t.scope_maps = analyzer.scope_maps.items;
+    t.scope_owner_map = analyzer.scope_owner_map;
+    t.node_scope_provenance = analyzer.node_scope_provenance;
+    t.unresolved_references = &analyzer.unresolved_references;
+    t.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    t.semantic_edit_enabled = true;
+    t.synthetic_idents = .empty;
+    const source_root: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@as(u32, @intCast(t.ast.nodes.items.len - 1)));
+    try t.buildBlockRenameMap();
+    const external_class = if (expect_external_class) blk: {
+        const first: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(t.ast.extra_data.items[t.ast.getNode(source_root).data.list.start]);
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.class_declaration, t.ast.getNode(first).tag);
+        const name = t.ast.readExtraNode(t.ast.getNode(first).data.extra, @import("../parser/ast.zig").ClassExtra.name);
+        break :blk analyzer.symbol_ids.items[@backingInt(name)];
+    } else null;
+    const root = try t.visitNode(source_root);
+    const actual = try coordinates.collect(a, t.ast, root);
+    var parents = try scope_utils.buildParentMap(a, t.ast, root);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, t.ast, root);
+    for (live) |raw| if (t.outputOwnedScope(@fromBackingInt(raw))) |scope| try owners.put(a, raw, @backingInt(scope));
+    const editor = &t.semantic_editor.?;
+    try std.testing.expectEqual(@as(usize, 1), t.plugins.worklet.class_factories.items.len);
+    var checked: usize = 0;
+    for (t.plugins.worklet.class_reference_nodes.items) |node| {
+        const raw = @backingInt(node);
+        if (actual[raw] == null) continue;
+        const origin = t.plugins.worklet.class_reference_origins.get(raw).?;
+        var rows: usize = 0;
+        for (editor.references.items) |row| {
+            const anchor = if (row.flags.declare) row.declaration_node_index else row.node_index;
+            if (anchor != node) continue;
+            try std.testing.expectEqual(origin.symbol, row.symbol_id);
+            try std.testing.expectEqual(origin.scope, row.scope_id);
+            try std.testing.expectEqualDeep(origin.flags, row.flags);
+            const position = scope_utils.expectedStatementCoordinates(t.ast, &parents, raw).?;
+            try std.testing.expectEqual(position.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(position.scope_stmt_idx, row.scope_stmt_idx);
+            if (!row.flags.declare) try std.testing.expectEqual(@as(?@import("../semantic/scope.zig").ScopeId, row.scope_id), scope_utils.expectedScope(t.ast, root, &parents, &owners, raw));
+            rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), rows);
+        checked += 1;
+    }
+    try std.testing.expect(checked > 0);
+    if (external_class) |sid| {
+        var captures: usize = 0;
+        const frame = t.plugins.worklet.class_factories.items[0];
+        for (editor.references.items) |row| {
+            if (!row.flags.read or row.node_index.isNone() or @backingInt(row.symbol_id) != sid or row.scope_id != frame.parent) continue;
+            try std.testing.expectEqual(@as(?@import("../semantic/scope.zig").ScopeId, frame.parent), scope_utils.expectedScope(t.ast, root, &parents, &owners, @backingInt(row.node_index)));
+            captures += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), captures);
+    }
+}
+
+test "worklet class clone preserves external class beside same-spelled local class" {
+    try checkWorkletSourceBirth(
+        "class Inner{static read(){return 42}}class Clazz{__workletClass=true;method(){{class Inner{};new Inner()}return Inner.read()}}",
+        true,
+    );
+}

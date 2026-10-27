@@ -207,3 +207,104 @@ pub fn isClassSelfReplacement(self: anytype, source: ast.NodeIndex, replacement:
         self.exact_output_ref_symbol_ids.get(raw) != @backingInt(current.symbol)) return false;
     return @import("static_class_capture.zig").validOwnReferenceOrigin(self, replacement);
 }
+
+/// Class declarations inside a known factory are local storage, not captures.
+/// Classify each exact read before the legacy name-keyed closure tables can
+/// conflate it with a same-spelled external class. Other worklets retain their
+/// existing closure analysis.
+pub fn ownsClosureClassReference(self: anytype, function: ast.NodeIndex, node: ast.NodeIndex) bool {
+    if (!self.semantic_edit_enabled or function.isNone() or node.isNone()) return false;
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    const raw = @backingInt(node);
+    const origin = self.plugins.worklet.class_reference_origins.get(raw) orelse return false;
+    if (origin.factory >= self.plugins.worklet.class_factories.items.len or !origin.flags.read or origin.flags.declare or
+        raw >= editor.symbol_ids.items.len or editor.symbol_ids.items[raw] != @backingInt(origin.symbol) or
+        @backingInt(origin.symbol) >= editor.symbols.items.len) return false;
+    const factory = self.plugins.worklet.class_factories.items[origin.factory];
+    if (factory.ast_owner != self.ast or self.current_scope != factory.scope or self.outputOwnedScope(function) != factory.scope or
+        factory.scope.isNone() or factory.scope.toIndex() >= editor.scopes.items.len) return false;
+    const owner = self.ast.getNode(function);
+    if (owner.tag != .function_declaration and owner.tag != .function_expression) return false;
+    const binding = self.ast.readExtraNode(owner.data.extra, ast.FunctionExtra.name);
+    if (binding != factory.binding or @backingInt(binding) >= editor.symbol_ids.items.len or
+        editor.symbol_ids.items[@backingInt(binding)] != @backingInt(factory.symbol)) return false;
+    const storage = editor.symbols.items[@backingInt(origin.symbol)];
+    if (storage.kind != .class_decl or !ownedScopeReachesFactory(self, storage.scope_id, factory.scope) or
+        !ownedScopeReachesFactory(self, origin.scope, factory.scope)) return false;
+    var reads: usize = 0;
+    var declaration = false;
+    for (editor.references.items) |row| {
+        if (row.node_index == node) {
+            if (row.symbol_id != origin.symbol or row.scope_id != origin.scope or !std.meta.eql(row.flags, origin.flags)) return false;
+            reads += 1;
+        }
+        if (!row.flags.declare or row.symbol_id != origin.symbol or row.scope_id != storage.scope_id or row.declaration_node_index.isNone()) continue;
+        const anchor = @backingInt(row.declaration_node_index);
+        const birth = self.plugins.worklet.class_reference_origins.get(anchor) orelse continue;
+        if (birth.factory == origin.factory and birth.symbol == origin.symbol and birth.scope == storage.scope_id and
+            std.meta.eql(birth.flags, row.flags) and anchor < editor.symbol_ids.items.len and editor.symbol_ids.items[anchor] == @backingInt(origin.symbol))
+            declaration = true;
+    }
+    if (reads != 1) return false;
+    if (declaration) return true;
+    // Immutable class-self declarations may be anchorless. Their exact class
+    // creator map and live owner are the declaration evidence instead.
+    if (editor.scopes.items[storage.scope_id.toIndex()].kind != .class_body) return false;
+    var selves = self.class_self_symbol_map.iterator();
+    while (selves.next()) |entry| {
+        if (entry.value_ptr.* != @backingInt(origin.symbol)) continue;
+        const class: ast.NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        if (self.outputOwnedScope(class) != storage.scope_id) continue;
+        const tag = self.ast.getNode(class).tag;
+        if (tag == .class_declaration or tag == .class_expression) return true;
+    }
+    return false;
+}
+
+fn ownedScopeReachesFactory(self: anytype, start: @import("../semantic/scope.zig").ScopeId, factory: @import("../semantic/scope.zig").ScopeId) bool {
+    const editor = &self.semantic_editor.?;
+    var scope = start;
+    var hops: usize = 0;
+    while (scope != factory) : (hops += 1) {
+        if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or hops >= editor.scopes.items.len) return false;
+        var owned = false;
+        var owners = self.scope_owner_origins.iterator();
+        while (owners.next()) |entry| {
+            if (self.outputOwnedScope(@fromBackingInt(entry.key_ptr.*)) == scope) {
+                owned = true;
+                break;
+            }
+        }
+        if (!owned) return false;
+        scope = editor.scopes.items[scope.toIndex()].parent;
+    }
+    return true;
+}
+
+/// The generated factory declaration is consumed by the ordinary function
+/// visitor. Publish its existing owner on the fresh result before plugin
+/// dispatch needs that actual function identity; unrelated functions do not
+/// enter this handoff.
+pub fn transferFactoryFunctionOwner(self: anytype, source: ast.NodeIndex, result: ast.NodeIndex) !void {
+    if (!self.semantic_edit_enabled) return;
+    for (self.plugins.worklet.class_factories.items) |factory| {
+        if (factory.function != source) continue;
+        const editor = &self.semantic_editor.?;
+        if (factory.ast_owner != self.ast or self.outputOwnedScope(source) != factory.scope or
+            self.current_scope != factory.scope or self.ast.getNode(source).tag != .function_declaration or
+            self.ast.getNode(result).tag != .function_declaration or
+            self.ast.readExtraNode(self.ast.getNode(source).data.extra, ast.FunctionExtra.name) != factory.binding or
+            self.ast.readExtraNode(self.ast.getNode(result).data.extra, ast.FunctionExtra.name) != factory.binding or
+            editor.symbol_ids.items[@backingInt(factory.binding)] != @backingInt(factory.symbol))
+            @panic("worklet factory result lost its exact source function owner");
+        const source_params = self.ast.readExtraNode(self.ast.getNode(source).data.extra, ast.FunctionExtra.params);
+        const output_params = self.ast.readExtraNode(self.ast.getNode(result).data.extra, ast.FunctionExtra.params);
+        const carrier = self.outputOwnedScope(source_params);
+        if (self.ast.getNode(source_params).tag != .formal_parameters or self.ast.getNode(output_params).tag != .formal_parameters or
+            self.ast.getNode(source_params).data.list.len != 0 or self.ast.getNode(output_params).data.list.len != 0 or
+            carrier != self.outputOwnedScope(output_params) or (carrier != null and carrier.? != factory.scope))
+            @panic("worklet factory result changed its known empty formal carrier");
+        try self.remapCopiedScopeOwner(source, result);
+        return;
+    }
+}

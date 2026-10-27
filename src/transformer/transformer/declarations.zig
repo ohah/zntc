@@ -368,6 +368,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         none,
     });
 
+    try @import("../worklet_class_clone.zig").transferFactoryFunctionOwner(self, source_idx, result);
+
     // Plugin dispatch: onFunction (AST 훅)
     const is_auto_worklet = self.plugins.worklet.auto_next;
     const plugin_insertion_scope = self.functionListInsertionScope(source_idx);

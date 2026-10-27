@@ -121,11 +121,12 @@ pub const AstTransformCtx = struct {
             // 다른 함수 요청 — 기존 캐시 해제 후 재계산
             self.deinitClosureCache();
         }
-        const vars = try worklet_mod.collectClosureVars(
+        const vars = try worklet_mod.collectClosureVarsAtOwner(
             self.transformer,
             info.original_body_idx,
             info.original_params,
             if (info.node_tag == .method_definition) null else info.name,
+            info.node_idx,
         );
         self.closure_cache = .{ .node_idx = info.node_idx, .vars = vars };
         return vars;
