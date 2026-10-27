@@ -336,7 +336,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.nullish_coalescing and node.tag == .logical_expression) {
                 const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .question2) {
-                    return es2020.ES2020(Transformer).lowerNullishCoalescing(self, node);
+                    return es2020.ES2020(Transformer).lowerNullishCoalescingForSource(self, idx, node);
                 }
             }
             // ES2022 Ergonomic Brand Checks: #x in obj → _x.has(obj) 등

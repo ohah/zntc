@@ -174,3 +174,7 @@ test {
 test {
     _ = @import("native_private_field_certificate_test.zig");
 }
+
+test {
+    _ = @import("optional_nullish_composition_test.zig");
+}
