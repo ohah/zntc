@@ -109,21 +109,21 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '18a7896d6aa86e577baaee116490dcd1a69a8c5d9744f15e6f0205660ef4a474';
+  '8274f25d630199265f9f205482b2077e03abfdd8abdcb1088852aef0114526db';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14184,
-  'exact.generated_references': 45855,
-  'exact.generated_scope_owners_checked': 13113,
+  'exact.generated_bindings': 14823,
+  'exact.generated_references': 45879,
+  'exact.generated_scope_owners_checked': 13077,
   'exact.external': 13203,
-  'exact.declaration_anchors_checked': 46245,
+  'exact.declaration_anchors_checked': 46281,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
-  'coverage.new_user_idents': 7107,
-  'strict.bound': 58002,
+  'coverage.new_user_idents': 7710,
+  'strict.bound': 58665,
   'strict.external': 1869,
-  'strict.marked_synthetic': 51117,
-  'post.bindings': 47672,
-  'post.references': 103508,
+  'strict.marked_synthetic': 51177,
+  'post.bindings': 47700,
+  'post.references': 103524,
   'post.external': 13203,
   'post.helpers': 7803,
   'post.preserved_transform_refs': 204,
