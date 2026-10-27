@@ -483,6 +483,13 @@ pub const Linker = struct {
         module_index: ModuleIndex,
     };
 
+    /// Exact ordinary provider selected by the export resolver. The semantic
+    /// identity proves this is a binding rather than an interop/member value.
+    pub const CanonicalImportTarget = struct {
+        canonical: SymbolRef,
+        provider_symbol: bundler_symbol.SymbolRef,
+    };
+
     /// namespace 객체 preamble 생성 시 사용하는 export 쌍.
     pub const NsExportPair = struct {
         exported: []const u8,
@@ -490,6 +497,7 @@ pub const Linker = struct {
         /// Canonical local declaration identity used by namespace tree-shaking. This may be
         /// invalid for graphless/CJS/namespace-expression exports; those stay conservative.
         binding_symbol: bundler_symbol.SymbolRef = bundler_symbol.SymbolRef.invalid,
+        canonical_import: ?CanonicalImportTarget = null,
         /// buildInlineObjectStr에서 할당된 문자열인 경우 true.
         /// exports ArrayList 해제 시 owned=true인 local만 free.
         owned: bool = false,
@@ -6228,6 +6236,15 @@ pub const Linker = struct {
 
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
     /// seen: export 이름 dedup, visited: 모듈 수준 dedup (diamond export * 방지).
+    pub fn ordinaryCanonicalImportTarget(self: *const Linker, canonical: SymbolRef) ?CanonicalImportTarget {
+        if (canonical.synthetic_member != null) return null;
+        const provider = self.graph.getModule(canonical.module_index) orelse return null;
+        if (provider.wrap_kind == .cjs) return null;
+        const binding = provider.findExportBinding(canonical.export_name) orelse return null;
+        if (binding.kind != .local or provider.exportBindingSemanticIndex(binding.*) == null) return null;
+        return .{ .canonical = canonical, .provider_symbol = binding.symbol };
+    }
+
     pub fn collectExportsRecursive(
         self: *const Linker,
         exports: *std.ArrayList(NsExportPair),
@@ -6269,6 +6286,7 @@ pub const Linker = struct {
             var owns_actual_local = false;
             var cjs_interop: ?SymbolRef = null;
             var binding_symbol: bundler_symbol.SymbolRef = .invalid;
+            var canonical_import: ?CanonicalImportTarget = null;
             var init_mod: ?u32 = if (m.wrap_kind == .esm) mod_i else null;
             if (eb.kind == .local and m.exportBindingSemanticIndex(eb) != null) {
                 binding_symbol = eb.symbol;
@@ -6312,6 +6330,7 @@ pub const Linker = struct {
                         }
                     }
                     if (ns_target_mod == null) {
+                        canonical_import = self.ordinaryCanonicalImportTarget(canonical);
                         // (#4120) canonical 이 CJS 모듈이면 default/named 모두 런타임 interop 멤버라
                         // 진짜 로컬 바인딩이 없다. cjs_interop 에 ref 만 *additive* 기록 →
                         // buildFinalExports(entry/dynamic)가 ESM 은 `var <syn> = <interop>;` materialize +
@@ -6333,7 +6352,17 @@ pub const Linker = struct {
                 break :blk eb_local;
             } else blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, ns_imports.get(eb_local));
-                if (ns_target_mod == null) break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
+                if (ns_target_mod == null) {
+                    // A local export of an import uses its exact source SID.
+                    // Synthetic default storage is not the imported binding.
+                    for (m.import_bindings) |binding| {
+                        if (binding.kind == .namespace or !bundler_symbol.SymbolRef.eql(binding.local_symbol, eb.symbol)) continue;
+                        const resolved = self.getResolvedBinding(mod_i, binding.local_span) orelse continue;
+                        canonical_import = self.ordinaryCanonicalImportTarget(resolved.canonical);
+                        break;
+                    }
+                    break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
+                }
                 break :blk eb_local;
             };
 
@@ -6346,6 +6375,7 @@ pub const Linker = struct {
                 .exported = eb.exported_name,
                 .local = safe_local,
                 .binding_symbol = binding_symbol,
+                .canonical_import = canonical_import,
                 .owned = owns_actual_local,
                 .init_mod = init_mod,
                 .ns_target_mod = ns_target_mod,

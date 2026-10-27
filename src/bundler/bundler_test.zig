@@ -52,3 +52,7 @@ comptime {
     _ = @import("graph/transform_prepass.zig");
     _ = @import("namespace_access_test.zig");
 }
+
+test {
+    _ = @import("bundler_test/barrel_import_target.zig");
+}
