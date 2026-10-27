@@ -795,7 +795,7 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
     const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
         facts.has_declaration_level_type_import and
         ((onlyErasableTypeImports(&parser.ast) and
-            erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
+            erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
             (onlyErasableTypeImportsAndPlainNamedRuntimeImports(
                 parser.allocator,
                 &parser.ast,
@@ -828,6 +828,9 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
 /// their exact identities or decoded local names survive in output. TypeScript
 /// additionally has a narrow mixed case for fully erased type imports beside
 /// separately declared plain named runtime imports whose source identities survive.
+/// Attributes are admitted here only on declaration-level `import type`; the
+/// caller still requires the exact post-transform erasure proof, and attributed
+/// inline type specifiers remain on the conservative path.
 fn onlyErasableTypeImports(ast: *const Ast) bool {
     var found_import = false;
     for (ast.nodes.items) |node| {
@@ -838,7 +841,10 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
         if ((!import_decl.is_type_only and
             !importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) or
-            import_decl.phase != .none or import_decl.attrs_len != 0 or
+            import_decl.phase != .none or
+            (import_decl.attrs_len != 0 and !import_decl.is_type_only) or
+            import_decl.attrs_start > ast.extra_data.items.len or
+            import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
     }
@@ -846,9 +852,10 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 }
 
 /// A declaration-level type import may share a source file with separate plain
-/// named value imports. Inline type specifiers inside a value import, default or
-/// namespace imports, side-effect imports, attributes, and phases remain on the
-/// conservative reanalysis path.
+/// named value imports. Attributes are allowed only on the declaration-level
+/// type import itself; attributes on runtime or inline-type imports, inline type
+/// specifiers inside value imports, default or namespace imports, side-effect
+/// imports, and phases remain on the conservative reanalysis path.
 fn onlyErasableTypeImportsAndPlainNamedRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -862,7 +869,10 @@ fn onlyErasableTypeImportsAndPlainNamedRuntimeImports(
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
-        if (import_decl.phase != .none or import_decl.attrs_len != 0 or
+        if (import_decl.phase != .none or
+            (import_decl.attrs_len != 0 and !import_decl.is_type_only) or
+            import_decl.attrs_start > ast.extra_data.items.len or
+            import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
 
@@ -1066,8 +1076,10 @@ fn capturePlainNamedRuntimeImportIdentitySnapshot(
 
 /// Lenient JavaScript mode rejects every import declaration by default. Reuse
 /// the transform graph only for an erased type-only import, or when a value-form
-/// import is structurally inside an erased ambient namespace. In either case,
-/// none of its exact identities or decoded local names may survive in output.
+/// import is structurally inside an erased ambient namespace. The TypeScript
+/// type-only proof may include attributes only on declaration-level `import type`.
+/// In either case, none of the import identities or decoded local names may
+/// survive in output.
 fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -1136,7 +1148,8 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
-        if (import_decl.phase != .none or import_decl.attrs_len != 0 or
+        if (import_decl.phase != .none or
+            (import_decl.attrs_len != 0 and (!type_imports_only or !import_decl.is_type_only)) or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
@@ -5963,7 +5976,8 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "import type { Shape } from './types'; type Alias = Shape; " ++
+    const source = "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
+        "type Alias = Shape; " ++
         "const shape: Alias = { value: 3 }; function read(input: Shape): number { " ++
         "const output: number = input.value; return output; } console.log(read(shape));";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
@@ -5978,6 +5992,25 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     try std.testing.expect(source_facts.has_declaration_level_type_import);
     try std.testing.expect(canMangleWithTransformSemantic(minify, &parser));
     try std.testing.expect(onlyErasableTypeImports(&parser.ast));
+
+    var import_extra: ?u32 = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .import_declaration) {
+            import_extra = node.data.extra;
+            break;
+        }
+    }
+    const import_extra_index = import_extra orelse return error.MissingDeclarationTypeImportExtra;
+    const attrs_start_slot = import_extra_index + 4;
+    const attrs_len_slot = import_extra_index + 5;
+    const original_attrs_start = parser.ast.extra_data.items[attrs_start_slot];
+    const original_attrs_len = parser.ast.extra_data.items[attrs_len_slot];
+    parser.ast.extra_data.items[attrs_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!onlyErasableTypeImports(&parser.ast));
+    parser.ast.extra_data.items[attrs_start_slot] = original_attrs_start;
+    parser.ast.extra_data.items[attrs_len_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!onlyErasableTypeImports(&parser.ast));
+    parser.ast.extra_data.items[attrs_len_slot] = original_attrs_len;
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     defer analyzer.deinit();
@@ -6002,12 +6035,31 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     transformer.unresolved_references = &analyzer.unresolved_references;
     const output_root = try transformer.visitNode(source_root);
 
-    try std.testing.expect(erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
     try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
     // The original source tree still contains the import and must not prove
     // output erasure merely because the parser mode is TypeScript.
-    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
     try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, source_root));
+
+    var output_import_extra: ?u32 = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count]) |node| {
+        if (node.tag == .import_declaration) {
+            output_import_extra = node.data.extra;
+            break;
+        }
+    }
+    const output_import_extra_index = output_import_extra orelse
+        return error.MissingOutputDeclarationTypeImportExtra;
+    const output_attrs_len_slot = output_import_extra_index + 5;
+    const original_output_attrs_len = transformer.ast.extra_data.items[output_attrs_len_slot];
+    transformer.ast.extra_data.items[output_attrs_len_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+    ));
+    transformer.ast.extra_data.items[output_attrs_len_slot] = original_output_attrs_len;
 
     var import_local: ?ast_mod.NodeIndex = null;
     for (transformer.ast.nodes.items[0..transformer.parser_node_count]) |node| {
@@ -6037,7 +6089,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     const output_read_idx = output_read orelse return error.MissingOutputShapeReference;
     const original_output_symbol = transformer.symbol_ids.items[@backingInt(output_read_idx)];
     transformer.symbol_ids.items[@backingInt(output_read_idx)] = imported_symbol;
-    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
     transformer.symbol_ids.items[@backingInt(output_read_idx)] = original_output_symbol;
 
     // A generated or edited reference can carry a different SymbolId while
@@ -6046,7 +6098,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     const original_output_span = transformer.ast.getNode(output_read_idx).span;
     transformer.ast.nodes.items[@backingInt(output_read_idx)].span =
         transformer.ast.getNode(import_local_idx).span;
-    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
     transformer.ast.nodes.items[@backingInt(output_read_idx)].span = original_output_span;
 
     var inline_scanner = try Scanner.init(allocator, "import { type Shape } from './types'; const value: Shape = { value: 4 };");
@@ -6087,13 +6139,18 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     _ = try attributed_inline_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), attributed_inline_parser.errors.items.len);
     try std.testing.expect(!onlyErasableTypeImports(&attributed_inline_parser.ast));
+    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+        allocator,
+        &attributed_inline_parser.ast,
+        @intCast(attributed_inline_parser.ast.nodes.items.len),
+    ));
 }
 
 test "#6193 erased declaration type imports preserve separate runtime import identities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "import type { Shape } from './types'; " ++
+    const source = "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
         "import { runtimeValue as amount } from './values'; " ++
         "function read(): number { return amount; } console.log(read());";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
@@ -6124,6 +6181,21 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
         allocator,
         &duplicate_import_parser.ast,
         @intCast(duplicate_import_parser.ast.nodes.items.len),
+    ));
+
+    var attributed_runtime_scanner = try Scanner.init(
+        allocator,
+        "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
+            "import { runtimeValue as amount } from './values' with { \"resolution-mode\": \"import\" };",
+    );
+    var attributed_runtime_parser = Parser.init(allocator, &attributed_runtime_scanner);
+    attributed_runtime_parser.configureFromExtension(".ts");
+    _ = try attributed_runtime_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), attributed_runtime_parser.errors.items.len);
+    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+        allocator,
+        &attributed_runtime_parser.ast,
+        @intCast(attributed_runtime_parser.ast.nodes.items.len),
     ));
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
@@ -6220,6 +6292,14 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
+        runtime_import_identity_snapshot,
+    ));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
+        minify,
+        &parser,
+        &transformer,
+        output_root,
+        null,
         runtime_import_identity_snapshot,
     ));
     mutable_references[runtime_reference_index] = original_reference;
