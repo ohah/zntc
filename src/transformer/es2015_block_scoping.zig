@@ -800,26 +800,45 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return id;
         }
 
-        const AnnexCatch = struct { wrapper: NodeIndex, handler: NodeIndex, scope: ScopeId, binding: NodeIndex };
-        fn annexCatch(self: *Transformer, block: NodeIndex, lexical_scope: ScopeId, lexical: SymbolId, name: []const u8) Transformer.Error!AnnexCatch {
+        const AnnexCatch = struct { wrapper: NodeIndex, handler: NodeIndex, entry_parent: NodeIndex, scope: ScopeId, binding: NodeIndex };
+        fn annexCatch(self: *Transformer, block: NodeIndex, lexical_scope: ScopeId, lexical: SymbolId, name: []const u8, callback: ScopeId) Transformer.Error!AnnexCatch {
             const span = self.ast.getNode(block).span;
             const parent = self.semantic_editor.?.scopes.items[lexical_scope.toIndex()].parent;
             const wrapper = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
             const outer = try self.addGeneratedScope(parent, wrapper, .block);
             const binding = try es_helpers.makeExactSyntheticBinding(self, name);
-            const handler = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = binding, .right = block, .flags = 0 } } });
+            const is_switch = self.ast.getNode(block).tag == .switch_statement;
+            const handler_body = if (is_switch) try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{block}) } }) else block;
+            const handler = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{ .left = binding, .right = handler_body, .flags = 0 } } });
             const scope = try self.addGeneratedScope(outer, handler, .catch_clause);
+            const handler_body_scope = if (is_switch) try self.addGeneratedScope(scope, handler_body, .block) else scope;
+            var discriminant_declaration: NodeIndex = .none;
+            if (is_switch) {
+                // Discriminant evaluation belongs outside the fresh lexical
+                // function environment, before switch declaration instantiation.
+                const extra = self.ast.getNode(block).data.extra;
+                const discriminant = self.ast.readExtraNode(extra, 0);
+                try prepareExtractedGeneratorBody(self, discriminant, parent, outer, &.{}, &.{});
+                const temp_name = try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex_switch", &self.block_rename_counter, outer);
+                const temp_binding = try es_helpers.makeExactSyntheticBinding(self, temp_name);
+                const temp_id = (try self.declareSyntheticInScope(temp_binding, span, .variable_var, callback)).?;
+                discriminant_declaration = try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, temp_binding, discriminant, span)}, .@"var", span);
+                const read = try self.makeSyntheticRefForSymbol(temp_id, handler_body_scope, .{ .read = true });
+                self.ast.nodes.items[@backingInt(read)].data.string_ref = try self.ast.addString(temp_name);
+                try self.trackExactOutputRead(read, @backingInt(temp_id));
+                self.ast.extra_data.items[extra] = @backingInt(read);
+            }
             const nil = try es_helpers.makeNullLiteral(self);
             const thrown = try self.ast.addNode(.{ .tag = .throw_statement, .span = span, .data = .{ .unary = .{ .operand = nil, .flags = 0 } } });
             const try_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{thrown}) } });
             _ = try self.addGeneratedScope(outer, try_body, .block);
             const statement = try self.ast.addNode(.{ .tag = .try_statement, .span = span, .data = .{ .ternary = .{ .a = try_body, .b = handler, .c = .none } } });
-            const list = try self.ast.addNodeList(&.{statement});
+            const list = try self.ast.addNodeList(if (discriminant_declaration.isNone()) &.{statement} else &.{ discriminant_declaration, statement });
             self.ast.nodes.items[@backingInt(wrapper)].data.list = list;
             const editor = &self.semantic_editor.?;
             editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = editor.scopes.items[lexical_scope.toIndex()].subtree_has_direct_eval;
             editor.scopes.items[scope.toIndex()].subtree_has_with = editor.scopes.items[lexical_scope.toIndex()].subtree_has_with;
-            editor.reparentScope(lexical_scope, scope) catch @panic("Annex B source block lost its exact catch parent");
+            editor.reparentScope(lexical_scope, handler_body_scope) catch @panic("Annex B source block lost its exact catch parent");
             editor.relocateSymbolAsPreservingAnchors(lexical, scope, binding) catch @panic("Annex B catch binding changed identity");
             editor.symbols.items[@backingInt(lexical)].kind = .catch_binding;
             editor.symbols.items[@backingInt(lexical)].decl_flags = @import("../semantic/symbol.zig").SymbolKind.catch_binding.declFlags();
@@ -827,7 +846,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             editor.ensureDeclarationAtNode(lexical, scope, binding) catch @panic("Annex B catch declaration birth failed");
             if (self.symbol_ids.items.len <= @backingInt(binding)) try self.symbol_ids.appendNTimes(self.allocator, null, @backingInt(binding) + 1 - self.symbol_ids.items.len);
             self.symbol_ids.items[@backingInt(binding)] = @backingInt(lexical);
-            return .{ .wrapper = wrapper, .handler = handler, .scope = scope, .binding = binding };
+            return .{ .wrapper = wrapper, .handler = handler, .entry_parent = if (is_switch) handler_body else handler, .scope = scope, .binding = binding };
         }
 
         // Called after the actual ordinary extraction callback owns
@@ -882,7 +901,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 }
                 if (isFunctionBoundary(node.tag) or node.tag == .class_declaration or node.tag == .class_expression) continue;
                 const scope = self.outputOwnedScope(work.node) orelse work.scope;
-                const is_block = node.tag == .block_statement or node.tag == .function_body;
+                const is_block = node.tag == .block_statement or node.tag == .function_body or node.tag == .switch_statement;
                 const block = if (is_block) work.node else work.block;
                 const block_parent = if (is_block) work.parent else work.block_parent;
                 // Reverse the child push, preserving source-order declaration
@@ -941,7 +960,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const source_name = try self.decodedName(self.ast.getText(original.name));
                 // Storage spelling is chosen for a known ID, never used to
                 // recover the lexical or outer variable identity.
-                const dynamic = self.semantic_editor.?.scopes.items[group.lexical_scope.toIndex()].blocksMangling();
+                const switch_entry = self.ast.getNode(group.block).tag == .switch_statement;
+                const dynamic = switch_entry or self.semantic_editor.?.scopes.items[group.lexical_scope.toIndex()].blocksMangling();
                 group.output_name = if (dynamic) source_name else try self.buildUniqueNameAvoidingDynamicEval("__zntc_annex", &self.block_rename_counter, callback);
                 var setter: ?SymbolId = null;
                 if (dynamic) {
@@ -950,13 +970,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const old_binding = self.ast.readExtraNode(self.ast.getNode(declaration).data.extra, ast_mod.FunctionExtra.name);
                         _ = self.semantic_editor.?.removeDeclarationAtNode(old_binding, group.lexical) catch @panic("Annex B catch lost its source declaration row");
                     };
-                    const carrier = try annexCatch(self, group.block, group.lexical_scope, group.lexical, group.output_name);
+                    const carrier = try annexCatch(self, group.block, group.lexical_scope, group.lexical, group.output_name, callback);
                     const parent = block_parents.get(@backingInt(group.block)) orelse group.parent;
                     if (parent.isNone()) {
                         if (output_body != group.block) @panic("Annex B root block changed its owner edge");
                         output_body = carrier.wrapper;
                     } else replaceAnnexBlockEdge(self, parent, group.block, carrier.wrapper);
-                    try block_parents.put(self.allocator, @backingInt(group.block), carrier.handler);
+                    try block_parents.put(self.allocator, @backingInt(group.block), carrier.entry_parent);
                 }
                 if (self.block_rename_map == null) self.block_rename_map = .empty;
                 try self.block_rename_map.?.put(self.allocator, @backingInt(group.lexical), group.output_name);
@@ -985,7 +1005,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(group.output_name);
                         try self.trackExactOutputReference(target, @backingInt(group.lexical));
                         const assignment = try es_helpers.makeAssignExpr(self, target, value, source.span, 0);
-                        try prefix.append(self.allocator, try annexEmptyCompletion(self, assignment, callback, source.span));
+                        try prefix.append(self.allocator, if (switch_entry) assignment else try annexEmptyCompletion(self, assignment, callback, source.span));
                     } else {
                         const binding = try es_helpers.makeExactSyntheticBinding(self, group.output_name);
                         const editor = &self.semantic_editor.?;
@@ -1006,26 +1026,47 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         try prefix.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", source.span));
                     }
                     const editor = &self.semantic_editor.?;
-                    const outer = editor.symbols.items[@backingInt(group.variable)];
-                    const outer_name = if (outer.synthetic_name.len > 0) outer.synthetic_name else self.ast.getText(outer.name);
-                    const target = try self.makeSyntheticRefForSymbol(group.variable, group.lexical_scope, .{ .write = true });
-                    self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(outer_name);
                     const read = try es_helpers.makeIdentifierRefFromSpan(self, try self.ast.addString(group.output_name));
                     try self.addSyntheticRefInScope(read, group.lexical, group.lexical_scope, .{ .read = true });
-                    try self.trackExactOutputReference(target, @backingInt(group.variable));
                     try self.trackExactOutputRead(read, @backingInt(group.lexical));
                     const operation = if (setter) |id| blk: {
                         // The setter owns the V write in its actual outer environment.
-                        try self.removeSemanticReference(target);
                         const known = editor.symbols.items[@backingInt(id)];
                         const callee = try es_helpers.makeIdentifierRefFromSpan(self, try self.ast.addString(known.synthetic_name));
                         try self.addSyntheticRefInScope(callee, id, group.lexical_scope, .{ .read = true });
                         try self.trackExactOutputRead(callee, @backingInt(id));
                         break :blk try es_helpers.makeCallExpr(self, callee, &.{read}, source.span);
-                    } else try es_helpers.makeAssignExpr(self, target, read, source.span, 0);
+                    } else blk: {
+                        const outer = editor.symbols.items[@backingInt(group.variable)];
+                        const outer_name = if (outer.synthetic_name.len > 0) outer.synthetic_name else self.ast.getText(outer.name);
+                        const target = try self.makeSyntheticRefForSymbol(group.variable, group.lexical_scope, .{ .write = true });
+                        self.ast.nodes.items[@backingInt(target)].data.string_ref = try self.ast.addString(outer_name);
+                        try self.trackExactOutputReference(target, @backingInt(group.variable));
+                        break :blk try es_helpers.makeAssignExpr(self, target, read, source.span, 0);
+                    };
                     const assignment = try annexEmptyCompletion(self, operation, callback, source.span);
                     const parent = declaration_parents.get(@backingInt(declaration)) orelse @panic("Annex B function lost its actual source position");
                     replaceAnnexBlockEdge(self, parent, declaration, assignment);
+                }
+                if (switch_entry) {
+                    // The fresh object cannot equal the already evaluated
+                    // discriminant. Its selector performs FDI before all source
+                    // selectors without adding a matching/fallthrough clause.
+                    const never_matches = try self.ast.addNode(.{ .tag = .object_expression, .span = self.ast.getNode(group.block).span, .data = .{ .list = try self.ast.addNodeList(&.{}) } });
+                    try prefix.append(self.allocator, never_matches);
+                    const test_node = try self.ast.addNode(.{ .tag = .sequence_expression, .span = self.ast.getNode(group.block).span, .data = .{ .list = try self.ast.addNodeList(prefix.items) } });
+                    const new_case = try self.addExtraNode(.switch_case, self.ast.getNode(group.block).span, &.{ @backingInt(test_node), 0, 0 });
+                    const extra = self.ast.getNode(group.block).data.extra;
+                    const start = self.ast.extra_data.items[extra + 1];
+                    const len = self.ast.extra_data.items[extra + 2];
+                    var cases: std.ArrayList(NodeIndex) = .empty;
+                    defer cases.deinit(self.allocator);
+                    try cases.append(self.allocator, new_case);
+                    for (self.ast.extra_data.items[start .. start + len]) |raw| try cases.append(self.allocator, @fromBackingInt(raw));
+                    const replacement = try self.ast.addNodeList(cases.items);
+                    self.ast.extra_data.items[extra + 1] = replacement.start;
+                    self.ast.extra_data.items[extra + 2] = replacement.len;
+                    continue;
                 }
                 const block_node = self.ast.getNode(group.block);
                 const list = block_node.data.list;
@@ -1309,16 +1350,25 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             else
                 call_scope;
 
+            const control_block = if (needs_ret_var and !is_generator and !await_driver and self.semantic_edit_enabled)
+                try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{}) } })
+            else
+                NodeIndex.none;
+            const evaluation_scope = if (!control_block.isNone())
+                try self.addGeneratedScope(callsite_scope, control_block, .block)
+            else
+                callsite_scope;
+
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
             const loop_ref = try es_helpers.makeExactSyntheticRef(self, loop_name);
-            var loop_ref_scope = callsite_scope;
+            var loop_ref_scope = evaluation_scope;
             if (loop_symbol) |symbol| {
                 const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 const loop_symbol_scope = symbols[@backingInt(symbol)].scope_id;
-                var cursor = callsite_scope;
+                var cursor = evaluation_scope;
                 var visible_from_call_scope = false;
                 for (0..scopes.len) |_| {
                     if (cursor.isNone() or cursor.toIndex() >= scopes.len) break;
@@ -1343,7 +1393,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 break :blk try es_helpers.makeStaticMember(self, loop_ref, call_prop, span);
             } else loop_ref;
             for (lexical_names, 0..) |name, name_i| {
-                const arg = try self.makeUserRefNamedAtScope(name, lexical_bindings[name_i], callsite_scope);
+                const arg = try self.makeUserRefNamedAtScope(name, lexical_bindings[name_i], evaluation_scope);
                 try self.scratch.append(self.allocator, arg);
             }
             const loop_call = try es_helpers.makeCallExpr(self, call_callee, self.scratch.items[scratch_top2..], span);
@@ -1370,7 +1420,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             var ret_temp_symbol_id: ?SymbolId = null;
             var ret_temp_owner_scope: ScopeId = .none;
             if (needs_ret_var) {
-                const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, callsite_scope, span);
+                const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, evaluation_scope, control_block, span);
                 final_stmt = control_flow_check.node;
                 ret_temp_span = control_flow_check.ret_temp_span;
                 ret_temp_binding = control_flow_check.ret_temp_binding;
@@ -1899,6 +1949,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             flow: *const FlowResult,
             local_label: ?[]const u8,
             call_scope: @import("../semantic/scope.zig").ScopeId,
+            reserved_block: NodeIndex,
             span: Span,
         ) Transformer.Error!ControlFlowCheck {
             const scratch_top = self.scratch.items.len;
@@ -2038,11 +2089,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // 모든 문을 블록으로 감싸기
             const block_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const block = try self.ast.addNode(.{
+            const block = if (reserved_block.isNone()) try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = block_list },
-            });
+            }) else blk: {
+                self.ast.nodes.items[@backingInt(reserved_block)].data.list = block_list;
+                break :blk reserved_block;
+            };
             return .{
                 .node = block,
                 .ret_temp_span = ret_name_span,
