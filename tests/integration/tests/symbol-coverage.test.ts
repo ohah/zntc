@@ -5460,20 +5460,21 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'type aliases containing attributed import types keep reanalysis',
+        name: 'type aliases containing attributed import types retain the graph',
         source: [
           "import { value } from './values';",
           "type Shape = import('./shape', { assert: { type: 'json' } }).Shape;",
           'const answer: Shape = value;',
-          'process.stdout.write(String(value));',
+          "process.stdout.write(`${value}:${globalThis.__attributedAliasShapeRan ? 'loaded' : 'elided'}`);",
           '',
         ].join('\n'),
         dependencies: {
           'values.ts': 'export const value = 42;\n',
-          'shape.ts': 'export interface Shape { value: number }\n',
+          'shape.ts':
+            'globalThis.__attributedAliasShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
-        stdout: '42',
+        graph: 'retained',
+        stdout: '42:elided',
       },
       {
         name: 'interface declarations erase their type-only imported module edges',
@@ -5614,20 +5615,21 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'elided',
       },
       {
-        name: 'attributed import type inside an interface keeps reanalysis',
+        name: 'resolution-mode import type inside an interface retains the graph',
         source: [
           "import { value } from './values';",
-          "interface Shape { value: import('./shape', { assert: { type: 'json' } }).Shape }",
+          "interface Shape { value: import('./shape', { with: { 'resolution-mode': 'import' } }).Shape }",
           'const answer: Shape = { value };',
-          'process.stdout.write(String(value));',
+          "process.stdout.write(`${value}:${globalThis.__attributedInterfaceShapeRan ? 'loaded' : 'elided'}`);",
           '',
         ].join('\n'),
         dependencies: {
           'values.ts': 'export const value = 42;\n',
-          'shape.ts': 'export interface Shape { value: number }\n',
+          'shape.ts':
+            'globalThis.__attributedInterfaceShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
-        stdout: '42',
+        graph: 'retained',
+        stdout: '42:elided',
       },
       {
         name: 'class implements erases its imported type while retaining runtime class output',
@@ -6379,19 +6381,20 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42:elided',
       },
       {
-        name: 'import type expression with attributes keeps reanalysis',
+        name: 'import type expression with attributes retains graph without a runtime edge',
         source: [
           "import { value } from './values';",
           "const answer: import('./types', { assert: { type: 'json' } }).Shape = value;",
-          'process.stdout.write(String(value));',
+          "process.stdout.write(`${value}:${globalThis.__typeImportExpressionAttributesRan ? 'loaded' : 'elided'}`);",
           '',
         ].join('\n'),
         dependencies: {
           'values.ts': 'export const value = 42;\n',
-          'types.ts': 'export interface Shape { value: number }\n',
+          'types.ts':
+            'globalThis.__typeImportExpressionAttributesRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
-        stdout: '42',
+        graph: 'retained',
+        stdout: '42:elided',
       },
       {
         name: 'template literal type keeps value-import identities',
