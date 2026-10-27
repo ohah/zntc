@@ -5397,7 +5397,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'value-42',
       },
       {
-        name: 'indexed access type keeps reanalysis',
+        name: 'indexed access type keeps value-import identities',
         source: [
           "import { value } from './values';",
           "const answer: number['toFixed'] = value;",
@@ -5405,7 +5405,22 @@ describe('symbol identity coverage gate (#4819)', () => {
           '',
         ].join('\n'),
         dependencies: { 'values.ts': 'export const value = 42;\n' },
-        graph: 'reanalyzed',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'indexed access type-only import elides the runtime dependency',
+        source: [
+          "import { Shape } from './shape';",
+          "const answer: Shape['value'] = 42;",
+          "process.stdout.write(globalThis.__indexedTypeImportRan ? 'loaded' : String(answer));",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__indexedTypeImportRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
         stdout: '42',
       },
       {

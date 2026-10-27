@@ -703,6 +703,7 @@ fn canRetainTypeErasuresWithExactReferenceEdits(ast: *const ast_mod.Ast) bool {
             .ts_union_type,
             .ts_intersection_type,
             .ts_conditional_type,
+            .ts_indexed_access_type,
             .ts_optional_type,
             .ts_rest_type,
             .ts_type_operator,
