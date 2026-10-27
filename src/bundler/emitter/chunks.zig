@@ -5149,3 +5149,79 @@ test "PM consumer local lifetime snapshots fixed lazy and minted lexical names o
     };
     try std.testing.expect(original_survived);
 }
+
+test "PM plain import alias actual source SID selector metadata and body tuple" {
+    const helper = @import("../test_helpers.zig");
+    const fixture = @import("../bundler_test/plain_import_alias_fixtures.zig").candidates[0];
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helper.writeFile(tmp.dir, "entry.mjs", fixture.entry);
+    try helper.writeFile(tmp.dir, "dep.mjs", fixture.dep);
+    try helper.writeFile(tmp.dir, "lazy.mjs", fixture.lazy.?);
+    const entry_path = try helper.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry_path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.preserve_modules = true;
+    try graph.build(std.testing.io, &.{entry_path});
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    var cg = try chunk_mod.generatePreserveModulesChunks(std.testing.allocator, &graph, &.{entry_path}, null);
+    defer cg.deinit();
+    linker.module_to_chunk = cg.module_to_chunk;
+    defer linker.module_to_chunk = null;
+    var entry_module: ?*const Module = null;
+    var modules = graph.modulesIterator();
+    while (modules.next()) |module| if (std.mem.eql(u8, module.path, entry_path)) {
+        entry_module = module;
+        break;
+    };
+    const module = entry_module orelse return error.MissingAliasEntry;
+    const ast = if (module.ast) |*value| value else return error.MissingAliasAst;
+    const sem = module.semantic orelse return error.MissingAliasSemantic;
+    var import_binding: ?linker_mod.ImportBinding = null;
+    for (module.import_bindings) |binding| if (binding.kind == .default) {
+        try std.testing.expect(import_binding == null);
+        import_binding = binding;
+    };
+    const binding = import_binding orelse return error.MissingAliasImport;
+    const anchor = binding.local_symbol_node orelse return error.MissingAliasAnchor;
+    try std.testing.expect(binding.local_symbol.moduleIndex() == module.index);
+    const sid = binding.local_symbol.semanticIndex() orelse return error.MissingAliasSymbol;
+    try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(anchor)]);
+    try std.testing.expect(sem.symbols.items[sid].kind == .import_binding);
+    var callee: NodeIndex = .none;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .new_expression) continue;
+        const candidate = ast.readExtraNode(node.data.extra, 0);
+        if (candidate.isNone() or @backingInt(candidate) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(candidate)] != sid) continue;
+        try std.testing.expect(callee.isNone());
+        callee = candidate;
+    }
+    try std.testing.expect(!callee.isNone());
+    const resolved = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return error.MissingAliasResolved;
+    const sym = chunk_mod.CrossChunkSym{ .canonical_module = resolved.canonical.module_index.toU32(), .name = resolved.canonical.export_name };
+    const actual_binding = crossChunkBindingName(&linker, sym);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    var natural: std.StringHashMapUnmanaged(void) = .empty;
+    var aliases: std.ArrayList([]const u8) = .empty;
+    const selected = try deconflictedConsumerLocal(&linker, sym, actual_binding, linker.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null, module.index.toU32(), a, &used, &natural, &aliases);
+    const published = linker.getConsumerImportLocal(sym.canonical_module, sym.name) orelse return error.MissingAliasPublishedLocal;
+    try std.testing.expectEqualStrings(selected, published);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(selected));
+    var metadata = try linker.buildMetadataForAst(ast, module.index.toU32(), true, null, .cjs, true);
+    defer metadata.deinit();
+    var codegen = Codegen.initWithOptions(std.testing.allocator, ast, .{ .module_format = .cjs, .linking_metadata = &metadata, .semantic_symbols = sem.symbols.items });
+    defer codegen.deinit();
+    try codegen.emitExpr(callee, .lowest, .{});
+    std.debug.print("PM plain import alias tuple module={d} bindingNode={d} sourceSID={d} sourceKind={s} sourceScope={d} calleeNode={d} calleeSID={?d} provider={d} export={s} selected={s} selectedFirstByte={d} validUTF8={any} legacyASCIIStart={any} metadata={s} body={s}\n", .{ module.index.toU32(), @backingInt(anchor), sid, @tagName(sem.symbols.items[sid].kind), @backingInt(sem.symbols.items[sid].scope_id), @backingInt(callee), codegen.sourceSymbolId(callee), sym.canonical_module, sym.name, selected, selected[0], std.unicode.utf8ValidateSlice(selected), selected[0] >= 0x21 and selected[0] < 0x80, metadata.renames.get(sid) orelse "<none>", codegen.buf.items });
+    for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid) std.debug.print("PM plain import alias source-row node={d} declaration={d} scope={d} flags={d}\n", .{ @backingInt(reference.node_index), @backingInt(reference.declaration_node_index), @backingInt(reference.scope_id), @as(u8, @bitCast(reference.flags)) });
+    try std.testing.expectEqualStrings(selected, codegen.buf.items);
+}

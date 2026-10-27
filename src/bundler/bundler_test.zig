@@ -22,6 +22,7 @@ comptime {
     _ = @import("bundler_test/compat.zig");
     _ = @import("bundler_test/default_deconflict.zig");
     _ = @import("bundler_test/consumer_local_lifetime.zig");
+    _ = @import("bundler_test/plain_import_alias.zig");
     _ = @import("bundler_test/patterns.zig");
     _ = @import("bundler_test/expressions.zig");
     _ = @import("bundler_test/jsx.zig");
