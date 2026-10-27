@@ -5106,3 +5106,46 @@ test "preserved output paths agree for virtual providers and nested source modul
         try std.testing.expectEqualStrings(case.expected, actual);
     }
 }
+
+test "PM consumer local lifetime snapshots fixed lazy and minted lexical names only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    var natural: std.StringHashMapUnmanaged(void) = .empty;
+    var aliases: std.ArrayList([]const u8) = .empty;
+    const borrowed = try a.dupe(u8, "t");
+    const symbol: chunk_mod.CrossChunkSym = .{ .canonical_module = 1, .name = "default" };
+    try std.testing.expectEqualStrings("t", try deconflictedConsumerLocal(null, symbol, borrowed, true, null, a, &used, &natural, &aliases));
+    try std.testing.expect(used.contains("t"));
+    try std.testing.expectEqualStrings("lazy_local", try deconflictedConsumerLocal(null, symbol, "lazy_local", true, null, a, &used, &natural, &aliases));
+    try std.testing.expect(used.contains("lazy_local"));
+    try natural.put(a, "t$2", {});
+    try std.testing.expectEqualStrings("t$3", try deconflictedConsumerLocal(null, symbol, borrowed, false, null, a, &used, &natural, &aliases));
+    // Live namespace metadata may own this expression string, but it is not
+    // an emitted lexical declaration and must not enter the reservation set.
+    try aliases.append(a, try a.dupe(u8, "ns.live"));
+    var occupied: std.ArrayList([]const u8) = .empty;
+    try snapshotConsumerLocals(a, &used, &occupied);
+    try std.testing.expectEqual(@as(usize, 3), occupied.items.len);
+    var found_original = false;
+    for (occupied.items) |name| {
+        try std.testing.expect(!std.mem.eql(u8, name, "ns.live"));
+        try std.testing.expect(!std.mem.eql(u8, name, "t$2"));
+        if (std.mem.eql(u8, name, "t")) {
+            found_original = true;
+            try std.testing.expect(name.ptr != borrowed.ptr);
+        }
+    }
+    try std.testing.expect(found_original);
+    used.clearRetainingCapacity();
+    natural.clearRetainingCapacity();
+    // Model the observed provider canonical-storage poison without reading
+    // freed memory. The independent owned snapshot must keep the original t.
+    @memset(borrowed, 0xaa);
+    var original_survived = false;
+    for (occupied.items) |name| if (std.mem.eql(u8, name, "t")) {
+        original_survived = true;
+    };
+    try std.testing.expect(original_survived);
+}
