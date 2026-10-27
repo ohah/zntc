@@ -248,10 +248,22 @@ pub fn ES2020(comptime Transformer: type) type {
         }
 
         pub fn lowerNullishCoalescing(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerNullishCoalescingForSource(self, .none, node);
+        }
+
+        pub fn lowerNullishCoalescingForSource(self: *Transformer, source_node: NodeIndex, node: Node) Transformer.Error!NodeIndex {
+            const composition = @import("optional_nullish_composition.zig");
+            const selected = if (self.optional_nullish_source) |source| composition.input(source, source_node) else null;
+            var capture: composition.Capture = .{ .left = node.data.binary.left };
             const old_left_idx = node.data.binary.left;
             const simple = helpers.isSimpleIdentifier(self, old_left_idx);
 
-            const new_left = try self.visitNode(old_left_idx);
+            const new_left = blk: {
+                const previous = self.optional_nullish_capture;
+                defer self.optional_nullish_capture = previous;
+                if (selected != null) self.optional_nullish_capture = &capture;
+                break :blk try self.visitNode(old_left_idx);
+            };
             const new_right = try self.visitNode(node.data.binary.right);
 
             const null_span = try self.ast.addString("null");
@@ -307,11 +319,27 @@ pub fn ES2020(comptime Transformer: type) type {
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
                 try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true }, identity, producer_id);
-                return self.ast.addNode(.{
+                const result = try self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
                     .data = .{ .ternary = .{ .a = neq_null, .b = temp_ref2, .c = new_right } },
                 });
+                if (selected) |source_input| {
+                    if (!capture.invalid and capture.inner != null and capture.inner.?.result == new_left and identity != null) {
+                        try self.optional_nullish_applications.append(self.allocator, .{
+                            .input = source_input,
+                            .inner = capture.inner.?,
+                            .right = new_right,
+                            .result = result,
+                            .producer = producer_id,
+                            .sid = @backingInt(identity.?.symbol_id),
+                            .write = temp_ref1,
+                            .read = temp_ref2,
+                            .scope = self.current_scope,
+                        });
+                    }
+                }
+                return result;
             }
         }
 
@@ -392,6 +420,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             var null_check_base: NodeIndex = undefined;
             var chain_base: NodeIndex = undefined;
+            var composition_temp: ?TrackedTempCapture = null;
 
             if (optional_member_call) |mc| {
                 null_check_base = mc.null_check_base;
@@ -402,6 +431,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 try self.duplicateUserReference(visited_base, chain_base);
             } else {
                 const cap = try captureTrackedTemp(self, visited_base, node.span);
+                composition_temp = cap;
                 null_check_base = cap.paren_assign;
                 chain_base = try readTrackedTemp(self, cap, node.span);
             }
@@ -421,6 +451,20 @@ pub fn ES2020(comptime Transformer: type) type {
                 .tag = .conditional_expression,
                 .span = node.span,
                 .data = .{ .ternary = .{ .a = eq_null, .b = b_branch, .c = c_branch } },
+            });
+            @import("optional_nullish_composition.zig").recordInner(self, node, .{
+                .result = cond,
+                .base = effective_base_idx,
+                .visited_base = visited_base,
+                .source_sid = self.getSymbolIdAt(effective_base_idx),
+                .null_check = null_check_base,
+                .chain_base = chain_base,
+                .rebuilt = rebuilt_chain,
+                .rebuilt_receiver = self.ast.readExtraNode(self.ast.getNode(rebuilt_chain).data.extra, 0),
+                .rebuilt_key = self.ast.readExtraNode(self.ast.getNode(rebuilt_chain).data.extra, 1),
+                .producer = if (composition_temp) |cap| cap.producer_id else 0,
+                .sid = if (composition_temp) |cap| if (cap.identity) |identity| @backingInt(identity.symbol_id) else null else null,
+                .write = if (composition_temp) |cap| self.ast.getNode(cap.paren_assign).data.binary.left else .none,
             });
             // 괄호로 감싸서 binary expression 안에서 우선순위 보장
             // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)

@@ -5537,6 +5537,10 @@ test "using state-machine predicate follows syntax and target support" {
 /// or an audited async class/object method with a retained home-object graph.
 /// Async-arrow captures must pass their own preflight.
 /// Direct eval and parameter initializer arrows remain outside this subset.
+pub fn optionalNullishSource(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, semantic: *const ModuleSemanticData, options: TransformOptions) !?@import("../../transformer/optional_nullish_composition.zig").Source {
+    return @import("../../transformer/optional_nullish_composition.zig").sourcePlan(allocator, ast, semantic, options, isRetainableOptionalChainMemberAccess, isRetainableBoundSourceCallCalleeChain);
+}
+
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -5560,6 +5564,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer ast.allocator.free(reachable_nodes);
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
+    const optional_nullish_source = optionalNullishSource(allocator, ast, semantic, options) catch null;
+    defer if (optional_nullish_source) |source| source.deinit(allocator);
     var retained_static_field_optional_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_static_field_optional_nodes.deinit(ast.allocator);
     if (options.unsupported.optional_chaining and
@@ -6283,7 +6289,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 {
                     // Keep composed optional/nullish lowering on the existing
                     // resync path until both operators share one exact gate.
-                    if (ast_mod.spineHasOptionalChain(ast, node.data.binary.left)) return false;
+                    if (ast_mod.spineHasOptionalChain(ast, node.data.binary.left)) {
+                        const source = optional_nullish_source orelse return false;
+                        if (@import("../../transformer/optional_nullish_composition.zig").input(source, @fromBackingInt(raw_idx)) == null) return false;
+                    }
                     // Nullish lowering either duplicates an exact identifier
                     // read or registers its generated temp references.
                     found_lowered_nullish_coalescing = true;
@@ -10810,6 +10819,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     if (can_keep_semantic_graph) {
         if (module.semantic) |*sem| {
+            if (optionalNullishSource(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
+                var source = value;
+                source.owner = sem.captureOwnerToken();
+                source.output = transformer.ast;
+                transformer.optional_nullish_source = source;
+            }
             if (@import("../../transformer/native_private_field_certificate.zig").sourcePlan(arena_alloc, ast_ptr, sem, opts) catch null) |value| {
                 var source = value;
                 source.owner = sem.captureOwnerToken();
@@ -10874,7 +10889,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or transformer.optional_nullish_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -11196,6 +11211,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             true,
         ) catch null;
         can_keep_semantic_graph = if (exact) |report| report.isClean() else false;
+    }
+
+    if (can_keep_semantic_graph and transformer.optional_nullish_source != null) {
+        const completed = if (module.semantic) |*sem| blk: {
+            const authority = @import("../../transformer/optional_nullish_composition.zig");
+            if (!(authority.publishPositions(&transformer, sem, root) catch false)) break :blk false;
+            break :blk authority.complete(&transformer, sem, root) catch false;
+        } else false;
+        const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;
+        can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
     }
 
     if (can_keep_semantic_graph and transformer.native_private_field_source != null) {
