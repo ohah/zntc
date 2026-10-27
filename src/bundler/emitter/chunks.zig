@@ -281,6 +281,25 @@ fn deconflictedConsumerLocal(
     return local;
 }
 
+const ConsumerPropertyOrigin = enum { binding_spelling, module_export_name };
+
+/// Decode the producer's known spelling role exactly once before handing a
+/// property StringValue to the member-expression builder. A bare module name
+/// is already StringValue; quoted ModuleExportName retains its source encoding.
+fn consumerImportPropertyValue(allocator: std.mem.Allocator, spelling: []const u8, origin: ConsumerPropertyOrigin) ![]const u8 {
+    switch (origin) {
+        .binding_spelling => {
+            if (!@import("../linker/identifier_name.zig").isIdentifierName(spelling)) return error.InvalidConsumerImportProperty;
+            return @import("../../lexer/scanner.zig").Scanner.decodeIdentifierEscapesAlloc(allocator, spelling);
+        },
+        .module_export_name => {
+            if (@import("../linker/preamble_writer.zig").isQuotedName(spelling))
+                return @import("../../string_escape.zig").decodeJsStringLiteral(allocator, spelling);
+            return spelling;
+        },
+    }
+}
+
 /// (#4587 target a) preserve-modules CJS 라이브 바인딩 소비자 import 방출.
 /// dep 의 재할당(storage) export 를 구조분해로 잡으면 순환에서 로드 시점 undefined 를 박제하므로:
 ///   1. `const <ns> = require("<bind_arg>");` holder 를 발급하고
@@ -352,7 +371,9 @@ fn emitPmCjsLiveImport(
                 try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ key, ns_local, quoted });
             } else try chunk_output.appendSlice(allocator, key);
             if (linker) |l| {
-                try l.putConsumerImportMember(sym.canonical_module, sym.name, ns_local, key);
+                const property_value = try consumerImportPropertyValue(allocator, key, if (lazy_local_keys or has_global) .binding_spelling else .module_export_name);
+                defer if (property_value.ptr != key.ptr) allocator.free(property_value);
+                try l.putConsumerImportMember(sym.canonical_module, sym.name, ns_local, property_value);
             }
         } else {
             // 비재할당 심볼: 현행 스냅샷 구조분해.
@@ -5213,6 +5234,7 @@ test "PM plain import alias actual source SID selector metadata and body tuple" 
     const selected = try deconflictedConsumerLocal(&linker, sym, actual_binding, linker.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null, module.index.toU32(), a, &used, &natural, &aliases);
     const published = linker.getConsumerImportLocal(sym.canonical_module, sym.name) orelse return error.MissingAliasPublishedLocal;
     try std.testing.expectEqualStrings(selected, published);
+    try std.testing.expect(linker.getConsumerImportTarget(sym.canonical_module, sym.name).?.role == .binding);
     try std.testing.expect(std.unicode.utf8ValidateSlice(selected));
     var metadata = try linker.buildMetadataForAst(ast, module.index.toU32(), true, null, .cjs, true);
     defer metadata.deinit();
@@ -5222,4 +5244,104 @@ test "PM plain import alias actual source SID selector metadata and body tuple" 
     std.debug.print("PM plain import alias tuple module={d} bindingNode={d} sourceSID={d} sourceKind={s} sourceScope={d} calleeNode={d} calleeSID={?d} provider={d} export={s} selected={s} selectedFirstByte={d} validUTF8={any} legacyASCIIStart={any} metadata={s} body={s}\n", .{ module.index.toU32(), @backingInt(anchor), sid, @tagName(sem.symbols.items[sid].kind), @backingInt(sem.symbols.items[sid].scope_id), @backingInt(callee), codegen.sourceSymbolId(callee), sym.canonical_module, sym.name, selected, selected[0], std.unicode.utf8ValidateSlice(selected), selected[0] >= 0x21 and selected[0] < 0x80, metadata.renames.get(sid) orelse "<none>", codegen.buf.items });
     for (sem.references) |reference| if (@backingInt(reference.symbol_id) == sid) std.debug.print("PM plain import alias source-row node={d} declaration={d} scope={d} flags={d}\n", .{ @backingInt(reference.node_index), @backingInt(reference.declaration_node_index), @backingInt(reference.scope_id), @as(u8, @bitCast(reference.flags)) });
     try std.testing.expectEqualStrings(selected, codegen.buf.items);
+}
+
+test "PM plain import alias member StringValue literal backslash retains key" {
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    // This is the StringValue containing a literal backslash, not the raw
+    // spelling of an identifier escape. The competing decoded key is 9.
+    try linker.putConsumerImportMember(0, "value", "holder", "\\u0061");
+    const target = linker.getConsumerImportTarget(0, "value") orelse return error.MissingMemberTarget;
+    try std.testing.expect(target.role == .namespace_member_expression);
+    const script = try std.fmt.allocPrint(std.testing.allocator, "const holder={{\"\\\\u0061\":7,a:9}};console.log({s});", .{target.text});
+    defer std.testing.allocator.free(script);
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    std.debug.print("PM plain import alias property StringValue literal-backslash expression={s} expected=7 actual={s}", .{ target.text, actual.stdout });
+    try std.testing.expectEqualStrings("7\n", actual.stdout);
+}
+
+test "PM plain import alias property origins preserve StringValue keys" {
+    const Case = struct { spelling: []const u8, origin: ConsumerPropertyOrigin, value: []const u8 };
+    const cases = [_]Case{
+        .{ .spelling = "\\u0061", .origin = .binding_spelling, .value = "a" },
+        .{ .spelling = "\"\\u0061\"", .origin = .module_export_name, .value = "a" },
+        .{ .spelling = "\"\\\\u0061\"", .origin = .module_export_name, .value = "\\u0061" },
+        .{ .spelling = "\"\\\"quoted\\\"\"", .origin = .module_export_name, .value = "\"quoted\"" },
+        .{ .spelling = "\"한글\"", .origin = .module_export_name, .value = "한글" },
+        .{ .spelling = "한글", .origin = .module_export_name, .value = "한글" },
+        .{ .spelling = "\\u{10400}", .origin = .binding_spelling, .value = "𐐀" },
+        .{ .spelling = "\"\"", .origin = .module_export_name, .value = "" },
+        .{ .spelling = "\"😀\"", .origin = .module_export_name, .value = "😀" },
+        .{ .spelling = "\"a-b\"", .origin = .module_export_name, .value = "a-b" },
+    };
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    for (cases) |case| {
+        const value = try consumerImportPropertyValue(std.testing.allocator, case.spelling, case.origin);
+        defer if (value.ptr != case.spelling.ptr) std.testing.allocator.free(value);
+        try std.testing.expectEqualStrings(case.value, value);
+        try linker.putConsumerImportMember(0, "value", "holder", value);
+        const target = linker.getConsumerImportTarget(0, "value") orelse return error.MissingMemberTarget;
+        try std.testing.expect(target.role == .namespace_member_expression);
+        const key = try std.json.Stringify.valueAlloc(std.testing.allocator, case.value, .{});
+        defer std.testing.allocator.free(key);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "const holder={{}};holder[{s}]=7;console.log({s});", .{ key, target.text });
+        defer std.testing.allocator.free(script);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("7\n", actual.stdout);
+    }
+    std.debug.print("PM plain import alias property-origin-controls=10 native=10\n", .{});
+}
+
+test "PM plain import alias lexical validation rejects malformed names without expression inference" {
+    const names = @import("../linker/identifier_name.zig");
+    for ([_][]const u8{ "plain$1", "이름", "é", "𐐀", "a\u{0301}", "a\u{200c}", "a\u{200d}", "\\u0061", "a\\u0030", "\\u{10400}" }) |valid| {
+        try std.testing.expect(try names.isBindingName(std.testing.allocator, valid, Linker.isReservedName));
+    }
+    for ([_][]const u8{ "", "\x00", "\xAA", "\xEC\x9D", "\xC0\xAF", "\xED\xA0\x80", "9name", "name.member", "name()", "name space", "bad-name", "😀", "\u{0301}name", "\\uD800", "\\u{110000}", "class", "\\u0063lass" }) |invalid| {
+        try std.testing.expect(!try names.isBindingName(std.testing.allocator, invalid, Linker.isReservedName));
+    }
+}
+
+test "PM plain import alias owned target roles reject invalid member inputs atomically" {
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    const original = try std.testing.allocator.dupe(u8, "owned");
+    defer std.testing.allocator.free(original);
+    try linker.putConsumerImportLocal(0, "value", original);
+    const target = linker.getConsumerImportTarget(0, "value") orelse return error.MissingImportTarget;
+    try std.testing.expect(target.role == .binding);
+    try std.testing.expect(target.text.ptr != original.ptr);
+    @memset(original, 0xaa);
+    try std.testing.expectEqualStrings("owned", target.text);
+    for ([_][]const u8{ "", "\xAA", "holder.field", "class", "\\u0063lass" }) |invalid| {
+        try std.testing.expectError(error.InvalidConsumerImportMember, linker.putConsumerImportMember(0, "value", invalid, "key"));
+        const restored = linker.getConsumerImportTarget(0, "value") orelse return error.MissingImportTarget;
+        try std.testing.expect(restored.role == .binding and restored.text.ptr == target.text.ptr);
+        try std.testing.expectEqualStrings("owned", restored.text);
+    }
+    try std.testing.expectError(error.InvalidConsumerImportMember, linker.putConsumerImportMember(0, "value", "holder", "\xAA"));
+    try std.testing.expectEqualStrings("owned", linker.getConsumerImportLocal(0, "value").?);
+    try linker.putConsumerImportMember(0, "value", "holder", "값");
+    try std.testing.expect(linker.getConsumerImportTarget(0, "value").?.role == .namespace_member_expression);
+    try std.testing.expectEqualStrings("holder.값", linker.getConsumerImportLocal(0, "value").?);
 }
