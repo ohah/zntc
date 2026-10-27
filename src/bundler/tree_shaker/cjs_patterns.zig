@@ -15,6 +15,130 @@ const ast_walk = @import("../../parser/ast_walk.zig");
 const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
 
+/// Declaration liveness in a dynamic root does not prove that a source-local
+/// Buffer alias still has its initializer value. This guards the production
+/// optimization before either retained or legacy AST editing may begin.
+pub fn nodeBufferCapabilityValuesAreStable(module: *const Module) bool {
+    const ast = if (module.ast) |*value| value else return false;
+    const semantic = if (module.semantic) |*value| value else return false;
+    if (ast.nodes.items.len == 0 or semantic.scopes.len == 0) return false;
+    const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or ast.getNode(root).tag != .program) return false;
+    const scope = semantic.scope_owner_map.get(@backingInt(root)) orelse return false;
+    if (scope != 0 or scope >= semantic.scopes.len) return false;
+    const program_scope = semantic.scopes[scope];
+    if (program_scope.kind != .global and program_scope.kind != .module) return false;
+    if (program_scope.blocksMangling()) return false;
+
+    const allocator = ast.allocator;
+    var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer buffer_names.deinit(allocator);
+    collectNodeBufferModuleObjectNames(allocator, ast, &buffer_names) catch return false;
+    var constructor_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer constructor_names.deinit(allocator);
+    collectNodeBufferCtorNames(allocator, ast, &buffer_names, &constructor_names) catch return false;
+    if (constructor_names.count() == 0) return true;
+
+    // Source var reinitializers share their original binding SID but need not
+    // increment write_count. Count actual live initializer edges independently.
+    var initializer_counts: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer initializer_counts.deinit(allocator);
+    var pending: std.ArrayList(NodeIndex) = .empty;
+    defer pending.deinit(allocator);
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(allocator);
+    pending.append(allocator, root) catch return false;
+    while (pending.pop()) |current| {
+        if (current.isNone()) continue;
+        const raw = @backingInt(current);
+        if (raw >= ast.nodes.items.len) return false;
+        const entry = live.getOrPut(allocator, raw) catch return false;
+        if (entry.found_existing) continue;
+        const node = ast.getNode(current);
+        if (node.tag == .variable_declarator) {
+            const binding = ast.readExtraNode(node.data.extra, 0);
+            const initializer = ast.readExtraNode(node.data.extra, 2);
+            if (!initializer.isNone() and !binding.isNone() and @backingInt(binding) < semantic.symbol_ids.len) {
+                if (semantic.symbol_ids[@backingInt(binding)]) |id| {
+                    const count = initializer_counts.getOrPut(allocator, id) catch return false;
+                    if (!count.found_existing) count.value_ptr.* = 0;
+                    count.value_ptr.* += 1;
+                }
+            }
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| pending.append(allocator, child) catch return false;
+    }
+
+    // Conditions contain only &&, parentheses and plain member reads. Their
+    // base references all execute in the if statement's actual lexical scope.
+    // Discover that scope from live AST owner edges, never from a row being
+    // validated or a name lookup. The visited map also rejects scope ambiguity.
+    const Work = struct { node: NodeIndex, scope: u32 };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer visited.deinit(allocator);
+    stack.append(allocator, .{ .node = root, .scope = scope }) catch return false;
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const raw = @backingInt(work.node);
+        if (raw >= ast.nodes.items.len) return false;
+        const node = ast.getNode(work.node);
+        const actual_scope = semantic.scope_owner_map.get(raw) orelse work.scope;
+        if (actual_scope >= semantic.scopes.len) return false;
+        if (actual_scope != work.scope) {
+            const expected_kind: ?@TypeOf(program_scope.kind) = switch (node.tag) {
+                .block_statement => .block,
+                .switch_statement => .switch_block,
+                .catch_clause => .catch_clause,
+                else => null,
+            };
+            if (expected_kind) |kind| {
+                if (semantic.scopes[actual_scope].kind != kind or
+                    @backingInt(semantic.scopes[actual_scope].parent) != work.scope) return false;
+            }
+        }
+        const seen = visited.getOrPut(allocator, raw) catch return false;
+        if (seen.found_existing) {
+            if (seen.value_ptr.* != actual_scope) return false;
+            continue;
+        }
+        seen.value_ptr.* = actual_scope;
+        if (node.tag == .if_statement) {
+            var capabilities: BufferCapabilitySet = .{};
+            if (collectNodeBufferCapabilityCondition(ast, node.data.ternary.a, &constructor_names, &capabilities) and capabilities.hasAll()) {
+                if (!capabilityConditionValuesAreStable(module, ast, node.data.ternary.a, actual_scope, &initializer_counts)) return false;
+            }
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| stack.append(allocator, .{ .node = child, .scope = actual_scope }) catch return false;
+    }
+    return true;
+}
+
+fn capabilityConditionValuesAreStable(module: *const Module, ast: *const Ast, condition: NodeIndex, scope: u32, initializer_counts: *const std.AutoHashMapUnmanaged(u32, u32)) bool {
+    const semantic = if (module.semantic) |*value| value else return false;
+    if (condition.isNone() or @backingInt(condition) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(condition);
+    return switch (node.tag) {
+        .parenthesized_expression => capabilityConditionValuesAreStable(module, ast, node.data.unary.operand, scope, initializer_counts),
+        .logical_expression => node.data.binary.flags == @backingInt(Kind.amp2) and
+            capabilityConditionValuesAreStable(module, ast, node.data.binary.left, scope, initializer_counts) and
+            capabilityConditionValuesAreStable(module, ast, node.data.binary.right, scope, initializer_counts),
+        .static_member_expression => blk: {
+            const parts = staticMemberParts(ast, condition) orelse break :blk false;
+            if (parts.object.isNone() or @backingInt(parts.object) >= ast.nodes.items.len or
+                ast.getNode(parts.object).tag != .identifier_reference or @backingInt(parts.object) >= semantic.symbol_ids.len) break :blk false;
+            const id = semantic.symbol_ids[@backingInt(parts.object)] orelse break :blk false;
+            if (!exactBufferValueRead(module, parts.object, id, scope)) break :blk false;
+            const object = exactNodeBufferConstructorObject(module, ast, id) orelse break :blk false;
+            break :blk initializer_counts.get(id) == 1 and initializer_counts.get(object) == 1;
+        },
+        else => false,
+    };
+}
+
 pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool {
     var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
     defer buffer_names.deinit(allocator);
@@ -241,6 +365,33 @@ fn foldNodeBufferCapabilityIfsWithContext(
         };
     }
     return true;
+}
+
+// Classify fallback declarations before requiring the exact function consumer.
+fn hasTopLevelDeadFallbackFunction(
+    ast: *const Ast,
+    dead_names: *const std.StringHashMapUnmanaged(void),
+) bool {
+    if (dead_names.count() == 0) return false;
+    const root = programNode(ast) orelse return true;
+    const list = root.data.list;
+    const extra_len = ast.extra_data.items.len;
+    if (list.start > extra_len or list.len > extra_len - list.start) return true;
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return true;
+        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
+        if (stmt.tag != .function_declaration) continue;
+        const extra_base: usize = stmt.data.extra;
+        const name_offset: usize = ast_mod.FunctionExtra.name;
+        if (extra_base > extra_len or name_offset >= extra_len - extra_base) return true;
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_base + name_offset]));
+        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return true;
+        const name = ast.nodes.items[@backingInt(name_idx)];
+        if (name.tag != .binding_identifier) return true;
+        if (dead_names.contains(ast.getText(name.span))) return true;
+    }
+    return false;
 }
 
 fn isRetainableNodeBufferCapabilityBranch(tag: Node.Tag, variable_kind: ?u32) bool {

@@ -2474,33 +2474,23 @@ pub const TreeShaker = struct {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (m.wrap_kind != .cjs) continue;
             const ast = if (m.ast) |*actual_ast| actual_ast else continue;
+            // This is a value optimization, not a graph-repair requirement.
+            // Keep both runtime branches and the original graph when eval or
+            // with can change the source-local capability aliases.
+            if (!cjs_patterns.nodeBufferCapabilityValuesAreStable(m)) continue;
             var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer removed_nodes.deinit(self.allocator);
             var needs_semantic_reanalysis = false;
             var folded_exports: std.ArrayListUnmanaged(cjs_patterns.FoldedNodeBufferExport) = .empty;
             defer folded_exports.deinit(self.allocator);
-            const semantic = if (m.semantic) |*value| value else null;
-            const dynamic_root = if (semantic) |sem| sem.scopes.len > 0 and sem.scopes[0].blocksMangling() else false;
-            // Dynamic root declarations and writers are seeded by crossModuleBFS.
-            // The static typed path retains its stricter source/fact proof;
-            // dynamic lookup must not authorize a named-export pruning fact.
-            const retained_folded = if (dynamic_root)
-                cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
-                    self.allocator,
-                    ast,
-                    &removed_nodes,
-                    semantic,
-                    &needs_semantic_reanalysis,
-                ) catch false
-            else
-                cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
-                    self.allocator,
-                    m,
-                    ast,
-                    &removed_nodes,
-                    &needs_semantic_reanalysis,
-                    &folded_exports,
-                ) catch false;
+            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
+                self.allocator,
+                m,
+                ast,
+                &removed_nodes,
+                &needs_semantic_reanalysis,
+                &folded_exports,
+            ) catch false;
             if (retained_folded) {
                 if (needs_semantic_reanalysis) {
                     // Missing semantic scope proof cannot authorize the

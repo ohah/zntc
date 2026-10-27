@@ -487,3 +487,180 @@ test "Buffer folded export facts are reset before a new TreeShaker analysis run"
     try shaker.analyze(&.{});
     try std.testing.expectEqual(@as(usize, 0), shaker.node_buffer_folded_exports.count());
 }
+
+test "Buffer capability value proof rejects dynamic missing and stale program scopes without edits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, sources[0]);
+    try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    const sem = &f.module.semantic.?;
+    const root = f.module.ast.?.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(f.module.ast.?.nodes.items.len - 1))));
+    const scope_before = sem.scopes[0];
+    const root_owner = sem.scope_owner_map.get(@backingInt(root)).?;
+    const node_count = f.module.ast.?.nodes.items.len;
+    const reference_count = sem.references.len;
+    const symbol_count = sem.symbols.items.len;
+    for (0..6) |mutation| {
+        const semantic_before = f.module.semantic;
+        switch (mutation) {
+            0 => @constCast(sem.scopes)[0].subtree_has_direct_eval = true,
+            1 => @constCast(sem.scopes)[0].subtree_has_with = true,
+            2 => @constCast(sem.scopes)[0].kind = .function,
+            3 => _ = sem.scope_owner_map.remove(@backingInt(root)),
+            4 => try sem.scope_owner_map.put(a, @backingInt(root), f.function_scope),
+            5 => f.module.semantic = null,
+            else => unreachable,
+        }
+        try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+        if (mutation == 5) f.module.semantic = semantic_before;
+        @constCast(f.module.semantic.?.scopes)[0] = scope_before;
+        try f.module.semantic.?.scope_owner_map.put(a, @backingInt(root), root_owner);
+        try std.testing.expectEqual(node_count, f.module.ast.?.nodes.items.len);
+        try std.testing.expectEqual(reference_count, f.module.semantic.?.references.len);
+        try std.testing.expectEqual(symbol_count, f.module.semantic.?.symbols.items.len);
+        try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    }
+    const scopes_before = sem.scopes;
+    sem.scopes = &.{};
+    try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    sem.scopes = scopes_before;
+    try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+}
+
+const dynamic_value_prefix = "var buffer=require('buffer');var B=buffer.Buffer;var events=[];";
+const dynamic_value_branch = "if(B.from&&B.alloc&&B.allocUnsafe&&B.allocUnsafeSlow){module.exports=buffer}else{exports.Buffer=SafeBuffer}";
+const dynamic_value_fallback = "function SafeBuffer(){}SafeBuffer.from=function(value){var receiver=this;return{toString:function(){return 'DYNAMIC_FALLBACK:'+value+':'+events.join(',')+':'+(receiver===SafeBuffer)}}};";
+const DynamicValueCase = struct {
+    source: []const u8,
+    code: []const u8,
+    unknown_argument: bool = false,
+    no_fold: bool = true,
+    with_boundary: bool = false,
+    expect_fold: bool = false,
+};
+const dynamic_value_cases = [_]DynamicValueCase{
+    .{ .source = dynamic_value_prefix ++ "eval(process.argv[2]);" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}" },
+    .{ .source = dynamic_value_prefix ++ "eval(process.argv[2]);" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}", .unknown_argument = true },
+    .{ .source = dynamic_value_prefix ++ "eval(process.argv[2]);" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "B={get from(){events.push('from');return 0},get alloc(){events.push('alloc');return 0}}" },
+    .{ .source = dynamic_value_prefix ++ "eval(process.argv[2]);" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "B={from:function(){events.push('never-call')},alloc:0,allocUnsafe:0,allocUnsafeSlow:0}" },
+    .{ .source = dynamic_value_prefix ++ "eval(process.argv[2]);" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "buffer={get Buffer(){console.log('getter');return{label:'changed',from:function(value){var receiver=this;return{toString:function(){return receiver.label+':'+value}}}}}}" },
+    .{ .source = dynamic_value_prefix ++ "eval('void B');" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "" },
+    .{ .source = dynamic_value_prefix ++ "var from=B.from;eval(process.argv[2]);module.exports={Buffer:{from:function(value,encoding){return from(value,encoding)}}};", .code = "from=function(value){return{toString:function(){return 'changed:'+value}}}", .unknown_argument = true, .no_fold = false },
+    .{ .source = dynamic_value_prefix ++ "with({B:{from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}){" ++ dynamic_value_branch ++ "}" ++ dynamic_value_fallback, .code = "", .with_boundary = true },
+    .{ .source = dynamic_value_prefix ++ "with({}){" ++ dynamic_value_branch ++ "}" ++ dynamic_value_fallback, .code = "", .with_boundary = true },
+    .{ .source = dynamic_value_prefix ++ "function change(){eval(process.argv[2])}change();" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}" },
+    .{ .source = dynamic_value_prefix ++ "B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0};" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "if(process.argv[2])B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0};" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "function change(){B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}change();" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "B=make();function make(){return{from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "buffer={Buffer:{from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}};B=buffer.Buffer;" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "B=buffer.Buffer;B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0};" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var B={from:0,alloc:0,allocUnsafe:0,allocUnsafeSlow:0}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change" },
+    .{ .source = dynamic_value_prefix ++ "if(process.argv[2]){var buffer={Buffer:{from:function(value){return{toString:function(){return 'changed:'+value}}}}}}" ++ dynamic_value_branch ++ dynamic_value_fallback, .code = "change", .no_fold = false },
+    .{ .source = prefix ++ "if(" ++ condition ++ "){exports.Buffer=B}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 'DYNAMIC_FALLBACK:'}SafeBuffer.from='DYNAMIC_FALLBACK:';", .code = "", .no_fold = false },
+};
+
+test "Buffer dynamic local aliases keep both runtime branches and their original values" {
+    const helpers = @import("../test_helpers.zig");
+    const profile = @import("../../profile.zig");
+    for (dynamic_value_cases, 0..) |case, index| {
+        for ([_]bool{ false, true }) |minify| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            const entry_source = if (case.unknown_argument)
+                "var API=require('./lib.cjs').Buffer;console.log(API.from(process.argv[3],'hex').toString());"
+            else
+                "var API=require('./lib.cjs').Buffer;console.log(API.from('61','hex').toString());";
+            try helpers.writeFile(tmp.dir, "entry.cjs", entry_source);
+            try helpers.writeFile(tmp.dir, "lib.cjs", case.source);
+            const entry = try helpers.absPath(&tmp, "entry.cjs");
+            defer std.testing.allocator.free(entry);
+            const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry, case.code, "62" } });
+            try std.testing.expect(native.term == .exited and native.term.exited == 0);
+            profile.resetForTest();
+            defer profile.resetForTest();
+            profile.setIoForTest(std.testing.io);
+            profile.addFromCsv("graph.resync.semantic");
+            var bundler = @import("../bundler.zig").Bundler.init(std.testing.allocator, .{
+                .entry_points = &.{entry},
+                .platform = .node,
+                .format = .cjs,
+                .minify_syntax = minify,
+                .minify_identifiers = minify,
+                .minify_whitespace = minify,
+            });
+            defer bundler.deinit();
+            const result = try bundler.bundle(std.testing.io);
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(!result.hasErrors());
+            // `with` remains on its existing unsafe prepass boundary when
+            // syntax/identifier minify runs. The capability veto adds no resync.
+            const expected_resyncs: u32 = if (case.with_boundary and minify) 1 else 0;
+            if (expected_resyncs != profile.count(.graph_resync_semantic))
+                std.debug.print("Buffer dynamic profile case={d} min={any} expected={d} actual={d}\n", .{ index, minify, expected_resyncs, profile.count(.graph_resync_semantic) });
+            try std.testing.expectEqual(expected_resyncs, profile.count(.graph_resync_semantic));
+            if (case.no_fold) try std.testing.expect(std.mem.indexOf(u8, result.output, "DYNAMIC_FALLBACK:") != null);
+            if (case.expect_fold) try std.testing.expect(std.mem.indexOf(u8, result.output, "DYNAMIC_FALLBACK:") == null);
+            try helpers.writeFile(tmp.dir, "out.cjs", result.output);
+            const out = try helpers.absPath(&tmp, "out.cjs");
+            defer std.testing.allocator.free(out);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", out, case.code, "62" } });
+            if (actual.term != .exited or actual.term.exited != 0 or !std.mem.eql(u8, native.stdout, actual.stdout))
+                std.debug.print("Buffer dynamic value case={d} min={any} native:{s} actual:{s} stderr:{s} code:{s}\n", .{ index, minify, native.stdout, actual.stdout, actual.stderr, result.output });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
+}
+
+test "Buffer capability value proof validates enclosing block owner kind and parent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, prefix ++ "{if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}}function SafeBuffer(){return 1}");
+    const sem = &f.module.semantic.?;
+    const ast = &f.module.ast.?;
+    var block: ?u32 = null;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .block_statement) continue;
+        const id = sem.scope_owner_map.get(@intCast(raw)) orelse continue;
+        if (sem.scopes[id].kind == .block and @backingInt(sem.scopes[id].parent) == 0) {
+            block = id;
+            break;
+        }
+    }
+    const id = block.?;
+    const before = sem.scopes[id];
+    try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    @constCast(sem.scopes)[id].kind = .function;
+    try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    @constCast(sem.scopes)[id] = before;
+    @constCast(sem.scopes)[id].parent = @fromBackingInt(f.function_scope);
+    try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    @constCast(sem.scopes)[id] = before;
+    try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+}
+
+test "Buffer nested eval marks the program while its outer alias has zero static writes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, dynamic_value_prefix ++ "function change(){eval(process.argv[2])}change();" ++ dynamic_value_branch ++ dynamic_value_fallback);
+    const sem = &f.module.semantic.?;
+    try std.testing.expect(sem.scopes[0].subtree_has_direct_eval);
+    const ast = &f.module.ast.?;
+    const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    var statements = ast.iterateExtraList(ast.getNode(root).data.list);
+    _ = statements.next().?;
+    const second = ast.getNode(statements.next().?);
+    var declarations = ast.iterateExtraList(second.data.list);
+    const declaration = ast.getNode(declarations.next().?);
+    const binding = ast.readExtraNode(declaration.data.extra, 0);
+    const id = sem.symbol_ids[@backingInt(binding)].?;
+    try std.testing.expectEqual(@as(u32, 0), sem.symbols.items[id].write_count);
+    try std.testing.expect(!patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+}
