@@ -24,7 +24,6 @@ const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
-const annex_b_function = @import("../semantic/annex_b_function.zig");
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
@@ -459,6 +458,7 @@ pub const AstEdgeFinding = struct {
 pub const AstLayoutIssue = enum {
     list_range,
     extra_child_slot,
+    enum_prelude_kind,
     extra_list_descriptor,
     extra_list_range,
 };
@@ -494,6 +494,15 @@ fn invalidExactAstLayout(ast: *const Ast, node_index: u32) ?AstLayoutFinding {
                     .tag = node.tag,
                     .issue = .extra_child_slot,
                     .data_index = base,
+                };
+            }
+            if (node.tag == .ts_enum_declaration) {
+                const prelude = ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.runtime_prelude);
+                if (!prelude.isNone() and @backingInt(prelude) < ast.nodes.items.len and ast.getNode(prelude).tag != .block_statement) return .{
+                    .node_index = node_index,
+                    .tag = node.tag,
+                    .issue = .enum_prelude_kind,
+                    .data_index = base + ast_mod.EnumExtra.runtime_prelude,
                 };
             }
             for (Node.Tag.extraListOffsets(node.tag)) |offsets| {
@@ -1065,13 +1074,13 @@ pub fn collectDeclarationNodes(
             .ts_enum_declaration, .flow_enum_declaration => {
                 if (ast.hasExtra(node.data.extra, 0)) {
                     const name: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
-                    if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
+                    if (!name.isNone() and ast.getNode(name).tag == .binding_identifier) try bindings.put(allocator, @backingInt(name), {});
                 }
             },
             .ts_module_declaration => {
                 const name = node.data.binary.left;
                 if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
-                    ast.getNode(name).tag != .string_literal)
+                    ast.getNode(name).tag == .binding_identifier)
                     try bindings.put(allocator, @backingInt(name), {});
             },
             .ts_import_equals_declaration => {
@@ -1239,7 +1248,7 @@ fn exactExecutionUnit(scopes: []const Scope, start: ScopeId) ?u32 {
         if (!exactValidScope(scopes, current)) return null;
         const scope = scopes[current.toIndex()];
         switch (scope.kind) {
-            .global, .module, .function, .class_body => return current.toIndex(),
+            .global, .module, .function, .class_body, .class_static_block => return current.toIndex(),
             .block, .switch_block, .catch_clause => {},
         }
         current = scope.parent;
@@ -1658,17 +1667,18 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         .program => kind == .global or kind == .module,
         // Function and catch bodies reuse their owner block node for the
         // enclosing execution scope in the source analyzer.
-        .block_statement => kind == .block or kind == .function or kind == .catch_clause,
+        .block_statement => kind == .block or kind == .function or kind == .catch_clause or kind == .class_static_block,
         // A lowered for-await loop reuses its lexical loop scope on the
         // generated while node (remapCopiedScopeOwner in semantic_edit.zig).
         .for_statement, .for_in_statement, .for_of_statement, .for_await_of_statement, .while_statement => kind == .block,
         .switch_statement => kind == .switch_block,
         .catch_clause => kind == .catch_clause or kind == .block,
         .class_declaration, .class_expression => kind == .class_body,
+        .static_block => kind == .class_static_block,
         .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .formal_parameters, .formal_parameter, .assignment_pattern, .assignment_expression, .assignment_target_with_default, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target, .parenthesized_expression, .sequence_expression => kind == .function,
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
-        .ts_module_declaration, .ts_enum_declaration, .flow_component_wrapper => kind == .function,
+        .ts_module_declaration, .ts_enum_declaration => kind == .function,
         .flow_match_arm => kind == .block,
         else => false,
     };
@@ -1685,16 +1695,39 @@ fn isNamespaceBodyBlock(
     return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
 }
 
-fn isFlowComponentImplementationFunction(
+fn canonicalNamespaceBodyOwner(
     ast: *const Ast,
-    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
-    function_raw: u32,
-) bool {
-    const parent_raw = parent_by_node.get(function_raw) orelse return false;
-    if (parent_raw >= ast.nodes.items.len) return false;
-    const parent = ast.nodes.items[parent_raw];
-    if (parent.tag != .flow_component_wrapper or parent.data.extra >= ast.extra_data.items.len) return false;
-    return ast.extra_data.items[parent.data.extra] == function_raw;
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    body: u32,
+) ?u32 {
+    if (body >= ast.nodes.items.len) return null;
+    const tag = ast.nodes.items[body].tag;
+    if (tag != .block_statement and tag != .ts_module_block) return null;
+    const primary = parents.get(body) orelse return null;
+    if (primary >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[primary];
+    if (node.tag != .ts_module_declaration or node.data.binary.flags != 0 or
+        @backingInt(node.data.binary.right) != body) return null;
+    const scope = owners.get(body) orelse return null;
+    if (scope >= scopes.len or scopes[scope].kind != .function or owners.get(primary) != scope) return null;
+    return primary;
+}
+
+fn staticBlockBodyOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
+    const owner = parents.get(block) orelse return null;
+    if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
+    const node = ast.nodes.items[owner];
+    return if (node.tag == .static_block and @backingInt(node.data.unary.operand) == block) owner else null;
+}
+
+fn enumPreludeOwner(ast: *const Ast, parents: *const std.AutoHashMapUnmanaged(u32, u32), block: u32) ?u32 {
+    const owner = parents.get(block) orelse return null;
+    if (owner >= ast.nodes.items.len or ast.nodes.items[block].tag != .block_statement) return null;
+    const node = ast.nodes.items[owner];
+    if (node.tag != .ts_enum_declaration or node.data.extra + ast_mod.EnumExtra.runtime_prelude >= ast.extra_data.items.len) return null;
+    return if (@backingInt(ast.readExtraNode(node.data.extra, ast_mod.EnumExtra.runtime_prelude)) == block) owner else null;
 }
 
 fn isFlowMatchWildcardReference(ctx: *const ExactCtx, node_raw: u32) bool {
@@ -2332,6 +2365,13 @@ const ExactCtx = struct {
                         },
                     );
                 }
+            }
+        }
+        if (ctx.symbols[raw_id].synthetic_kind == .implicit_arguments) {
+            const native_owner = nativeArgumentsOwnerScope(ctx.ast, raw, ctx.scope_owner_map, ctx.parent_by_node, ctx.symbols);
+            if (native_owner == null or native_owner.? != @backingInt(ctx.symbols[raw_id].scope_id)) {
+                ctx.report.scope_resolution_mismatch += 1;
+                std.debug.print("zntc: implicit-arguments-native-owner node={d} symbol={d} symbol_scope={d} actual_owner={any}\n", .{ raw, raw_id, @backingInt(ctx.symbols[raw_id].scope_id), native_owner });
             }
         }
         const expected: ?u32 = if (ctx.helper_reference_nodes.contains(raw)) blk: {
@@ -3109,6 +3149,13 @@ fn checkExactImpl(
         if (scope_id >= scopes.len) continue;
         const tag = ast.nodes.items[raw].tag;
         if (!scopeOwnerKindMatches(tag, scopes[scope_id].kind)) continue;
+        if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .function) continue;
+        }
+        if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_id and scopes[scope_id].kind == .class_static_block) continue;
+        }
+        if (canonicalNamespaceBodyOwner(ast, &parent_by_node, scope_owner_map, scopes, raw) != null) continue;
         const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
         if (first_owner.found_existing) {
             if (first_owner.value_ptr.* != raw) {
@@ -3274,6 +3321,8 @@ fn checkExactImpl(
         };
         const strictness_issue: ?[]const u8 = if (scope.kind == .class_body and !scope.is_strict)
             "class-body-must-be-strict"
+        else if (scope.kind == .class_static_block and !scope.is_strict)
+            "class-static-block-must-be-strict"
         else if (scope.kind == .module and !scope.is_strict)
             "module-must-be-strict"
         else if (!scope.parent.isNone() and exactValidScope(scopes, scope.parent) and
@@ -3338,27 +3387,6 @@ fn checkExactImpl(
                 recordScopeMapMismatch(&report, "entry-name-or-owner", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
             }
         }
-    }
-    // Native sloppy syntax performs Annex B's V = L implicitly at each block
-    // declaration. The analyzer counts those virtual value/write edges
-    // without inventing identifier nodes or Reference rows. Include the same
-    // producer-owned edges when reconciling counters; lowered roles have real
-    // output references and markLowered already removed this virtual count.
-    for (symbols, 0..) |_, sid| {
-        const role = annex_b_function.forSymbol(symbols, @fromBackingInt(@intCast(@as(u32, @intCast(sid))))) catch {
-            report.identity_mismatch += 1;
-            continue;
-        } orelse continue;
-        if (role.state != .native) continue;
-        const assignments: usize = role.source_assignment_count;
-        value_counts[sid] += assignments;
-        const variable = @backingInt(role.variable);
-        if (variable >= symbols.len) {
-            report.identity_mismatch += 1;
-            continue;
-        }
-        value_counts[variable] += assignments;
-        write_counts[variable] += assignments;
     }
     for (symbols, 0..) |symbol, sid| {
         if (!exactValidScope(scopes, symbol.scope_id)) {
@@ -3531,7 +3559,8 @@ fn checkExactImpl(
             // same owner node; the latter may be the recorded owner.
             .catch_clause => null,
             .class_declaration, .class_expression => .class_body,
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .flow_component_wrapper => .function,
+            .static_block => .class_static_block,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => .function,
             else => continue,
         };
         if (tag == .block_statement) {
@@ -3540,6 +3569,25 @@ fn checkExactImpl(
             // visits this block's statement list directly. The block is a
             // syntax container, not a second lexical ScopeId owner.
             if (isNamespaceBodyBlock(ast, &parent_by_node, raw)) continue;
+            if (parent_raw) |parent| {
+                const owner = ast.nodes.items[parent];
+                if (owner.tag == .static_block and @backingInt(owner.data.unary.operand) == raw) {
+                    const primary_scope = scope_owner_map.get(parent);
+                    const body_scope = scope_owner_map.get(raw);
+                    if (primary_scope == null or body_scope == null or primary_scope.? != body_scope.? or
+                        body_scope.? >= scopes.len or scopes[body_scope.?].kind != .class_static_block)
+                        recordScopeOwnerMismatch(&report, raw, tag, "static-body-owner", body_scope, .class_static_block, if (body_scope != null and body_scope.? < scopes.len) scopes[body_scope.?].kind else null);
+                    continue;
+                }
+            }
+            if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+                const enum_scope = scope_owner_map.get(owner);
+                const body_scope = scope_owner_map.get(raw);
+                if (enum_scope == null or body_scope == null or enum_scope.? != body_scope.? or
+                    body_scope.? >= scopes.len or scopes[body_scope.?].kind != .function)
+                    recordScopeOwnerMismatch(&report, raw, tag, "enum-prelude-owner", body_scope, .function, if (body_scope != null and body_scope.? < scopes.len) scopes[body_scope.?].kind else null);
+                continue;
+            }
             const is_function_body = if (parent_raw) |parent| blk: {
                 const parent_node = ast.nodes.items[parent];
                 break :blk ast.functionBodyBlock(parent_node) != null and
@@ -3553,11 +3601,6 @@ fn checkExactImpl(
             } else false;
             if (is_function_body or is_aliased_catch_body) continue;
         }
-        // Flow component analysis enters the function scope on the wrapper,
-        // then visits the synthetic implementation declaration's body in
-        // that scope. The inner declaration does not own a second scope.
-        if (tag == .function_declaration and
-            isFlowComponentImplementationFunction(ast, &parent_by_node, raw)) continue;
         const raw_scope = scope_owner_map.get(raw) orelse {
             // Rebuilt Programs and generated blocks/loops may be structural
             // wrappers with no fresh semantic scope. Class, switch, catch, and
@@ -3604,6 +3647,12 @@ fn checkExactImpl(
         }
         if (scope_raw >= scopes.len) continue;
         const owner_scope = scopes[scope_raw];
+        if (enumPreludeOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_raw and owner_scope.kind == .function) continue;
+        }
+        if (staticBlockBodyOwner(ast, &parent_by_node, raw)) |owner| {
+            if (scope_owner_map.get(owner) == scope_raw and owner_scope.kind == .class_static_block) continue;
+        }
         if (raw == @backingInt(root)) {
             // A non-Program root can be a fragment nested inside an implicit
             // outer scope, so only a Program owner is required to be parentless.
@@ -4037,6 +4086,7 @@ fn checkExactImpl(
             };
         }
     }
+    try accountNativeAnnexBAssignments(allocator, ast, &reachable_nodes, symbol_ids, symbols, scopes, value_counts, write_counts, &report);
     for (symbols, 0..) |symbol, sid| {
         if (symbol.reference_count != value_counts[sid]) {
             report.reference_count_mismatch += 1;
@@ -4155,6 +4205,9 @@ fn isRetainedSourceScopeReference(
     const raw_id = @backingInt(symbol_id);
     if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope) or
         !exactValidScope(ctx.scopes, output_scope)) return false;
+    // Historical scope evidence is valid only after its actual AST owner
+    // disappears, not when another live branch still owns that ScopeId.
+    if (hasReachableScopeOwner(ctx, @backingInt(use_scope))) return false;
     const symbol = ctx.symbols[raw_id];
     if (symbol.synthetic_kind != null or symbol.synthetic_name.len > 0) {
         // A generator state machine can replace a generated catch clause with
@@ -4254,6 +4307,131 @@ pub const PostMinifyReport = struct {
     }
 };
 
+/// Scope and owner evidence belongs to one semantic graph over this exact AST.
+pub const PostMinifyNativeOwners = struct {
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+};
+
+const PostMinifyNativeOwnerPair = struct {
+    actual: PostMinifyNativeOwners,
+    resolved: PostMinifyNativeOwners,
+};
+
+/// Select only the native binding supplied by this graph's current AST frame.
+/// The map key is the actual function, parameter-environment or IIFE node;
+/// numeric ScopeIds and SymbolIds are never compared between graphs.
+fn collectPostMinifyNativeBindings(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable: []const u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    graph: PostMinifyNativeOwners,
+) !std.AutoHashMapUnmanaged(u32, u32) {
+    var result: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    errdefer result.deinit(allocator);
+    var engines: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer engines.deinit(allocator);
+    var invalid_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer invalid_scopes.deinit(allocator);
+    for (symbols, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        const scope = @backingInt(symbol.scope_id);
+        if (scope >= graph.scopes.len) continue;
+        if ((symbol.kind != .parameter and symbol.kind != .variable_var) or graph.scopes[scope].kind != .function or
+            sid > std.math.maxInt(u32))
+        {
+            try invalid_scopes.put(allocator, scope, {});
+            continue;
+        }
+        const engine = try engines.getOrPut(allocator, scope);
+        if (engine.found_existing) try invalid_scopes.put(allocator, scope, {});
+        engine.value_ptr.* = @intCast(sid);
+    }
+    var parameter_frames: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parameter_frames.deinit(allocator);
+    var ambiguous_parameters: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ambiguous_parameters.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .binding_identifier and raw < symbol_ids.len) {
+            if (symbol_ids[raw]) |sid| {
+                if (sid < symbols.len and symbols[sid].kind == .parameter and
+                    symbols[sid].synthetic_kind == .implicit_arguments)
+                    try invalid_scopes.put(allocator, @backingInt(symbols[sid].scope_id), {});
+            }
+        }
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .method_definition => {},
+            else => continue,
+        }
+        if (!ast.hasExtra(node.data.extra, 1)) continue;
+        const params = ast.readExtraNode(node.data.extra, 1);
+        if (params.isNone()) continue;
+        const entry = try parameter_frames.getOrPut(allocator, @backingInt(params));
+        if (entry.found_existing and entry.value_ptr.* != raw)
+            try ambiguous_parameters.put(allocator, @backingInt(params), {});
+        entry.value_ptr.* = raw;
+    }
+    const Frame = struct { node: u32, carrier: u32 };
+    var scope_frames: std.AutoHashMapUnmanaged(u32, Frame) = .empty;
+    defer scope_frames.deinit(allocator);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw];
+        const body_scope = graph.scope_owner_map.get(raw) orelse continue;
+        if (body_scope >= graph.scopes.len or graph.scopes[body_scope].kind != .function) continue;
+        var scope = body_scope;
+        var carrier = raw;
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .method_definition => {
+                if (!ast.hasExtra(node.data.extra, 1)) continue;
+                const params = ast.readExtraNode(node.data.extra, 1);
+                if (!params.isNone()) {
+                    if (@backingInt(params) >= ast.nodes.items.len or ast.getNode(params).tag != .formal_parameters or
+                        ambiguous_parameters.contains(@backingInt(params))) continue;
+                    if (graph.scope_owner_map.get(@backingInt(params))) |parameter_scope| {
+                        if (parameter_scope >= graph.scopes.len or parameter_scope == body_scope or
+                            graph.scopes[parameter_scope].kind != .function or
+                            @backingInt(graph.scopes[body_scope].parent) != parameter_scope) continue;
+                        scope = parameter_scope;
+                        carrier = @backingInt(params);
+                    }
+                }
+            },
+            .ts_enum_declaration, .ts_module_declaration => {
+                if (node.tag == .ts_module_declaration and node.data.binary.flags != 0) continue;
+                if (node.tag == .ts_enum_declaration and
+                    (!ast.hasExtra(node.data.extra, 3) or ast.readExtra(node.data.extra, 3) & 2 != 0)) continue;
+                const role: SyntheticKind = if (node.tag == .ts_enum_declaration) .enum_iife_parameter else .namespace_iife_parameter;
+                var parameters: usize = 0;
+                var invalid = false;
+                for (symbols) |symbol| {
+                    if (symbol.synthetic_kind != role or @backingInt(symbol.scope_id) != scope) continue;
+                    parameters += 1;
+                    if (symbol.kind != .parameter) invalid = true;
+                }
+                if (invalid or parameters != 1) continue;
+            },
+            else => continue,
+        }
+        const frame = try scope_frames.getOrPut(allocator, scope);
+        if (frame.found_existing and frame.value_ptr.node != raw)
+            try invalid_scopes.put(allocator, scope, {});
+        frame.value_ptr.* = .{ .node = raw, .carrier = carrier };
+    }
+    var frames = scope_frames.iterator();
+    while (frames.next()) |entry| {
+        const scope = entry.key_ptr.*;
+        if (invalid_scopes.contains(scope)) continue;
+        const engine = engines.get(scope) orelse continue;
+        try result.put(allocator, entry.value_ptr.carrier, engine);
+    }
+    return result;
+}
+
 pub fn checkPostMinify(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -4269,6 +4447,79 @@ pub fn checkPostMinify(
     explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
     resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+) !PostMinifyReport {
+    return checkPostMinifyImpl(
+        allocator,
+        ast,
+        root,
+        actual_symbol_ids,
+        resolved_symbol_ids,
+        actual_symbols,
+        resolved_symbols,
+        pre_minify_references,
+        helper_ref_nodes,
+        helper_scope_map,
+        unresolved_reference_nodes,
+        explicit_global_reference_nodes,
+        actual_class_self_symbols,
+        resolved_class_self_symbols,
+        null,
+    );
+}
+
+pub fn checkPostMinifyWithNativeOwners(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    actual_symbol_ids: []const ?u32,
+    resolved_symbol_ids: []const ?u32,
+    actual_symbols: []const Symbol,
+    resolved_symbols: []const Symbol,
+    pre_minify_references: []const Reference,
+    helper_ref_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    actual_native_owners: PostMinifyNativeOwners,
+    resolved_native_owners: PostMinifyNativeOwners,
+) !PostMinifyReport {
+    return checkPostMinifyImpl(
+        allocator,
+        ast,
+        root,
+        actual_symbol_ids,
+        resolved_symbol_ids,
+        actual_symbols,
+        resolved_symbols,
+        pre_minify_references,
+        helper_ref_nodes,
+        helper_scope_map,
+        unresolved_reference_nodes,
+        explicit_global_reference_nodes,
+        actual_class_self_symbols,
+        resolved_class_self_symbols,
+        .{ .actual = actual_native_owners, .resolved = resolved_native_owners },
+    );
+}
+
+fn checkPostMinifyImpl(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    actual_symbol_ids: []const ?u32,
+    resolved_symbol_ids: []const ?u32,
+    actual_symbols: []const Symbol,
+    resolved_symbols: []const Symbol,
+    pre_minify_references: []const Reference,
+    helper_ref_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
+    native_owners: ?PostMinifyNativeOwnerPair,
 ) !PostMinifyReport {
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
     defer allocator.free(reachable);
@@ -4372,6 +4623,24 @@ pub fn checkPostMinify(
         try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved.?, {});
     }
 
+    if (native_owners) |owners| {
+        var actual_native = try collectPostMinifyNativeBindings(allocator, ast, reachable, actual_symbol_ids, actual_symbols, owners.actual);
+        defer actual_native.deinit(allocator);
+        var resolved_native = try collectPostMinifyNativeBindings(allocator, ast, reachable, resolved_symbol_ids, resolved_symbols, owners.resolved);
+        defer resolved_native.deinit(allocator);
+        var native = actual_native.iterator();
+        while (native.next()) |entry| {
+            const resolved = resolved_native.get(entry.key_ptr.*) orelse continue;
+            const actual = entry.value_ptr.*;
+            // A source var may share native arguments storage. Its real AST
+            // declaration pair already owns the binding and takes precedence.
+            if (bound_actual_ids.contains(actual)) continue;
+            report.bindings_checked += 1;
+            try bound_actual_ids.put(allocator, actual, {});
+            try binding_pairs.put(allocator, (@as(u64, actual) << 32) | resolved, {});
+        }
+    }
+
     // Namespace and enum emitters synthesize an IIFE parameter in codegen;
     // its semantic SymbolId has no binding node in the transformed AST.
     for (actual_symbols, 0..) |actual_symbol, actual_raw| {
@@ -4398,6 +4667,7 @@ pub fn checkPostMinify(
     // at the removed declaration span.
     for (actual_symbols, 0..) |actual_symbol, actual_raw| {
         if (actual_raw > std.math.maxInt(u32) or bound_actual_ids.contains(@intCast(actual_raw))) continue;
+        if (actual_symbol.synthetic_kind == .implicit_arguments) continue;
         const actual_name = if (actual_symbol.synthetic_name.len > 0)
             actual_symbol.synthetic_name
         else
@@ -4517,6 +4787,243 @@ pub fn checkPostMinify(
         }
     }
     return report;
+}
+
+const NativePostMutation = enum {
+    none,
+    foreign_reference,
+    same_number_foreign_reference,
+    missing_actual_owner,
+    missing_resolved_owner,
+    different_parameter_carrier,
+    wrong_scope,
+    wrong_scope_kind,
+    wrong_kind,
+    wrong_role,
+    explicit_formal_engine,
+    duplicate_actual_engine,
+    duplicate_resolved_engine,
+    wrong_iife_parameter_kind,
+    duplicate_iife_parameter,
+    wrong_iife_parameter_role,
+};
+
+fn checkNativePostPair(source: []const u8, typescript: bool, mutation: NativePostMutation) !void {
+    return checkNativePostPairMode(source, typescript, false, mutation);
+}
+
+fn checkNativePostPairMode(source: []const u8, typescript: bool, sloppy: bool, mutation: NativePostMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(if (typescript) ".ts" else if (sloppy) ".cjs" else ".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var actual = Analyzer.init(a, &parser.ast);
+    actual.is_module = !sloppy;
+    actual.is_ts = typescript;
+    actual.enable_stmt_info = true;
+    actual.collect_unresolved_reference_nodes = true;
+    try actual.analyze();
+    var resolved = Analyzer.init(a, &parser.ast);
+    resolved.is_module = !sloppy;
+    resolved.is_ts = typescript;
+    resolved.collect_unresolved_reference_nodes = true;
+    try resolved.analyze();
+    try std.testing.expectEqual(@as(usize, 0), actual.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), resolved.errors.items.len);
+    var actual_symbols: std.ArrayList(Symbol) = .empty;
+    try actual_symbols.appendSlice(a, actual.symbols.items);
+    const actual_ids = try a.dupe(?u32, actual.symbol_ids.items);
+    const actual_scopes = try a.dupe(Scope, actual.scopes.items);
+    var actual_owners = try actual.scope_owner_map.clone(a);
+    var resolved_owners = try resolved.scope_owner_map.clone(a);
+    // Give the independently analyzed graph a different SID numbering. Only
+    // the columns consumed by this oracle are projected; owner ScopeIds stay
+    // local to that graph, and no numeric equality is identity evidence.
+    var resolved_symbols: std.ArrayList(Symbol) = .empty;
+    for (0..resolved.symbols.items.len) |i|
+        try resolved_symbols.append(a, resolved.symbols.items[resolved.symbols.items.len - 1 - i]);
+    const resolved_ids = try a.dupe(?u32, resolved.symbol_ids.items);
+    for (resolved_ids) |*id| if (id.*) |old| {
+        id.* = @intCast(resolved.symbols.items.len - 1 - old);
+    };
+    var resolved_classes = try resolved.class_self_symbol_map.clone(a);
+    var class_ids = resolved_classes.valueIterator();
+    while (class_ids.next()) |id| id.* = @intCast(resolved.symbols.items.len - 1 - id.*);
+
+    var selected: ?u32 = null;
+    var foreign: ?u32 = null;
+    for (actual_symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        if (selected == null) selected = @intCast(sid) else if (foreign == null) foreign = @intCast(sid);
+    }
+    const engine = selected orelse return error.MissingNativeEngine;
+    const scope = @backingInt(actual_symbols.items[engine].scope_id);
+    var engine_read: ?u32 = null;
+    for (actual_ids, 0..) |id, raw| {
+        if (id == engine and parser.ast.nodes.items[raw].tag == .identifier_reference) {
+            engine_read = @intCast(raw);
+            break;
+        }
+    }
+    const read = engine_read orelse return error.MissingNativeEngineRead;
+    var carrier: ?u32 = null;
+    var owner_iter = actual_owners.iterator();
+    while (owner_iter.next()) |entry| {
+        if (entry.value_ptr.* == scope) carrier = entry.key_ptr.*;
+    }
+    const owner = carrier orelse return error.MissingNativeEngineOwner;
+    switch (mutation) {
+        .none => {},
+        .foreign_reference => actual_ids[read] = foreign orelse return error.MissingForeignEngine,
+        .same_number_foreign_reference => {
+            const decoy = foreign orelse return error.MissingForeignEngine;
+            const expected = resolved_ids[read].?;
+            std.mem.swap(Symbol, &resolved_symbols.items[expected], &resolved_symbols.items[decoy]);
+            for (resolved_ids) |*id| {
+                if (id.* == expected) id.* = decoy else if (id.* == decoy) id.* = expected;
+            }
+            var classes = resolved_classes.valueIterator();
+            while (classes.next()) |id| {
+                if (id.* == expected) id.* = decoy else if (id.* == decoy) id.* = expected;
+            }
+            actual_ids[read] = decoy;
+            try std.testing.expectEqual(actual_ids[read], resolved_ids[read]);
+        },
+        .missing_actual_owner => _ = actual_owners.remove(owner),
+        .missing_resolved_owner => _ = resolved_owners.remove(owner),
+        .different_parameter_carrier => {
+            try std.testing.expectEqual(Node.Tag.formal_parameters, parser.ast.nodes.items[owner].tag);
+            var body_scope: ?u32 = null;
+            for (actual_scopes, 0..) |candidate, sid| {
+                if (@backingInt(candidate.parent) == scope and candidate.kind == .function) {
+                    body_scope = @intCast(sid);
+                    break;
+                }
+            }
+            _ = actual_owners.remove(owner);
+            actual_symbols.items[engine].scope_id = @fromBackingInt(body_scope orelse return error.MissingNativeBodyScope);
+        },
+        .wrong_scope => actual_symbols.items[engine].scope_id = @fromBackingInt(@as(u32, 0)),
+        .wrong_scope_kind => actual_scopes[scope].kind = .block,
+        .wrong_kind => actual_symbols.items[engine].kind = .variable_let,
+        .wrong_role => actual_symbols.items[engine].synthetic_kind = null,
+        .explicit_formal_engine => {
+            var formal: ?u32 = null;
+            for (actual_ids, 0..) |id, raw| {
+                const sid = id orelse continue;
+                if (parser.ast.nodes.items[raw].tag == .binding_identifier and
+                    actual_symbols.items[sid].kind == .parameter and
+                    @backingInt(actual_symbols.items[sid].scope_id) == scope and sid != engine)
+                {
+                    formal = sid;
+                    break;
+                }
+            }
+            const forged = formal orelse return error.MissingExplicitFormal;
+            actual_symbols.items[engine].synthetic_kind = null;
+            actual_symbols.items[forged].synthetic_kind = .implicit_arguments;
+            actual_ids[read] = forged;
+        },
+        .duplicate_actual_engine => try actual_symbols.append(a, actual_symbols.items[engine]),
+        .duplicate_resolved_engine => try resolved_symbols.append(a, resolved_symbols.items[resolved_ids[read].?]),
+        .wrong_iife_parameter_kind, .duplicate_iife_parameter, .wrong_iife_parameter_role => {
+            var parameter: ?usize = null;
+            for (actual_symbols.items, 0..) |symbol, sid| {
+                if (@backingInt(symbol.scope_id) == scope and
+                    (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter)) parameter = sid;
+            }
+            const sid = parameter orelse return error.MissingIifeParameter;
+            switch (mutation) {
+                .wrong_iife_parameter_kind => actual_symbols.items[sid].kind = .variable_var,
+                .duplicate_iife_parameter => try actual_symbols.append(a, actual_symbols.items[sid]),
+                .wrong_iife_parameter_role => actual_symbols.items[sid].synthetic_kind = .bundler_runtime_helper,
+                else => unreachable,
+            }
+        },
+    }
+    const report = try checkPostMinifyWithNativeOwners(
+        a,
+        &parser.ast,
+        root,
+        actual_ids,
+        resolved_ids,
+        actual_symbols.items,
+        resolved_symbols.items,
+        actual.references.items,
+        &.{},
+        &actual.helper_scope_map,
+        &resolved.unresolved_reference_nodes,
+        &std.AutoHashMapUnmanaged(u32, void).empty,
+        &actual.class_self_symbol_map,
+        &resolved_classes,
+        .{ .scopes = actual_scopes, .scope_owner_map = &actual_owners },
+        .{ .scopes = resolved.scopes.items, .scope_owner_map = &resolved_owners },
+    );
+    if (mutation == .none) {
+        try std.testing.expect(report.isClean());
+        const conservative = try checkPostMinify(
+            a,
+            &parser.ast,
+            root,
+            actual_ids,
+            resolved_ids,
+            actual_symbols.items,
+            resolved_symbols.items,
+            actual.references.items,
+            &.{},
+            &actual.helper_scope_map,
+            &resolved.unresolved_reference_nodes,
+            &std.AutoHashMapUnmanaged(u32, void).empty,
+            &actual.class_self_symbol_map,
+            &resolved_classes,
+        );
+        if (actual_symbols.items[engine].kind == .variable_var) {
+            try std.testing.expect(conservative.isClean());
+            try std.testing.expectEqual(conservative.bindings_checked, report.bindings_checked);
+        } else try std.testing.expect(conservative.dangling_reference_id > 0);
+    } else {
+        try std.testing.expect(!report.isClean());
+        if (mutation == .foreign_reference or mutation == .same_number_foreign_reference or mutation == .explicit_formal_engine)
+            try std.testing.expect(report.wrong_reference_target > 0);
+    }
+}
+
+test "post-minify native arguments pairs ten current AST owner forms with independently numbered SIDs" {
+    const sources = [_]struct { source: []const u8, ts: bool = false }{
+        .{ .source = "function read(value){return arguments[0]}" },
+        .{ .source = "function read(value=1){return arguments[0]}" },
+        .{ .source = "function read(...values){return arguments.length+values.length}" },
+        .{ .source = "function read({value}){return arguments[0]+value}" },
+        .{ .source = "const object={read(value=1){return arguments[0]}}" },
+        .{ .source = "class Read{read(value=1){return arguments[0]}}" },
+        .{ .source = "function read(value){return(()=>arguments[0])()}" },
+        .{ .source = "async function* read(value=1){yield arguments[0]}" },
+        .{ .source = "namespace N{export const value=arguments.length}", .ts = true },
+        .{ .source = "enum E{A=arguments.length}", .ts = true },
+    };
+    for (sources) |source| try checkNativePostPair(source.source, source.ts, .none);
+}
+
+test "post-minify native arguments rejects foreign owners numeric decoys and forged engine roles" {
+    for (std.meta.tags(NativePostMutation)) |mutation| {
+        if (mutation == .none) continue;
+        const iife = mutation == .wrong_iife_parameter_kind or mutation == .duplicate_iife_parameter or mutation == .wrong_iife_parameter_role;
+        try checkNativePostPair(if (iife)
+            "namespace N{export const value=arguments.length}"
+        else
+            "function left(value=1){return arguments[0]}function right(value=2){return arguments[0]}", iife, mutation);
+    }
+}
+
+test "post-minify native arguments source var keeps its existing AST binding authority" {
+    // A source var called arguments is valid in this sloppy CJS function;
+    // strict ESM rejects that source binding before this oracle can run.
+    try checkNativePostPairMode("function read(value){var arguments;return arguments[0]}", false, true, .none);
 }
 
 pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
@@ -4991,6 +5498,7 @@ const StrictCtx = struct {
     scopes: []const Scope,
     node_scopes: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
     parent_traces: *const std.AutoHashMapUnmanaged(u32, ParentTrace),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
     references: *const std.AutoHashMapUnmanaged(u32, ReferenceEvidence),
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
     external_evidence: ?StrictExternalEvidence,
@@ -5104,6 +5612,10 @@ const StrictCtx = struct {
         const expected_scope = expected.scope_id orelse return .scope_unknown;
         if (@backingInt(evidence.reference.scope_id) != expected_scope) return .scope_mismatch;
         if (!visibleFrom(symbol.scope_id, evidence.reference.scope_id, self.scopes)) return .invisible_reference;
+        if (symbol.synthetic_kind == .implicit_arguments) {
+            const native_owner = nativeArgumentsOwnerScope(self.ast, raw, self.scope_owner_map, self.parent_traces, self.symbols) orelse return .scope_unknown;
+            if (native_owner != @backingInt(symbol.scope_id)) return .invisible_reference;
+        }
         return .bound;
     }
 };
@@ -5195,6 +5707,75 @@ fn isAnnexBBlockFunctionAlias(scopes: []const Scope, symbol: *const Symbol, bloc
     const block = scopes[block_scope];
     if (block.kind.isVarScope() or block.is_strict) return false;
     return nearestVarScope(block_scope, scopes) == @as(?u32, symbol.scope_id.toIndex());
+}
+
+// Native Annex B declarations execute V=L at each actual declaration. The
+// analyzer records those operations in symbol counts without identifier rows.
+fn accountNativeAnnexBAssignments(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    value_counts: []usize,
+    write_counts: []usize,
+    report: *ExactReport,
+) !void {
+    var has_roles = false;
+    for (symbols) |symbol| {
+        if (symbol.binding_instantiation.annex_b or !symbol.annex_b_alias.variable.isNone() or symbol.annex_b_alias.source_assignment_count != 0) {
+            has_roles = true;
+            break;
+        }
+    }
+    if (!has_roles) return;
+    const annex = @import("../semantic/annex_b_function.zig");
+    const observed = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(observed);
+    @memset(observed, 0);
+    var declarations = reachable_nodes.iterator();
+    while (declarations.next()) |entry| {
+        const index: NodeIndex = @fromBackingInt(entry.key_ptr.*);
+        const declaration = ast.getNode(index);
+        if (declaration.tag != .function_declaration) continue;
+        if (ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name).isNone()) continue;
+        const role = (annex.forDeclaration(ast, symbol_ids, symbols, index) catch {
+            report.declaration_identity_mismatch += 1;
+            continue;
+        }) orelse continue;
+        if (role.state != .native) continue;
+        const lexical = @backingInt(role.lexical);
+        const variable = @backingInt(role.variable);
+        const lexical_scope = symbols[lexical].scope_id;
+        const variable_scope = symbols[variable].scope_id;
+        if (!exactValidScope(scopes, lexical_scope) or !exactValidScope(scopes, variable_scope) or
+            scopes[lexical_scope.toIndex()].is_strict or
+            nearestVarScope(lexical_scope.toIndex(), scopes) != variable_scope.toIndex())
+        {
+            report.declaration_scope_mismatch += 1;
+            continue;
+        }
+        // The pair is selected only by its typed source role. Spelling equality
+        // checks that role's consistency; it never selects a replacement SID.
+        const lexical_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, exactSymbolName(ast, &symbols[lexical]));
+        defer if (lexical_name.ptr != exactSymbolName(ast, &symbols[lexical]).ptr) allocator.free(lexical_name);
+        const variable_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, exactSymbolName(ast, &symbols[variable]));
+        defer if (variable_name.ptr != exactSymbolName(ast, &symbols[variable]).ptr) allocator.free(variable_name);
+        if (!std.mem.eql(u8, lexical_name, variable_name)) {
+            report.declaration_identity_mismatch += 1;
+            continue;
+        }
+        observed[lexical] += 1;
+        value_counts[lexical] += 1;
+        value_counts[variable] += 1;
+        write_counts[variable] += 1;
+    }
+    for (symbols, 0..) |symbol, sid| {
+        const alias = symbol.annex_b_alias;
+        if (alias.variable.isNone() or alias.state != .native) continue;
+        if (observed[sid] != alias.source_assignment_count) report.declaration_identity_mismatch += 1;
+    }
 }
 
 fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {
@@ -5333,6 +5914,113 @@ fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.Walk
     return .descend;
 }
 
+/// Enum/namespace IIFEs are emitted by their TypeScript creators. Their one
+/// real IIFE parameter role independently witnesses the ordinary native frame.
+fn nativeArgumentsFrameScope(
+    ast: *const Ast,
+    raw: u32,
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    symbols: []const Symbol,
+) ?u32 {
+    if (raw >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[raw];
+    const body_scope = owners.get(raw) orelse return null;
+    switch (node.tag) {
+        .function_declaration, .function_expression, .function, .method_definition => {
+            if (!ast.hasExtra(node.data.extra, 1)) return null;
+            const params = ast.readExtraNode(node.data.extra, 1);
+            return if (!params.isNone()) owners.get(@backingInt(params)) orelse body_scope else body_scope;
+        },
+        .ts_enum_declaration, .ts_module_declaration => {
+            const required: SyntheticKind = if (node.tag == .ts_enum_declaration) .enum_iife_parameter else .namespace_iife_parameter;
+            var parameter: ?*const Symbol = null;
+            for (symbols) |*symbol| {
+                if (symbol.synthetic_kind != required or @backingInt(symbol.scope_id) != body_scope) continue;
+                if (parameter != null or symbol.kind != .parameter) return null;
+                parameter = symbol;
+            }
+            const actual = parameter orelse return null;
+            const name = if (actual.synthetic_name.len > 0) actual.synthetic_name else ast.getText(actual.name);
+            if (@import("../lexer/scanner.zig").Scanner.identifierNamesEqual(name, "arguments")) return null;
+            return body_scope;
+        },
+        else => return null,
+    }
+}
+
+/// Select native arguments storage from actual AST evaluation boundaries.
+/// Arrows inherit it; method keys/decorators evaluate outside the method.
+fn nativeArgumentsOwnerScope(
+    ast: *const Ast,
+    raw: u32,
+    owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    parents: anytype,
+    symbols: []const Symbol,
+) ?u32 {
+    var child = raw;
+    var decorator = false;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        const entry = parents.get(child) orelse return null;
+        const parent: u32 = if (@TypeOf(entry) == u32) entry else blk: {
+            if (entry.ambiguous) return null;
+            break :blk entry.parent;
+        };
+        if (parent >= ast.nodes.items.len) return null;
+        const node = ast.nodes.items[parent];
+        if (node.tag == .decorator) decorator = true;
+        if (node.tag == .static_block) return null;
+        if (node.tag == .property_definition or node.tag == .accessor_property) {
+            if (!ast.hasExtra(node.data.extra, ast_mod.PropertyExtra.init)) return null;
+            if (child == @backingInt(ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init))) return null;
+            decorator = false;
+        }
+        switch (node.tag) {
+            .ts_enum_declaration, .ts_module_declaration => return nativeArgumentsFrameScope(ast, parent, owners, symbols),
+            .function_declaration, .function_expression, .function, .method_definition => {
+                if (!ast.hasExtra(node.data.extra, 2)) return null;
+                const params = ast.readExtraNode(node.data.extra, 1);
+                if (node.tag == .method_definition) {
+                    const body = ast.readExtraNode(node.data.extra, 2);
+                    if (decorator or (child != @backingInt(params) and child != @backingInt(body))) {
+                        decorator = false;
+                        child = parent;
+                        continue;
+                    }
+                }
+                return nativeArgumentsFrameScope(ast, parent, owners, symbols);
+            },
+            else => {},
+        }
+        child = parent;
+    }
+    return null;
+}
+
+/// Native ordinary functions supply this binding without an AST formal.
+/// Validate its actual function/parameter owner instead of accepting a marker
+/// alone; an arrow or a sibling/global scope cannot supply native arguments.
+fn hasNativeArgumentsOwner(
+    ast: *const Ast,
+    symbol: *const Symbol,
+    scopes: []const Scope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable: *const std.AutoHashMapUnmanaged(u32, ScopeTrace),
+    symbols: []const Symbol,
+) bool {
+    if (symbol.synthetic_kind != .implicit_arguments or
+        (symbol.kind != .parameter and symbol.kind != .variable_var) or
+        symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= scopes.len or
+        scopes[symbol.scope_id.toIndex()].kind != .function or
+        !exactScopeMapKeyMatchesSymbol(ast, symbol, "arguments")) return false;
+    var nodes = reachable.keyIterator();
+    while (nodes.next()) |raw| {
+        const arguments_scope = nativeArgumentsFrameScope(ast, raw.*, scope_owner_map, symbols) orelse continue;
+        if (arguments_scope == @backingInt(symbol.scope_id)) return true;
+    }
+    return false;
+}
+
 pub fn checkStrict(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -5427,6 +6115,7 @@ fn checkStrictImpl(
         .scopes = scopes,
         .node_scopes = &node_scopes,
         .parent_traces = &parent_traces,
+        .scope_owner_map = scope_owner_map,
         .references = &reference_evidence,
         .synthetic = synthetic,
         .external_evidence = external_evidence,
@@ -5451,6 +6140,7 @@ fn checkStrictImpl(
             symbol.synthetic_kind != null or
             symbol.name.start & Ast.STRING_TABLE_BIT != 0;
         if (!has_generated_name_provenance or raw_id > std.math.maxInt(u32)) continue;
+        if (hasNativeArgumentsOwner(ast, &symbol, scopes, scope_owner_map, &node_scopes, symbols)) continue;
         // Virtual namespace/enum IIFE parameters have no emitted AST binding
         // node; checkExact validates them against reachable owner scopes.
         if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter or
@@ -8422,4 +9112,77 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
     );
     try std.testing.expectEqual(@as(usize, 1), report.unproven_external_reference);
     try std.testing.expect(!report.isClean());
+}
+
+test "exact identity audit admits only canonical namespace body aliases" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "namespace N { { let local = 1; } } namespace M {}");
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var sem = Analyzer.init(a, &parser.ast);
+    sem.is_ts = true;
+    sem.collect_unresolved_reference_nodes = true;
+    try sem.analyze();
+    try std.testing.expectEqual(@as(usize, 0), sem.errors.items.len);
+    var primary: ?u32 = null;
+    var sibling: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_module_declaration) continue;
+        if (primary == null) primary = @intCast(raw) else sibling = @intCast(raw);
+    }
+    const p = primary.?;
+    const body = @backingInt(parser.ast.nodes.items[p].data.binary.right);
+    const scope = sem.scope_owner_map.get(p).?;
+    const sibling_scope = sem.scope_owner_map.get(sibling.?).?;
+    try std.testing.expect(scope != sibling_scope);
+    const body_node = parser.ast.nodes.items[body];
+    const nested = parser.ast.extra_data.items[body_node.data.list.start];
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    try parents.put(a, body, p);
+    try parents.put(a, nested, body);
+    try sem.scope_owner_map.put(a, body, scope);
+    try std.testing.expectEqual(p, canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body).?);
+    const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const canonical = try checkExact(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), sem.symbol_ids.items, sem.symbols.items, sem.scopes.items, sem.scope_maps.items, &sem.scope_owner_map, sem.references.items, &.{}, &.{}, &empty_nodes, &empty_nodes, &origins);
+    try std.testing.expectEqual(@as(usize, 0), canonical.duplicate_scope_owner);
+    // A live nested lexical block sharing the same number is still a second
+    // owner, not the canonical namespace body edge.
+    const nested_scope = sem.scope_owner_map.get(nested).?;
+    try sem.scope_owner_map.put(a, nested, scope);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, nested) == null);
+    const duplicate = try checkExact(a, &parser.ast, root, @intCast(parser.ast.nodes.items.len), sem.symbol_ids.items, sem.symbols.items, sem.scopes.items, sem.scope_maps.items, &sem.scope_owner_map, sem.references.items, &.{}, &.{}, &empty_nodes, &empty_nodes, &origins);
+    try std.testing.expectEqual(@as(usize, 1), duplicate.duplicate_scope_owner);
+    try sem.scope_owner_map.put(a, nested, nested_scope);
+    try sem.scope_owner_map.put(a, body, sibling_scope);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, scope);
+    _ = sem.scope_owner_map.remove(p);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, p, scope);
+    const original = parser.ast.nodes.items[p];
+    parser.ast.nodes.items[p].data.binary.flags = 1;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    parser.ast.nodes.items[p] = original;
+    try parents.put(a, body, sibling.?);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try parents.put(a, body, p);
+    const original_body = parser.ast.nodes.items[body];
+    parser.ast.nodes.items[body].tag = .empty_statement;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    parser.ast.nodes.items[body] = original_body;
+    _ = sem.scope_owner_map.remove(body);
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, @intCast(sem.scopes.items.len));
+    try sem.scope_owner_map.put(a, p, @intCast(sem.scopes.items.len));
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, sem.scopes.items, body) == null);
+    try sem.scope_owner_map.put(a, body, scope);
+    try sem.scope_owner_map.put(a, p, scope);
+    const scopes = try a.dupe(Scope, sem.scopes.items);
+    scopes[scope].kind = .block;
+    try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, scopes, body) == null);
 }

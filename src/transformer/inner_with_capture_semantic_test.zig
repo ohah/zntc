@@ -119,6 +119,7 @@ test "inner with lexical capture keeps static method names out of value visitati
             t.scopes = analyzer.scopes.items;
             t.scope_maps = analyzer.scope_maps.items;
             t.scope_owner_map = analyzer.scope_owner_map;
+            t.unresolved_references = &analyzer.unresolved_references;
             t.class_self_symbol_map = analyzer.class_self_symbol_map;
             t.node_scope_provenance = analyzer.node_scope_provenance;
             t.semantic_edit_enabled = true;
@@ -129,18 +130,75 @@ test "inner with lexical capture keeps static method names out of value visitati
             try std.testing.expect(!key.isNone());
             const original = t.ast.getNode(key);
             const original_id = t.getSymbolIdAt(key);
+            var source_arguments: ?u32 = null;
+            var source_read_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+            if (original.tag == .computed_property_key) {
+                const key_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(alloc, t.ast, key);
+                for (key_nodes) |raw| {
+                    const idx: ast.NodeIndex = @fromBackingInt(raw);
+                    if (t.ast.getNode(idx).tag != .identifier_reference) continue;
+                    const id = t.getSymbolIdAt(idx) orelse continue;
+                    if (analyzer.symbols.items[id].synthetic_kind != .implicit_arguments) continue;
+                    try std.testing.expect(source_arguments == null);
+                    source_arguments = id;
+                    for (analyzer.references.items) |reference| {
+                        if (reference.node_index == idx) source_read_scope = reference.scope_id;
+                    }
+                }
+                try std.testing.expect(source_arguments != null and source_read_scope != null);
+            }
             try t.buildBlockRenameMap();
             const transformed = try t.visitNode(root);
             const live = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(alloc, t.ast, transformed);
             if (original.tag == .computed_property_key) {
                 try std.testing.expect(std.mem.indexOfScalar(u32, live, @backingInt(key)) == null);
-                var captured_arguments = false;
-                for (t.capture_refs.items) |reference| {
-                    if (reference.kind == .arguments_value) captured_arguments = true;
+                const id = source_arguments.?;
+                const cell = t.live_arguments_cells.get(id) orelse return error.MissingLiveArgumentsCell;
+                const editor = &t.semantic_editor.?;
+                try std.testing.expectEqual(analyzer.symbols.items[id].scope_id, cell.scope);
+                try std.testing.expectEqual(.variable_var, editor.symbols.items[id].kind);
+                const engine = @backingInt(cell.engine_id);
+                try std.testing.expect(engine != id and engine >= analyzer.symbols.items.len);
+                try std.testing.expectEqual(.parameter, editor.symbols.items[engine].kind);
+                try std.testing.expectEqual(.implicit_arguments, editor.symbols.items[engine].synthetic_kind.?);
+                try std.testing.expectEqual(cell.scope, editor.symbols.items[engine].scope_id);
+                try std.testing.expectEqual(engine, editor.scope_maps.items[cell.scope.toIndex()].get("arguments").?);
+                try std.testing.expect(!cell.declaration.isNone());
+                try std.testing.expect(std.mem.indexOfScalar(u32, live, @backingInt(cell.declaration)) != null);
+                var declarations: usize = 0;
+                var engine_reads: usize = 0;
+                var key_reads: usize = 0;
+                for (editor.references.items) |reference| {
+                    if (@backingInt(reference.symbol_id) == id and reference.flags.declare) {
+                        try std.testing.expectEqual(cell.scope, reference.scope_id);
+                        try std.testing.expect(!reference.declaration_node_index.isNone());
+                        try std.testing.expect(std.mem.indexOfScalar(u32, live, @backingInt(reference.declaration_node_index)) != null);
+                        try std.testing.expectEqual(id, t.getSymbolIdAt(reference.declaration_node_index).?);
+                        declarations += 1;
+                    }
                 }
-                try std.testing.expect(captured_arguments);
+                for (live) |raw| {
+                    const idx: ast.NodeIndex = @fromBackingInt(raw);
+                    if (t.ast.getNode(idx).tag != .identifier_reference) continue;
+                    const actual = t.getSymbolIdAt(idx) orelse continue;
+                    if (actual != id and actual != engine) continue;
+                    const reference = (try editor.referenceForNode(idx)) orelse return error.MissingArgumentsReferenceAtBirth;
+                    try std.testing.expectEqual(actual, @backingInt(reference.symbol_id));
+                    try std.testing.expect(reference.flags.read and !reference.flags.write and !reference.flags.declare);
+                    if (actual == engine) {
+                        try std.testing.expectEqual(cell.scope, reference.scope_id);
+                        engine_reads += 1;
+                    } else {
+                        try std.testing.expectEqual(source_read_scope.?, reference.scope_id);
+                        key_reads += 1;
+                    }
+                }
+                try std.testing.expectEqual(@as(usize, 1), declarations);
+                try std.testing.expectEqual(@as(usize, 1), engine_reads);
+                try std.testing.expectEqual(@as(usize, 1), key_reads);
             } else {
                 try std.testing.expect(std.mem.indexOfScalar(u32, live, @backingInt(key)) != null);
+                try std.testing.expectEqual(@as(u32, 0), t.live_arguments_cells.count());
                 try std.testing.expectEqual(original.tag, t.ast.getNode(key).tag);
                 try std.testing.expectEqual(original_id, t.getSymbolIdAt(key));
             }

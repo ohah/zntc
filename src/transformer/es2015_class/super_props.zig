@@ -94,9 +94,21 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
+            return makeThisAliasRefWithFlags(self, .{ .read = true });
+        }
+
+        fn makeThisAliasRefWithFlags(self: *Transformer, flags: @import("../../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeSyntheticRef(self, "_this");
-            if (self.semantic_edit_enabled and self.capture_frame != 0)
-                try self.trackLexicalCaptureRef(ref, .none, .this_value);
+            if (flags.write) self.ast.nodes.items[@backingInt(ref)].tag = .assignment_target_identifier;
+            if (self.semantic_edit_enabled and self.capture_frame != 0) {
+                try self.trackLexicalCaptureRefWithFlags(ref, .none, .this_value, flags);
+                if (self.active_derived_constructor_new_target) |owner| {
+                    if (owner.capture_frame == self.capture_frame) {
+                        const id = owner.this_symbol_id orelse @panic("lowered super has no reserved this SID");
+                        if (self.getSymbolIdAt(ref) != @as(u32, @backingInt(id))) @panic("reserved super capture lost its exact SID");
+                    }
+                }
+            }
             return ref;
         }
 
@@ -125,7 +137,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// super() 호출 후 this → _this 별칭을 활성화하여
         /// __callSuper가 반환하는 새 객체를 올바르게 참조.
         /// call_expression: extra = [callee, args_start, args_len, flags]
-        pub fn lowerSuperCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+        pub fn lowerSuperCall(self: *Transformer, source_call: NodeIndex, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const args_start = self.readU32(e, 1);
@@ -162,27 +174,50 @@ pub fn SuperProps(comptime Transformer: type) type {
             });
 
             const call = try es_helpers.makeCallExpr(self, callee, &.{ parent_ref, args_array, new_target_ref }, span);
+            // Construct first, then inspect the live constructor binding. A
+            // parent constructor may re-enter the same deferred super closure.
+            const result = try es_helpers.captureToTrackedTemp(self, call, span);
+            const result_read = try es_helpers.makeCapturedTempRef(self, result, span, .{ .read = true });
 
             // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
             // var _this / var _newTarget 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
-            const this_ref = try makeThisAliasRef(self);
+            const this_ref = try makeThisAliasRefWithFlags(self, .{ .write = true });
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
+                .data = .{ .binary = .{ .left = this_ref, .right = result_read, .flags = 0 } },
             });
-            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), {});
+            const marker: Transformer.GeneratedSuperCall = if (self.active_derived_constructor_new_target) |owner| .{
+                .source_call = source_call,
+                .constructor_frame = self.capture_frame,
+                .constructor_scope = owner.owner_scope,
+                .use_scope = self.current_scope,
+                .target_symbol = owner.this_symbol_id,
+                .callee_symbol = if (self.getSymbolIdAt(callee)) |id| @fromBackingInt(id) else null,
+                .result_assignment = result.paren_assign,
+                .result_symbol = result.symbol_id,
+                .pending_result_producer_id = if (result.symbol_id == null) result.temp_producer_id orelse 0 else 0,
+                .result_scope = if (result.symbol_id) |id| self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id else .none,
+                .native = false,
+            } else legacy: {
+                if (self.semantic_edit_enabled) @panic("lowered super lost its constructor owner");
+                break :legacy .{ .constructor_frame = 0, .constructor_scope = .none, .use_scope = .none, .target_symbol = null, .result_assignment = result.paren_assign, .native = false };
+            };
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
             const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);
 
-            const seq_list = try self.ast.addNodeList(&.{ assert_call, raw_assign });
+            const seq_list = try self.ast.addNodeList(&.{ result.paren_assign, assert_call, raw_assign });
             const seq = try self.ast.addNode(.{
                 .tag = .sequence_expression,
                 .span = span,
                 .data = .{ .list = seq_list },
             });
+            var published = marker;
+            published.evaluation_sequence = seq;
+            published.check_symbol = if (self.getSymbolIdAt(assert_uninit)) |id| @fromBackingInt(id) else null;
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), published);
 
             self.super_call_this_alias = true;
             self.runtime_helpers.call_super = true;
@@ -223,25 +258,29 @@ pub fn SuperProps(comptime Transformer: type) type {
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
             // Parent.prototype.method 또는 static Parent.method
-            const super_base = try buildSuperBaseRef(self, span);
-            var new_method_prop = try self.visitNode(method_prop_idx);
-            // #4229: identifier escape (\u{6d} 등) 는 합성 member 에 verbatim
-            // 잔존하면 es5 산출물에 ES2015 문법 — canonical(디코드) identifier 로.
-            {
-                const mp = self.ast.getNode(new_method_prop);
-                if (mp.tag == .identifier_reference) {
-                    const raw = self.ast.getText(mp.data.string_ref);
-                    if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
-                        const group_name = @import("../../regexp/group_name.zig");
-                        var decoded: std.ArrayList(u8) = .empty;
-                        defer decoded.deinit(self.allocator);
-                        try group_name.appendCanonical(self.allocator, &decoded, raw);
-                        const dec_span = try self.ast.addString(decoded.items);
-                        new_method_prop = try es_helpers.makePropertyNameFromSpan(self, dec_span);
+            const method_member = if (@import("../retained_field_arrow.zig").activeSuper(self))
+                try buildSuperPropGet(self, try makeStaticSuperPropArg(self, method_prop_idx), span)
+            else member: {
+                const super_base = try buildSuperBaseRef(self, span);
+                var new_method_prop = try self.visitNode(method_prop_idx);
+                // #4229: identifier escape (\u{6d} 등) 는 합성 member 에 verbatim
+                // 잔존하면 es5 산출물에 ES2015 문법 — canonical(디코드) identifier 로.
+                {
+                    const mp = self.ast.getNode(new_method_prop);
+                    if (mp.tag == .identifier_reference) {
+                        const raw = self.ast.getText(mp.data.string_ref);
+                        if (std.mem.indexOfScalar(u8, raw, '\\') != null) {
+                            const group_name = @import("../../regexp/group_name.zig");
+                            var decoded: std.ArrayList(u8) = .empty;
+                            defer decoded.deinit(self.allocator);
+                            try group_name.appendCanonical(self.allocator, &decoded, raw);
+                            const dec_span = try self.ast.addString(decoded.items);
+                            new_method_prop = try es_helpers.makePropertyNameFromSpan(self, dec_span);
+                        }
                     }
                 }
-            }
-            const method_member = try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
+                break :member try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
+            };
 
             // Parent.prototype.method.call
             const call_prop = try es_helpers.makePropertyName(self, "call");
@@ -430,6 +469,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해
         /// via_proto_chain / non-derived / is_static 분기를 일관되게 처리해야 한다.
         pub fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (try @import("../retained_field_arrow.zig").superBase(self, span)) |base| return base;
             // 객체 리터럴 메서드: home object 의 프로토타입 (#4729). 클래스 진입 시 비워진다.
             if (self.current_super_home_object) |home| {
                 return @import("../object_super.zig").buildHomeProto(self, home, span);
@@ -451,6 +491,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         }
 
         fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (try @import("../retained_field_arrow.zig").superReceiver(self, span)) |receiver| return receiver;
             if (self.current_super_static_receiver) |receiver_span| {
                 if (try @import("../static_class_capture.zig").makeThisReference(self)) |capture| return capture;
                 return self.makeCurrentClassRef(receiver_span);
@@ -752,9 +793,13 @@ pub fn SuperProps(comptime Transformer: type) type {
             const ce = callee_node.data.extra;
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
-            const super_base = try buildSuperBaseRef(self, span);
-            const new_method_prop = try self.visitNode(method_prop_idx);
-            const method_member = try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
+            const method_member = if (@import("../retained_field_arrow.zig").activeSuper(self))
+                try buildSuperPropGet(self, try self.visitNode(method_prop_idx), span)
+            else member: {
+                const super_base = try buildSuperBaseRef(self, span);
+                const new_method_prop = try self.visitNode(method_prop_idx);
+                break :member try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
+            };
 
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);

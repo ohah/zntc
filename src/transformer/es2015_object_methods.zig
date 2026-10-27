@@ -121,7 +121,20 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
 
             // Only computed keys evaluate an expression in the outer context.
             // A static name such as `arguments` must keep its property role.
-            const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) try self.visitNode(key_idx) else key_idx;
+            var new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) try self.visitNode(key_idx) else key_idx;
+            const direct_name = try self.ast.directStaticKeyName(self.allocator, key_idx);
+            defer if (direct_name) |name| self.allocator.free(name);
+            if (direct_name != null and std.mem.eql(u8, direct_name.?, "__proto__")) {
+                // A method named __proto__ is an own data property. Keep that
+                // source role when replacing method syntax with a function;
+                // a colon property would instead change the object's prototype.
+                const key = try @import("es_helpers.zig").buildStringNode(self, "\"__proto__\"", m.span);
+                new_key = try self.ast.addNode(.{
+                    .tag = .computed_property_key,
+                    .span = self.ast.getNode(key_idx).span,
+                    .data = .{ .unary = .{ .operand = key, .flags = 0 } },
+                });
+            }
 
             return self.ast.addNode(.{
                 .tag = .object_property,

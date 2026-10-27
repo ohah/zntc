@@ -54,6 +54,30 @@ pub fn collect(
             continue;
         }
 
+        if (node.tag == .ts_enum_declaration) {
+            const extra = node.data.extra;
+            const prelude = ast.readExtraNode(extra, ast_mod.EnumExtra.runtime_prelude);
+            var prefix_len: u32 = 0;
+            if (!prelude.isNone()) {
+                if (@backingInt(prelude) >= ast.nodes.items.len) return error.InvalidStatementNode;
+                const body = ast.getNode(prelude);
+                if (body.tag != .block_statement) return error.InvalidStatementList;
+                prefix_len = body.data.list.len;
+                try stack.append(allocator, .{ .node = prelude, .context = frame.context });
+            }
+            try stack.append(allocator, .{ .node = ast.readExtraNode(extra, ast_mod.EnumExtra.name), .context = frame.context });
+            const start = ast.extra_data.items[extra + ast_mod.EnumExtra.members_start];
+            const len = ast.extra_data.items[extra + ast_mod.EnumExtra.members_len];
+            if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start)
+                return error.InvalidStatementList;
+            for (ast.extra_data.items[start .. start + len], 0..) |member, index| {
+                var context = frame.context;
+                context.scope_stmt_idx = std.math.add(u32, prefix_len, @intCast(index)) catch return error.InvalidStatementList;
+                try stack.append(allocator, .{ .node = @fromBackingInt(member), .context = context });
+            }
+            continue;
+        }
+
         var children = ast_walk.children(ast, node);
         while (children.next()) |child| {
             try stack.append(allocator, .{ .node = child, .context = frame.context });

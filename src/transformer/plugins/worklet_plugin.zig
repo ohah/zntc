@@ -263,7 +263,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         const t = api.transformer;
         const method_node = t.ast.getNode(info.node_idx);
         const me = method_node.data.extra;
-        const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
+        const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body, !method_accessor);
 
         if (method_accessor) {
             const stmts = try worklet_mod.buildWorkletPropertyAssignments(
@@ -320,9 +320,24 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 /// method_definition에서 function_expression을 추출한다.
 /// 메서드 이름은 원본에서 lexical binding이 아니므로 새 함수도 익명으로 만든다.
 /// body_idx: directive가 제거된 stripped body (caller가 전달).
-fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_idx: NodeIndex) PluginError!NodeIndex {
+fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_idx: NodeIndex, consumes_method: bool) PluginError!NodeIndex {
     const t = api.transformer;
-    const method_node = t.ast.getNode(info.node_idx);
+    var method = info.node_idx;
+    var params = info.params;
+    var body = body_idx;
+    if (!consumes_method) {
+        var cloned = try @import("../initializer_clone.zig").cloneWorkletMethod(t, method, t.current_scope);
+        defer cloned.deinit(t.allocator);
+        try @import("../worklet_class_clone.zig").registerMethod(t, &cloned);
+        method = cloned.roots[0];
+        const copied = t.ast.getNode(method);
+        const parameters = t.ast.readExtraNode(copied.data.extra, ast_mod.MethodExtra.params);
+        params = t.ast.getNode(parameters).data.list;
+        const previous_body = t.ast.readExtraNode(copied.data.extra, ast_mod.MethodExtra.body);
+        body = try worklet_mod.stripWorkletDirective(t, previous_body);
+        try t.remapCopiedScopeOwner(previous_body, body);
+    }
+    const method_node = t.ast.getNode(method);
     const me = method_node.data.extra;
 
     // method_definition extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
@@ -336,19 +351,23 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 
     const none = @backingInt(NodeIndex.none);
     // function_expression: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
-    const params_list_node = t.ast.addFormalParameters(info.params, method_node.span) catch return error.OutOfMemory;
+    const params_list_node = t.ast.addFormalParameters(params, method_node.span) catch return error.OutOfMemory;
+    const old_params = t.ast.readExtraNode(me, ast_mod.MethodExtra.params);
+    try t.remapCopiedScopeOwner(old_params, params_list_node);
     const func_extra = t.ast.addExtras(&.{
         @backingInt(name_node),
         @backingInt(params_list_node),
-        @backingInt(body_idx),
+        @backingInt(body),
         func_flags,
         none, // return type
     }) catch return error.OutOfMemory;
-    return t.ast.addNode(.{
+    const function = t.ast.addNode(.{
         .tag = .function_expression,
         .span = method_node.span,
         .data = .{ .extra = func_extra },
     }) catch return error.OutOfMemory;
+    try t.remapCopiedScopeOwner(method, function);
+    return function;
 }
 
 /// Worklet factory block: `{ var name = func; name.__workletHash=...; ...; return name; }`
@@ -896,6 +915,10 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     // __workletClass property를 strip한 새 body 생성 + default 방문 수행.
     const stripped_body = try stripWorkletClassMarker(t, body_idx);
     const source_class_self = t.class_self_symbol_map.get(@backingInt(node_idx));
+    const source_class_scope = t.outputOwnedScope(node_idx) orelse if (t.semantic_edit_enabled)
+        @panic("worklet source class has no exact scope owner")
+    else
+        @as(@import("../../semantic/scope.zig").ScopeId, .none);
     // 원본 class extra를 복사하여 body만 교체한 새 class 노드.
     const none = @backingInt(NodeIndex.none);
     const new_name_idx = t.ast.extra_data.items[class_extra];
@@ -915,6 +938,8 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
         @fromBackingInt(@intCast(new_name_idx)),
         stripped_body,
         source_class_self,
+        source_class_scope,
+        node_idx,
     );
     // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
     try t.trailing_nodes.append(t.allocator, factory_stmt);
@@ -994,36 +1019,18 @@ const ClassFactoryBody = struct {
     class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId,
 };
 
-fn cloneClassFactoryBody(t: *Transformer, source_body_idx: NodeIndex) !NodeIndex {
-    const source_body = t.ast.getNode(source_body_idx);
-    const start = source_body.data.list.start;
-    const len = source_body.data.list.len;
-    const top = t.scratch.items.len;
-    defer t.scratch.shrinkRetainingCapacity(top);
-
-    var i: u32 = 0;
-    while (i < len) : (i += 1) {
-        const member_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[start + i]));
-        const member = t.ast.getNode(member_idx);
-        if (member.tag == .method_definition) {
-            var clone = member;
-            const extra = member.data.extra;
-            clone.data.extra = try t.ast.addExtras(t.ast.extra_data.items[extra .. extra + 6]);
-            try t.scratch.append(t.allocator, try t.ast.addNode(clone));
-        } else {
-            try t.scratch.append(t.allocator, member_idx);
-        }
-    }
-
-    const list = try t.ast.addNodeList(t.scratch.items[top..]);
-    return t.ast.addNode(.{ .tag = .class_body, .span = source_body.span, .data = .{ .list = list } });
-}
-
 fn buildClassFactoryBody(
     t: *Transformer,
     class_name_span: Span,
     stripped_body: NodeIndex,
     factory_scope: @import("../../semantic/scope.zig").ScopeId,
+    source_class_scope: @import("../../semantic/scope.zig").ScopeId,
+    source_class_self: ?u32,
+    factory_function: NodeIndex,
+    factory_binding: NodeIndex,
+    factory_function_symbol: ?@import("../../semantic/symbol.zig").SymbolId,
+    wrapper_scope: @import("../../semantic/scope.zig").ScopeId,
+    source_class: NodeIndex,
 ) !ClassFactoryBody {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @backingInt(NodeIndex.none);
@@ -1033,17 +1040,20 @@ fn buildClassFactoryBody(
     // separate, then attach the inner binding to this generated class scope.
     const class_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
     const class_self_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
-    const factory_body = try cloneClassFactoryBody(t, stripped_body);
     const class_expr = try t.addExtraNode(.class_expression, zero_span, &.{
-        @backingInt(class_self_binding), none, @backingInt(factory_body),
+        @backingInt(class_self_binding), none, none,
         none,                            0,    0,
         0,                               0,
     });
     try t.generated_class_without_source_anchor.put(t.allocator, @backingInt(class_expr), {});
 
     var class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId = null;
+    const class_scope = if (t.semantic_edit_enabled) try t.addGeneratedScope(factory_scope, class_expr, .class_body) else .none;
     if (t.semantic_edit_enabled) {
-        const class_scope = try t.addGeneratedScope(factory_scope, class_expr, .class_body);
+        // Class syntax creates a strict environment even when its factory
+        // is evaluated in a sloppy enclosing source environment. Set this
+        // before cloning any owned method or parameter scopes.
+        t.semantic_editor.?.scopes.items[class_scope.toIndex()].is_strict = true;
         class_self_symbol = (try t.declareSyntheticInScope(
             class_self_binding,
             class_name_span,
@@ -1055,16 +1065,36 @@ fn buildClassFactoryBody(
             editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.is_const = true;
             editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.preserve_class_name = true;
         } else unreachable;
-
-        const factory_body_node = t.ast.getNode(factory_body);
-        const member_start = factory_body_node.data.list.start;
-        var i: u32 = 0;
-        while (i < factory_body_node.data.list.len) : (i += 1) {
-            const member_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[member_start + i]));
-            if (t.ast.getNode(member_idx).tag == .method_definition)
-                _ = try t.addGeneratedFunctionScope(class_scope, member_idx);
-        }
     }
+    const BoundaryBinding = @import("../../semantic/runtime_subtree_clone.zig").BoundaryBinding;
+    const mappings: []const BoundaryBinding = if (t.semantic_edit_enabled) &.{.{
+        .source = @fromBackingInt(source_class_self orelse @panic("worklet class copy has no source self SID")),
+        .target = class_self_symbol orelse @panic("worklet class copy has no target self SID"),
+    }} else &.{};
+    var cloned = try @import("../initializer_clone.zig").cloneWithBindings(
+        t,
+        &.{stripped_body},
+        source_class_scope,
+        class_scope,
+        mappings,
+    );
+    defer cloned.deinit(t.allocator);
+    if (t.semantic_edit_enabled) try @import("../worklet_class_clone.zig").register(t, .{
+        .ast_owner = t.ast,
+        .function = factory_function,
+        .binding = factory_binding,
+        .symbol = factory_function_symbol orelse @panic("worklet factory has no known declaration SID"),
+        .scope = factory_scope,
+        .parent = wrapper_scope,
+        .source_class = source_class,
+        .source_scope = source_class_scope,
+        .source_self = mappings[0].source,
+        .target_class = class_expr,
+        .target_scope = class_scope,
+        .target_self = mappings[0].target,
+    }, &cloned, class_self_binding);
+    const class_body = cloned.roots[0];
+    t.ast.extra_data.items[t.ast.getNode(class_expr).data.extra + ast_mod.ClassExtra.body] = @backingInt(class_body);
 
     const factory_symbol = try t.declareSyntheticInScope(class_binding, zero_span, .variable_var, factory_scope);
     // var <Class> = class_expr;
@@ -1094,6 +1124,8 @@ fn buildClassFactoryAssignment(
     class_name_node: NodeIndex,
     stripped_body: NodeIndex,
     source_class_self: ?u32,
+    source_class_scope: @import("../../semantic/scope.zig").ScopeId,
+    source_class: NodeIndex,
 ) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -1118,6 +1150,7 @@ fn buildClassFactoryAssignment(
     const binding_node = try es_helpers.makeExactSyntheticBindingFromSpan(t, binding_name_span);
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
+    const wrapper_params_node = try t.ast.addFormalParameters(try t.ast.addNodeList(&.{}), zero_span);
     const none = @backingInt(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
         @backingInt(binding_node), @backingInt(empty_params_node),
@@ -1129,10 +1162,13 @@ fn buildClassFactoryAssignment(
     // expression. Its class scope must be nested under the factory function,
     // which is the final output owner for this synthetic body.
     const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
-        none, @backingInt(empty_params_node), none, 0, none,
+        none, @backingInt(wrapper_params_node), none, 0, none,
     });
+    // This assignment is emitted after the source class, in its actual
+    // lexical evaluation environment rather than inside the class body.
+    const evaluation_scope = if (t.semantic_edit_enabled) t.outputScopeParent(source_class_scope) else t.current_scope;
     const wrapper_scope = if (t.semantic_edit_enabled)
-        try t.addGeneratedFunctionScope(t.current_scope, wrapper_fn)
+        try t.addGeneratedFunctionScope(evaluation_scope, wrapper_fn)
     else
         @as(@import("../../semantic/scope.zig").ScopeId, .none);
     const factory_scope = if (t.semantic_edit_enabled)
@@ -1150,7 +1186,7 @@ fn buildClassFactoryAssignment(
             try es_helpers.resolveSyntheticNameAvoidingDynamicEval(t, factory_name, t.current_scope);
         symbol.output_name_hint = try t.allocator.dupe(u8, output_name_hint);
     }
-    const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope);
+    const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope, source_class_scope, source_class_self, inner_fn, binding_node, factory_symbol, wrapper_scope, source_class);
     t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @backingInt(factory_body.node);
     const body_raw = @backingInt(factory_body.node);
     if (t.plugins.worklet.class_factory_display_names.contains(body_raw))
@@ -1188,7 +1224,7 @@ fn buildClassFactoryAssignment(
 
     // LHS: ClassName.ClassName__classFactory — ClassName 은 사용자 클래스라 그 심볼을 물려받는다.
     const obj_ref = try t.makeIdentifierRefWithSymbol(class_name_span, class_name_node);
-    try t.trackUserReadFromBinding(obj_ref, class_name_node, t.current_scope);
+    try t.trackUserReadFromBinding(obj_ref, class_name_node, evaluation_scope);
     const prop_ref = try es_helpers.makePropertyNameFromSpan(t, factory_name_span);
     const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
         @backingInt(obj_ref), @backingInt(prop_ref), 0,

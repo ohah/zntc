@@ -830,13 +830,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = static_body_list },
         });
-        class_this_initialization_scope = try self.addGeneratedScope(class_parent_scope, static_body, .block);
-        const static_block = try self.ast.addNode(.{
-            .tag = .static_block,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = static_body, .flags = 0 } },
-        });
-        try new_members.insert(self.allocator, 0, static_block);
+        const static_block = try @import("../generated_static_block.zig").create(self, class_parent_scope, static_body, zero_span);
+        class_this_initialization_scope = static_block.scope;
+        try new_members.insert(self.allocator, 0, static_block.node);
     }
 
     // _metadata 선언 + member __esDecorate 호출 + class __esDecorate 호출
@@ -962,13 +958,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = try self.ast.addNodeList(&.{run_init_stmt}) },
         });
-        if (self.semantic_edit_enabled)
-            class_extra_run_scope = try self.addGeneratedScope(class_parent_scope, run_body, .block);
-        try new_members.append(self.allocator, try self.ast.addNode(.{
-            .tag = .static_block,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = run_body, .flags = 0 } },
-        }));
+        const static_block = try @import("../generated_static_block.zig").create(self, class_parent_scope, run_body, zero_span);
+        class_extra_run_scope = static_block.scope;
+        try new_members.append(self.allocator, static_block.node);
     }
 
     // 2번째 static { } 블록 생성
@@ -979,14 +971,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .list = sb_body_list },
         });
-        metadata_block_scope = try self.addGeneratedScope(class_parent_scope, sb_body, .block);
-        const sb = try self.ast.addNode(.{
-            .tag = .static_block,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = sb_body, .flags = 0 } },
-        });
+        const static_block = try @import("../generated_static_block.zig").create(self, class_parent_scope, sb_body, zero_span);
+        metadata_block_scope = static_block.scope;
         // 첫 static block 뒤에 삽입 (index 1)
-        try new_members.insert(self.allocator, 1, sb);
+        try new_members.insert(self.allocator, 1, static_block.node);
     }
 
     // Computed member key reads in the context object live in this generated
@@ -1847,15 +1835,12 @@ fn flushStaticExtra(
         .span = zero_span,
         .data = .{ .list = try self.ast.addNodeList(&.{stmt}) },
     });
-    if (self.semantic_edit_enabled) {
-        const block_scope = try self.addGeneratedScope(class_parent_scope, body, .block);
-        for (refs.items[refs_start..]) |*reference| reference.scope = block_scope;
-    }
-    try new_members.append(self.allocator, try self.ast.addNode(.{
-        .tag = .static_block,
-        .span = zero_span,
-        .data = .{ .unary = .{ .operand = body, .flags = 0 } },
-    }));
+    const static_block = try @import("../generated_static_block.zig").create(self, class_parent_scope, body, zero_span);
+    if (self.semantic_edit_enabled)
+        for (refs.items[refs_start..]) |*reference| {
+            reference.scope = static_block.scope;
+        };
+    try new_members.append(self.allocator, static_block.node);
 }
 
 fn buildPiggybackedInitCall(

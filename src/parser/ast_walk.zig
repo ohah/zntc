@@ -244,6 +244,83 @@ pub const BindingIdentifierWalker = struct {
     }
 };
 
+/// ECMAScript ContainsExpression for parameter binding positions. Ordinary
+/// default expressions and computed binding keys split the parameter/body env;
+/// destructuring or rest syntax alone only makes arguments unmapped.
+pub fn parameterListHasExpressions(allocator: std.mem.Allocator, tree: *const Ast, params: ast_mod.NodeList) error{OutOfMemory}!bool {
+    const split = tree.nodeListSplitRest(params);
+    for (split.elements) |raw| {
+        if (try parameterHasExpressions(allocator, tree, @fromBackingInt(@intCast(raw)))) return true;
+    }
+    if (split.rest_operand) |rest| return parameterHasExpressions(allocator, tree, rest);
+    return false;
+}
+
+pub fn parameterHasExpressions(allocator: std.mem.Allocator, tree: *const Ast, root: NodeIndex) error{OutOfMemory}!bool {
+    if (root.isNone() or @backingInt(root) >= tree.nodes.items.len) return false;
+    var pending: std.ArrayList(NodeIndex) = .empty;
+    defer pending.deinit(allocator);
+    try pending.append(allocator, root);
+    while (pending.pop()) |idx| {
+        if (idx.isNone() or @backingInt(idx) >= tree.nodes.items.len) continue;
+        const node = tree.getNode(idx);
+        switch (node.tag) {
+            .formal_parameter => {
+                const extra = node.data.extra;
+                if (!tree.hasExtra(extra, ast_mod.FormalParameterExtra.default)) continue;
+                const default_value: NodeIndex = @fromBackingInt(@intCast(tree.extra_data.items[extra + ast_mod.FormalParameterExtra.default]));
+                if (!default_value.isNone()) return true;
+                try pending.append(allocator, @fromBackingInt(@intCast(tree.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])));
+            },
+            .formal_parameters, .sequence_expression => {
+                const list = node.data.list;
+                if (list.start > tree.extra_data.items.len or list.len > tree.extra_data.items.len - list.start) continue;
+                for (tree.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                    try pending.append(allocator, @fromBackingInt(@intCast(raw)));
+                }
+            },
+            .parenthesized_expression => try pending.append(allocator, node.data.unary.operand),
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => return true,
+            .array_pattern, .array_assignment_target => {
+                const split = tree.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| try pending.append(allocator, @fromBackingInt(@intCast(raw)));
+                if (split.rest_operand) |rest| try pending.append(allocator, rest);
+            },
+            .object_pattern, .object_assignment_target => {
+                const split = tree.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| {
+                    const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+                    if (child_idx.isNone() or @backingInt(child_idx) >= tree.nodes.items.len) continue;
+                    const child = tree.getNode(child_idx);
+                    if (child.tag == .binding_property or child.tag == .assignment_target_property_property) {
+                        const key = child.data.binary.left;
+                        if (!key.isNone() and @backingInt(key) < tree.nodes.items.len and
+                            tree.getNode(key).tag == .computed_property_key) return true;
+                        try pending.append(allocator, child.data.binary.right);
+                    } else if (child.tag == .assignment_target_property_identifier) {
+                        if (!child.data.binary.right.isNone()) return true;
+                    } else {
+                        try pending.append(allocator, child_idx);
+                    }
+                }
+                if (split.rest_operand) |rest| try pending.append(allocator, rest);
+            },
+            .rest_element, .spread_element, .binding_rest_element, .assignment_target_rest => try pending.append(allocator, node.data.unary.operand),
+            .binding_property, .assignment_target_property_property => {
+                const key = node.data.binary.left;
+                if (!key.isNone() and @backingInt(key) < tree.nodes.items.len and
+                    tree.getNode(key).tag == .computed_property_key) return true;
+                try pending.append(allocator, node.data.binary.right);
+            },
+            .assignment_target_property_identifier => {
+                if (!node.data.binary.right.isNone()) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// 바인딩 패턴 (포함 cover-grammar 결과) 의 leaf identifier 를 순회하는 iterator.
 /// caller 는 반환된 walker 를 `defer w.deinit()` 해야 함.
 pub fn bindingIdentifiers(

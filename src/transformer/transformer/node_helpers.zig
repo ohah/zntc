@@ -80,7 +80,9 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     const lower_block_scoping = self.options.unsupported.block_scoping;
     const lower_parameter_object_rest = self.options.unsupported.object_spread;
     const lower_class_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
-    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields and
+    const lower_lexical_arguments = self.options.unsupported.arrow or self.options.unsupported.generator or
+        self.options.unsupported.async_await or self.options.unsupported.async_generator;
+    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields and !lower_lexical_arguments and
         !@import("../native_parameter_cells.zig").hasPotentialClassWork(self)) return;
     if (self.scopes.len == 0) return;
     var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
@@ -133,11 +135,14 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         var globals = unresolved.keyIterator();
         while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
     }
+    const LivePlan = struct { id: u32, name: []const u8, owner: NodeIndex };
+    var live_plans: std.ArrayList(LivePlan) = .empty;
+    defer live_plans.deinit(self.allocator);
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
     for (symbols, 0..) |sym, i| {
         const annex_role = @import("../../semantic/annex_b_function.zig").forSymbol(symbols, @fromBackingInt(@as(u32, @intCast(i)))) catch
             std.debug.panic("invalid native Annex B name allocation role", .{});
-        if (annex_role) |role| if (role.state != .lowered) {
+        if (annex_role) |role| if (role.state == .native) {
             // Source syntax still performs V=L. Only a previously allocated
             // exact V alias may change this group's spelling; L never receives
             // an independent lexical-block rename.
@@ -146,7 +151,21 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         const parameter_rename = parameter_renames.contains(@intCast(i));
         const block_rename = lower_block_scoping and table.contains(@intCast(i));
-        if (!block_rename and !parameter_rename) continue;
+        // Explicit lexical bindings do not use a function's implicit arguments
+        // object. Give that exact binding a non-special spelling so generated
+        // ordinary functions can close over its live cell, including writes.
+        const engine_owner = if (self.semantic_edit_enabled and lower_lexical_arguments and sym.synthetic_kind == .implicit_arguments and
+            sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling())
+            @import("../live_arguments.zig").unsplitOwner(self, sym.scope_id)
+        else
+            null;
+        const namespace_property = if (self.namespace_member_owners) |members| members.contains(@intCast(i)) else false;
+        const arguments_rename = engine_owner != null or (lower_lexical_arguments and sym.synthetic_kind == null and !namespace_property and
+            (sym.kind == .parameter or sym.kind == .variable_let or sym.kind == .variable_const or
+                (sym.kind == .variable_var and @import("../live_arguments.zig").isArrowLocal(self, sym.scope_id))) and
+            sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling() and
+            std.mem.eql(u8, try canonicalIdentifier(arena, self.ast.getText(sym.name)), "arguments"));
+        if (!block_rename and !parameter_rename and !arguments_rename) continue;
         const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));
         const name = while (true) {
             self.block_rename_counter += 1;
@@ -155,6 +174,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         try reserved.put(self.allocator, name, {});
         try map.put(self.allocator, @intCast(i), name);
+        if (engine_owner) |owner| try live_plans.append(self.allocator, .{ .id = @intCast(i), .name = name, .owner = owner });
         if (parameter_rename) {
             if (sym.scope_id.toIndex() < scopes.len and scopes[sym.scope_id.toIndex()].blocksMangling()) {
                 try @import("semantic_edit.zig").renameParameterEnvironmentBindingForDynamicBody(self, @intCast(i), name);
@@ -163,6 +183,7 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
             }
         }
     }
+    for (live_plans.items) |plan| try @import("../live_arguments.zig").prepare(self, plan.id, plan.name, plan.owner);
     self.block_rename_map = map;
     try @import("../parameter_environment.zig").collectInferredNames(self, &parameter_renames);
 }
@@ -230,6 +251,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     // the source user's Reference must not overwrite that new identity.
     if (self.capture_ref_by_origin.contains(key)) return;
     if (self.reference_origin_map.get(key)) |existing| {
+        if (existing == key and @import("../static_class_capture.zig").validOwnReferenceOrigin(self, clone)) return;
         if (existing != origin) std.debug.panic("reference clone has conflicting origins", .{});
         return;
     }
@@ -281,6 +303,9 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     const old_i = @backingInt(old_idx);
     const new_i = @backingInt(new_idx);
 
+    if (self.native_constructor_reference_origins.get(old_i)) |origin|
+        try self.native_constructor_reference_origins.put(self.allocator, new_i, origin);
+
     // The visitor intentionally replaced this user reference with a fresh
     // lexical-capture use. Its symbol is bound from the capture declaration,
     // never inherited from the replaced source identifier.
@@ -288,14 +313,17 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
 
     try copyDeferredGeneratorForInReference(self, old_i, new_idx);
 
-    if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
+    const class_replacement = old_i != new_i and @import("../worklet_class_clone.zig").isClassSelfReplacement(self, old_idx, new_idx);
+    if (old_i != new_i and self.plugins.worklet.class_reference_replacements.contains(new_i) and !class_replacement)
+        @panic("worklet class-self replacement lost its exact creator pair");
+    if (!class_replacement) if (self.exact_output_ref_scope_ids.get(old_i)) |planned_scope| {
         if (self.exact_output_ref_scope_ids.get(new_i)) |existing_scope| {
             if (existing_scope != planned_scope)
                 std.debug.panic("copied generated reference changed its producer-selected output ScopeId", .{});
         } else {
             try self.exact_output_ref_scope_ids.put(self.allocator, new_i, planned_scope);
         }
-    }
+    };
 
     // Some producers deliberately remap a copied reference to a different
     // output identity, such as a Worklet class-self reference copied into its
@@ -674,7 +702,7 @@ pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
     // `(_t=get(),set(_t+1),_t)` 3-part 시퀀스 대신 compact `set(get()+1)` 로
     // lowering (lru-cache@es2021 등 private-heavy es2021 size 회수, 의미 보존).
     if (node.tag == .expression_statement and
-        self.options.unsupported.privateLoweringPlan().fields)
+        self.effectivePrivateLoweringPlan().fields)
     {
         const opn = self.ast.getNode(old_operand);
         if (opn.tag == .update_expression) {
@@ -801,7 +829,7 @@ pub fn visitUnaryExtra(self: anytype, node: Node) Error!NodeIndex {
                 return try result;
             }
         }
-        if (self.options.unsupported.privateLoweringPlan().fields and
+        if (self.effectivePrivateLoweringPlan().fields and
             operand.tag == .private_field_expression)
         {
             if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {

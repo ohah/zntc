@@ -262,7 +262,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             (if (span.end > span.start) span else try self.ast.addString("default"))
         else
             try self.ast.addString("default");
-        break :blk if (try parameter_environment.definesStaticName(self, source_idx)) null else name;
+        break :blk if (try parameter_environment.definesStaticNameBeforeFields(self, source_idx)) null else name;
     } else null;
     // The generated outer binding used for an anonymous default export is an
     // implementation detail. Restore the source-level name before any static
@@ -280,22 +280,16 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 .span = node.span,
                 .data = .{ .list = try self.ast.addNodeList(&.{}) },
             });
-            const block_scope = if (self.semantic_edit_enabled)
-                try self.addGeneratedScope(class_scope, block_body, .block)
-            else
-                class_scope;
+            const name_block = try @import("../generated_static_block.zig").create(self, class_scope, block_body, node.span);
+            const block_scope = name_block.scope;
             const this_ref = try es_helpers.makeThisExpr(self, node.span);
             const name_statement = try parameter_environment.classNameStatement(self, this_ref, name, block_scope, node.span);
             self.ast.nodes.items[@backingInt(block_body)].data.list = try self.ast.addNodeList(&.{name_statement});
-            const name_block = try self.ast.addNode(.{
-                .tag = .static_block,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = block_body, .flags = 0 } },
-            });
+
             const old_members = self.ast.getNode(body_idx).data.list;
             var members: std.ArrayList(NodeIndex) = .empty;
             defer members.deinit(self.allocator);
-            try members.append(self.allocator, name_block);
+            try members.append(self.allocator, name_block.node);
             for (self.ast.extra_data.items[old_members.start .. old_members.start + old_members.len]) |raw|
                 try members.append(self.allocator, @fromBackingInt(@intCast(raw)));
             self.ast.nodes.items[@backingInt(body_idx)].data.list = try self.ast.addNodeList(members.items);
@@ -463,6 +457,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         self.current_scope;
     const initializer_plan = try class_member_helpers.prepareFieldInitializerPlan(self, body_idx, initializer_class_scope);
     var ctx = ClassMemberContext{
+        .source_class = source_idx,
+        .keep_native_private_initializers = class_member_helpers.canKeepNativePrivateInitializers(self, body_idx),
         .field_initializer_plan = initializer_plan,
         .class_members = &class_members,
         .field_assignments = &field_assignments,
@@ -665,9 +661,35 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 defer self.current_class_name_node = saved_static_reference_class_name;
                 defer self.current_class_self_symbol_id = saved_static_reference_class_symbol;
                 if (!anonymous_default_export_binding.isNone()) {
+                    _ = @import("../static_class_capture.zig").handoffAnonymousExportValue(
+                        self,
+                        source_idx,
+                        saved_static_reference_class_name,
+                        anonymous_default_export_binding,
+                        generated_export_scope,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => @panic("anonymous default class lost its exact static capture value handoff"),
+                    };
                     self.current_class_name_node = anonymous_default_export_binding;
                     self.current_class_self_symbol_id = self.getSymbolIdAt(anonymous_default_export_binding) orelse
                         std.debug.panic("anonymous default decorator wrapper has no exact class reference SymbolId", .{});
+                    if (self.options.unsupported.class_static_block) {
+                        if (legacy_default_class_inferred_name) |name| {
+                            const value = try self.makeUserRefNamedAtScope(
+                                self.ast.getText(self.ast.getNode(anonymous_default_export_binding).data.string_ref),
+                                anonymous_default_export_binding,
+                                generated_export_scope,
+                            );
+                            try post.append(self.allocator, try @import("../parameter_environment.zig").classNameStatement(
+                                self,
+                                value,
+                                name,
+                                generated_export_scope,
+                                node.span,
+                            ));
+                        }
+                    }
                 }
                 try appendStaticStatements(
                     self,
@@ -739,6 +761,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             new_decos.start,       new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
+        try @import("../native_private_field_certificate.zig").record(self, .class_copy, source_idx, class_result);
         var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
         defer post.deinit(self.allocator);
         try appendStaticStatements(self, &post, new_name, static_field_ref_scope, .{
@@ -1223,6 +1246,13 @@ pub fn lowerClassWithPrehoistedKeys(
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
     const new_body = try hoistAllComputedKeys(self, node.tag, body_idx, &key_assigns);
+    // These expression fragments are emitted before the reconstructed class.
+    // Their exact cloned reads now execute in the known enclosing scope.
+    if (self.semantic_edit_enabled) {
+        const class_scope = self.outputOwnedScope(source_idx) orelse @panic("prehoisted class key has no source environment");
+        const output_scope = self.outputScopeParent(class_scope);
+        for (key_assigns.items) |fragment| try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_idx, fragment, output_scope);
+    }
 
     var slots: [8]u32 = undefined;
     for (0..8) |k| slots[k] = self.ast.extra_data.items[node.data.extra + k];

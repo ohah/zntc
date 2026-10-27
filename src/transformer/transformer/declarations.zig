@@ -16,6 +16,8 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
+const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 
 /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
 /// binding이 destructuring pattern (object/array)인지 판별.
@@ -295,7 +297,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
     // var _this = this; / var _arguments = arguments; 를 바디 앞에 삽입.
     const needs_new_target_capture = self.hasLexicalCapture(capture_frame.active_frame, .new_target_value);
-    if (self.options.unsupported.arrow and !new_body.isNone() and
+    if ((self.options.unsupported.arrow or @import("../live_arguments.zig").ownerCell(self) != null) and !new_body.isNone() and
         (self.needs_this_var or self.needs_arguments_var or needs_new_target_capture))
     {
         var capture_stmts: [3]NodeIndex = undefined;
@@ -312,9 +314,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
             capture_count += 1;
         }
         if (self.needs_arguments_var) {
-            const args_init = try self.makeCapturedArgumentsInit();
-            capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
-            try self.bindLexicalCapture(capture_stmts[capture_count], .arguments_value);
+            capture_stmts[capture_count] = try es_helpers.makeArgumentsCaptureDeclaration(self, node.span);
             capture_count += 1;
         }
         if (needs_new_target_capture) {
@@ -367,6 +367,8 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         @backingInt(new_body), self.readU32(e, 3),
         none,
     });
+
+    try @import("../worklet_class_clone.zig").transferFactoryFunctionOwner(self, source_idx, result);
 
     // Plugin dispatch: onFunction (AST 훅)
     const is_auto_worklet = self.plugins.worklet.auto_next;
@@ -462,7 +464,13 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
             .span = name_node.span,
             .data = .{ .none = 0 },
         });
-        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(name_idx), 0 });
+        const key = try es_helpers.makePropertyName(self, self.ast.getText(name_node.data.string_ref));
+        const value = if (self.semantic_edit_enabled) blk: {
+            const id = self.getSymbolIdAt(name_idx) orelse @panic("parameter property lost its source binding SID");
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            break :blk try es_helpers.makeTempRefFromIdentity(self, .{ .span = name_node.data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = symbols[id].scope_id, .reference_scope = self.current_scope }, name_node.span, .{ .read = true });
+        } else try es_helpers.makeIdentifierRefFromSpan(self, name_node.data.string_ref);
+        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(key), 0 });
         const member = try self.ast.addNode(.{
             .tag = .static_member_expression,
             .span = name_node.span,
@@ -471,7 +479,7 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = name_node.span,
-            .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
+            .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
         });
         const stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
@@ -531,7 +539,392 @@ pub fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeInde
 /// block_statement / program / function_body 앞에 문들을 삽입한다.
 /// body의 첫 super() 호출 이후 위치에 stmts 삽입 — derived class constructor 전용 (#1495).
 /// super_call이 없으면 body 앞에 prepend (fallback). body가 block이 아니면 block으로 감싼 뒤 처리.
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+
+fn isNativeSuperCall(self: *const Transformer, index: NodeIndex) bool {
+    if (index.isNone()) return false;
+    const node = self.ast.getNode(index);
+    return node.tag == .call_expression and
+        self.ast.getNode(self.ast.readExtraNode(node.data.extra, 0)).tag == .super_expression;
+}
+
+fn hasDeferredNativeSuper(self: *Transformer, root: NodeIndex) Error!bool {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const node = self.ast.getNode(index);
+        if (node.tag == .class_declaration or node.tag == .class_expression or node.tag == .method_definition) continue;
+        if (isNativeSuperCall(self, index)) return true;
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    return false;
+}
+
+/// Move this already-created initializer fragment at its actual execution
+/// site. Existing IDs and flags remain authoritative across the handoff.
+fn placeNativeInitializer(self: *Transformer, statement: NodeIndex, from: ScopeId, to: ScopeId) Error!void {
+    if (!self.semantic_edit_enabled or from == to) return;
+    const editor = &self.semantic_editor.?;
+    const Saved = struct { node: NodeIndex, origin: @import("../native_constructor_guard.zig").ReferenceOrigin };
+    var origins: std.ArrayList(Saved) = .empty;
+    defer origins.deinit(self.allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, statement);
+    while (stack.pop()) |index| {
+        if (index.isNone()) continue;
+        const raw = @backingInt(index);
+        if (self.native_constructor_reference_origins.get(raw)) |origin| {
+            const row = (editor.referenceForNode(index) catch @panic("initializer reference index is invalid")) orelse @panic("initializer origin lost its reference");
+            if (row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or !std.meta.eql(row.flags, origin.flags))
+                @panic("initializer placement changed its creation identity");
+            try origins.append(self.allocator, .{ .node = index, .origin = origin });
+        }
+        if (self.exact_output_ref_scope_ids.getPtr(raw)) |scope| {
+            if (scope.* == @backingInt(from)) scope.* = @backingInt(to);
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(index));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    try @import("../class_strict_context.zig").moveSourceReferences(self, statement, from, from, to);
+    try self.reparentGeneratedBodyScopes(from, to, statement);
+    for (origins.items) |saved| {
+        const expected = if (saved.origin.scope == from) to else saved.origin.scope;
+        const row = (editor.referenceForNode(saved.node) catch @panic("initializer moved reference index is invalid")) orelse @panic("initializer placement dropped its reference");
+        if (row.symbol_id != saved.origin.symbol_id or row.scope_id != expected or !std.meta.eql(row.flags, saved.origin.flags))
+            @panic("initializer placement lost its exact identity");
+        try @import("../native_constructor_guard.zig").recordReference(self, saved.node, saved.origin.symbol_id, expected, saved.origin.flags);
+    }
+}
+
+/// Every physical super site owns its initializer AST and owned bindings.
+/// Additional sites are cloned before moving the original fragment.
+const SuperSite = struct { node: NodeIndex, scope: ScopeId, constructor_scope: ScopeId, alias: NodeIndex };
+
+pub const LoweredConstructorOwner = struct {
+    frame: u32,
+    scope: ScopeId,
+    target: ?SymbolId,
+};
+pub const LoweredSiteError = std.mem.Allocator.Error || error{ InvalidScope, InvalidSymbol, InvalidNode };
+
+/// Non-owning access to an actual graph. Finished certificates use its const
+/// slices; creators retain the editor's indexed uniqueness checks.
+pub const LoweredSiteGraph = struct {
+    symbols: []const @import("../../semantic/symbol.zig").Symbol,
+    scopes: []const @import("../../semantic/scope.zig").Scope,
+    symbol_ids: []const ?u32,
+    references: []const @import("../../semantic/symbol.zig").Reference,
+    editor: ?*@import("../../semantic/editor.zig").SemanticEditor = null,
+
+    fn getSymbolIdAt(self: *const @This(), node: NodeIndex) ?u32 {
+        if (node.isNone() or @backingInt(node) >= self.symbol_ids.len) return null;
+        return self.symbol_ids[@backingInt(node)];
+    }
+
+    fn referenceForNode(self: *const @This(), node: NodeIndex) LoweredSiteError!?@import("../../semantic/symbol.zig").Reference {
+        if (self.editor) |editor| return editor.referenceForNode(node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        };
+        if (node.isNone()) return error.InvalidNode;
+        var found: ?@import("../../semantic/symbol.zig").Reference = null;
+        for (self.references) |row| {
+            if (row.node_index != node) continue;
+            if (found != null) return error.InvalidNode;
+            found = row;
+        }
+        return found;
+    }
+};
+
+const LoweredSiteNodes = struct { node: Node, result_assignment: Node, call: Node, check: Node };
+
+fn validateLoweredSuperSyntax(ast: *const ast_mod.Ast, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!LoweredSiteNodes {
+    if (marker.native or index.isNone() or @backingInt(index) >= ast.nodes.items.len) return error.InvalidNode;
+    if (marker.constructor_frame != owner.frame or marker.constructor_scope != owner.scope or marker.use_scope != use_scope) return error.InvalidScope;
+    if (marker.target_symbol != owner.target or !std.meta.eql(marker.flags, ReferenceFlags{ .write = true })) return error.InvalidSymbol;
+    const node = ast.getNode(index);
+    if (node.tag != .assignment_expression or node.data.binary.right.isNone() or
+        marker.result_assignment.isNone() or @backingInt(marker.result_assignment) >= ast.nodes.items.len) return error.InvalidNode;
+    const result_assignment = ast.getNode(marker.result_assignment);
+    if (result_assignment.tag != .assignment_expression or result_assignment.data.binary.right.isNone()) return error.InvalidNode;
+    const call = ast.getNode(result_assignment.data.binary.right);
+    if (call.tag != .call_expression) return error.InvalidNode;
+    if (marker.evaluation_sequence.isNone() or @backingInt(marker.evaluation_sequence) >= ast.nodes.items.len) return error.InvalidNode;
+    const evaluation = ast.getNode(marker.evaluation_sequence);
+    if (evaluation.tag != .sequence_expression or evaluation.data.list.len != 3 or
+        ast.readExtraNode(evaluation.data.list.start, 0) != marker.result_assignment) return error.InvalidNode;
+    const binding_site = ast.readExtraNode(evaluation.data.list.start, 2);
+    if (binding_site != index) {
+        const placed = ast.getNode(binding_site);
+        if (placed.tag != .sequence_expression or placed.data.list.len < 3 or
+            ast.readExtraNode(placed.data.list.start, 0) != index) return error.InvalidNode;
+    }
+    const check = ast.getNode(ast.readExtraNode(evaluation.data.list.start, 1));
+    if (check.tag != .call_expression or ast.readExtra(check.data.extra, 2) != 1) return error.InvalidNode;
+    return .{ .node = node, .result_assignment = result_assignment, .call = call, .check = check };
+}
+
+fn validateLoweredSuperSemantics(ast: *const ast_mod.Ast, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId, nodes: LoweredSiteNodes, graph: LoweredSiteGraph) LoweredSiteError!void {
+    const node = nodes.node;
+    const result_assignment = nodes.result_assignment;
+    const call = nodes.call;
+    const check = nodes.check;
+    if (marker.pending_result_producer_id != 0) return error.InvalidSymbol;
+    if (owner.scope.isNone() or use_scope.isNone() or owner.scope.toIndex() >= graph.scopes.len or use_scope.toIndex() >= graph.scopes.len or graph.scopes[owner.scope.toIndex()].kind != .function) return error.InvalidScope;
+    const target = graph.getSymbolIdAt(node.data.binary.left) orelse return error.InvalidSymbol;
+    if (target >= graph.symbols.len or graph.symbols[target].scope_id != owner.scope or graph.symbols[target].kind != .variable_var) return error.InvalidSymbol;
+    const result_id = marker.result_symbol orelse return error.InvalidSymbol;
+    if (@backingInt(result_id) >= graph.symbols.len or marker.result_scope.isNone() or
+        marker.result_scope.toIndex() >= graph.scopes.len or
+        graph.scopes[marker.result_scope.toIndex()].kind != .function or
+        graph.symbols[@backingInt(result_id)].scope_id != marker.result_scope or
+        graph.symbols[@backingInt(result_id)].kind != .variable_var) return error.InvalidSymbol;
+    if (graph.getSymbolIdAt(result_assignment.data.binary.left) != @backingInt(result_id) or
+        graph.getSymbolIdAt(node.data.binary.right) != @backingInt(result_id)) return error.InvalidSymbol;
+    for ([_]struct { node: NodeIndex, flags: ReferenceFlags }{
+        .{ .node = result_assignment.data.binary.left, .flags = .{ .write = true } },
+        .{ .node = node.data.binary.right, .flags = .{ .read = true } },
+    }) |use| {
+        const result_row = (graph.referenceForNode(use.node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        }) orelse return error.InvalidNode;
+        if (result_row.scope_id != use_scope) return error.InvalidScope;
+        if (result_row.symbol_id != result_id or !std.meta.eql(result_row.flags, use.flags)) return error.InvalidSymbol;
+    }
+    const callee = ast.readExtraNode(call.data.extra, 0);
+    const callee_id = graph.getSymbolIdAt(callee) orelse return error.InvalidSymbol;
+    if (marker.target_symbol != @as(SymbolId, @fromBackingInt(target)) or marker.callee_symbol != @as(SymbolId, @fromBackingInt(callee_id))) return error.InvalidSymbol;
+    const row = (graph.referenceForNode(node.data.binary.left) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidNode,
+    }) orelse return error.InvalidNode;
+    if (row.scope_id != use_scope) return error.InvalidScope;
+    if (row.symbol_id != marker.target_symbol.? or !std.meta.eql(row.flags, marker.flags)) return error.InvalidSymbol;
+    const call_row = (graph.referenceForNode(callee) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidNode,
+    }) orelse return error.InvalidNode;
+    if (call_row.scope_id != use_scope) return error.InvalidScope;
+    if (call_row.symbol_id != marker.callee_symbol.? or !call_row.flags.read) return error.InvalidSymbol;
+    const check_callee = ast.readExtraNode(check.data.extra, 0);
+    const live_this = ast.readExtraNode(ast.readExtra(check.data.extra, 1), 0);
+    for ([_]struct { node: NodeIndex, id: ?SymbolId }{
+        .{ .node = check_callee, .id = marker.check_symbol },
+        .{ .node = live_this, .id = marker.target_symbol },
+    }) |use| {
+        const expected = use.id orelse return error.InvalidSymbol;
+        if (graph.getSymbolIdAt(use.node) != @backingInt(expected)) return error.InvalidSymbol;
+        const check_row = (graph.referenceForNode(use.node) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        }) orelse return error.InvalidNode;
+        if (check_row.scope_id != use_scope) return error.InvalidScope;
+        if (check_row.symbol_id != expected or !std.meta.eql(check_row.flags, ReferenceFlags{ .read = true })) return error.InvalidSymbol;
+    }
+}
+
+pub fn validateLoweredSuperSite(self: *Transformer, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId) LoweredSiteError!void {
+    const nodes = try validateLoweredSuperSyntax(self.ast, index, marker, owner, use_scope);
+    if (!self.semantic_edit_enabled) return;
+    const editor = if (self.semantic_editor) |*value| value else return error.InvalidNode;
+    return validateLoweredSuperSemantics(self.ast, marker, owner, use_scope, nodes, .{
+        .symbols = editor.symbols.items,
+        .scopes = editor.scopes.items,
+        .symbol_ids = self.symbol_ids.items,
+        .references = editor.references.items,
+        .editor = editor,
+    });
+}
+
+/// Validate a completed owner's exact arrays without reconstructing or
+/// temporarily reattaching a SemanticEditor after its finish boundary.
+pub fn validateLoweredSuperSiteInGraph(ast: *const ast_mod.Ast, index: NodeIndex, marker: Transformer.GeneratedSuperCall, owner: LoweredConstructorOwner, use_scope: ScopeId, graph: LoweredSiteGraph) LoweredSiteError!void {
+    const nodes = try validateLoweredSuperSyntax(ast, index, marker, owner, use_scope);
+    return validateLoweredSuperSemantics(ast, marker, owner, use_scope, nodes, graph);
+}
+
+/// Only creator-recorded lowered calls belonging to this constructor frame
+/// are candidates. Traversal supplies actual use scopes, never binding IDs.
+pub fn insertLoweredSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex) Error!NodeIndex {
+    if (statements.len == 0) return body;
+    const owner = self.active_derived_constructor_new_target orelse @panic("lowered initializer has no constructor handle");
+    if (owner.capture_frame != self.capture_frame or owner.owner_scope != self.current_scope)
+        @panic("lowered initializer lost its exact constructor frame");
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var sites: std.ArrayList(SuperSite) = .empty;
+    defer sites.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = body, .scope = owner.owner_scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const node = self.ast.getNode(work.node);
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (self.generated_super_call_assignments.get(@backingInt(work.node))) |source_marker| {
+            var marker = source_marker;
+            if (!marker.native and (marker.constructor_frame == owner.capture_frame or marker.constructor_scope == owner.owner_scope)) {
+                if (marker.result_symbol == null and self.semantic_edit_enabled) {
+                    // A parameter initializer may have deferred its temp owner.
+                    // This actual constructor assembly now owns its placement;
+                    // the allocator handle, never its spelling, selects storage.
+                    if (marker.constructor_frame != owner.capture_frame or marker.constructor_scope != owner.owner_scope or
+                        marker.use_scope != scope or marker.pending_result_producer_id == 0 or marker.result_assignment.isNone())
+                        @panic("lowered super result lost its deferred producer");
+                    const result_assignment = self.ast.getNode(marker.result_assignment);
+                    if (result_assignment.tag != .assignment_expression or node.tag != .assignment_expression)
+                        @panic("lowered super result lost its assignment anchors");
+                    const result_lhs = result_assignment.data.binary.left;
+                    const name_span = self.ast.getNode(result_lhs).data.string_ref;
+                    const id = try self.reserveSyntheticTempSymbolForProducerInScope(marker.pending_result_producer_id, name_span, node.span, scope) orelse
+                        @panic("lowered super result has no actual owner");
+                    for ([_]struct { node: NodeIndex, flags: ReferenceFlags }{
+                        .{ .node = result_lhs, .flags = .{ .write = true } },
+                        .{ .node = node.data.binary.right, .flags = .{ .read = true } },
+                    }) |use| {
+                        if (self.getSymbolIdAt(use.node)) |existing| {
+                            const row = (self.semantic_editor.?.referenceForNode(use.node) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => @panic("lowered super temp has an invalid existing reference"),
+                            }) orelse
+                                @panic("lowered super temp has no existing reference");
+                            if (existing != @backingInt(id) or row.symbol_id != id or row.scope_id != scope or !std.meta.eql(row.flags, use.flags))
+                                @panic("lowered super temp changed its producer reference");
+                        } else try self.addSyntheticRefInScope(use.node, id, scope, use.flags);
+                    }
+                    marker.result_symbol = id;
+                    marker.pending_result_producer_id = 0;
+                    marker.result_scope = self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id;
+                    try self.generated_super_call_assignments.put(self.allocator, @backingInt(work.node), marker);
+                }
+                validateLoweredSuperSite(self, work.node, marker, .{ .frame = owner.capture_frame, .scope = owner.owner_scope, .target = owner.this_symbol_id }, scope) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => std.debug.panic("lowered super changed its creator contract: {s}", .{@errorName(err)}),
+                };
+                try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = owner.owner_scope, .alias = node.data.binary.left });
+            }
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| {
+            const incoming = if (@import("semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(work.node), @backingInt(child))) work.scope else scope;
+            try stack.append(self.allocator, .{ .node = child, .scope = incoming });
+        }
+    }
+    return assembleSuperSites(self, body, statements, sites.items);
+}
+
+fn insertNativeSuperInitializers(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, derived: bool) Error!?NodeIndex {
+    if (!derived) return try self.prependStatementsToBody(body, statements);
+    if (statements.len == 0) return body;
+    for (statements) |statement| if (self.ast.getNode(statement).tag != .expression_statement) return null;
+    const constructor_scope = self.current_scope;
+    const Site = SuperSite;
+    const Work = struct { node: NodeIndex, scope: ScopeId };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    var suppressed: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer suppressed.deinit(self.allocator);
+    var sites: std.ArrayList(Site) = .empty;
+    defer sites.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .node = body, .scope = self.current_scope });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const node = self.ast.getNode(work.node);
+        switch (node.tag) {
+            .class_declaration, .class_expression, .method_definition, .static_block => continue,
+            .function, .function_expression, .function_declaration => {
+                if (try hasDeferredNativeSuper(self, work.node)) return null;
+                continue;
+            },
+            .arrow_function_expression => {
+                // A retained arrow keeps the source constructor's lexical
+                // super environment. Its own ScopeId is the actual use scope;
+                // ordinary functions and nested classes remain barriers.
+                if (self.options.unsupported.arrow) {
+                    if (try hasDeferredNativeSuper(self, work.node)) return null;
+                    continue;
+                }
+            },
+            else => {},
+        }
+        const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (self.generated_super_call_assignments.contains(@backingInt(work.node)) and
+            node.tag == .assignment_expression and isNativeSuperCall(self, node.data.binary.right))
+        {
+            try suppressed.put(self.allocator, @backingInt(node.data.binary.right), {});
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = constructor_scope, .alias = node.data.binary.left });
+        } else if (isNativeSuperCall(self, work.node) and !suppressed.contains(@backingInt(work.node))) {
+            try sites.append(self.allocator, .{ .node = work.node, .scope = scope, .constructor_scope = constructor_scope, .alias = .none });
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| {
+            const incoming = if (@import("semantic_edit.zig").childSkipsOutputScope(self.ast, @backingInt(work.node), @backingInt(child))) work.scope else scope;
+            try stack.append(self.allocator, .{ .node = child, .scope = incoming });
+        }
+    }
+    if (sites.items.len == 0) return body;
+    return try assembleSuperSites(self, body, statements, sites.items);
+}
+
+fn assembleSuperSites(self: *Transformer, body: NodeIndex, statements: []const NodeIndex, sites: []const SuperSite) Error!NodeIndex {
+    if (sites.len == 0) return body;
+    try @import("../initializer_clone.zig").bindPendingCaptures(self, statements);
+    var clones: std.ArrayList(@import("../../semantic/runtime_subtree_clone.zig").Result) = .empty;
+    defer {
+        for (clones.items) |*copy| copy.deinit(self.allocator);
+        clones.deinit(self.allocator);
+    }
+    // Snapshot all additional instances before the first placement reparents
+    // the source fragment's scopes or moves any original reference rows.
+    for (sites[1..]) |site| {
+        var copy = try @import("../initializer_clone.zig").clone(self, statements, self.current_scope, site.scope);
+        errdefer copy.deinit(self.allocator);
+        try clones.append(self.allocator, copy);
+    }
+    for (sites, 0..) |site, index| {
+        if (site.constructor_scope != self.current_scope) @panic("native super initializer lost its constructor owner");
+        const instance = if (index == 0) statements else clones.items[index - 1].roots;
+        const original = self.ast.getNode(site.node);
+        const operation = try self.ast.addNode(original);
+        if (!site.alias.isNone()) {
+            const owner = self.generated_super_call_assignments.get(@backingInt(site.node)).?;
+            _ = self.generated_super_call_assignments.remove(@backingInt(site.node));
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(operation), owner);
+        }
+        var expressions: std.ArrayList(NodeIndex) = .empty;
+        defer expressions.deinit(self.allocator);
+        try expressions.append(self.allocator, operation);
+        for (instance) |statement| {
+            try placeNativeInitializer(self, statement, self.current_scope, site.scope);
+            try expressions.append(self.allocator, self.ast.getNode(statement).data.unary.operand);
+        }
+        const result = if (site.alias.isNone()) try self.ast.addNode(.{ .tag = .this_expression, .span = original.span, .data = .{ .none = 0 } }) else blk: {
+            const id = self.getSymbolIdAt(site.alias) orelse @panic("native super producer alias lost its exact SID");
+            const editor = &self.semantic_editor.?;
+            const row = (editor.referenceForNode(site.alias) catch @panic("native super alias reference index is invalid")) orelse @panic("native super alias has no write reference");
+            if (@backingInt(row.symbol_id) != id or !row.flags.write or row.scope_id != site.scope or editor.symbols.items[id].scope_id != self.current_scope)
+                @panic("native super alias changed its actual constructor role");
+            const read = try es_helpers.makeTempRefFromIdentity(self, .{ .span = self.ast.getNode(site.alias).data.string_ref, .symbol_id = @fromBackingInt(id), .owner_scope = self.current_scope, .reference_scope = site.scope }, original.span, .{ .read = true });
+            try @import("../native_constructor_guard.zig").recordReference(self, read, @fromBackingInt(id), site.scope, .{ .read = true });
+            break :blk read;
+        };
+        try expressions.append(self.allocator, result);
+        self.ast.nodes.items[@backingInt(site.node)] = .{ .tag = .sequence_expression, .span = original.span, .data = .{ .list = try self.ast.addNodeList(expressions.items) } };
+    }
+    return body;
+}
+
 pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+    // This API is only used for derived constructors. Base constructors keep
+    // their explicit prepend path at the caller.
+    if (!self.options.unsupported.class) {
+        if (try insertNativeSuperInitializers(self, body_idx, stmts, true)) |output| return output;
+    }
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .function_body) {
         return self.prependStatementsToBody(body_idx, stmts);
@@ -548,7 +941,14 @@ pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts
         if (stmt.tag != .expression_statement) continue;
         const operand = stmt.data.unary.operand;
         if (operand.isNone()) continue;
-        const call = self.ast.getNode(operand);
+        // Native derived-this capture can already have wrapped this exact
+        // super call in an assignment. Its result still establishes the
+        // constructor receiver before instance initializers execute.
+        var call = self.ast.getNode(operand);
+        while (call.tag == .assignment_expression) {
+            if (call.data.binary.right.isNone()) break;
+            call = self.ast.getNode(call.data.binary.right);
+        }
         if (call.tag != .call_expression) continue;
         const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[call.data.extra]));
         const callee = self.ast.getNode(callee_idx);
@@ -722,6 +1122,9 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
             .class_decl,
             class_scope,
         )) orelse std.debug.panic("inferred class name did not receive a SymbolId", .{});
+        // This name is visible to static initializers before any post-class
+        // naming helper can run. Preserve it on the producer's exact SID.
+        self.semantic_editor.?.symbols.items[@backingInt(id)].decl_flags.preserve_class_name = true;
         try self.class_self_symbol_map.put(self.allocator, @backingInt(named), @backingInt(id));
     }
     return named;

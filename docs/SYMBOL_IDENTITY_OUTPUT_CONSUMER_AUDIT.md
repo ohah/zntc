@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | standalone | [`buildStandaloneLateOutputNameOverrides`](../src/transpile.zig#L1215)가 늦게 이름을 고를 synthetic symbol에 대해 exact `SymbolId`별 override를 만든다. [`Codegen.sourceSymbolId`](../src/codegen/codegen.zig#L429)와 [`finalSymbolName`](../src/codegen/codegen.zig#L441)이 그 ID와 override를 읽는다. | [`node_dispatch.emitNode`](../src/codegen/node_dispatch.zig#L195)가 선언·참조·assignment target·JSX identifier를 출력한다. 이름 변경이 없으면 source-backed 노드는 원문 span을 보존한다. |
 | bundler | [`resolvePostGraphOutputHintNames`](../src/bundler/linker.zig#L1046)가 semantic graph에서 허용된 generated output hint를 exact `(ModuleIndex, SymbolId)`로 등록한다. [`getCanonicalByRef`](../src/bundler/linker.zig#L4966)와 `rename_table`이 canonical spelling을 제공하고, metadata가 AST의 `symbol_ids`와 rename을 codegen에 전달한다. | codegen은 같은 `finalSymbolName` 소비자를 사용한다. semantic ownership을 요구하는 namespace/enum 경로는 identity가 없거나 모호하면 오류로 종료한다. |
-| ESM factory wrapper 및 출력 밖 AST 노드 | [`resolveNodeName`](../src/bundler/emitter.zig#L2903)는 NodeIndex의 `symbol_ids`에서 exact ID를 찾아 linker rename을 적용한다. 늦게 방출하는 TLA wait는 [`resolveTlaPromiseName`](../src/bundler/emitter.zig#L1725)에서 저장된 binding node, `SymbolId`, `ScopeId`를 검증한다. | wrapper hoisted `var`/함수/class/namespace/enum 이름과 TLA promise 이름을 writer에 전달한다. rename이 없는 경우에만 원문 이름을 쓴다. |
+| ESM factory wrapper 및 출력 밖 AST 노드 | [`resolveNodeName`](../src/bundler/emitter.zig#L2903)는 NodeIndex의 `symbol_ids`에서 exact ID를 찾아 linker rename을 적용한다. 늦게 방출하는 TLA wait는 [`resolveTlaPromiseName`](../src/bundler/emitter.zig#L1725)에서 저장된 binding node, `SymbolId`, `ScopeId`를 검증한다. | wrapper hoisted `var`/함수/class/namespace/enum 이름과 TLA promise 이름을 writer에 전달한다. rename이 없거나 기존 malformed-start guard가 거부하면 전달된 원문 이름을 쓴다. 정상 Unicode 시작 이름은 같은 SID의 최종 spelling을 쓴다. 아래 2026-10-27 보정을 참고한다. |
 
 ## 출력 소비자별 인벤토리
 
@@ -82,3 +82,17 @@ protocol label과 kind 비교는 이미 지정된 ID의 역할을 검증하는 �
 이 변경은 interop/HMR/require shim/wrapper 역할 전체의 마이그레이션이나 변환 후
 재분석 제거 완료를 뜻하지 않는다. 해당 producer와 rename 보존 bridge는 별도 잔여
 경계다. 전체 #4819/#6193 완료 여부는 그 경계를 제거한 뒤 판단한다.
+
+## 2026-10-27 Unicode 최종 이름과 후보 SID 중복 제거
+
+ESM factory wrapper의 hoisted class/let 선언은 같은 exact SID의 본문 read/write와 동일한 linker 최종 이름을 써야 한다. 기존 resolveNodeName은 첫 UTF-8 byte가 0x80 이상인 정상 이름까지 거부해, 선언 이름과 이름이 바뀐 본문 참조가 달라지는 ReferenceError를 만들었다. 이제 Unicode 첫 codepoint를 decode하고 IdentifierStart를 검사해 정상 이름을 소비한다.
+
+resolveNodeName 소유의 기존 malformed-start fallback은 남아 있다. 빈 이름, 공백/control 시작, 유효한 Unicode IdentifierStart가 아닌 비ASCII 시작이면 전달된 원문 이름을 반환한다. 이는 이름 복구나 lifetime 증명이 아니며, rename 저장소 소유권 감사와 잘못된 이름 생산 시 실패 종료 계약은 잔여다. 이 guard를 전체 identifier 검증으로 해석하지 않는다.
+
+collectUnifiedInput은 같은 module의 같은 SID가 scope-map의 raw escaped/decoded alias로 여러 번 등장해도 Phase A 후보를 한 번만 추가한다. 기존 eligibility/reserved-name 검사를 먼저 적용하며 synthetic 후보도 같은 SID 집합으로 제한한다. 다른 module의 같은 숫자 SID는 별개다. 중복 rename allocation을 덮어써 발생하던 allocator leak을 실제 testing allocator로 검출하고 수정했다.
+
+고정 CLI61133 및 실제 main60e CLI를 같은 9칸으로 비교한 재현에서 class/let/function × plain/identifier/full minify 9칸 중 plain class/let 2칸이 ReferenceError였다. 수정 focused35 tests와 Korean/Latin/Deseret/escaped spelling ×3 선언종류×5모드 60 native 실행을 통과했다. 전체8139+exe1 통과는 이후 d41 스냅샷 기준이며, 이후 main 병합012b 검증을 대신하지 않는다. 이 결과는 #5954 전체 종료나 native private identity 이전 완료를 뜻하지 않는다.
+
+문서 앞부분의 mismatch 0건은 명시된 과거 기준 main26e005cf1의 조사 범위다. 이번 실제 main60e 재현에서는 Unicode hoist mismatch 2칸을 확인했으므로 이를 현재 main의 0건 주장으로 재사용하지 않는다. 2026-10-27 확인 시 수정은 로컬 `a13fad4da` 및 composed `d41a3f402`에 있으며 PR #6393 공개 head `c75a8d71d`에는 아직 없다.
+
+전용 회귀는 `src/bundler/emitter_test.zig`의 `emitter: Unicode` 네 테스트에 있다. 최종 이름 선택, malformed-start guard 보존, 실제 lazy-module 충돌 실행, 같은 SID의 escaped alias 후보 중복을 각각 검사한다.

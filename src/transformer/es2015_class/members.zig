@@ -173,6 +173,11 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.static_elements.items) |elem| {
                 switch (elem) {
                     .raw_stmt => |raw| {
+                        if (self.ast.getNode(raw).tag == .static_block) {
+                            const lowered = try @import("../static_block_environment.zig").lower(self, raw, output_scope, class_name_span);
+                            try new_elements.append(self.allocator, .{ .stmt = lowered });
+                            continue;
+                        }
                         // Stage 3 creates this exact metadata binding in its
                         // static block. Flattening emits the declaration in
                         // the class IIFE, so transfer its SID before visiting
@@ -190,6 +195,12 @@ pub fn Members(comptime Transformer: type) type {
                                     std.debug.panic("flattened Stage 3 metadata lost its producer identity", .{});
                                 try self.relocateOutputSymbolAs(sid, output_scope, binding);
                             }
+                        }
+                        if (self.semantic_edit_enabled and self.ast.getNode(raw).tag == .block_statement) {
+                            const body_scope = self.outputOwnedScope(raw) orelse @panic("retained static body has no source owner");
+                            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                            const old_parent = scopes[body_scope.toIndex()].parent;
+                            try self.reparentGeneratedBodyScopes(old_parent, output_scope, raw);
                         }
                         const visited = blk: {
                             const saved_scope = self.current_scope;
@@ -506,6 +517,16 @@ pub fn Members(comptime Transformer: type) type {
                     }
                 } else if (member.tag == .static_block) {
                     const sb_body_idx = member.data.unary.operand;
+                    // Only an actual source static-block environment owns this
+                    // storage. Synthetic Stage3 metadata keeps its flattening
+                    // protocol and is not disguised as a source environment.
+                    const source_owner = self.outputOwnedScope(@fromBackingInt(raw_idx));
+                    const source_scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                    const owns_environment = if (source_owner) |owner| source_scopes[owner.toIndex()].kind == .class_static_block else !self.semantic_edit_enabled and raw_idx < self.parser_node_count;
+                    if (owns_environment) {
+                        try cm.static_elements.append(self.allocator, .{ .raw_stmt = @fromBackingInt(raw_idx) });
+                        continue;
+                    }
                     if (!sb_body_idx.isNone()) {
                         const sb_body = self.ast.getNode(sb_body_idx);
                         if (sb_body.tag == .block_statement) {
@@ -513,6 +534,31 @@ pub fn Members(comptime Transformer: type) type {
                             // private mapping 이 set 되어 있어야 하고, accessor backing 이 main loop 가
                             // 더 진행되며 cm.private_fields 에 추가된다. 둘이 끝난 뒤 visitDeferredStaticBlocks
                             // 가 .raw_stmt 를 visit 해 .stmt 로 대체.
+                            // Enum outer declarations have real lexical AST
+                            // storage. Keep their containing block as an actual
+                            // output owner instead of erasing its environment.
+                            var enum_stack: std.ArrayList(NodeIndex) = .empty;
+                            defer enum_stack.deinit(self.allocator);
+                            try enum_stack.append(self.allocator, sb_body_idx);
+                            var contains_enum = false;
+                            while (enum_stack.pop()) |candidate| {
+                                if (candidate.isNone()) continue;
+                                const child = self.ast.getNode(candidate);
+                                if (child.tag == .ts_enum_declaration) {
+                                    contains_enum = true;
+                                    break;
+                                }
+                                switch (child.tag) {
+                                    .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
+                                    else => {},
+                                }
+                                var children = @import("../../parser/ast_walk.zig").children(self.ast, child);
+                                while (children.next()) |descendant| try enum_stack.append(self.allocator, descendant);
+                            }
+                            if (contains_enum) {
+                                try cm.static_elements.append(self.allocator, .{ .raw_stmt = sb_body_idx });
+                                continue;
+                            }
                             const sb_stmts_start = sb_body.data.list.start;
                             const sb_stmts_len = sb_body.data.list.len;
                             var i_loop: u32 = 0;
@@ -536,6 +582,11 @@ pub fn Members(comptime Transformer: type) type {
         /// Static computed fields use an explicit `var` inside that IIFE, so
         /// their temp must be removed from the enclosing function's later
         /// temp sweep.
+        pub fn bindComputedKeyTempsForClass(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span, source_class: NodeIndex) Transformer.Error!void {
+            for (cm.accessor_key_memos.items) |fragment| try @import("../worklet_class_clone.zig").moveHoistedKeyReferences(self, source_class, fragment, scope);
+            return bindComputedKeyTemps(self, cm, scope, span);
+        }
+
         pub fn bindComputedKeyTemps(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!void {
             if (!self.semantic_edit_enabled) return;
             if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or

@@ -201,7 +201,7 @@ fn acceptChild(ast: *const Ast, parent: Node, slot: u32, child: NodeIndex) bool 
         .export_specifier => slot == 0 and (parent.data.binary.flags & 1) == 0,
         .export_named_declaration => slot == 0,
         .ts_enum_member, .flow_enum_member => slot != 0,
-        .ts_module_declaration => slot != 0,
+        .ts_module_declaration => slot != 0 or ast.getNode(child).tag == .assignment_target_identifier,
         .ts_import_equals_declaration => slot != 0,
         else => true,
     };

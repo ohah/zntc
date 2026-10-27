@@ -335,7 +335,7 @@ test "Codegen: enum IIFE" {
     var r = try e2e(std.testing.allocator, "enum Color { Red, Green, Blue }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Color = /* @__PURE__ */ ((Color) => {Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";return Color;})(Color || {});",
+        "var Color = /* @__PURE__ */ (function(Color) {\"use strict\";Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";return Color;})(Color || {});",
         r.output,
     );
 }
@@ -345,7 +345,7 @@ test "Codegen: namespace IIFE" {
     defer r.deinit();
     // 내부 const는 export 아니므로 Foo.x = x 없음
     try std.testing.expectEqualStrings(
-        "var Foo;((_Foo) => {const x=1;})(Foo || (Foo = {}));",
+        "var Foo;(function(_Foo) {\"use strict\";const x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -435,7 +435,7 @@ test "Codegen: enum with initializer" {
     var r = try e2e(std.testing.allocator, "enum Status { Active = 1, Inactive = 0 }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Status = /* @__PURE__ */ ((Status) => {Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";return Status;})(Status || {});",
+        "var Status = /* @__PURE__ */ (function(Status) {\"use strict\";Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";return Status;})(Status || {});",
         r.output,
     );
 }
@@ -1373,7 +1373,7 @@ test "#4819 Codegen keeps namespace text fallback when semantic owners are absen
     var cg = Codegen.init(allocator, transformer.ast);
     defer cg.deinit();
     const output = try cg.generate(root);
-    try std.testing.expectEqualStrings("var N;((N) => {N.value=1;})(N || (N = {}));\n", output);
+    try std.testing.expectEqualStrings("var N;(function(N) {N.value=1;})(N || (N = {}));\n", output);
 }
 
 test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" {
@@ -1426,7 +1426,7 @@ test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" 
     var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
     defer valid_cg.deinit();
     const output = try valid_cg.generate(root);
-    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(function(_Self)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
 
     var missing_enum_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -1460,7 +1460,7 @@ test "#4819 Codegen keeps collision-safe enum fallback without semantic owners" 
     var cg = Codegen.init(allocator, transformer.ast);
     defer cg.deinit();
     const output = try cg.generate(root);
-    try std.testing.expect(std.mem.indexOf(u8, output, "((_Self) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(function(_Self)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(Self || {});") != null);
 }
 
@@ -2380,4 +2380,38 @@ test "Codegen #3110: minify_syntax off → 변환 안 함 (anti-regression)" {
     var r = try e2eWithOptions(std.testing.allocator, "function h(){ if (c) return a; return b; }", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expectEqualStrings("function h(){if(c)return a;return b;}", r.output);
+}
+
+test "Codegen: enum runtime prelude keeps native local declarations in ESM factories" {
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "enum E{A=arguments.length}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=(()=>arguments.length)()}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number(arguments[0]===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>arguments[0])()===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=(arguments[0].marker=7)}", .expected = "7 7\n" },
+        .{ .source = "enum E{A=Number(this===undefined)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>this)()===undefined)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=arguments.length+arguments.length}", .expected = "2 7\n" },
+        .{ .source = "enum E{A=Number(arguments[0]===E),B=Number((()=>arguments[0])()===E)}", .expected = "1 7\n" },
+        .{ .source = "enum E{A=Number((()=>arguments)()[0]===E)}", .expected = "1 7\n" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        errdefer std.debug.print("enum ESM prelude source={s} minify={}\n", .{ case.source, minify });
+        const source = try std.fmt.allocPrint(std.testing.allocator, "{s}{s}", .{ case.source[0 .. case.source.len - 1], ",Z=(()=>arguments.length)()};let after=7;" });
+        defer std.testing.allocator.free(source);
+        var result = try e2eFull(std.testing.allocator, source, .{ .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5) }, .{ .esm_var_assign_only = true, .minify_whitespace = minify }, ".ts");
+        defer result.deinit();
+        // The outer factory's bindings are supplied by its hoist scan. The
+        // enum's actual ordinary IIFE must still declare its own locals.
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "var after") == null);
+        const script = try std.fmt.allocPrint(std.testing.allocator, "\"use strict\";var E,after;{s}console.log(E.A,after);", .{result.output});
+        defer std.testing.allocator.free(script);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const native = try std.process.run(arena.allocator(), std.testing.io, .{ .argv = &.{ "node", "-e", script } });
+        if (native.term != .exited or native.term.exited != 0 or !std.mem.eql(u8, case.expected, native.stdout))
+            std.debug.print("enum ESM output={s}\nstdout={s}stderr={s}\n", .{ result.output, native.stdout, native.stderr });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
+    };
 }

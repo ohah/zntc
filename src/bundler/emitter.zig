@@ -2436,12 +2436,12 @@ pub fn emitModule(
     // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
     // dev_mode 에선 skip — 병합은 출력 크기 최적화용이라 런타임 의미 불변. HMR 체감 우선.
     if (!options.dev_mode) {
-        @import("../transformer/minify.zig").mergeDecls(
-            transformer.ast,
-            root,
-            if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
-            arena_alloc,
-        );
+        const merge_skip = if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null;
+        if (module.semantic) |semantic| {
+            try @import("strict_function_context.zig").mergeOutputDeclarations(transformer.ast, semantic, root, merge_skip, arena_alloc);
+        } else {
+            @import("../transformer/minify.zig").mergeDecls(transformer.ast, root, merge_skip, arena_alloc);
+        }
     }
 
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
@@ -2968,10 +2968,16 @@ pub fn resolveNodeName(md: ?*const LinkingMetadata, node_idx: u32, fallback: []c
         if (node_idx < m.symbol_ids.len) {
             if (m.symbol_ids[node_idx]) |sid| {
                 if (m.renames.get(sid)) |renamed| {
-                    // 방어 — 알 수 없는 UAF 경로 (#2429) 로 rename slice 첫 byte 가
-                    // 0xAA / 0 등 invalid identifier byte 면 fallback. metadata.zig 의
-                    // `isValidIdentStartByte` 와 동일 정책.
-                    if (renamed.len == 0 or renamed[0] < 0x21 or renamed[0] >= 0x80) return fallback;
+                    // Keep the existing malformed-start guard, but a UTF-8
+                    // lead byte can be the linker's valid Unicode binding name.
+                    // Hoisted declarations must use the same selected SID name
+                    // as their assignments and references.
+                    if (renamed.len == 0 or renamed[0] < 0x21) return fallback;
+                    if (renamed[0] >= 0x80) {
+                        const unicode = @import("../lexer/unicode.zig");
+                        const decoded = unicode.decodeUtf8(renamed);
+                        if (decoded.len == 1 or !unicode.isIdentifierStart(decoded.codepoint)) return fallback;
+                    }
                     return renamed;
                 }
             }

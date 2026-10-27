@@ -205,7 +205,7 @@ test "ES2019: optional catch no transform on es2019" {
 test "ES2022: static block to IIFE" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { console.log(\"init\"); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}(()=>{\"use strict\";console.log(\"init\");})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(function(){\"use strict\";console.log(\"init\");}).call(_classThis0);", r.output);
 }
 
 // #4468: static block 은 이제 **AST 로** 출력된다 (예전엔 writeNodeSpan 으로 소스
@@ -226,13 +226,13 @@ test "ES2022: static block no transform on esnext" {
 test "ES2022: multiple static blocks" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { a(); } method() {} static { b(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){}}(()=>{\"use strict\";a();})();(()=>{\"use strict\";b();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){}}const _classThis0=Foo;(function(){\"use strict\";a();}).call(_classThis0);(function(){\"use strict\";b();}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block with methods preserved" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method() { return 1; } static { init(); } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{\"use strict\";init();})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}const _classThis0=Foo;(function(){\"use strict\";init();}).call(_classThis0);", r.output);
 }
 
 // --- ES2017: async/await → generator ---
@@ -1575,24 +1575,24 @@ test "ES2018: no spread - no transform" {
 
 test "ES2022: static block this → class name" {
     // class Foo { static { this.x = 1; } }
-    // → class Foo {} (() => { Foo.x = 1; })();
+    // → 실제 strict function Scope + 불변 class snapshot receiver의 .call.
     var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(()=>{\"use strict\";_classThis0.x=1;})();", r.output);
+    try std.testing.expectEqualStrings("class Foo{}const _classThis0=Foo;(function(){\"use strict\";_classThis0.x=1;}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block this in nested function not replaced" {
     // 일반 함수 안의 this는 치환하면 안 됨 (자체 this 바인딩)
     var r = try e2eTarget(std.testing.allocator, "class Bar { static { function f() { return this; } } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Bar{}(()=>{\"use strict\";function f(){return this;}})();", r.output);
+    try std.testing.expectEqualStrings("class Bar{}const _classThis0=Bar;(function(){\"use strict\";function f(){return this;}}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block this in arrow replaced" {
     // arrow function은 this 상속 → 치환 대상
     var r = try e2eTarget(std.testing.allocator, "class Baz { static { const f = () => this.x; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(()=>{\"use strict\";const f=()=>_classThis0.x;})();", r.output);
+    try std.testing.expectEqualStrings("class Baz{}const _classThis0=Baz;(function(){\"use strict\";const f=()=>_classThis0.x;}).call(_classThis0);", r.output);
 }
 
 test "ES2022: static block anonymous class - this uses generated class self" {
@@ -1616,7 +1616,7 @@ test "ES2022: static block this - no transform on esnext" {
 test "ES2022: multiple static blocks with this" {
     var r = try e2eTarget(std.testing.allocator, "class A { static { this.x = 1; } static { this.y = 2; } }", .es2021);
     defer r.deinit();
-    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(()=>{\"use strict\";_classThis0.x=1;})();(()=>{\"use strict\";_classThis0.y=2;})();", r.output);
+    try std.testing.expectEqualStrings("class A{}const _classThis0=A;(function(){\"use strict\";_classThis0.x=1;}).call(_classThis0);(function(){\"use strict\";_classThis0.y=2;}).call(_classThis0);", r.output);
 }
 
 // --- ES2015: template literal ---
@@ -1738,7 +1738,9 @@ test "ES2015: shorthand no transform on esnext" {
 test "ES2015: computed property lowering" {
     var r = try e2eTarget(std.testing.allocator, "var o={a:1,[k]:v,b:2};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var o=(_a={a:1},__publicField(_a,__toPropertyKey(k),v),_a.b=2,_a);", r.output);
+    // A literal property after a computed key still creates an own data
+    // property; assignment could invoke an inherited setter.
+    try std.testing.expectEqualStrings("var _a;var o=(_a={a:1},__publicField(_a,__toPropertyKey(k),v),__publicField(_a,\"b\",2),_a);", r.output);
 }
 
 test "ES2015: computed property only" {
@@ -2737,7 +2739,7 @@ test "ES2015: derived constructor return 값이 super를 먼저 평가" {
 test "ES2015: derived constructor return comma expression super 평가 순서" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){return (super(),undefined);}}", .es5);
     defer r.deinit();
-    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn((__assertThisUninitialized") orelse return error.TestExpectedEqual;
+    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn((") orelse return error.TestExpectedEqual;
     const this_pos = std.mem.indexOfPos(u8, r.output, helper_pos, "),_this)") orelse return error.TestExpectedEqual;
     try std.testing.expect(helper_pos < this_pos);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,((__assertThisUninitialized") == null);
@@ -2750,10 +2752,13 @@ test "ES2015: derived constructor return primitive도 super 후 검사" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,value(") == null);
 }
 
-test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
+test "ES2015: derived constructor super 중복 호출은 생성 후 할당 전 검사" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super();}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    const call_pos = std.mem.indexOf(u8, r.output, "=__callSuper(") orelse return error.TestExpectedEqual;
+    const check_pos = std.mem.indexOfPos(u8, r.output, call_pos, "__assertThisUninitialized(_this)") orelse return error.TestExpectedEqual;
+    const bind_pos = std.mem.indexOfPos(u8, r.output, check_pos, ",_this=") orelse return error.TestExpectedEqual;
+    try std.testing.expect(call_pos < check_pos and check_pos < bind_pos);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this,_this=") == null);
 }
 
@@ -2764,7 +2769,9 @@ test "ES2015: derived constructor arrow this capture waits for super" {
         .es5,
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    const call_pos = std.mem.indexOf(u8, r.output, "=__callSuper(") orelse return error.TestExpectedEqual;
+    const check_pos = std.mem.indexOfPos(u8, r.output, call_pos, "__assertThisUninitialized(_this)") orelse return error.TestExpectedEqual;
+    try std.testing.expect(std.mem.indexOfPos(u8, r.output, check_pos, ",_this=") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function(event){__assertThisInitialized(_this).seen=event.value;}") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") == null);
 }

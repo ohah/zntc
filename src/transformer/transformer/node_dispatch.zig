@@ -470,7 +470,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                     return result;
                 }
             }
-            return self.visitMemberExpression(node);
+            const result = try self.visitMemberExpression(node);
+            try @import("../native_private_field_certificate.zig").record(self, .use_copy, idx, result);
+            return result;
         },
         .computed_member_expression => {
             // ES 다운레벨링: ?. → ternary (target < es2020)
@@ -500,7 +502,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (node.tag == .for_in_statement and self.hasActivePrivateFieldLowering()) {
                 if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
             }
-            if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
+            if (try self.maybeLowerForInOfDestructuring(idx, node)) |result| return result;
             return self.visitForInOfTernary(node);
         },
         .try_statement,
@@ -530,7 +532,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // #4254: for_of 가 native(es2015~17)인데 LHS binding 이 object rest 면
             // LHS 슬롯에 destructuring expand 불가 → body-destructure 로.
             if (!self.options.unsupported.for_of) {
-                if (try self.maybeLowerForInOfDestructuring(node)) |result| return result;
+                if (try self.maybeLowerForInOfDestructuring(idx, node)) |result| return result;
             }
             return self.visitForInOfTernary(node);
         },
@@ -647,21 +649,30 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 try es2015_arrow.ES2015Arrow(Transformer).noteRetainedPrivateSyntax(self, idx);
                 return idx;
             }
-            if (self.options.unsupported.async_await) {
-                const extras = self.ast.extra_data.items;
-                const e = node.data.extra;
-                if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
-                    // async + generator 둘 다 unsupported → 직접 state machine 생성
-                    if (self.options.unsupported.generator) {
-                        return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
+            var field_plan = if (arrow_needs_downlevel) try @import("../retained_field_arrow.zig").prepare(self, idx, node.span) else null;
+            const saved_field_plan = self.retained_field_this_plan;
+            defer self.retained_field_this_plan = saved_field_plan;
+            defer if (field_plan) |*plan| plan.deinit(self.allocator);
+            if (field_plan) |*plan| self.retained_field_this_plan = plan;
+            const arrow_result = result: {
+                if (self.options.unsupported.async_await) {
+                    const extras = self.ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
+                        // async + generator 둘 다 unsupported → 직접 state machine 생성
+                        if (self.options.unsupported.generator) {
+                            break :result es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, idx, node);
+                        }
+                        break :result es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, idx, node);
                     }
-                    return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, idx, node);
                 }
-            }
-            if (self.options.unsupported.arrow) {
-                return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, idx, node);
-            }
-            return self.visitArrowFunction(idx, node);
+                if (self.options.unsupported.arrow) {
+                    break :result es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, idx, node);
+                }
+                break :result self.visitArrowFunction(idx, node);
+            };
+            const value = try arrow_result;
+            return if (field_plan) |*plan| @import("../retained_field_arrow.zig").finish(self, plan, value, node.span) else value;
         },
         .class_declaration => {
             if (self.with_statement_depth > 0 and self.options.unsupported.class and
@@ -706,7 +717,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const pre_legacy_hoist_idx = target_node_idx;
             target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
             target_node = self.ast.getNode(target_node_idx);
-            if (self.options.unsupported.class) {
+            const deferred_super = try @import("../deferred_super_class_lowering.zig").select(self, idx, target_node);
+            if (self.options.unsupported.class or deferred_super != null) {
+                const previous_plan = self.pending_deferred_super_class_plan;
+                self.pending_deferred_super_class_plan = deferred_super;
+                defer self.pending_deferred_super_class_plan = previous_plan;
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
             if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);
@@ -747,15 +762,19 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const pre_legacy_hoist_idx = target_node_idx;
             target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
             target_node = self.ast.getNode(target_node_idx);
-            if (self.options.unsupported.class) {
+            const deferred_super = try @import("../deferred_super_class_lowering.zig").select(self, idx, target_node);
+            if (self.options.unsupported.class or deferred_super != null) {
+                const previous_plan = self.pending_deferred_super_class_plan;
+                self.pending_deferred_super_class_plan = deferred_super;
+                defer self.pending_deferred_super_class_plan = previous_plan;
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
             if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },
-        .for_statement => self.visitForStatement(node),
-        .switch_statement => self.visitSwitchStatement(node),
+        .for_statement => self.visitForStatement(idx),
+        .switch_statement => self.visitSwitchStatement(idx, node),
         .switch_case => self.visitSwitchCase(node),
         .call_expression => {
             // ES2022: this.#method(args) → _method_fn.call(this, args)
@@ -774,7 +793,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // ES2015: super.method(args) → Parent.prototype.method.call(this, args)
             if (self.needsSuperLowering()) {
                 if (es2015_class.ES2015Class(Transformer).isSuperCall(self, node)) {
-                    return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, node);
+                    return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, idx, node);
                 }
                 if (es2015_class.ES2015Class(Transformer).isSuperMethodCall(self, node)) {
                     return es2015_class.ES2015Class(Transformer).lowerSuperMethodCall(self, node);
@@ -803,7 +822,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         },
         .tagged_template_expression => self.visitTaggedTemplate(node),
         .method_definition => self.visitMethodDefinition(idx, node),
-        .property_definition => self.visitPropertyDefinition(node),
+        .property_definition => self.visitPropertyDefinition(idx, node),
         .object_property => self.visitObjectProperty(node),
         .formal_parameter => self.visitFormalParameter(node),
         .import_declaration => self.visitImportDeclaration(node),
@@ -826,6 +845,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         // === 리프 노드: 그대로 복사 (자식 없음) ===
         // this_expression: static block 안에서 클래스 이름으로 치환 가능
         .this_expression => {
+            if (try @import("../retained_field_arrow.zig").reference(self, idx, node.span)) |ref| return ref;
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 if (self.native_parameter_arrow_this_capture) |capture| {
                     if (capture.frame == self.capture_frame) {
@@ -1126,6 +1146,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             break :blk new_regex;
         },
         .identifier_reference => {
+            @import("../live_arguments.zig").noteReference(self, idx);
             if (try @import("../static_class_capture.zig").makeClassSelfReference(self, idx)) |ref| return ref;
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
@@ -1165,6 +1186,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.copyNodeDirect(idx);
         },
         .assignment_target_identifier => {
+            @import("../live_arguments.zig").noteReference(self, idx);
             // Native static postludes must keep the inner class binding's
             // readonly semantics. ES5 already uses its exact setter target.
             if (!self.options.unsupported.class) {
@@ -1263,7 +1285,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         // init expression 만 visit 필요 (다른 변환 영향 없음).
         .flow_enum_declaration => self.visitFlowEnumDeclaration(node),
         .flow_enum_member => self.visitBinaryNode(idx),
-        .ts_module_declaration => self.visitNamespaceDeclaration(node),
+        .ts_module_declaration => self.visitNamespaceDeclaration(idx, node),
         .ts_module_block => self.visitListNode(idx),
 
         // import x = require('y') → const x = require('y')

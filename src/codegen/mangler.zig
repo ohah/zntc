@@ -534,6 +534,7 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 fn hasFixedOutputName(sym: Symbol) bool {
     const kind = sym.synthetic_kind orelse return false;
     return switch (kind) {
+        .implicit_arguments,
         .cjs_runtime_internal_local,
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,

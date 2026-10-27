@@ -3571,3 +3571,73 @@ test "default expression snapshots own distinct initial facade identities across
         try std.testing.expectEqual(@as(usize, 1), exports);
     }
 }
+
+test "namespace declaration coordinates preserve enclosing program and local list independently" {
+    const sources = [_][]const u8{
+        "0;namespace First{export const first=1;}namespace First{export const second=2;}",
+        "0;namespace First{;export const first=1;}namespace First{\"use strict\";export const second=2;}",
+        "const outside=0;namespace First{export const first=1;export let second=2;}namespace First{export const third=3;}",
+        "0;namespace Outer{export namespace Inner{export const first=1;}}namespace Outer{export const second=2;}",
+        "0;namespace First{{var first=1;}}namespace First{{var second=2;}}",
+        "0;namespace First{for(var first=0;first<1;first++){}}namespace First{for(var second=0;second<1;second++){}}",
+        "let outside=0;namespace First{var first=1;}namespace First{var second=2;}",
+        "0;namespace First{{var first=1;let local=2;}}namespace First{var second=2;}",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".ts");
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        // No Transformer, prepass or coordinate projector: this oracle checks
+        // the initial binder against the actual parsed leaf/list containment.
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        const contexts = try @import("statement_coordinates.zig").collect(a, &parser.ast, root);
+        var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            var children = @import("../parser/ast_walk.zig").children(&parser.ast, node);
+            while (children.next()) |child| {
+                if (!child.isNone()) try parents.put(a, @backingInt(child), @intCast(raw));
+            }
+        }
+        var source_declarations: usize = 0;
+        for (analyzer.references.items) |row| {
+            if (!row.flags.declare or row.declaration_node_index.isNone()) continue;
+            const leaf = row.declaration_node_index;
+            const symbol = analyzer.symbols.items[@backingInt(row.symbol_id)];
+            if (symbol.kind != .variable_const and symbol.kind != .variable_let and symbol.kind != .variable_var) continue;
+            try std.testing.expect(symbol.synthetic_kind == null);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.binding_identifier, parser.ast.getNode(leaf).tag);
+            try std.testing.expectEqual(@as(?u32, @backingInt(row.symbol_id)), analyzer.symbol_ids.items[@backingInt(leaf)]);
+            try std.testing.expectEqual(symbol.scope_id, row.scope_id);
+            var child = @backingInt(leaf);
+            var expected_scope: ?u32 = null;
+            while (parents.get(child)) |parent| {
+                const node = parser.ast.nodes.items[parent];
+                const lexical_block = symbol.kind != .variable_var and node.tag == .block_statement;
+                const namespace_body = node.tag == .ts_module_declaration and @backingInt(node.data.binary.left) != child;
+                if (lexical_block or namespace_body or node.tag == .program) {
+                    if (analyzer.scope_owner_map.get(parent)) |scope| {
+                        expected_scope = scope;
+                        break;
+                    }
+                }
+                child = parent;
+            }
+            try std.testing.expectEqual(expected_scope orelse return error.MissingSourceDeclarationOwner, @backingInt(symbol.scope_id));
+            const actual = contexts[@backingInt(leaf)] orelse return error.MissingNamespaceDeclarationContext;
+            try std.testing.expectEqual(actual.stmt_idx, row.stmt_idx);
+            try std.testing.expectEqual(actual.scope_stmt_idx, row.scope_stmt_idx);
+            source_declarations += 1;
+        }
+        try std.testing.expect(source_declarations >= 2);
+    }
+}

@@ -129,10 +129,29 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
     // esm_var_assign_only: var 선언은 이미 __esm 밖 top-level에 hoisted.
     // factory 안에서는 할당만 출력.
-    if (!self.options.esm_var_assign_only or self.namespace_body_depth > 0) try self.write("var ");
+    // A canonical assignment target is paired with an actual outer AST
+    // declaration emitted by the transformer; source/graphless bindings keep
+    // the legacy declaration form until that producer runs.
+    if (name_node.tag != .assignment_target_identifier and (!self.options.esm_var_assign_only or self.namespace_body_depth > 0)) try self.write("var ");
     try self.emitNode(name_idx);
     try self.write(" = /* @__PURE__ */ ");
     try writeIifeHead(self, param_name);
+
+    // The prelude is a canonical AST edge whose block aliases this actual
+    // ordinary IIFE body; emit its statements without adding a nested scope.
+    const prelude = self.ast.readExtraNode(e, ast_mod.EnumExtra.runtime_prelude);
+    if (!prelude.isNone()) {
+        // These statements execute inside the enum's ordinary function, not
+        // at the enclosing ESM factory's hoisted declaration boundary.
+        const saved_assign_only = self.options.esm_var_assign_only;
+        self.options.esm_var_assign_only = false;
+        defer self.options.esm_var_assign_only = saved_assign_only;
+        const body = self.ast.getNode(prelude);
+        std.debug.assert(body.tag == .block_statement);
+        for (0..body.data.list.len) |index| {
+            try self.emitNode(self.ast.readExtraNode(body.data.list.start, @intCast(index)));
+        }
+    }
 
     // 2차 패스: 각 멤버 출력
     var auto_value: i64 = 0;
@@ -482,11 +501,11 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         // A nested namespace is block-scoped whether it is private or exported.
         // In an `__esm` factory the emitter declares a top-level one outside
         // the factory (#5663): a `var` here would hide it from `__export`.
-        if (namespacePlacementIsNested(placement)) {
+        if (name_node.tag != .assignment_target_identifier and namespacePlacementIsNested(placement)) {
             try self.write("let ");
             try self.write(local_name);
             try self.writeByte(';');
-        } else if (!self.options.esm_var_assign_only or self.namespace_body_depth > 1) {
+        } else if (name_node.tag != .assignment_target_identifier and (!self.options.esm_var_assign_only or self.namespace_body_depth > 1)) {
             try self.write("var ");
             try self.write(local_name);
             try self.writeByte(';');
@@ -511,7 +530,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
 
     // Nested namespaces use lexical bindings; top-level namespaces use var.
     // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
-    if (!self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
+    if (name_node.tag != .assignment_target_identifier and !self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
         if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
             try self.write(local_name);
@@ -1075,19 +1094,12 @@ fn emitInt(self: anytype, value: i64) !void {
     try self.buf.appendSlice(self.allocator, result);
 }
 
-/// `((N) => {`, or `(function(N) {` when the target lacks arrow functions
-/// (#4797). Both close with `})(…)`. The IIFE body never reads `this` or
-/// `arguments`, so the two forms behave alike.
+/// TypeScript's enum/namespace IIFEs own native this and arguments even when
+/// arrows are supported. Keep that execution boundary on every target.
 fn writeIifeHead(self: anytype, param_name: []const u8) !void {
-    if (self.options.lower_arrow) {
-        try self.write("(function(");
-        try self.write(param_name);
-        try self.write(") {");
-    } else {
-        try self.write("((");
-        try self.write(param_name);
-        try self.write(") => {");
-    }
+    try self.write("(function(");
+    try self.write(param_name);
+    try self.write(") {");
 }
 
 test "#4819 generated IIFE parameter names require an exact final-name result" {

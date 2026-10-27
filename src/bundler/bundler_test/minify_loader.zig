@@ -5849,3 +5849,65 @@ test "#4485 CSS url(): scheme / data / root-absolute 는 건드리지 않는다"
     try std.testing.expect(std.mem.indexOf(u8, css, "data:image/png;base64,AA") != null);
     try std.testing.expect(std.mem.indexOf(u8, css, "url(/abs.png)") != null);
 }
+test "Bundler strict adjacent factories preserve exact declaration owners through actual emitter" {
+    const input_source =
+        \\function Foo(_newTarget=11,value=()=>()=>[new.target,eval("typeof _newTarget"+"2")]){const captured=value()();console.log(captured[0]===Foo,captured[1])}
+        \\function Escaped(_newTarget=12,value=()=>()=>{function read(){return ev\u0061l("typeof _newTarget"+"2");}return [new.target,read()];}){const captured=value()();console.log(captured[0]===Escaped,captured[1]);}
+        \\new Foo();
+        \\new Escaped();
+    ;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", input_source);
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    const native = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "--input-type=module", "-e", input_source },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    switch (native.term) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings("true undefined\ntrue undefined\n", native.stdout);
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+        .platform = .react_native,
+        .rn_version_matrix = @import("../../transformer/transformer.zig").TransformOptions.compat.fromReactNativeVersionSpec("0.80").?,
+        .flow = true,
+        .jsx_in_js = true,
+        .configurable_exports = true,
+        .strict_execution_order = true,
+        .worklet_transform = true,
+        .codegen_transform = true,
+        .entry_error_guard = true,
+        .minify_identifiers = true,
+    });
+    defer bundler.deinit();
+    // This is the real emitter, including the unconditional non-dev merge step.
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.output },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    });
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    switch (actual.term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("adjacent factory node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}

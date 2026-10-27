@@ -52,6 +52,12 @@ pub const Plugin = options_mod.Plugin;
 pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
+pub const StatementPublication = struct {
+    symbol_id: @import("../semantic/symbol.zig").SymbolId,
+    scope: ScopeId,
+    stmt: u32,
+    scope_stmt: u32,
+};
 /// Field visits and the source constructor share one actual storage identity
 /// even when traversal opens different capture frames for them.
 pub const NativeFieldCapturePlan = struct {
@@ -59,6 +65,13 @@ pub const NativeFieldCapturePlan = struct {
     initialize_on_super: bool = false,
     frame: u32 = 0,
     scope: ScopeId = .none,
+    this_declaration: NodeIndex = .none,
+    symbol_id: ?u32 = null,
+};
+/// Actual ordinary enum IIFE storage, allocated before its member expressions.
+pub const EnumCapturePlan = struct {
+    frame: u32,
+    scope: ScopeId,
     this_declaration: NodeIndex = .none,
     symbol_id: ?u32 = null,
 };
@@ -169,7 +182,28 @@ pub const ParameterBodyVarCopy = struct {
 };
 
 pub const Transformer = struct {
+    pub const LoweredClassOwner = struct { node: NodeIndex, source_scope: ScopeId };
+    pub const GeneratedSuperCall = struct {
+        /// External original input anchor; cloning output never remaps it.
+        source_call: NodeIndex = .none,
+        constructor_frame: u32,
+        constructor_scope: ScopeId,
+        use_scope: ScopeId,
+        target_symbol: ?SymbolId,
+        callee_symbol: ?SymbolId = null,
+        result_assignment: NodeIndex = .none,
+        result_symbol: ?SymbolId = null,
+        pending_result_producer_id: u64 = 0,
+        result_scope: ScopeId = .none,
+        evaluation_sequence: NodeIndex = .none,
+        check_symbol: ?SymbolId = null,
+        flags: ReferenceFlags = .{ .write = true },
+        native: bool,
+    };
     pub const DerivedConstructorNewTarget = struct {
+        owner_scope: ScopeId = .none,
+        this_declaration: NodeIndex = .none,
+        this_symbol_id: ?SymbolId = null,
         binding: NodeIndex,
         name_span: Span,
         symbol_id: ?SymbolId,
@@ -188,6 +222,20 @@ pub const Transformer = struct {
         target_id: ?@import("../semantic/symbol.zig").SymbolId,
         previous: ?*@This(),
     };
+    active_lowered_class: ?LoweredClassOwner = null,
+    class_factory_statement_lists_changed: bool = false,
+    pending_deferred_super_class_plan: ?@import("deferred_super_class_lowering.zig").Plan = null,
+    computed_object_helper_source: ?@import("computed_object_helper_authority.zig").Source = null,
+    computed_object_helper_applications: std.ArrayListUnmanaged(@import("computed_object_helper_authority.zig").Application) = .empty,
+    native_private_field_source: ?@import("native_private_field_certificate.zig").Source = null,
+    native_private_field_applications: std.ArrayListUnmanaged(@import("native_private_field_certificate.zig").Applied) = .empty,
+    legacy_assignment_field_source: ?@import("legacy_assignment_field_certificate.zig").Source = null,
+    class_initializer_source: ?@import("class_initializer_publication.zig").Source = null,
+    class_initializer_domain: ?*const Ast = null,
+    class_initializer_frames: std.ArrayListUnmanaged(@import("class_initializer_publication.zig").Frame) = .empty,
+    legacy_assignment_field_applications: std.ArrayListUnmanaged(@import("legacy_assignment_field_certificate.zig").Applied) = .empty,
+    selective_class_candidate: ?@import("selective_class_certificate.zig").Source = null,
+    selective_class_applications: std.ArrayListUnmanaged(@import("selective_class_certificate.zig").Applied) = .empty,
     active_class_self_write_target: ?*ClassSelfWriteTarget = null,
     class_self_written_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
     class_self_written_symbols_built: bool = false,
@@ -196,6 +244,8 @@ pub const Transformer = struct {
     /// `*Ast` — Transformer 가 소유권을 가진다 (clone 경로). D1b-2 의 `initInPlace` 는
     /// 외부 소유 AST 를 borrow 하는 variant 로 같은 필드를 공유.
     ast: *Ast,
+    /// Opaque identity of the live semantic input domain (clone preserves indices).
+    semantic_source_ast: ?*const Ast = null,
 
     /// 파서 노드 수. transform() 시작 시 루트 인덱스(parser_node_count - 1) 계산에 사용.
     parser_node_count: u32,
@@ -230,6 +280,14 @@ pub const Transformer = struct {
     /// 새 참조 노드 → 최초 출처 참조 노드. `SymbolId` 복사와 별개로
     /// read/write·문장 위치의 출처를 보존한다. 바인딩→참조 생성은 여기에 넣지 않는다.
     reference_origin_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Exact identity-changing class-self replacements, recorded by their creator.
+    static_class_reference_origins: std.AutoHashMapUnmanaged(u32, struct {
+        source: NodeIndex,
+        source_symbol_id: u32,
+        class_value_symbol_id: u32,
+        class_binding: NodeIndex,
+        reference: @import("../semantic/symbol.zig").Reference,
+    }) = .empty,
     /// Provenance for generated refs that intentionally remain external.
     /// Coverage audits and bundler semantic resync both consume this marker set.
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -355,6 +413,8 @@ pub const Transformer = struct {
     static_field_initializer_depth: u32 = 0,
     static_class_contexts: std.ArrayListUnmanaged(@import("static_class_capture.zig").Frame) = .empty,
     static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
+    /// Creator records consumed by takeDeclaration; active lifecycle stays empty.
+    completed_static_class_captures: std.AutoHashMapUnmanaged(u32, @import("static_class_capture.zig").Capture) = .empty,
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
@@ -400,11 +460,34 @@ pub const Transformer = struct {
         scope: ScopeId,
         frame: u32,
         kind: LexicalCaptureKind,
+        flags: ReferenceFlags = .{ .read = true },
     }) = .empty,
     capture_ref_by_origin: std.AutoHashMapUnmanaged(u32, usize) = .empty,
     capture_binding_ids: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    live_arguments_cells: std.AutoHashMapUnmanaged(u32, @import("live_arguments.zig").Cell) = .empty,
     capture_frame: u32 = 0,
     native_field_capture_plan: ?*NativeFieldCapturePlan = null,
+    native_constructor_timing_plans: std.AutoHashMapUnmanaged(u32, @import("native_constructor_timing.zig").Plan) = .empty,
+    native_constructor_timing_fields: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    native_constructor_placement_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    native_arguments_declaration_origins: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
+    native_arguments_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_arguments.zig").ReferenceOrigin) = .empty,
+    native_arguments_parameter_handoffs: std.AutoHashMapUnmanaged(u32, @import("native_arguments.zig").ParameterHandoff) = .empty,
+    /// The exact ordinary callback currently being built from a define value.
+    /// Nested define arrows inherit it; ordinary callbacks replace it.
+    define_native_arguments_owner: ?ScopeId = null,
+    native_constructor_reference_origins: std.AutoHashMapUnmanaged(u32, @import("native_constructor_guard.zig").ReferenceOrigin) = .empty,
+    /// Borrowed only during transform; restored on every success/error return.
+    native_arrow_statement_batch: ?*@import("native_arrow_statement_publication.zig").Batch = null,
+    native_constructor_statement_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
+    native_constructor_statement_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    enum_capture_plan: ?*EnumCapturePlan = null,
+    retained_loop_key_cells: std.AutoHashMapUnmanaged(u32, []@import("retained_class_keys.zig").Cell) = .empty,
+    retained_class_key_plan: ?*@import("retained_class_keys.zig").Plan = null,
+    retained_field_name_cell: ?@import("retained_class_keys.zig").Cell = null,
+    retained_field_initializer_frame: u32 = 0,
+    retained_field_initializer_static: bool = false,
+    retained_field_this_plan: ?*@import("retained_field_arrow.zig").Plan = null,
     next_capture_frame: u32 = 1,
     /// Formal-parameter initializers evaluate in a separate environment from
     /// the function body. Downleveled arrows there must capture lexical values
@@ -451,21 +534,13 @@ pub const Transformer = struct {
     generator_collected_function_roots: std.AutoHashMapUnmanaged(u32, ScopeId) = .empty,
     generator_collected_function_declarations: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     generator_annex_b_var_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
-    /// Ordinary extracted loops publish Annex B aliases through exact
-    /// function-scope setter declarations, outside the extracted `_loop`.
-    annex_b_loop_setters: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
-    annex_b_setter_counter: u32 = 0,
-    annex_b_setter_param_counter: u32 = 0,
+    /// Setter values are created at the known outer Annex B variable owner.
+    loop_annex_b_setters: std.AutoHashMapUnmanaged(u32, struct { binding: NodeIndex, value: NodeIndex, symbol: SymbolId, owner: ScopeId }) = .empty,
     generator_function_storage_changed: bool = false,
     generator_function_storage_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     generator_function_coordinate_program_changed: bool = false,
     generator_function_statement_value_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
-    generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, struct {
-        symbol_id: @import("../semantic/symbol.zig").SymbolId,
-        scope: ScopeId,
-        stmt: u32,
-        scope_stmt: u32,
-    }) = .empty,
+    generator_function_coordinate_handoffs: std.AutoHashMapUnmanaged(u32, StatementPublication) = .empty,
     /// Exact pending uses for generated callback temps; these do not use the
     /// temp-name reference chain.
     generator_state_temp_refs: std.ArrayListUnmanaged(GeneratedTempReference) = .empty,
@@ -756,10 +831,10 @@ pub const Transformer = struct {
     /// __callSuper가 Reflect.construct를 사용하면 새 객체를 반환하므로,
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
-    /// Exact assignment nodes emitted for source `super()` calls. Derived
-    /// constructor field insertion follows these NodeIndex handles instead of
-    /// rediscovering generated code from `_this` or helper spellings.
-    generated_super_call_assignments: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact assignment nodes and creator frame/scope/target roles emitted
+    /// for source `super()` calls. Initializer placement consumes these typed
+    /// handles instead of rediscovering `_this` or helper spellings.
+    generated_super_call_assignments: std.AutoHashMapUnmanaged(u32, GeneratedSuperCall) = .empty,
 
     /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
     /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.
@@ -837,6 +912,9 @@ pub const Transformer = struct {
     const_enums: std.ArrayList(ConstEnumDecl) = .empty,
     /// 런타임 enum 의 상수 멤버 값 — 병합된 뒤 선언·계산식 뒤 자동 증가 멤버용 (#5601).
     enum_values: std.ArrayList(ConstEnumDecl) = .empty,
+    enum_outer_storage_bindings: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    enum_outer_source_ids: std.AutoHashMapUnmanaged(u32, NodeIndex) = .empty,
+    enum_outer_exported_ids: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// namespace 안에서 수집한 const enum 의 경로(`N.E`, `O.I.E`) — namespace 밖에서
     /// `N.E.A` 로 읽는 멤버를 인라인한다. 선언은 지워지므로 인라인하지 않으면 정의가 없다 (#5600).
     namespaced_const_enums: std.ArrayList(NamespacedConstEnum) = .empty,
@@ -889,15 +967,24 @@ pub const Transformer = struct {
     /// 아닌데 위 3 flag 도 모두 false 면 (즉 평범한 native class method) 어차피 false 반환 ⇒
     /// 가드 제거가 일반 native class method 의 raw super 를 건드릴 위험 없음.
     pub inline fn needsSuperLowering(self: *const Transformer) bool {
-        return self.options.unsupported.class or self.current_super_is_static or self.current_super_in_extracted_fn or
+        return @import("retained_field_arrow.zig").activeSuper(self) or self.isClassLowered() or self.current_super_is_static or self.current_super_in_extracted_fn or
             self.current_super_home_object != null;
+    }
+
+    pub inline fn isClassLowered(self: *const Transformer) bool {
+        return self.options.unsupported.class or self.active_lowered_class != null;
+    }
+
+    pub inline fn effectivePrivateLoweringPlan(self: *const Transformer) @import("compat.zig").UnsupportedFeatures.PrivateLoweringPlan {
+        if (self.active_lowered_class != null) return .{ .methods = true, .fields = true };
+        return self.options.unsupported.privateLoweringPlan();
     }
 
     /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.
     /// 공통 private lowering 계획이 활성이고 현재 class 에 추출한
     /// private field/method mapping 이 있을 때 true.
     pub inline fn hasActivePrivateFieldLowering(self: *const Transformer) bool {
-        return self.options.unsupported.privateLoweringPlan().fields and
+        return self.effectivePrivateLoweringPlan().fields and
             (self.current_private_fields.len > 0 or self.current_private_methods.len > 0);
     }
 
@@ -909,6 +996,7 @@ pub const Transformer = struct {
     pub const deinit = lifecycle_mod.deinit;
     pub const deinitExceptAst = lifecycle_mod.deinitExceptAst;
     pub const initSymbolIds = lifecycle_mod.initSymbolIds;
+    pub const initSymbolIdsOwned = lifecycle_mod.initSymbolIdsOwned;
     pub const markRuntimeHelperRef = lifecycle_mod.markRuntimeHelperRef;
     pub const ownedHelperRefNodes = lifecycle_mod.ownedHelperRefNodes;
     pub const ownedExplicitGlobalRefNodes = lifecycle_mod.ownedExplicitGlobalRefNodes;
@@ -957,6 +1045,7 @@ pub const Transformer = struct {
         class_name_node: NodeIndex,
         class_self_symbol_id: ?u32,
         this_depth: u32,
+        lowered_class: ?LoweredClassOwner = null,
 
         /// 아무 super 문맥도 없는 상태(최상위). 이 안의 클래스 키에는 `super` 가 올 수 없다.
         pub fn isEmpty(ctx: SuperContext) bool {
@@ -983,6 +1072,7 @@ pub const Transformer = struct {
             .class_name_node = self.current_class_name_node,
             .class_self_symbol_id = self.current_class_self_symbol_id,
             .this_depth = self.this_depth,
+            .lowered_class = self.active_lowered_class,
         };
     }
 
@@ -1001,6 +1091,7 @@ pub const Transformer = struct {
         self.current_class_name_node = ctx.class_name_node;
         self.current_class_self_symbol_id = ctx.class_self_symbol_id;
         self.this_depth = ctx.this_depth;
+        self.active_lowered_class = ctx.lowered_class;
     }
 
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
@@ -1050,7 +1141,14 @@ pub const Transformer = struct {
         if (owner_scope) |scope_id| self.current_scope = @fromBackingInt(@intCast(scope_id));
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
+        if (self.ast.getNode(idx).tag == .program) {
+            try @import("class_initializer_publication.zig").publish(self, new_idx);
+            try @import("native_constructor_timing.zig").projectCoordinates(self, new_idx);
+            try @import("native_arguments.zig").publish(self, new_idx);
+        }
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
+        if (self.ast.getNode(idx).tag == .program)
+            try @import("worklet_class_clone.zig").publish(self, new_idx);
         // A later visit may copy a generated capture declaration while
         // building an outer async/generator state machine. Pass 2 must see
         // the same parameter-capture role on the final statement identity.
@@ -1161,12 +1259,14 @@ pub const Transformer = struct {
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
+    pub const trackLexicalCaptureRefWithFlags = @import("transformer/semantic_edit.zig").trackLexicalCaptureRefWithFlags;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
     pub const bindLexicalCaptureWithSyntheticKind = @import("transformer/semantic_edit.zig").bindLexicalCaptureWithSyntheticKind;
     pub const bindLexicalCaptureToExistingSymbol = @import("transformer/semantic_edit.zig").bindLexicalCaptureToExistingSymbol;
     pub const hasLexicalCapture = @import("transformer/semantic_edit.zig").hasLexicalCapture;
     pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;
     pub const shouldCaptureArguments = @import("transformer/semantic_edit.zig").shouldCaptureArguments;
+    pub const makeNativeArgumentsRef = @import("transformer/semantic_edit.zig").makeNativeArgumentsRef;
     pub const makeCapturedArgumentsInit = @import("transformer/semantic_edit.zig").makeCapturedArgumentsInit;
     pub const makeSyntheticRefForSymbol = @import("transformer/semantic_edit.zig").makeSyntheticRefForSymbol;
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
@@ -1338,6 +1438,7 @@ pub const Transformer = struct {
     pub const insertParameterPropertyAssignmentsAfterSuper = declarations_mod.insertParameterPropertyAssignmentsAfterSuper;
     pub const insertParameterPropertyAssignments = declarations_mod.insertParameterPropertyAssignments;
     pub const insertStatementsAfterSuper = declarations_mod.insertStatementsAfterSuper;
+    pub const insertLoweredSuperInitializers = @import("transformer/declarations.zig").insertLoweredSuperInitializers;
     pub const prependStatementsToBody = declarations_mod.prependStatementsToBody;
     pub const appendStatementsToBody = declarations_mod.appendStatementsToBody;
 

@@ -1037,6 +1037,16 @@ fn generatorStatementScopeParticipates(self: *Transformer, scope: ScopeId) Edito
 }
 
 pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex, root_scope: ScopeId) EditorError!void {
+    if (self.native_arrow_statement_batch) |batch| {
+        @import("../native_arrow_statement_publication.zig").validateCommitted(self, batch, root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidNode,
+        };
+    }
+    @import("../class_initializer_publication.zig").validateCommitted(self, root) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidNode,
+    };
     const editor = try editorFor(self);
     if (self.outputOwnedScope(root) == null) {
         try editor.scope_owner_map.put(self.allocator, @backingInt(root), @backingInt(root_scope));
@@ -1193,6 +1203,7 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
             }
         }
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier) {
+            if (self.native_constructor_statement_nodes.contains(raw) and !self.native_constructor_statement_handoffs.contains(raw)) return error.InvalidNode;
             if (self.deferred_generator_for_in_body_ref_scopes.contains(raw))
                 std.debug.panic("live generator for-in body reference reached output binding without a reserved ScopeId", .{});
             if (self.tracked_runtime_helper_ref_index.get(raw)) |tracked_index| {
@@ -1201,7 +1212,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 // reference scope from this final AST walk.
                 if (scope.isNone() or tracked_index >= self.tracked_runtime_helper_refs.items.len)
                     std.debug.panic("runtime helper reference has no exact output scope", .{});
-                const publication = self.generator_function_coordinate_handoffs.get(raw);
+                const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
+                const publication = try @import("../native_arrow_statement_publication.zig").agree(self, raw, try @import("../class_initializer_publication.zig").agree(self, raw, try @import("../worklet_class_clone.zig").agreePublication(self, raw, @import("../native_constructor_timing.zig").publication(self, raw), flags), flags), flags);
                 if (publication == null and self.generator_function_statement_value_nodes.contains(raw) and try generatorStatementScopeParticipates(self, scope)) return error.InvalidNode;
                 const produced = editor.referenceForNode(work.node) catch |err| return editError(err);
                 if (publication) |known| {
@@ -1254,7 +1266,8 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 }
                 if (raw_id) |id| {
                     if (id < editor.symbols.items.len) {
-                        try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id });
+                        const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
+                        try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = id, .flags = flags });
                     }
                 }
             }
@@ -1360,7 +1373,15 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
                 std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
             const symbol: SymbolId = @fromBackingInt(@intCast(reference.raw_id));
             const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
-            const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+            const constructor_publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
+            const arguments_publication = try @import("../native_arguments.zig").publication(self, @backingInt(reference.node));
+            if (constructor_publication != null and arguments_publication != null) {
+                if (constructor_publication.?.symbol_id != arguments_publication.?.symbol_id) return error.InvalidSymbol;
+                if (constructor_publication.?.scope != arguments_publication.?.scope) return error.InvalidScope;
+                if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
+                    return error.InvalidNode;
+            }
+            const publication = try @import("../native_arrow_statement_publication.zig").agree(self, @backingInt(reference.node), try @import("../class_initializer_publication.zig").agree(self, @backingInt(reference.node), try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags), reference.flags), reference.flags);
             if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
                 std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
                 return error.InvalidNode;
@@ -1437,7 +1458,15 @@ pub fn bindOutputScopesAndReferencesChecked(self: *Transformer, root: NodeIndex,
         // explicit producer split. Placement never creates or adopts an ID.
         const resolved_id = reference.raw_id;
         const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
-        const publication = self.generator_function_coordinate_handoffs.get(@backingInt(reference.node));
+        const constructor_publication = @import("../native_constructor_timing.zig").publication(self, @backingInt(reference.node));
+        const arguments_publication = try @import("../native_arguments.zig").publication(self, @backingInt(reference.node));
+        if (constructor_publication != null and arguments_publication != null) {
+            if (constructor_publication.?.symbol_id != arguments_publication.?.symbol_id) return error.InvalidSymbol;
+            if (constructor_publication.?.scope != arguments_publication.?.scope) return error.InvalidScope;
+            if (constructor_publication.?.stmt != arguments_publication.?.stmt or constructor_publication.?.scope_stmt != arguments_publication.?.scope_stmt)
+                return error.InvalidNode;
+        }
+        const publication = try @import("../native_arrow_statement_publication.zig").agree(self, @backingInt(reference.node), try @import("../class_initializer_publication.zig").agree(self, @backingInt(reference.node), try @import("../worklet_class_clone.zig").agreePublication(self, @backingInt(reference.node), constructor_publication orelse arguments_publication, reference.flags), reference.flags), reference.flags);
         if (publication == null and self.generator_function_statement_value_nodes.contains(@backingInt(reference.node)) and try generatorStatementScopeParticipates(self, reference.scope)) {
             std.debug.print("missing generator statement publication node={d} name={s} sid={d} scope={d} hasrow={any} rowscope={d}\n", .{ @backingInt(reference.node), outputReferenceName(self.ast, reference.node) orelse "", reference.raw_id, @backingInt(reference.scope), maybe_reference != null, if (maybe_reference) |row| @backingInt(row.scope_id) else std.math.maxInt(u32) });
             return error.InvalidNode;
@@ -2298,6 +2327,9 @@ fn reparentLiveSourceScopes(self: *Transformer, source_scope: ScopeId, target_sc
 pub fn relocateNodeScopeProvenance(self: *Transformer, node: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
+    if (self.generated_super_call_assignments.getPtr(@backingInt(node))) |call| {
+        if (call.use_scope == source) call.use_scope = target;
+    }
     const previous = editor.node_scope_provenance.get(node) orelse {
         if (self.ast.getNode(node).tag == .import_expression)
             std.debug.panic("moved import expression lost its creation scope provenance", .{});
@@ -2491,6 +2523,95 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);
 }
 
+pub fn bindEnumOuterStorage(self: *Transformer, source: NodeIndex, binding: NodeIndex, id: SymbolId, scope: ScopeId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var source_rows: usize = 0;
+    var output_rows: usize = 0;
+    var other_rows: usize = 0;
+    for (editor.references.items) |reference| {
+        if (!reference.flags.declare or reference.symbol_id != id) continue;
+        if (reference.declaration_node_index == source) source_rows += 1 else if (reference.declaration_node_index == binding) output_rows += 1 else other_rows += 1;
+    }
+    if (source_rows != 0) {
+        _ = editor.reanchorDeclarationFromNode(self.ast, source, binding, id) catch |err| return editError(err);
+    } else if (output_rows == 0 and other_rows != 0) @panic("enum storage lost its exact first declaration anchor");
+    editor.relocateSymbolAsPreservingAnchors(id, scope, binding) catch |err| return editError(err);
+    editor.ensureDeclarationAtNode(id, scope, binding) catch |err| return editError(err);
+}
+
+/// The explicit outer declaration owns its existing source binding. A merged
+/// declaration instead discards only its own now-unreachable declaration row.
+pub fn discardMergedEnumDeclaration(self: *Transformer, source: NodeIndex, id: SymbolId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var anchored = false;
+    for (editor.references.items) |reference| if (reference.flags.declare and reference.declaration_node_index == source) {
+        if (reference.symbol_id != id) @panic("merged enum declaration changed source identity");
+        anchored = true;
+    };
+    if (anchored) _ = editor.removeDeclarationAtNode(source, id) catch |err| return editError(err);
+    // Keep the parser-node identity available to enum constant/member
+    // evaluation; this unreachable binding has no live declaration row.
+
+}
+
+pub fn makeEnumOuterWrite(self: *Transformer, binding: NodeIndex, id: SymbolId, scope: ScopeId, source_span: Span) Transformer.Error!NodeIndex {
+    const editor = try editorFor(self);
+    if (@backingInt(id) >= editor.symbols.items.len or !scopeWithin(editor.scopes.items, scope, editor.symbols.items[@backingInt(id)].scope_id))
+        @panic("enum write cannot see its exact storage owner");
+    if (self.ast.getNode(binding).tag != .binding_identifier or self.getSymbolIdAt(binding) != @backingInt(id))
+        @panic("enum outer write has no exact storage binding");
+    const target = try es_helpers.makeExactSyntheticRefFromSpan(self, self.ast.getNode(binding).data.string_ref);
+    self.ast.nodes.items[@backingInt(target)].tag = .assignment_target_identifier;
+    self.ast.nodes.items[@backingInt(target)].span = source_span;
+    try addSyntheticRefInScope(self, target, id, scope, .{ .read = true, .write = true });
+    return target;
+}
+
+/// Reserve only the source primary's actual namespace IIFE body. Source
+/// lexical child blocks keep their separate scopes; body copies carry this
+/// explicit alias through the existing creation-origin remap protocol.
+pub fn bindNamespaceBodyOwner(self: *Transformer, primary: NodeIndex, body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (primary.isNone() or body.isNone() or scope.isNone() or
+        @backingInt(primary) >= self.ast.nodes.items.len or @backingInt(body) >= self.ast.nodes.items.len or
+        scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("namespace body has no exact ordinary IIFE owner");
+    const owner = self.ast.getNode(primary);
+    const body_tag = self.ast.getNode(body).tag;
+    if (owner.tag != .ts_module_declaration or owner.data.binary.flags != 0 or
+        owner.data.binary.right != body or self.outputOwnedScope(primary) != scope or
+        (body_tag != .block_statement and body_tag != .ts_module_block))
+        @panic("namespace body is not the exact primary body edge");
+    if (self.outputOwnedScope(body)) |existing| {
+        if (existing != scope) @panic("namespace body already has a foreign owner");
+    }
+    var parameters: usize = 0;
+    for (editor.symbols.items) |symbol| {
+        if (symbol.scope_id != scope or symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        if (symbol.kind != .parameter) @panic("namespace IIFE parameter has an invalid typed role");
+        parameters += 1;
+    }
+    if (parameters != 1) @panic("namespace body has no unique typed IIFE parameter");
+    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    const origin = try self.scope_owner_origins.getOrPut(self.allocator, @backingInt(body));
+    if (!origin.found_existing) origin.value_ptr.* = @backingInt(body);
+}
+
+/// A TS enum's canonical prelude is its existing ordinary IIFE body, not a
+/// new block environment. Publish that known alias even before any identifier
+/// edit has caused lazy editor creation.
+pub fn bindEnumPreludeOwner(self: *Transformer, body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (body.isNone() or self.ast.getNode(body).tag != .block_statement or scope.isNone() or
+        scope.toIndex() >= editor.scopes.items.len or editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("enum prelude has no actual ordinary IIFE owner");
+    try editor.scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, @backingInt(body), @backingInt(scope));
+}
+
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
 pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: NodeIndex) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
@@ -2529,8 +2650,9 @@ pub fn reserveGeneratedFunctionScope(self: *Transformer, parent: ScopeId) Transf
 }
 
 /// A named function expression's immutable name environment has no AST
-/// owner of its own. Its strictness follows the enclosing scope; the function
-/// body carries any function-local strict directive separately.
+/// owner of its own. Reserve it before constructor/helper references exist.
+/// Like the analyzer's name block, it inherits enclosing strictness. The
+/// function's own strict body is a separate function scope and directive.
 pub fn reserveGeneratedNameScope(self: *Transformer, parent: ScopeId) Transformer.Error!ScopeId {
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);
@@ -3055,6 +3177,16 @@ pub fn hasLexicalCaptureSince(self: *const Transformer, start: usize, frame: u32
 /// An `arguments` binding declared inside the lowered arrow already resolves
 /// inside its emitted function, without an outer capture alias.
 pub fn shouldCaptureArguments(self: *Transformer, source: NodeIndex) bool {
+    // TypeScript member proxies are property reads, not special arguments
+    // bindings. Let their exact namespace/enum owner emit the property access.
+    if (self.getSymbolIdAt(source)) |id| {
+        const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+        if (id < symbols.len and symbols[id].synthetic_kind == .enum_iife_member) return false;
+        if (self.namespace_member_owners) |members| if (members.contains(id)) return false;
+    }
+    // A selected exact binding alias remains visible through generated
+    // functions; copying its current value would disconnect later writes.
+    if (self.tableRenameOf(source) != null) return false;
     if (!self.semantic_edit_enabled or self.outermost_lowered_arrow_scope.isNone()) return true;
     const raw_id = self.getSymbolIdAt(source) orelse return true;
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -3068,8 +3200,54 @@ pub fn shouldCaptureArguments(self: *Transformer, source: NodeIndex) bool {
     return true;
 }
 
-/// The capture initializer reads the source `arguments` binding when it is an
-/// explicit user symbol. Implicit function arguments remain a host reference.
+/// A producer with a reserved ordinary function scope creates its native
+/// arguments slot before emitting the first use. This is not a global name
+/// and cannot replace an explicit source formal or lexical binding.
+pub fn makeNativeArgumentsRef(self: *Transformer, owner_scope: ScopeId, use_scope: ScopeId, span: Span) Transformer.Error!NodeIndex {
+    if (!self.semantic_edit_enabled) {
+        const name = try self.ast.addString("arguments");
+        return self.ast.addNode(.{ .tag = .identifier_reference, .span = span, .data = .{ .string_ref = name } });
+    }
+    const editor = try editorFor(self);
+    if (owner_scope.isNone() or owner_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[owner_scope.toIndex()].kind != .function)
+        @panic("native arguments producer has no actual function scope");
+    var selected: ?SymbolId = null;
+    for (editor.symbols.items, 0..) |symbol, raw| {
+        if (symbol.scope_id != owner_scope or symbol.synthetic_kind != .implicit_arguments) continue;
+        if (selected != null or symbol.kind != .parameter)
+            @panic("native arguments producer has ambiguous engine storage");
+        selected = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    if (selected == null) {
+        if (editor.scope_maps.items[owner_scope.toIndex()].contains("arguments"))
+            @panic("native arguments producer would replace a source binding");
+        const name = try self.ast.addString("arguments");
+        selected = @fromBackingInt(@as(u32, @intCast(editor.symbols.items.len)));
+        try editor.symbols.append(self.allocator, .{
+            .name = name,
+            .scope_id = owner_scope,
+            .origin_scope = owner_scope,
+            .kind = .parameter,
+            .decl_flags = SymbolKind.parameter.declFlags(),
+            .declaration_span = span,
+            .synthetic_kind = .implicit_arguments,
+            .synthetic_name = "arguments",
+        });
+        editor.scopes.items[owner_scope.toIndex()].symbol_count += 1;
+        try editor.scope_maps.items[owner_scope.toIndex()].put(self.allocator, "arguments", @backingInt(selected.?));
+    } else if (editor.scope_maps.items[owner_scope.toIndex()].get("arguments") != @as(?usize, @backingInt(selected.?))) {
+        @panic("native arguments engine lost its exact scope entry");
+    }
+    editor.ensureDeclarationAtNode(selected.?, owner_scope, .none) catch |err| return editError(err);
+    try @import("../native_arguments.zig").record(self, selected.?, owner_scope);
+    const reference = try self.makeSyntheticRefForSymbol(selected.?, use_scope, .{ .read = true });
+    try @import("../native_arguments.zig").recordReference(self, reference, selected.?, owner_scope, use_scope);
+    return reference;
+}
+
+/// Capture initializers consume the exact source edge carried by their frame.
+/// A frame without such an edge retains its explicit host-reference path.
 pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex {
     const helpers = @import("../es_helpers.zig");
     if (!self.semantic_edit_enabled or self.capture_frame == 0)
@@ -3125,6 +3303,10 @@ pub fn ensureNativeConstructorCaptureBinding(self: *Transformer, plan: *@import(
 /// A generated lexical alias keeps its exact frame and source role. Moved
 /// fields with a known constructor owner create their Reference immediately.
 pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
+    return trackLexicalCaptureRefWithFlags(self, node, source, kind, .{ .read = true });
+}
+
+pub fn trackLexicalCaptureRefWithFlags(self: *Transformer, node: NodeIndex, source: NodeIndex, kind: LexicalCaptureKind, flags: ReferenceFlags) Transformer.Error!void {
     const source_span = if (!source.isNone()) self.ast.getNode(source).span else self.ast.getNode(node).span;
     if (kind == .this_value) {
         if (self.native_parameter_arrow_this_capture) |capture| {
@@ -3133,10 +3315,28 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
                 self.needs_this_var = capture.needs_this_before;
                 if (self.semantic_edit_enabled) {
                     const id = capture.identity.symbol_id orelse @panic("native parameter this has no exact binding");
-                    try addSyntheticRefInScope(self, node, id, self.current_scope, .{ .read = true });
+                    try addSyntheticRefInScope(self, node, id, self.current_scope, flags);
                 }
                 return;
             }
+        }
+    }
+    if (self.enum_capture_plan) |plan| {
+        if (kind == .this_value and self.semantic_edit_enabled and plan.frame == self.capture_frame) {
+            if (plan.scope != self.capture_scope) @panic("enum capture escaped its actual IIFE frame");
+            if (plan.this_declaration.isNone()) {
+                const previous = self.current_scope;
+                self.current_scope = plan.scope;
+                defer self.current_scope = previous;
+                plan.this_declaration = try self.buildVarDecl("_this", try es_helpers.makeThisExpr(self, source_span), source_span);
+                try self.bindLexicalCapture(plan.this_declaration, .this_value);
+                plan.symbol_id = self.capture_binding_ids.get(captureKey(plan.frame, .this_value)) orelse @panic("enum this storage has no exact SID");
+            }
+            const id = plan.symbol_id orelse @panic("enum this capture has no exact binding");
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
+            self.needs_this_var = false;
+            try self.lexical_capture_uses.append(self.allocator, .{ .frame = plan.frame, .kind = kind, .span = source_span });
+            return;
         }
     }
     if (nativeFieldCaptureOwner(self)) |plan| {
@@ -3145,7 +3345,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
             try ensureNativeConstructorCaptureBinding(self, plan, source_span);
             const id = plan.symbol_id orelse std.debug.panic("field capture lost its declaration identity", .{});
             try self.bindLexicalCaptureToExistingSymbol(.this_value, @fromBackingInt(id));
-            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, .{ .read = true });
+            try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
             try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
             return;
         }
@@ -3174,6 +3374,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
         .scope = self.current_scope,
         .frame = self.capture_frame,
         .kind = kind,
+        .flags = flags,
     });
     const raw = @backingInt(node);
     if (self.capture_ref_by_origin.contains(raw)) std.debug.panic("lexical capture node tracked twice", .{});
@@ -3182,6 +3383,12 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
     // A later copy can precede declaration binding; preserve exact origin even
     // while this generated reference has no SymbolId yet.
     try self.reference_origin_map.put(self.allocator, raw, raw);
+    // A producer that reserved this frame/role already owns the identity.
+    // Bind at the actual use scope now instead of deferring known references
+    // to the output walker. Earlier unbound frames keep their pending edge.
+    if (self.capture_binding_ids.get(captureKey(self.capture_frame, kind))) |id| {
+        try addSyntheticRefInScope(self, node, @fromBackingInt(id), self.current_scope, flags);
+    }
 }
 
 /// Called at the actual capture declaration producer. A frame and role select
@@ -3293,7 +3500,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
             const reference_index = editor.reference_index.get(raw) orelse
                 std.debug.panic("bound lexical capture has no reference record: node={d} name={s} symbol={d} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), existing, pending.frame, @tagName(pending.kind) });
             const reference = editor.references.items[reference_index];
-            if (@backingInt(reference.symbol_id) != id or !reference.flags.read) {
+            if (@backingInt(reference.symbol_id) != id or !std.meta.eql(reference.flags, pending.flags)) {
                 std.debug.panic("bound lexical capture reference has inconsistent identity: node={d} name={s} ref_symbol={d} expected_symbol={d} ref_scope={d} output_scope={d} read={any} write={any} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), @backingInt(reference.symbol_id), id, reference.scope_id.toIndex(), output_scope.toIndex(), reference.flags.read, reference.flags.write, pending.frame, @tagName(pending.kind) });
             }
             if (reference.scope_id != output_scope) {
@@ -3301,7 +3508,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
             }
             continue;
         }
-        try addSyntheticRefInScope(self, @fromBackingInt(@intCast(raw)), @fromBackingInt(@intCast(id)), output_scope, .{ .read = true });
+        try addSyntheticRefInScope(self, @fromBackingInt(@intCast(raw)), @fromBackingInt(@intCast(id)), output_scope, pending.flags);
     }
 
     for (self.capture_refs.items) |pending| {
@@ -3431,13 +3638,34 @@ pub fn relocateRuntimeHelperRef(self: *Transformer, node: NodeIndex, scope: Scop
     if (scope.isNone()) std.debug.panic("runtime helper relocation has no scope", .{});
     if (self.tracked_runtime_helper_ref_index.get(@backingInt(node))) |index| {
         const editor = try editorFor(self);
+        const tracked = self.tracked_runtime_helper_refs.items[index];
+        if (!@import("../computed_object_helper_authority.zig").relocate(self, node, tracked.symbol_id, tracked.scope, scope, false))
+            return editError(error.InvalidScope);
         editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        std.debug.assert(@import("../computed_object_helper_authority.zig").relocate(self, node, tracked.symbol_id, tracked.scope, scope, true));
         self.tracked_runtime_helper_refs.items[index].scope = scope;
         return;
     }
     // The final output-scope walk can have removed the tracking record already.
     if (self.semantic_editor) |*editor| {
+        if (!@import("../computed_object_helper_authority.zig").contains(self, node)) {
+            editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+            return;
+        }
+        var count: usize = 0;
+        var old_scope: ScopeId = .none;
+        var known_sid: u32 = 0;
+        for (editor.references.items) |row| {
+            if (row.node_index != node) continue;
+            count += 1;
+            old_scope = row.scope_id;
+            known_sid = @backingInt(row.symbol_id);
+        }
+        if (count != 1) return editError(error.InvalidNode);
+        if (!@import("../computed_object_helper_authority.zig").relocate(self, node, known_sid, old_scope, scope, false))
+            return editError(error.InvalidScope);
         editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        std.debug.assert(@import("../computed_object_helper_authority.zig").relocate(self, node, known_sid, old_scope, scope, true));
     } else {
         std.debug.panic("runtime helper reference was not pending or bound", .{});
     }
@@ -4789,6 +5017,13 @@ pub fn ensureAnnexBVariableStorage(self: *Transformer, variable: u32, project_ow
     }
     if (variable >= editor.symbols.items.len) std.debug.panic("invalid implicit Annex B var storage SymbolId", .{});
     const symbol = editor.symbols.items[variable];
+    // Production analysis can omit declaration rows. An existing exact
+    // parser binding still owns explicit V storage and must not be duplicated.
+    for (self.ast.nodes.items[0..self.parser_node_count], 0..) |node, raw| {
+        if (node.tag == .binding_identifier and raw < self.symbol_ids.items.len and
+            self.symbol_ids.items[raw] == variable) return;
+    }
+
     if (symbol.kind != .variable_var or symbol.scope_id.isNone()) std.debug.panic("invalid implicit Annex B var storage owner", .{});
     const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, symbol.name);
     try self.setGeneratedSymbolId(binding, variable);
@@ -5663,4 +5898,130 @@ test "hostile SymbolId 6029 checked API rejects import creation scope drift" {
 test "hostile SymbolId 6029 rejects import creation scope healing" {
     if (isSemanticEditPanicChild()) return;
     try expectInvalidSemanticEditPanic("invalid-import-creation-scope", "InvalidScope");
+}
+
+/// A real generated function consumes a source static-block var environment.
+/// Preserve its IDs and declaration anchors; do not relabel the source Scope.
+pub fn transferStaticBlockStorage(self: *Transformer, source: NodeIndex, function_scope: ScopeId, body: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    const source_scope = self.outputOwnedScope(source) orelse @panic("static block lost its source environment");
+    const environment = editor.scopes.items[source_scope.toIndex()];
+    if (self.ast.getNode(source).tag != .static_block or environment.kind != .class_static_block or
+        editor.scopes.items[function_scope.toIndex()].kind != .function)
+        @panic("static block storage transfer has the wrong owner role");
+    editor.scopes.items[function_scope.toIndex()].is_strict = true;
+    editor.scopes.items[function_scope.toIndex()].subtree_has_direct_eval = environment.subtree_has_direct_eval;
+    editor.scopes.items[function_scope.toIndex()].subtree_has_with = environment.subtree_has_with;
+    for (0..editor.symbols.items.len) |sid| {
+        if (editor.symbols.items[sid].scope_id != source_scope) continue;
+        editor.relocateSymbol(@fromBackingInt(@intCast(sid)), function_scope) catch |err| return editError(err);
+    }
+    try moveStaticBlockSourceReferences(self, body, source_scope, function_scope);
+    try reparentGeneratedBodyScopes(self, source_scope, function_scope, body);
+    // This exact body was a source environment alias, and is now the actual
+    // generated function body. No unrelated block receives that owner.
+    if (self.ast.getNode(source).data.unary.operand != body or self.outputOwnedScope(body) != source_scope)
+        @panic("static block body lost its canonical source owner");
+    // The source alias is consumed before visitation. The actual ordinary
+    // function owns this body implicitly; in particular, the Worklet source
+    // owner copier must not mistake the container for a second function.
+    const origin = self.scope_owner_origins.get(@backingInt(body)) orelse @backingInt(body);
+    _ = self.scope_owner_remaps.remove(origin);
+    _ = editor.scope_owner_map.remove(@backingInt(body));
+    _ = self.transformed_scope_owner_map.remove(@backingInt(body));
+    _ = self.scope_owner_origins.remove(@backingInt(body));
+    try self.scope_owner_removed.put(self.allocator, @backingInt(body), {});
+}
+
+/// Source static bodies carry an alias because the static node owns their
+/// special environment. An ordinary function body instead uses its function
+/// owner directly. Retire only the exact alias used during body visitation.
+pub fn completeStaticBlockBody(self: *Transformer, source: NodeIndex, source_body: NodeIndex, output_body: NodeIndex, scope: ScopeId) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    try retireStaticBlockClassSelfSources(self, source, output_body);
+    if (self.ast.getNode(source_body).tag != .block_statement or self.ast.getNode(output_body).tag != .block_statement or
+        !self.scope_owner_removed.contains(@backingInt(source_body)) or
+        editor.scope_owner_map.contains(@backingInt(source_body)) or
+        self.transformed_scope_owner_map.contains(@backingInt(source_body)) or
+        editor.scope_owner_map.contains(@backingInt(output_body)) or
+        self.transformed_scope_owner_map.contains(@backingInt(output_body)) or
+        editor.scopes.items[scope.toIndex()].kind != .function)
+        @panic("static block output body lost its actual function environment");
+    const source_origin = self.scope_owner_origins.get(@backingInt(source_body)) orelse @backingInt(source_body);
+    if (self.scope_owner_origins.get(@backingInt(output_body))) |output_origin| {
+        if (output_origin != source_origin) @panic("static body alias has a foreign source origin");
+    }
+    _ = self.scope_owner_remaps.remove(source_origin);
+    for ([_]NodeIndex{ source_body, output_body }) |body| {
+        _ = editor.scope_owner_map.remove(@backingInt(body));
+        _ = self.transformed_scope_owner_map.remove(@backingInt(body));
+        _ = self.scope_owner_origins.remove(@backingInt(body));
+    }
+}
+
+fn staticBlockCapturesSelf(self: *Transformer, id: SymbolId) bool {
+    for (self.static_class_contexts.items) |context|
+        if (context.class_self_symbol_id == @as(?u32, @backingInt(id))) return true;
+    return false;
+}
+
+fn moveStaticBlockSourceReferences(self: *Transformer, body: NodeIndex, source: ScopeId, target: ScopeId) Transformer.Error!void {
+    const editor = try editorFor(self);
+    var temporary = std.heap.ArenaAllocator.init(self.allocator);
+    defer temporary.deinit();
+    const a = temporary.allocator();
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    try stack.append(a, body);
+    while (stack.pop()) |node| {
+        if (node.isNone()) continue;
+        try self.relocateNodeScopeProvenance(node, source, target);
+        const reference = editor.referenceForNode(node) catch |err| return editError(err);
+        if (reference) |ref| {
+            if (!ref.flags.declare and ref.scope_id == source) {
+                // The exact class-self reader/writer producer replaces this
+                // source use with its immutable capture during visitation.
+                // Keep the source row in its still-valid class environment
+                // until that precise node has actually been consumed.
+                if (!staticBlockCapturesSelf(self, ref.symbol_id)) {
+                    if (self.tracked_runtime_helper_ref_index.contains(@backingInt(node)))
+                        try self.relocateRuntimeHelperRef(node, target)
+                    else
+                        editor.moveReference(node, target, ref.stmt_idx, ref.scope_stmt_idx) catch |err| return editError(err);
+                }
+            }
+        }
+        var children = ast_walk.children(self.ast, self.ast.getNode(node));
+        while (children.next()) |child| try stack.append(a, child);
+    }
+}
+
+fn retireStaticBlockClassSelfSources(self: *Transformer, source: NodeIndex, output_body: NodeIndex) Transformer.Error!void {
+    const editor = try editorFor(self);
+    const source_scope = self.outputOwnedScope(source) orelse @panic("static class-self lifecycle lost its source environment");
+    var pending = false;
+    for (editor.references.items) |ref| {
+        if (!ref.flags.declare and ref.scope_id == source_scope and staticBlockCapturesSelf(self, ref.symbol_id)) {
+            pending = true;
+            break;
+        }
+    }
+    if (!pending) return;
+    var temporary = std.heap.ArenaAllocator.init(self.allocator);
+    defer temporary.deinit();
+    const live = try ast_walk.collectReachableNodeIndicesFrom(temporary.allocator(), self.ast, output_body);
+    var index: usize = 0;
+    while (index < editor.references.items.len) {
+        const ref = editor.references.items[index];
+        if (ref.flags.declare or ref.scope_id != source_scope or !staticBlockCapturesSelf(self, ref.symbol_id)) {
+            index += 1;
+            continue;
+        }
+        if (std.mem.indexOfScalar(u32, live, @backingInt(ref.node_index)) != null)
+            @panic("static class-self source escaped its exact capture producer");
+        // Retire the output row/index while retaining the parser-node ID in
+        // Transformer's source staging array for later intentional revisits.
+        editor.removeReference(ref.node_index) catch |err| return editError(err);
+    }
 }
