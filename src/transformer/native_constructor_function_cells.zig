@@ -241,10 +241,11 @@ fn runControl(source: []const u8, storage_count: u32, entry_count: u32, remainin
     }
     const source_references = try allocator.dupe(@import("../semantic/symbol.zig").Reference, analyzer.references.items);
     const source_symbols = try allocator.dupe(@import("../semantic/symbol.zig").Symbol, analyzer.symbols.items);
-    if (expected_anchors == 0) {
-        // The function-var case has no independent function-name row. Its
-        // canonical source var must have a real row which survives unchanged.
+    {
+        // Every actual source var declaration keeps its own anchored row,
+        // independently of the function declaration row retired below.
         var source_var_anchors: usize = 0;
+        var source_var_bindings: usize = 0;
         for (0..source_body.len) |i| {
             const declaration = t.ast.getNode(t.ast.readExtraNode(source_body.start, @intCast(i)));
             if (declaration.tag != .variable_declaration or t.ast.extra_data.items[declaration.data.extra] != @backingInt(ast.VariableDeclarationKind.@"var")) continue;
@@ -253,12 +254,13 @@ fn runControl(source: []const u8, storage_count: u32, entry_count: u32, remainin
             for (0..len) |j| {
                 const declarator = t.ast.getNode(t.ast.readExtraNode(start, @intCast(j)));
                 const binding = t.ast.readExtraNode(declarator.data.extra, 0);
+                source_var_bindings += 1;
                 for (source_references) |reference| {
                     if (reference.flags.declare and reference.declaration_node_index == binding) source_var_anchors += 1;
                 }
             }
         }
-        try std.testing.expect(source_var_anchors > 0);
+        try std.testing.expectEqual(source_var_bindings, source_var_anchors);
     }
     var anchored_removed: usize = 0;
     for (source_references) |reference| {
@@ -370,7 +372,7 @@ test "native constructor function cells exact storage and eleven generated AST n
         .{ .body = "try{read()}catch(e){console.log(e.name)}let x=7;function read(){return x}super();console.log(read())", .remaining = 4 },
         .{ .body = "function read(){return read}const old=read;read=9;super();console.log(old())", .remaining = 4 },
         .{ .body = "console.log(read());function read(){return 1}function read(){return 2}super();", .remaining = 2 },
-        .{ .body = "var read=9;function read(){return 7}super();console.log(read)", .remaining = 3, .anchors = 0 },
+        .{ .body = "var read=9;function read(){return 7}super();console.log(read)", .remaining = 3 },
         .{ .body = "function read(){return 7}var read=9;super();console.log(read)", .remaining = 3 },
         .{ .body = "function \\u0066oo(){return 7}super();console.log(foo.name,foo())", .remaining = 2 },
         .{ .body = "function read(){return 7}super();{function read(){return 9}console.log(read())}console.log(read())", .remaining = 3 },
