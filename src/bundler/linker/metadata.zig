@@ -386,12 +386,6 @@ fn importBindingName(self: *const Linker, module_index: u32, ib: anytype, fallba
     return self.getCanonicalByRef(ib.local_symbol) orelse fallback;
 }
 
-/// identifier 의 첫 byte 가 정상 ASCII (0x21-0x7F) 인지. UAF 시 채워지는 0xAA / 0 등
-/// invalid byte 를 reject — `target_name` 이 freed memory 면 rename 등록 skip.
-fn isValidIdentStartByte(b: u8) bool {
-    return b >= 0x21 and b < 0x80;
-}
-
 /// `Linker.unified_result` 에서 현재 모듈의 Phase B (nested) rename 을
 /// `renames` 에 merge. Phase A 심볼 (module_scope_symbols bitset set) 은
 /// 스킵 — self-rename 루프가 canonical_name 경로로 이미 처리했음.
@@ -1361,6 +1355,7 @@ pub fn buildMetadataForAst(
             // minify_identifiers 로 로컬이 `n` 으로 mangle 되면 `second` 는 자유 변수가 되어
             // 런타임 `ReferenceError` (빌드·파싱은 통과). 형제 호출부(cjs_interop / entry
             // exports)는 이미 `isCrossChunkConsumer` 로 게이트한다 — 여기만 빠져 있었다.
+            var effective_target_role: Linker.ConsumerImportRole = .binding;
             const effective_target = if (ns_inline_target_name) |inline_name| inline_name else if (resolved) |rb| blk_eff: {
                 const canon_mi = @backingInt(rb.canonical.module_index);
                 if (!self.isCrossChunkConsumer(module_index, canon_mi)) break :blk_eff target_name;
@@ -1373,7 +1368,10 @@ pub fn buildMetadataForAst(
                 // ⚠️ canonical 이 non-wrap(.none)일 때만 map 이 채워지므로 `loc` 은 esm-wrap canonical
                 // 전용인 export_getter_overrides(아래 1193) 경로에 절대 안 흘러간다(borrowed loc UAF 회피).
                 if (self.graph.preserve_modules) {
-                    if (self.getConsumerImportLocal(canon_mi, rb.canonical.export_name)) |loc| break :blk_eff loc;
+                    if (self.getConsumerImportTarget(canon_mi, rb.canonical.export_name)) |target| {
+                        effective_target_role = target.role;
+                        break :blk_eff target.text;
+                    }
                 }
                 break :blk_eff target_name;
             } else target_name;
@@ -1398,7 +1396,13 @@ pub fn buildMetadataForAst(
                     }
                 };
             };
-            if (live_cjs_target != null or (!isReservedName(effective_target) and effective_target.len > 0 and isValidIdentStartByte(effective_target[0]))) {
+            // Lexical names and producer-built expressions have different grammars.
+            // Keep exact selected text/SID; a valid Unicode binding is not stale memory.
+            const valid_target = if (live_cjs_target != null) true else switch (effective_target_role) {
+                .binding => try @import("identifier_name.zig").isBindingName(self.allocator, effective_target, isReservedName),
+                .namespace_member_expression => effective_target.len > 0 and std.unicode.utf8ValidateSlice(effective_target),
+            };
+            if (valid_target) {
                 if (importBindingLocalSemanticIndex(ib, &module_scope, module_index)) |sym_idx| {
                     // #3664 P2: synthetic_named_exports → canonical(default/target) export 의 member
                     // access 로 rename(`{target_name}.{member}`). 정적으로 export 안 된 named import 를

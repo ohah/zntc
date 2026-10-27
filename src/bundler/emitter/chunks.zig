@@ -352,9 +352,7 @@ fn emitPmCjsLiveImport(
                 try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ key, ns_local, quoted });
             } else try chunk_output.appendSlice(allocator, key);
             if (linker) |l| {
-                const member = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_local, key });
-                defer allocator.free(member);
-                try l.putConsumerImportLocal(sym.canonical_module, sym.name, member);
+                try l.putConsumerImportMember(sym.canonical_module, sym.name, ns_local, key);
             }
         } else {
             // 비재할당 심볼: 현행 스냅샷 구조분해.
