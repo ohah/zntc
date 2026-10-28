@@ -1746,6 +1746,24 @@ test "escaped mutable storage retains exact export identity and existing eligibi
     try std.testing.expect(!module.exportBindingIsCjsStorage(binding));
     module.semantic = sem;
     try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    const malformed = [_]struct { raw: []const u8, value: []const u8 }{
+        .{ .raw = "\xff", .value = "\xff" },
+        .{ .raw = "\xc0\xaf", .value = "\xc0\xaf" },
+        .{ .raw = "\xed\xa0\x80", .value = "\xed\xa0\x80" },
+        .{ .raw = "\"a\"", .value = "\"a\"" },
+        .{ .raw = "#a", .value = "#a" },
+        .{ .raw = "\\u0061", .value = "\\u0061" },
+        .{ .raw = "\\uD835\\uDC9C", .value = "𝒜" },
+        .{ .raw = "", .value = "" },
+    };
+    for (malformed) |case| {
+        sem.symbols.items[0] = cjsStorageTestSymbol(case.raw, .variable_let, 1);
+        var bad = binding;
+        bad.exported_name = case.value;
+        try std.testing.expect(!module.exportBindingIsCjsStorage(bad));
+        sem.symbols.items[0] = cjsStorageTestSymbol("\\uAC12", .variable_let, 1);
+        try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    }
 }
 
 test "escaped mutable storage actual Bundler preserves declaration and update values" {
