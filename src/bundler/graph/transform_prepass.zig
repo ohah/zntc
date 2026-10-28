@@ -18006,3 +18006,41 @@ test "static getter super retains actual entry graph without semantic resync" {
     }
     try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
 }
+
+test "static getter super source admission preserves narrow syntax and owner boundaries" {
+    const controls = [_]struct { text: []const u8, admitted: bool }{
+        .{ .text = "var object={get value(){return super.value}};", .admitted = true },
+        .{ .text = "var seed=1;var object={get value(){return super.value+seed+this.extra}};", .admitted = true },
+        .{ .text = "var object={get value(){return (()=>super.value)()}};", .admitted = false },
+        .{ .text = "var object={get value(){function nested(){}return super.value}};", .admitted = false },
+        .{ .text = "var object={set value(v){super.value=v}};", .admitted = false },
+        .{ .text = "var object={get value(){return super.value=1}};", .admitted = false },
+        .{ .text = "var object={get value(){return ++super.value}};", .admitted = false },
+        .{ .text = "var Object=globalThis.Object;var object={get value(){return super.value}};", .admitted = false },
+        .{ .text = "var object={get value(){eval('value');return super.value}};", .admitted = false },
+        .{ .text = "var object={get value(){return super.value},extra:1};", .admitted = false },
+    };
+    for (controls) |control| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const f = try runtimeHelperReanalysisTestFixture(arena.allocator(), control.text);
+        try std.testing.expectEqual(control.admitted, computedAccessorSuperSourceAdmissionForTest(&f));
+    }
+}
+
+test "static getter super source admission rejects wrong actual getter Scope kind and restores" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var f = try runtimeHelperReanalysisTestFixture(arena.allocator(), "var object={get value(){return super.value}};");
+    try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
+    var owner: ?u32 = null;
+    for (f.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .method_definition) owner = f.semantic.scope_owner_map.get(@intCast(raw));
+    }
+    const g = owner orelse return error.MissingStaticGetterSourceOwner;
+    const saved = f.semantic.scopes[g];
+    @constCast(f.semantic.scopes)[g].kind = .block;
+    try std.testing.expect(!computedAccessorSuperSourceAdmissionForTest(&f));
+    @constCast(f.semantic.scopes)[g] = saved;
+    try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
+}
