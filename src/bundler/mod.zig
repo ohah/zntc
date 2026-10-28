@@ -151,6 +151,7 @@ test {
     _ = @import("cache_key_test.zig");
     _ = @import("disk_module_store_test.zig");
     _ = @import("tree_shaker_test.zig");
+    _ = @import("constant_facts.zig"); // atomic tracked materialization OOM regressions
     _ = @import("tree_shaker/const_materialize.zig"); // numeric post-pass retains prepass deltas on the same graph
     _ = @import("linker_test.zig");
     _ = @import("linker/preamble_writer_test.zig"); // #4510 CJS interop 회귀 가드
