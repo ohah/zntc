@@ -3213,6 +3213,113 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('standalone erased type imports preserve exact side-effect runtime import identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-type-import-side-effect-'));
+    const cases = [
+      {
+        name: 'single-side-effect',
+        graph: 'retained',
+        output: '42:ran',
+        source: [
+          "import type { Shape } from './types';",
+          "import './effect';",
+          'type Model = Shape;',
+          'const value: Model = { answer: 42 };',
+          'process.stdout.write(`${value.answer}:${globalThis.__effect}`);',
+        ].join('\n'),
+        files: { 'effect.js': "globalThis.__effect = 'ran';\n" },
+      },
+      {
+        name: 'multiple-and-empty-imports',
+        graph: 'retained',
+        output: '42:first,empty,second',
+        source: [
+          "import './first';",
+          "import {} from './empty';",
+          "import './second';",
+          "import type { Shape } from './types';",
+          'const value: Shape = { answer: 42 };',
+          "process.stdout.write(`${value.answer}:${globalThis.__effects.join(',')}`);",
+        ].join('\n'),
+        files: {
+          'first.js': "(globalThis.__effects ??= []).push('first');\n",
+          'empty.js': "(globalThis.__effects ??= []).push('empty');\n",
+          'second.js': "(globalThis.__effects ??= []).push('second');\n",
+        },
+      },
+      {
+        name: 'named-value-plus-side-effect',
+        graph: 'retained',
+        output: '42:ran',
+        source: [
+          "import type { Shape } from './types';",
+          "import { value } from './values';",
+          "import './effect';",
+          'const shape: Shape = { answer: value };',
+          'process.stdout.write(`${shape.answer}:${globalThis.__effect}`);',
+        ].join('\n'),
+        files: {
+          'values.js': 'exports.value = 42;\n',
+          'effect.js': "globalThis.__effect = 'ran';\n",
+        },
+      },
+      {
+        name: 'attributed-type-plus-side-effect',
+        graph: 'retained',
+        output: '42:ran',
+        source: [
+          "import type { Shape } from './types' with { 'resolution-mode': 'import' };",
+          "import './effect';",
+          'const shape: Shape = { answer: 42 };',
+          'process.stdout.write(`${shape.answer}:${globalThis.__effect}`);',
+        ].join('\n'),
+        files: { 'effect.js': "globalThis.__effect = 'ran';\n" },
+      },
+      {
+        name: 'attributed-side-effect-keeps-fallback',
+        graph: 'reanalyzed',
+        output: null,
+        source: [
+          "import type { Shape } from './types';",
+          "import './effect' with { type: 'json' };",
+          'const shape: Shape = { answer: 42 };',
+        ].join('\n'),
+        files: {},
+      },
+    ] as const;
+
+    try {
+      for (const item of cases) {
+        const input = join(dir, `${item.name}.ts`);
+        writeFileSync(input, item.source);
+        for (const [name, contents] of Object.entries(item.files)) {
+          writeFileSync(join(dir, name), contents);
+        }
+        const result = runCoverage(input, TARGETS[4], dir, true, ['--format=cjs']);
+        expect(result.exitCode, `${item.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transformIdentityAuditProblems(result.stderr),
+          `${item.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), `${item.name}: ${result.stderr}`).toEqual(
+          [],
+        );
+        expect(
+          transpileGraphModeProblems(result.stderr, true, item.graph),
+          `${item.name}: ${result.stderr}`,
+        ).toEqual([]);
+        if (item.output !== null) {
+          const actual = runNode([join(dir, 'out.js')]);
+          expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${item.name}: runtime output changed`).toBe(item.output);
+          expect(actual.stderr, `${item.name}: unexpected runtime diagnostic`).toBe('');
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('all oracle fixtures retain exact identity accounting in legacy .unknown mode', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-lenient-unknown-matrix-'));
     const expectedParseFailures = new Set(LENIENT_UNKNOWN_PARSE_DIAGNOSTICS.keys());
