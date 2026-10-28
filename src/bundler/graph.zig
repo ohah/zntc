@@ -368,6 +368,9 @@ pub const ModuleGraph = struct {
 
     /// Graph-local, non-serialized authority for completed self namespace AST.
     self_namespace_holders: std.AutoHashMapUnmanaged(u32, @import("self_namespace_ast.zig").Completed) = .empty,
+    /// Provider source authority was consumed; keep it out of ModuleStore
+    /// even after its importer plan is invalidated. Graph-local, never serialized.
+    namespace_source_consumed_providers: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     pub const PkgInfo = graph_state.PkgInfo;
     pub const WorkerEntry = graph_state.WorkerEntry;

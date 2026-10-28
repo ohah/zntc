@@ -6321,6 +6321,7 @@ fn foreignNamespaceAllocationFailure(offset: usize) !bool {
         failing.resize_fail_index = std.math.maxInt(usize);
         try std.testing.expectEqual(error.OutOfMemory, err);
         try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+        try std.testing.expectEqual(@as(usize, 0), graph.namespace_source_consumed_providers.count());
         try std.testing.expect(importer.ast.?.nodes.items.ptr == importer_ast.nodes.items.ptr);
         try std.testing.expect(importer.semantic.?.symbol_ids.ptr == importer_sem.symbol_ids.ptr);
         try std.testing.expectEqual(importer_sem.owner_token, importer.semantic.?.owner_token);
@@ -7371,4 +7372,253 @@ test "self namespace restored source receipt is not transferred into ModuleStore
     try std.testing.expect(cached.module.self_namespace_source_receipt == null);
     try std.testing.expect(module.self_namespace_source_receipt == null);
     try std.testing.expect(module.parse_arena == null and cached.module.parse_arena != null);
+}
+
+fn checkForeignProviderDeclarationProof(corruption: u32) !void {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;export const unused=9;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from'./provider.mjs';console.log(Reflect.get(ns,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const importer = graph.moduleAtMut(findModuleIdx(&graph, "entry.mjs").?).?;
+    const provider = graph.moduleAtMut(findModuleIdx(&graph, "provider.mjs").?).?;
+    const sem = &provider.semantic.?;
+    const anchor = provider.export_bindings[0].local_symbol_node.?;
+    const sid = sem.symbol_ids[@backingInt(anchor)].?;
+    try std.testing.expectEqual(@as(usize, 2), sem.references.len);
+    const original_binding = provider.ast.?.nodes.items[@backingInt(anchor)];
+    const original = try a.dupe(semantic_symbol.Reference, sem.references);
+    defer a.free(original);
+    var selected: ?usize = null;
+    var other: ?usize = null;
+    for (sem.references, 0..) |row, i| {
+        if (@backingInt(row.symbol_id) == sid) selected = i else other = i;
+    }
+    const selected_row = &@constCast(sem.references)[selected.?];
+    switch (corruption) {
+        0 => selected_row.flags.read = true,
+        1 => selected_row.node_index = anchor,
+        2 => @constCast(sem.references)[other.?].declaration_node_index = anchor,
+        3 => provider.ast.?.nodes.items[@backingInt(anchor)].tag = .identifier_reference,
+        4 => @constCast(sem.references)[other.?] = original[selected.?],
+        5 => selected_row.flags._reserved = 1,
+        else => unreachable,
+    }
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    // A malformed source graph must not grant a provider export capability.
+    try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+    try std.testing.expect(provider.semantic.?.owner_token == .unassigned);
+    try std.testing.expect(importer.semantic.?.owner_token == .unassigned);
+    @memcpy(@constCast(sem.references), original);
+    provider.ast.?.nodes.items[@backingInt(anchor)] = original_binding;
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expectEqual(@as(usize, 1), graph.self_namespace_holders.count());
+    try lowering.validate(&graph, importer);
+}
+
+test "foreign namespace provider source proof rejects mixed declaration flags and restores" {
+    try checkForeignProviderDeclarationProof(0);
+}
+
+test "foreign namespace provider source proof rejects a declaration use node and restores" {
+    try checkForeignProviderDeclarationProof(1);
+}
+
+test "foreign namespace provider source proof rejects another symbol owning the same anchor and restores" {
+    try checkForeignProviderDeclarationProof(2);
+}
+
+test "foreign namespace provider source proof rejects a nonbinding export anchor" {
+    try checkForeignProviderDeclarationProof(3);
+}
+
+test "foreign namespace holder proof validates a registered plan before binding roles" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from'./provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "entry.mjs").?;
+    const importer = graph.moduleAtMut(index).?;
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expect(graph.self_namespace_holders.get(index.toU32()).?.foreign_target != null);
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    var good = try linker.buildMetadataForAst(&importer.ast.?, index.toU32(), true, null, .esm, true);
+    good.deinit();
+    const role = importer.import_bindings[0].local_role;
+    defer importer.import_bindings[0].local_role = role;
+    importer.import_bindings[0].local_role = .import_binding;
+    var rejected = false;
+    if (linker.buildMetadataForAst(&importer.ast.?, index.toU32(), true, null, .esm, true)) |output| {
+        var metadata = output;
+        metadata.deinit();
+    } else |err| {
+        try std.testing.expectEqual(error.InvalidSelfNamespaceHolder, err);
+        rejected = true;
+    }
+    try std.testing.expect(rejected);
+    importer.import_bindings[0].local_role = role;
+    var restored = try linker.buildMetadataForAst(&importer.ast.?, index.toU32(), true, null, .esm, true);
+    restored.deinit();
+    const bindings = importer.import_bindings;
+    importer.import_bindings = &.{};
+    defer importer.import_bindings = bindings;
+    try std.testing.expectError(error.InvalidSelfNamespaceHolder, linker.buildMetadataForAst(&importer.ast.?, index.toU32(), true, null, .esm, true));
+    importer.import_bindings = bindings;
+    try lowering.validate(&graph, importer);
+}
+
+test "foreign namespace holder proof keeps a consumed provider out of Store after importer invalidation" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from'./provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "control.mjs", "export const control=11;");
+    const helpers = @import("test_helpers.zig");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const provider_path = try helpers.absPath(&tmp, "provider.mjs");
+    defer a.free(provider_path);
+    const control_path = try helpers.absPath(&tmp, "control.mjs");
+    defer a.free(control_path);
+    const disk_path = try helpers.absPath(&tmp, "disk-cache");
+    defer a.free(disk_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, disk_path);
+    defer disk.deinit();
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(a);
+    defer store.deinit();
+    var cold = ModuleGraph.init(a, &cache);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    cold.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(store.modules.contains(provider_path));
+    var warm = ModuleGraph.init(a, &cache);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 2), warm.disk_load_hits.load(.monotonic));
+    const importer_index = findModuleIdx(&warm, "entry.mjs").?;
+    const provider_index = findModuleIdx(&warm, "provider.mjs").?;
+    const provider = warm.moduleAtMut(provider_index).?;
+    try std.testing.expect(provider.self_namespace_source_receipt != null);
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&warm, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expectEqual(@as(usize, 1), warm.self_namespace_holders.count());
+    try std.testing.expect(provider.self_namespace_source_receipt == null);
+    try std.testing.expect(provider.semantic.?.owner_token != .unassigned);
+    warm.invalidateModule(importer_index);
+    try std.testing.expectEqual(@as(usize, 0), warm.self_namespace_holders.count());
+    const control_index = try warm.addModule(std.testing.io, control_path);
+    warm.parseModule(std.testing.io, control_index);
+    const control = warm.moduleAtMut(control_index).?;
+    const control_mtime = try ModuleGraph.getMtime(std.testing.io, control_path);
+    warm.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(!store.modules.contains(provider_path));
+    try std.testing.expect(provider.parse_arena != null);
+    try std.testing.expect(store.getIfFresh(control_path, control_mtime) != null);
+    try std.testing.expect(control.parse_arena == null);
+}
+
+fn checkForeignConsumedProviderRetirement(full_prepare: bool) !void {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from'./provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    const helpers = @import("test_helpers.zig");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const old_provider_index = findModuleIdx(&graph, "provider.mjs").?;
+    const source_type = graph.moduleAtMut(old_provider_index).?.module_type;
+    const source_loader = graph.moduleAtMut(old_provider_index).?.loader;
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expectEqual(@as(usize, 1), graph.self_namespace_holders.count());
+    var expected_path: []const u8 = undefined;
+    if (full_prepare) {
+        graph.prepareForPreservedRebuild();
+        try std.testing.expectEqual(@as(usize, 0), graph.moduleCount());
+        // Reuse known filesystem entries; this tests graph reset rather than
+        // the independently cached resolver's discovery of newly created files.
+        try writeFile(tmp.dir, "entry.mjs", "import{replacement}from'./provider.mjs';console.log(replacement);");
+        try writeFile(tmp.dir, "provider.mjs", "export const replacement=11;");
+        try graph.build(std.testing.io, &.{entry});
+        expected_path = try helpers.absPath(&tmp, "provider.mjs");
+    } else {
+        graph.invalidateModule(old_provider_index);
+        try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+        try writeFile(tmp.dir, "provider.mjs", "export const replacement=11;");
+        // Production reparsing restores the known loader identity after the
+        // slot reset; Module.init itself intentionally starts as unknown.
+        graph.moduleAtMut(old_provider_index).?.module_type = source_type;
+        graph.moduleAtMut(old_provider_index).?.loader = source_loader;
+        graph.parseModule(std.testing.io, old_provider_index);
+        expected_path = try helpers.absPath(&tmp, "provider.mjs");
+    }
+    defer a.free(expected_path);
+    const new_provider_index = findModuleIdx(&graph, "provider.mjs") orelse return error.MissingReparsedProviderFixture;
+    try std.testing.expectEqual(old_provider_index, new_provider_index);
+    const new_provider = graph.moduleAtMut(new_provider_index).?;
+    try std.testing.expect(new_provider.ast != null and new_provider.semantic != null and new_provider.parse_arena != null);
+    const anchor = new_provider.export_bindings[0].local_symbol_node.?;
+    const sid = new_provider.semantic.?.symbol_ids[@backingInt(anchor)].?;
+    try std.testing.expectEqualStrings("replacement", new_provider.ast.?.getText(new_provider.semantic.?.symbols.items[sid].name));
+    try std.testing.expect(new_provider.semantic.?.owner_token == .unassigned);
+    var store = module_store_mod.PersistentModuleStore.init(a);
+    defer store.deinit();
+    const mtime = try ModuleGraph.getMtime(std.testing.io, expected_path);
+    graph.transferModulesToStore(std.testing.io, &store);
+    // A retired provider index must not taint the new actual source domain.
+    try std.testing.expect(store.getIfFresh(expected_path, mtime) != null);
+    try std.testing.expect(new_provider.parse_arena == null);
+    try std.testing.expectEqual(@as(usize, 0), graph.namespace_source_consumed_providers.count());
+}
+
+test "foreign namespace holder proof provider invalidation restores ordinary Store eligibility" {
+    try checkForeignConsumedProviderRetirement(false);
+}
+
+test "foreign namespace holder proof full prepare does not taint a reused provider index" {
+    try checkForeignConsumedProviderRetirement(true);
+}
+
+test "foreign namespace provider source proof preserves selected declaration uniqueness" {
+    try checkForeignProviderDeclarationProof(4);
+}
+
+test "foreign namespace provider source proof rejects reserved declaration flag bits" {
+    try checkForeignProviderDeclarationProof(5);
 }

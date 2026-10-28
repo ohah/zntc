@@ -741,6 +741,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     // be skipped merely because the original source required no prepass.
     if (graph.shouldRunTransformerPrePass(&projected_module, false)) return error.PendingSelfNamespaceTransform;
     try graph.self_namespace_holders.ensureUnusedCapacity(graph.allocator, 1);
+    if (foreign != null) try graph.namespace_source_consumed_providers.ensureUnusedCapacity(graph.allocator, 1);
     if (graph.self_namespace_holders.contains(module.index.toU32())) return error.DuplicateSelfNamespaceHolder;
     const cache: @import("module.zig").TransformCache = .{ .runtime_helpers = .{}, .symbol_ids = candidate.symbol_ids };
     const owner = candidate.captureOwnerToken(); // candidate only; source stays unchanged on failure
@@ -808,6 +809,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     if (foreign) |value| {
         value.provider.self_namespace_source_receipt = null;
         value.provider.semantic = provider_candidate.?;
+        graph.namespace_source_consumed_providers.putAssumeCapacity(value.provider.index.toU32(), {});
     }
     module.self_namespace_source_receipt = null;
     module.ast = ast.*;

@@ -543,6 +543,10 @@ pub fn buildMetadataForAstWithHolderReservations(
     }
 
     const m = m_opt.?.*;
+    // A registered foreign proof cannot disappear by changing its binding role.
+    if (self.graph.self_namespace_holders.get(m.index.toU32())) |plan| {
+        if (plan.foreign_target != null) try @import("../self_namespace_ast.zig").validate(self.graph, m_opt.?);
+    }
     // Reject a stale output proof before generic metadata code can inspect
     // corrupted scope ancestry or produce a replacement raw namespace holder.
     for (m.import_bindings) |binding| {
