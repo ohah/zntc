@@ -6221,3 +6221,504 @@ test "self namespace AST holder observes actual getter creator topology" {
     }
     try std.testing.expectEqual(@as(usize, 1), method_count);
 }
+
+const SelfNamespaceCase = struct {
+    name: []const u8,
+    source: []const u8,
+    selected: bool,
+    ids: bool = false,
+    syntax: bool = false,
+    split: bool = false,
+    preserve: bool = false,
+    es5: bool = false,
+};
+
+fn checkSelfNamespaceSelection(case: SelfNamespaceCase) !void {
+    errdefer std.debug.print("self namespace selection failed case={s}\n", .{case.name});
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", case.source);
+    try writeFile(tmp.dir, "dep.mjs", "export const value=7;");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    graph.minify_identifiers = case.ids;
+    graph.code_splitting = case.split;
+    graph.preserve_modules = case.preserve;
+    graph.transform_options_base.minify_syntax = case.syntax;
+    if (case.es5) graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const module = graph.moduleAtMut(index).?;
+    const before = module.semantic orelse return error.MissingSelfSemantic;
+    const before_ast = module.ast orelse return error.MissingSelfAst;
+    const original_binding = module.import_bindings[0];
+    const original_node = original_binding.local_symbol_node orelse return error.MissingSelfImportAnchor;
+    const original_sid = before.symbol_ids[@backingInt(original_node)] orelse return error.MissingSelfImportIdentity;
+    const before_symbols = try a.dupe(semantic_symbol.Symbol, before.symbols.items);
+    defer a.free(before_symbols);
+    const before_references = try a.dupe(semantic_symbol.Reference, before.references);
+    defer a.free(before_references);
+    const before_ids = try a.dupe(?u32, before.symbol_ids);
+    defer a.free(before_ids);
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = case.syntax });
+    const selected = graph.self_namespace_holders.contains(index.toU32());
+    try std.testing.expectEqual(case.selected, selected);
+    if (!selected) {
+        const after = module.semantic.?;
+        try std.testing.expect(module.ast.?.nodes.items.ptr == before_ast.nodes.items.ptr);
+        try std.testing.expect(module.ast.?.transformed_root == before_ast.transformed_root);
+        try std.testing.expectEqualDeep(before_symbols, after.symbols.items);
+        try std.testing.expectEqualDeep(before_references, after.references);
+        try std.testing.expectEqualDeep(before_ids, after.symbol_ids);
+        try std.testing.expect(after.owner_token == before.owner_token);
+        try std.testing.expect(module.import_bindings[0].local_role == original_binding.local_role);
+    } else {
+        try lowering.validate(&graph, module);
+        const plan = graph.self_namespace_holders.get(index.toU32()).?;
+        try std.testing.expectEqual(original_sid, plan.holder);
+        try std.testing.expectEqual(@as(?u32, original_sid), module.semantic.?.symbol_ids[@backingInt(plan.binding)]);
+        try std.testing.expectEqualDeep(before_symbols, before.symbols.items);
+        try std.testing.expectEqualDeep(before_references, before.references);
+        const node_count = module.ast.?.nodes.items.len;
+        const scope_count = module.semantic.?.scopes.len;
+        const row_count = module.semantic.?.references.len;
+        const owner = module.semantic.?.owner_token;
+        try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try std.testing.expectEqual(node_count, module.ast.?.nodes.items.len);
+        try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
+        try std.testing.expectEqual(row_count, module.semantic.?.references.len);
+        try std.testing.expect(module.semantic.?.owner_token == owner);
+        try std.testing.expectEqual(@as(usize, 1), graph.self_namespace_holders.count());
+        var linker = Linker.init(a, &graph, .esm);
+        defer linker.deinit();
+        try linker.link();
+        try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+        try lowering.validate(&graph, module);
+        try std.testing.expectEqual(@as(?u32, original_sid), module.import_bindings[0].local_symbol.semanticIndex());
+        const ast = if (module.ast) |*value| value else return error.MissingSelfOutput;
+        var metadata = try linker.buildMetadataForAst(ast, index.toU32(), true, null, .esm, true);
+        defer metadata.deinit();
+        try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
+    }
+    std.debug.print("self namespace actual selection case={s} selected={any} sourceSID={d}\n", .{ case.name, selected, original_sid });
+}
+
+test "self namespace AST holder ten selected source identities retain declaration authority" {
+    const cases = [_]SelfNamespaceCase{
+        .{ .name = "late-import", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "import-first", .source = "import*as ns from'./self.mjs';export const value=7;console.log(Reflect.get(ns,'value'));", .selected = true },
+        .{ .name = "directive", .source = "'use strict';export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "namespace-name", .source = "export const value=7;console.log(Reflect.get(view,'value'));import*as view from'./self.mjs';", .selected = true },
+        .{ .name = "export-name", .source = "export const answer=7;console.log(Reflect.get(ns,'answer'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "string", .source = "export const value='seven';console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "boolean", .source = "export const value=true;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "null", .source = "export const value=null;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+        .{ .name = "dollar-name", .source = "export const value=7;console.log(Reflect.get($view,'value'));import*as $view from'./self.mjs';", .selected = true },
+        .{ .name = "two-reads", .source = "export const value=7;console.log(Reflect.get(ns,'value'));console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = true },
+    };
+    for (cases) |case| try checkSelfNamespaceSelection(case);
+}
+
+test "self namespace AST holder unsupported valid sources preserve the existing path" {
+    const cases = [_]SelfNamespaceCase{
+        .{ .name = "hoisted-var", .source = "console.log(Reflect.get(ns,'value'));export var value=7;import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "hoisted-function", .source = "console.log(Reflect.get(ns,'value')());export function value(){return 7}import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "early-const", .source = "console.log(Reflect.get(ns,'value'));export const value=7;import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "foreign", .source = "import*as ns from'./dep.mjs';console.log(Reflect.get(ns,'value'));", .selected = false },
+        .{ .name = "direct-callee", .source = "export const value=7;ns.value();import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "protocol", .source = "export const value=7;console.log(Object.getPrototypeOf(ns));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "wrong-key", .source = "export const value=7;console.log(Reflect.get(ns,'other'));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "receiver", .source = "export const value=7;console.log(Reflect.get(ns,'value',{}));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "computed-reflect", .source = "export const value=7;console.log(Reflect['get'](ns,'value'));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "opaque-eval", .source = "export const value=7;eval('ns');console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "escaped-namespace", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as n\\u0073 from'./self.mjs';", .selected = false },
+        .{ .name = "escaped-export", .source = "export const v\\u0061lue=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false },
+        .{ .name = "identifiers-profile", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false, .ids = true },
+        .{ .name = "syntax-profile", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false, .syntax = true },
+        .{ .name = "split-profile", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false, .split = true },
+        .{ .name = "preserve-profile", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false, .preserve = true },
+        .{ .name = "es5-profile", .source = "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", .selected = false, .es5 = true },
+    };
+    for (cases) |case| try checkSelfNamespaceSelection(case);
+}
+
+const SelfNamespaceCorruption = enum { missing_plan, foreign_owner, foreign_backing, holder_id, getter_parent, getter_strict, read_scope, string_table, lexical_marker, root_name, cache_demand, statement_kind, statement_coordinates, record_target, record_kind, pending_profile };
+
+fn checkSelfNamespaceCorruption(attack: SelfNamespaceCorruption) !void {
+    errdefer std.debug.print("self namespace hostile failed attack={s}\n", .{@tagName(attack)});
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const module = graph.moduleAtMut(index).?;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    try lowering.validate(&graph, module);
+    const plan = graph.self_namespace_holders.get(index.toU32()).?;
+    const sem = if (module.semantic) |*value| value else return error.MissingSelfSemantic;
+    const ast = if (module.ast) |*value| value else return error.MissingSelfAst;
+    const saved_record = module.import_records[0];
+    const saved_nodes = ast.nodes;
+    const saved_owner = sem.owner_token;
+    const saved_id = sem.symbol_ids[@backingInt(plan.binding)];
+    const saved_scope = sem.scopes[plan.getter_scope.toIndex()];
+    const saved_strings = ast.string_table.items;
+    const saved_byte = saved_strings[0];
+    const saved_lexical = ast.preserve_lexical_declaration_indices.items;
+    const saved_lexical_value = saved_lexical[0];
+    const statement_extra = ast.getNode(plan.statement).data.extra;
+    const saved_kind = ast.extra_data.items[statement_extra];
+    const name = ast.getText(sem.symbols.items[plan.holder].name);
+    const saved_cache = module.transform_cache.?;
+    var read_row: ?usize = null;
+    for (sem.references, 0..) |reference, raw| if (reference.node_index == plan.read) {
+        read_row = raw;
+    };
+    const read_index = read_row orelse return error.MissingSelfGetterReference;
+    const saved_reference = sem.references[read_index];
+    switch (attack) {
+        .missing_plan => _ = graph.self_namespace_holders.remove(index.toU32()),
+        .foreign_owner => {
+            var foreign = sem.*;
+            foreign.owner_token = .unassigned;
+            sem.owner_token = foreign.captureOwnerToken();
+        },
+        .foreign_backing => ast.nodes.items = try module.parse_arena.?.allocator().dupe(@import("../parser/ast.zig").Node, ast.nodes.items),
+        .holder_id => @constCast(sem.symbol_ids)[@backingInt(plan.binding)] = plan.exported,
+        .getter_parent => @constCast(sem.scopes)[plan.getter_scope.toIndex()].parent = plan.getter_scope,
+        .getter_strict => @constCast(sem.scopes)[plan.getter_scope.toIndex()].is_strict = false,
+        .read_scope => @constCast(sem.references)[read_index].scope_id = plan.root_scope,
+        .string_table => ast.string_table.items[0] = 'x',
+        .lexical_marker => ast.preserve_lexical_declaration_indices.clearRetainingCapacity(),
+        .root_name => try @constCast(sem.scope_maps)[plan.root_scope.toIndex()].put(module.parse_arena.?.allocator(), name, plan.exported),
+        .cache_demand => module.transform_cache.?.runtime_helpers.keep_names = true,
+        .statement_kind => ast.extra_data.items[statement_extra] = @backingInt(@import("../parser/ast.zig").VariableDeclarationKind.@"var"),
+        .statement_coordinates => @constCast(sem.references)[read_index].scope_stmt_idx += 1,
+        .record_target => {
+            try writeFile(tmp.dir, "foreign.mjs", "export const value=9;");
+            const foreign_path = try @import("test_helpers.zig").absPath(&tmp, "foreign.mjs");
+            defer a.free(foreign_path);
+            module.import_records[0].resolved = try graph.addModule(std.testing.io, foreign_path);
+            try std.testing.expect(graph.getModule(module.import_records[0].resolved) != module);
+        },
+        .record_kind => module.import_records[0].kind = .dynamic_import,
+        .pending_profile => graph.minify_identifiers = true,
+    }
+    if (attack == .pending_profile) {
+        try std.testing.expectError(error.InvalidSelfNamespaceProfile, lowering.lower(&graph, options));
+    } else {
+        if (attack == .missing_plan) {
+            try std.testing.expectError(error.MissingSelfNamespaceHolder, lowering.validate(&graph, module));
+        } else try std.testing.expectError(error.InvalidSelfNamespaceHolder, lowering.validate(&graph, module));
+        if (linker.buildMetadataForAst(ast, index.toU32(), true, null, .esm, true)) |unexpected| {
+            var disposable = unexpected;
+            disposable.deinit();
+            return error.CorruptSelfNamespaceEmittedMetadata;
+        } else |_| {}
+    }
+    switch (attack) {
+        .missing_plan => graph.self_namespace_holders.putAssumeCapacity(index.toU32(), plan),
+        .foreign_owner => sem.owner_token = saved_owner,
+        .foreign_backing => ast.nodes = saved_nodes,
+        .holder_id => @constCast(sem.symbol_ids)[@backingInt(plan.binding)] = saved_id,
+        .getter_parent, .getter_strict => @constCast(sem.scopes)[plan.getter_scope.toIndex()] = saved_scope,
+        .read_scope, .statement_coordinates => @constCast(sem.references)[read_index] = saved_reference,
+        .string_table => ast.string_table.items[0] = saved_byte,
+        .lexical_marker => {
+            ast.preserve_lexical_declaration_indices.items = saved_lexical;
+            ast.preserve_lexical_declaration_indices.items[0] = saved_lexical_value;
+        },
+        .root_name => try @constCast(sem.scope_maps)[plan.root_scope.toIndex()].put(module.parse_arena.?.allocator(), name, plan.holder),
+        .cache_demand => module.transform_cache = saved_cache,
+        .statement_kind => ast.extra_data.items[statement_extra] = saved_kind,
+        .record_target, .record_kind => module.import_records[0] = saved_record,
+        .pending_profile => graph.minify_identifiers = false,
+    }
+    try lowering.validate(&graph, module);
+    // The valid foreign-target attack adds a second real module after lower;
+    // its restored output remains valid, while first-family admission stays closed.
+    if (attack == .record_target) {
+        try std.testing.expectError(error.InvalidSelfNamespaceProfile, lowering.lower(&graph, options));
+    } else try lowering.lower(&graph, options);
+    var metadata = try linker.buildMetadataForAst(ast, index.toU32(), true, null, .esm, true);
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
+    std.debug.print("self namespace actual hostile attack={s} rejected=true restored=true\n", .{@tagName(attack)});
+}
+
+test "self namespace AST holder rejects altered output authority before metadata and restores" {
+    var first_failure: ?anyerror = null;
+    inline for (std.meta.tags(SelfNamespaceCorruption)) |attack| {
+        checkSelfNamespaceCorruption(attack) catch |err| {
+            if (first_failure == null) first_failure = err;
+        };
+    }
+    if (first_failure) |err| return err;
+}
+
+fn selfNamespaceAllocationFailure(offset: usize) !bool {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var failing = std.testing.FailingAllocator.init(a, .{});
+    const controlled = failing.allocator();
+    var cache = resolve_cache_mod.ResolveCache.init(controlled, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(controlled, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const module = graph.moduleAtMut(index).?;
+    const before_ast = module.ast.?;
+    const before_sem = module.semantic.?;
+    const before_symbols = try a.dupe(semantic_symbol.Symbol, before_sem.symbols.items);
+    defer a.free(before_symbols);
+    const before_rows = try a.dupe(semantic_symbol.Reference, before_sem.references);
+    defer a.free(before_rows);
+    const before_ids = try a.dupe(?u32, before_sem.symbol_ids);
+    defer a.free(before_ids);
+    const binding = module.import_bindings[0];
+    // Force arena growth to take the fallible new-block path too.
+    failing.resize_fail_index = failing.resize_index;
+    failing.fail_index = failing.alloc_index + offset;
+    if (@import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false })) |_| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try @import("self_namespace_ast.zig").validate(&graph, module);
+        return true;
+    } else |err| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+        try std.testing.expect(module.ast.?.nodes.items.ptr == before_ast.nodes.items.ptr);
+        try std.testing.expect(module.ast.?.nodes.items.len == before_ast.nodes.items.len);
+        try std.testing.expect(module.ast.?.transformed_root == before_ast.transformed_root);
+        try std.testing.expectEqualDeep(before_symbols, module.semantic.?.symbols.items);
+        try std.testing.expectEqualDeep(before_rows, module.semantic.?.references);
+        try std.testing.expectEqualDeep(before_ids, module.semantic.?.symbol_ids);
+        try std.testing.expect(module.semantic.?.owner_token == before_sem.owner_token);
+        try std.testing.expect(module.import_bindings[0].local_role == binding.local_role);
+        try std.testing.expect(module.transform_cache == null);
+        // The same source can be retried after failure without a second parse.
+        try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try @import("self_namespace_ast.zig").validate(&graph, module);
+        return false;
+    }
+}
+
+test "self namespace AST holder allocation failures leave source and completion unpublished" {
+    var failures: usize = 0;
+    var reached_success = false;
+    for (0..128) |offset| {
+        if (try selfNamespaceAllocationFailure(offset)) {
+            reached_success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(reached_success and failures > 0);
+    std.debug.print("self namespace transaction actual OOM points={d} restored=true\n", .{failures});
+}
+
+test "self namespace lifecycle completed store eviction preserves ordinary control" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, graph.moduleAtMut(index).?);
+    var store = module_store_mod.PersistentModuleStore.init(a);
+    defer store.deinit();
+    // Seed a previous source-only cache entry from an independent real graph.
+    var seed = ModuleGraph.init(a, &cache);
+    defer seed.deinit();
+    try seed.build(std.testing.io, &.{entry});
+    seed.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(store.modules.contains(entry));
+    try writeFile(tmp.dir, "control.mjs", "export const control=11;");
+    const control_path = try @import("test_helpers.zig").absPath(&tmp, "control.mjs");
+    defer a.free(control_path);
+    const control_index = try graph.addModule(std.testing.io, control_path);
+    graph.parseModule(std.testing.io, control_index);
+    const control = graph.moduleAtMut(control_index).?;
+    try std.testing.expect(control.ast != null and control.semantic != null and control.parse_arena != null);
+    const control_mtime = try ModuleGraph.getMtime(std.testing.io, control_path);
+    graph.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(!store.modules.contains(entry));
+    try std.testing.expect(store.getIfFresh(control_path, control_mtime) != null);
+    try std.testing.expectEqual(@as(usize, 1), store.modules.count());
+    try std.testing.expect(graph.moduleAtMut(index).?.parse_arena != null);
+    try std.testing.expect(control.parse_arena == null);
+}
+
+test "self namespace lifecycle repeated lower preserves owner backing and counts" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, graph.moduleAtMut(index).?);
+    const module = graph.moduleAtMut(index).?;
+    const plan = graph.self_namespace_holders.get(index.toU32()).?;
+    const nodes = module.ast.?.nodes.items;
+    const refs = module.semantic.?.references;
+    const scopes = module.semantic.?.scopes;
+    const refs_copy = try a.dupe(semantic_symbol.Reference, refs);
+    defer a.free(refs_copy);
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, module);
+    try std.testing.expectEqual(@as(usize, 1), graph.self_namespace_holders.count());
+    try std.testing.expectEqual(plan.owner, module.semantic.?.owner_token);
+    try std.testing.expect(nodes.ptr == module.ast.?.nodes.items.ptr);
+    try std.testing.expectEqual(nodes.len, module.ast.?.nodes.items.len);
+    try std.testing.expect(refs.ptr == module.semantic.?.references.ptr);
+    try std.testing.expect(scopes.ptr == module.semantic.?.scopes.ptr);
+    try std.testing.expectEqual(scopes.len, module.semantic.?.scopes.len);
+    try std.testing.expectEqualDeep(refs_copy, module.semantic.?.references);
+}
+
+test "self namespace lifecycle invalidate reuses index without stale completed owner" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, graph.moduleAtMut(index).?);
+    const source_type = graph.moduleAtMut(index).?.module_type;
+    const source_loader = graph.moduleAtMut(index).?.loader;
+    graph.invalidateModule(index);
+    try std.testing.expect(!graph.self_namespace_holders.contains(index.toU32()));
+    try std.testing.expect(graph.moduleAtMut(index).?.ast == null);
+    try writeFile(tmp.dir, "self.mjs", "export const changed=9;");
+    const reused = try graph.addModule(std.testing.io, entry);
+    try std.testing.expectEqual(index, reused);
+    // In-place invalidation preserves the slot; like the production reparse
+    // flow, restore the known file identity before the parser reads it.
+    graph.moduleAtMut(reused).?.module_type = source_type;
+    graph.moduleAtMut(reused).?.loader = source_loader;
+    graph.parseModule(std.testing.io, reused);
+    const module = graph.moduleAtMut(reused).?;
+    try std.testing.expect(module.ast != null and module.semantic != null);
+    try std.testing.expect(std.mem.indexOf(u8, module.ast.?.source, "changed=9") != null);
+    try lowering.lower(&graph, options);
+    try std.testing.expect(!graph.self_namespace_holders.contains(reused.toU32()));
+    for (module.import_bindings) |binding| try std.testing.expect(binding.local_role != .materialized_const);
+}
+
+test "self namespace lifecycle full prepare clears slots and completed map" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, graph.moduleAtMut(index).?);
+    graph.prepareForPreservedRebuild();
+    try std.testing.expectEqual(@as(usize, 0), graph.moduleCount());
+    try std.testing.expectEqual(@as(usize, 0), graph.path_to_module.count());
+    try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+    try writeFile(tmp.dir, "self.mjs", "export const changed=9;");
+    const reused = try graph.addModule(std.testing.io, entry);
+    try std.testing.expectEqual(index, reused);
+    graph.parseModule(std.testing.io, reused);
+    try lowering.lower(&graph, options);
+    try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+}
+
+test "self namespace lifecycle missing plan rejects unchanged output then restores" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&graph, options);
+    try lowering.validate(&graph, graph.moduleAtMut(index).?);
+    const module = graph.moduleAtMut(index).?;
+    const plan = graph.self_namespace_holders.get(index.toU32()).?;
+    const nodes = module.ast.?.nodes.items;
+    const refs = module.semantic.?.references;
+    const refs_copy = try a.dupe(semantic_symbol.Reference, refs);
+    defer a.free(refs_copy);
+    try std.testing.expect(graph.self_namespace_holders.remove(index.toU32()));
+    try std.testing.expectError(error.MissingSelfNamespaceHolder, lowering.validate(&graph, module));
+    try std.testing.expectError(error.MissingSelfNamespaceHolder, lowering.lower(&graph, options));
+    try std.testing.expect(nodes.ptr == module.ast.?.nodes.items.ptr);
+    try std.testing.expectEqual(nodes.len, module.ast.?.nodes.items.len);
+    try std.testing.expectEqual(plan.owner, module.semantic.?.owner_token);
+    try std.testing.expectEqualDeep(refs_copy, module.semantic.?.references);
+    try std.testing.expect(module.import_bindings[0].local_role == .materialized_const);
+    graph.self_namespace_holders.putAssumeCapacity(index.toU32(), plan);
+    try lowering.validate(&graph, module);
+    try lowering.lower(&graph, options);
+}

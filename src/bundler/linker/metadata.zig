@@ -543,6 +543,26 @@ pub fn buildMetadataForAstWithHolderReservations(
     }
 
     const m = m_opt.?.*;
+    // Reject a stale output proof before generic metadata code can inspect
+    // corrupted scope ancestry or produce a replacement raw namespace holder.
+    for (m.import_bindings) |binding| {
+        if (binding.local_role != .materialized_const) continue;
+        if (binding.kind != .namespace or format != .esm) return error.InvalidSelfNamespaceHolder;
+        const actual_module = m_opt.?;
+        try @import("../self_namespace_ast.zig").validate(self.graph, actual_module);
+        const actual_ast = if (actual_module.ast) |*value| value else return error.InvalidSelfNamespaceHolder;
+        if (ast.nodes.items.ptr != actual_ast.nodes.items.ptr or ast.nodes.items.len != actual_ast.nodes.items.len or
+            ast.extra_data.items.ptr != actual_ast.extra_data.items.ptr or ast.extra_data.items.len != actual_ast.extra_data.items.len or
+            ast.source.ptr != actual_ast.source.ptr or ast.source.len != actual_ast.source.len or
+            ast.string_table.items.ptr != actual_ast.string_table.items.ptr or ast.string_table.items.len != actual_ast.string_table.items.len or
+            ast.transformed_root != actual_ast.transformed_root or ast.transform_boundary != actual_ast.transform_boundary or
+            ast.has_object_getter != actual_ast.has_object_getter) return error.InvalidSelfNamespaceHolder;
+        if (override_symbol_ids) |ids| {
+            const expected = actual_module.semantic.?.symbol_ids;
+            if (ids.len != expected.len) return error.InvalidSelfNamespaceHolder;
+            for (ids, expected) |current, known| if (current != known) return error.InvalidSelfNamespaceHolder;
+        }
+    }
     try self.prepareEsmInteropRuntimeNamesIfNeeded();
     try @constCast(self).prepareHmrRuntimeInternalNames();
 
@@ -1147,21 +1167,7 @@ pub fn buildMetadataForAstWithHolderReservations(
                 }
             }
 
-            if (ib.local_role == .materialized_const) {
-                if (ib.kind != .namespace) return error.InvalidSelfNamespaceHolder;
-                const actual_module = m_opt.?;
-                try @import("../self_namespace_ast.zig").validate(self.graph, actual_module);
-                const actual_ast = if (actual_module.ast) |*value| value else return error.InvalidSelfNamespaceHolder;
-                if (ast.nodes.items.ptr != actual_ast.nodes.items.ptr or ast.nodes.items.len != actual_ast.nodes.items.len or
-                    ast.extra_data.items.ptr != actual_ast.extra_data.items.ptr or ast.extra_data.items.len != actual_ast.extra_data.items.len or
-                    ast.source.ptr != actual_ast.source.ptr or ast.source.len != actual_ast.source.len) return error.InvalidSelfNamespaceHolder;
-                if (override_symbol_ids) |ids| {
-                    const expected = actual_module.semantic.?.symbol_ids;
-                    if (ids.len != expected.len) return error.InvalidSelfNamespaceHolder;
-                    for (ids, expected) |current, known| if (current != known) return error.InvalidSelfNamespaceHolder;
-                }
-                continue; // the actual const/getter AST supplies storage and uses
-            }
+            if (ib.local_role == .materialized_const) continue;
 
             // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로

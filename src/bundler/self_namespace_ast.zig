@@ -108,7 +108,7 @@ fn source(graph: *Graph, module: *const Module) !?Source {
     const binding = module.import_bindings[0];
     if (binding.kind != .namespace or binding.is_helper or binding.callsite_target != null or binding.local_role != .import_binding or binding.import_record_index != 0) return null;
     const record = module.import_records[0];
-    if (record.resolved != module.index or graph.getModule(record.resolved) != module or record.ts_elided or record.is_lazy_resolved) return null;
+    if (record.kind != .static_import or record.resolved != module.index or graph.getModule(record.resolved) != module or record.ts_elided or record.is_lazy_resolved) return null;
     const specifier = binding.local_symbol_node orelse return null;
     const declaration = binding.local_declaration_node orelse return null;
     if (@backingInt(specifier) >= sem.symbol_ids.len) return null;
@@ -152,6 +152,17 @@ fn source(graph: *Graph, module: *const Module) !?Source {
         if (len != 2) return null;
         try arguments.put(scratch_allocator, ast.extra_data.items[start], {});
     }
+    // Raw source spans, not decoded scanner labels, define this ASCII-only
+    // family. Escaped bindings remain on the supported existing path.
+    const holder_symbol = sem.symbols.items[holder];
+    const export_symbol = sem.symbols.items[export_sid];
+    for ([_]@import("../lexer/token.zig").Span{ holder_symbol.name, export_symbol.name }) |span| {
+        if (span.start & Ast.STRING_TABLE_BIT != 0 or span.start > span.end or span.end > ast.source.len or
+            !asciiIdentifier(ast.getText(span))) return null;
+    }
+    if (sem.scope_maps.len != sem.scopes.len or sem.scope_maps[root_scope.toIndex()].count() != 2 or
+        sem.scope_maps[root_scope.toIndex()].get(ast.getText(holder_symbol.name)) != @as(?usize, holder) or
+        sem.scope_maps[root_scope.toIndex()].get(ast.getText(export_symbol.name)) != @as(?usize, export_sid)) return null;
     var row: ?usize = null;
     var reads: usize = 0;
     for (sem.references, 0..) |reference, index| {
@@ -402,6 +413,11 @@ pub fn validate(graph: *const Graph, module: *const Module) !void {
     const ast = if (module.ast) |*value| value else return error.InvalidSelfNamespaceHolder;
     const sem = if (module.semantic) |*value| value else return error.InvalidSelfNamespaceHolder;
     if (plan.module != module or module.wrap_kind != .none) return error.InvalidSelfNamespaceHolder;
+    if (module.import_records.len != 1 or module.import_bindings.len != 1 or
+        module.import_bindings[0].kind != .namespace or module.import_bindings[0].import_record_index != 0) return error.InvalidSelfNamespaceHolder;
+    const record = module.import_records[0];
+    if (record.kind != .static_import or record.resolved != module.index or
+        graph.getModule(record.resolved) != module or record.ts_elided or record.is_lazy_resolved) return error.InvalidSelfNamespaceHolder;
     const cache = module.transform_cache orelse return error.InvalidSelfNamespaceHolder;
     if (!std.meta.eql(cache, plan.cache)) return error.InvalidSelfNamespaceHolder;
     try validatePayload(plan, ast, sem, module.import_bindings);
