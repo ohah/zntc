@@ -6377,10 +6377,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
 
     // Plain computed data properties, synchronous object methods, async object
     // methods with static keys or safe source-bound key expressions, computed
-    // accessors without `super`, and audited static class-field keys lower
-    // through tracked temps and output scopes. Accessor `super` may add a
-    // runtime helper module, so it stays on reanalysis. Generator methods and
-    // other async keys stay gated out.
+    // Accessors and audited static class-field keys lower through tracked
+    // temps and output scopes. Computed accessor super requires the actual
+    // synchronous method owner below and a mandatory exact output audit.
+    // Generator methods and other async keys stay gated out.
     const ComputedObjectKeyOwner = enum { data_property, method, accessor, static_class_field };
     const ComputedObjectKey = struct { node: ast_mod.NodeIndex, owner: ComputedObjectKeyOwner };
     var computed_object_keys: std.AutoHashMapUnmanaged(u32, ComputedObjectKeyOwner) = .empty;
@@ -6432,7 +6432,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const computed = candidate orelse continue;
                 if (computed.node.isNone() or @backingInt(computed.node) >= ast.nodes.items.len) return false;
                 if (ast.nodes.items[@backingInt(computed.node)].tag != .computed_property_key) continue;
-                if (computed.owner == .accessor and methodHasSuperExpression(ast, member)) continue;
+                if (computed.owner == .accessor and methodHasSuperExpression(ast, member)) {
+                    // The actual object member owns this synchronous accessor.
+                    // Its descriptor function keeps that known method scope;
+                    // ordinary nested functions remain a super-owner barrier.
+                    if (!methodSuperUsesOnlyDirectMethodBody(ast, member)) return false;
+                    const owner = semantic.scope_owner_map.get(raw_member) orelse return false;
+                    if (owner >= semantic.scopes.len or semantic.scopes[owner].kind != .function) return false;
+                    retained_sync_super_methods.put(ast.allocator, raw_member, {}) catch return false;
+                }
                 computed_object_keys.put(ast.allocator, @backingInt(computed.node), computed.owner) catch return false;
             }
         }
@@ -7229,6 +7237,27 @@ fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
             ast.extra_data.items.len - extra <= ast_mod.ClassExtra.super) return false;
         const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.ClassExtra.super]));
         if (!super_idx.isNone()) return true;
+    }
+    return false;
+}
+
+// This is an audit requirement, not independent admission: the syntax
+// preflight still validates each exact object member and its source scope.
+fn hasComputedObjectAccessorSuper(allocator: std.mem.Allocator, ast: *const ast_mod.Ast) !bool {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+    for (reachable) |raw| {
+        const object = ast.nodes.items[raw];
+        if (object.tag != .object_expression) continue;
+        var members = ast.iterateExtraList(object.data.list);
+        while (members.next()) |member_idx| {
+            const member = ast.getNode(member_idx);
+            if (member.tag != .method_definition) continue;
+            const flags = ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags);
+            if (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) == 0) continue;
+            const key = ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
+            if (!key.isNone() and ast.getNode(key).tag == .computed_property_key and methodHasSuperExpression(ast, member)) return true;
+        }
     }
     return false;
 }
@@ -11482,6 +11511,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var opts = self.transform_options_base;
     opts.unsupported = moduleUnsupported(opts.unsupported, module);
+    const computed_accessor_super_requires_exact = if (opts.unsupported.object_extensions)
+        hasComputedObjectAccessorSuper(arena_alloc, ast_ptr) catch true
+    else
+        false;
     opts.react_refresh = self.react_refresh and is_user_code;
     opts.styled_components = self.styled_components and is_user_code;
     opts.styled_components_ssr = self.styled_components_ssr;
@@ -12073,6 +12106,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             false;
         const exact = if (completed) exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null else null;
         can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
+    }
+
+    if (can_keep_semantic_graph and computed_accessor_super_requires_exact) {
+        const exact = exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null;
+        can_keep_semantic_graph = exact != null and exact.?.isClean();
     }
 
     var retained_helper_demands = transformer.runtime_helpers;
@@ -17080,4 +17118,46 @@ pub fn sideeffectEntryPreparedAdmissionForTest(m: *const Module, options: Transf
     var get = false;
     var set = false;
     return canKeepPrepassSemanticGraphPrepared(&context, m, options, &[_]Plugin{}, &get, &set, null, null, prepared);
+}
+
+fn computedAccessorSuperSourceAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+    var get = false;
+    var set = false;
+    return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, &get, &set) and get and set;
+}
+
+test "computed accessor super authority source admission keeps nested and Object boundaries" {
+    const controls = [_]struct { source: []const u8, admitted: bool }{
+        .{ .source = "var object={get['value'](){return super.value}};", .admitted = true },
+        .{ .source = "var object={set['value'](value){super.value=value}};", .admitted = true },
+        .{ .source = "var object={get['value'](){return (()=>super.value)()}};", .admitted = false },
+        .{ .source = "var object={get['value'](){return (async()=>super.value)()}};", .admitted = false },
+        .{ .source = "var object={get['value'](){return class extends super.value{}}};", .admitted = false },
+        .{ .source = "var Object=globalThis.Object;var object={get['value'](){return super.value}};", .admitted = false },
+    };
+    for (controls) |control| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const f = try runtimeHelperReanalysisTestFixture(arena.allocator(), control.source);
+        try std.testing.expectEqual(control.admitted, computedAccessorSuperSourceAdmissionForTest(&f));
+    }
+}
+
+test "computed accessor super authority source admission rejects a foreign scope kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var f = try runtimeHelperReanalysisTestFixture(arena.allocator(), "var object={get['value'](){return super.value}};");
+    try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
+    var owner: ?u32 = null;
+    for (f.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .method_definition) owner = f.semantic.scope_owner_map.get(@intCast(raw));
+    }
+    const scope = owner orelse return error.MissingAccessorScope;
+    const saved = f.semantic.scopes[scope];
+    @constCast(f.semantic.scopes)[scope].kind = .block;
+    try std.testing.expect(!computedAccessorSuperSourceAdmissionForTest(&f));
+    @constCast(f.semantic.scopes)[scope] = saved;
+    try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
 }
