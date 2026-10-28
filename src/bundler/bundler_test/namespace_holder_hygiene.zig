@@ -2,7 +2,7 @@
 const std = @import("std");
 const Bundler = @import("../bundler.zig").Bundler;
 const helpers = @import("../test_helpers.zig");
-const Case = struct { name: []const u8, entry: []const u8, dep: []const u8, expected: []const u8, lazy: ?[]const u8 = null, barrel: ?[]const u8 = null, forbidden_output: ?[]const u8 = null, owner_placeholder: bool = false };
+const Case = struct { name: []const u8, entry: []const u8, dep: []const u8, expected: []const u8, lazy: ?[]const u8 = null, barrel: ?[]const u8 = null, forbidden_output: ?[]const u8 = null, owner_placeholder: bool = false, provider_probe: ?[]const u8 = null, provider_expected: []const u8 = "" };
 const Format = @import("../types.zig").Format;
 const Profile = struct { format: Format = .cjs, preserve: bool = true, split: bool = false, minify: bool = false, syntax: bool = false };
 fn run(case: Case, profile: Profile) !void {
@@ -58,6 +58,16 @@ fn run(case: Case, profile: Profile) !void {
         } else std.debug.print("holder output:\n{s}\n", .{result.output});
     }
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+    if (case.provider_probe) |probe| {
+        try std.testing.expect(profile.format == .cjs and profile.preserve);
+        const provider = try helpers.absPath(&tmp, "dep.js");
+        defer std.testing.allocator.free(provider);
+        const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", probe, provider } });
+        defer std.testing.allocator.free(observed.stdout);
+        defer std.testing.allocator.free(observed.stderr);
+        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+        try std.testing.expectEqualStrings(case.provider_expected, observed.stdout);
+    }
 }
 
 const positives = [_]Case{
@@ -242,4 +252,42 @@ test "quoted ordinary named exports preserve local bindings and provider keys in
         .{ .name = "quoted-local-collision", .entry = "import{\"한글\" as read}from './dep.mjs';const value=9;console.log(read.n,value)", .dep = "const value={n:7};export{value as \"한글\"}", .expected = "7 9\n" },
     };
     for (cases) |case| for (profiles) |profile| try run(case, profile);
+}
+
+test "quoted ordinary aliases of one provider SID share selected consumer binding" {
+    const case = Case{
+        .name = "quoted-two-aliases-one-SID",
+        .entry = "import{\"first-key\" as first,\"second-key\" as second}from './dep.mjs';console.log(first===second,first.n,second.n)",
+        .dep = "const value={n:7};export{value as \"first-key\",value as \"second-key\"}",
+        .expected = "true 7 7\n",
+    };
+    for (profiles) |profile| try run(case, profile);
+}
+
+test "quoted ordinary provider standalone exposes actual StringValue own keys" {
+    const case = Case{
+        .name = "quoted-provider-independent-keys",
+        .entry = "import{\"\\\\u0061\" as first,\"\\\"key\\\"\" as second,\"한글\" as third}from './dep.mjs';console.log(first.n,second.n,third.n)",
+        .dep = "const value={n:7};export{value as \"\\\\u0061\",value as \"\\\"key\\\"\",value as \"한글\"}",
+        .expected = "7 7 7\n",
+        .provider_probe =
+        \\const ns=require(process.argv[1]);const expected=['\\u0061','"key"','한글'];const keys=Reflect.ownKeys(ns);if(expected.some(k=>!keys.includes(k)||Reflect.get(ns,k).n!==7))throw Error('wrong public StringValue');if(keys.some(k=>k!=='value'&&!expected.includes(k)))throw Error('unexpected source-syntax key');console.log('actual keys and values');
+        ,
+        .provider_expected = "actual keys and values\n",
+    };
+    for ([_]Profile{ .{}, .{ .minify = true } }) |profile| try run(case, profile);
+}
+
+test "quoted ordinary hoisted function provider standalone exposes actual callable own keys" {
+    const case = Case{
+        .name = "quoted-hoisted-function-independent-keys",
+        .entry = "import{\"\\\\u0061\" as first,\"\\\"key\\\"\" as second}from './dep.mjs';console.log(first(),second())",
+        .dep = "function value(){return 7}export{value as \"\\\\u0061\",value as \"\\\"key\\\"\"}",
+        .expected = "7 7\n",
+        .provider_probe =
+        \\const ns=require(process.argv[1]);const expected=['\\u0061','"key"'];const keys=Reflect.ownKeys(ns);if(expected.some(k=>!keys.includes(k)||Reflect.get(ns,k)()!==7))throw Error('wrong callable StringValue');if(keys.some(k=>k!=='value'&&!expected.includes(k)))throw Error('unexpected function source-syntax key');console.log('actual callable keys and values');
+        ,
+        .provider_expected = "actual callable keys and values\n",
+    };
+    for ([_]Profile{ .{}, .{ .minify = true } }) |profile| try run(case, profile);
 }

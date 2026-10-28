@@ -2537,7 +2537,9 @@ test "quoted ordinary export origin survives cached metadata and rejects foreign
     const module = graph.modules.at(0);
     try std.testing.expectEqual(@as(usize, 1), module.export_bindings.len);
     const original = module.export_bindings[0];
-    try std.testing.expectEqualStrings("\"한글\"", (try module.ordinaryQuotedExportLiteral(original)).?.literal_syntax);
+    const cold_verified = try module.ordinaryQuotedExportLiteral(original);
+    try std.testing.expect(cold_verified != null);
+    try std.testing.expectEqualStrings("\"한글\"", cold_verified.?.literal_syntax);
     var foreign_ast = module.ast.?;
     var foreign = original;
     foreign.public_key_origin.?.ast = &foreign_ast;
@@ -2588,6 +2590,8 @@ test "quoted ordinary export origin survives cached metadata and rejects foreign
     module.export_bindings = &.{};
     try graph.materializeFromCachedAst(module, module.parse_arena.?.allocator());
     try std.testing.expectEqual(@as(usize, 1), module.export_bindings.len);
-    try std.testing.expectEqualStrings("\"한글\"", (try module.ordinaryQuotedExportLiteral(module.export_bindings[0])).?.literal_syntax);
+    const restored_verified = try module.ordinaryQuotedExportLiteral(module.export_bindings[0]);
+    try std.testing.expect(restored_verified != null);
+    try std.testing.expectEqualStrings("\"한글\"", restored_verified.?.literal_syntax);
     try std.testing.expectEqual(original.symbol, module.export_bindings[0].symbol);
 }
