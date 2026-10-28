@@ -2278,6 +2278,30 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     return found_super;
 }
 
+// First static accessor family: one public identifier-key getter, whose
+// direct body only reads super. Existing producers own its G/home/global roles.
+fn isRetainableStaticGetterSuper(ast: *const ast_mod.Ast, semantic: *const @import("../module.zig").ModuleSemanticData, object: ast_mod.Node, member_idx: u32) bool {
+    if (ast.is_typescript or object.tag != .object_expression or object.data.list.len != 1 or member_idx >= ast.nodes.items.len) return false;
+    const member = ast.nodes.items[member_idx];
+    if (member.tag != .method_definition or !ast.hasExtra(member.data.extra, ast_mod.MethodExtra.flags + 1)) return false;
+    if (ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags) != ast_mod.MethodFlags.is_getter) return false;
+    const key = ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
+    const params = ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.params);
+    const body = ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.body);
+    if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or ast.getNode(key).tag != .identifier_reference or
+        params.isNone() or @backingInt(params) >= ast.nodes.items.len or ast.getNode(params).tag != .formal_parameters or ast.getNode(params).data.list.len != 0 or
+        body.isNone() or @backingInt(body) >= ast.nodes.items.len or !methodSuperUsesOnlyDirectMethodBody(ast, member)) return false;
+    const g = semantic.scope_owner_map.get(member_idx) orelse return false;
+    if (g >= semantic.scopes.len or semantic.scopes[g].kind != .function or semantic.scopes[g].blocksMangling()) return false;
+    const nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, body) catch return false;
+    defer ast.allocator.free(nodes);
+    for (nodes) |raw| switch (ast.nodes.items[raw].tag) {
+        .arrow_function_expression, .function_declaration, .function_expression, .function, .method_definition, .class_declaration, .class_expression, .with_statement, .assignment_expression, .update_expression, .computed_member_expression => return false,
+        else => {},
+    };
+    return true;
+}
+
 // A class async method can keep its home-object graph when every `super` use
 // belongs to audited arrow scopes at one uniform lexical depth below the
 // method. Async arrows on every path to `super` must keep their own state
@@ -6744,6 +6768,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var source_parent_map_ready = false;
     var retained_async_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_async_functions.deinit(ast.allocator);
+    var found_static_getter_super = false;
     var retained_sync_super_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_sync_super_methods.deinit(ast.allocator);
     if (options.unsupported.async_await) {
@@ -7053,7 +7078,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 };
                 const computed = candidate orelse continue;
                 if (computed.node.isNone() or @backingInt(computed.node) >= ast.nodes.items.len) return false;
-                if (ast.nodes.items[@backingInt(computed.node)].tag != .computed_property_key) continue;
+                if (ast.nodes.items[@backingInt(computed.node)].tag != .computed_property_key) {
+                    if (isRetainableStaticGetterSuper(ast, semantic, owner_node, raw_member)) {
+                        retained_sync_super_methods.put(ast.allocator, raw_member, {}) catch return false;
+                        found_static_getter_super = true;
+                    }
+                    continue;
+                }
                 if (computed.owner == .accessor and methodHasSuperExpression(ast, member)) {
                     // The actual object member owns this synchronous accessor.
                     // Its descriptor function keeps that known method scope;
@@ -7792,7 +7823,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    const safe_graph = found_arrow or found_native_await or found_native_generator or found_native_async_generator or
+    const safe_graph = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
         found_lowered_generator or
         found_lowered_async_function or
         found_native_tagged_template or found_lowered_tagged_template or
@@ -7866,6 +7897,12 @@ fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
 // This is an audit requirement, not independent admission: the syntax
 // preflight still validates each exact object member and its source scope.
 fn hasComputedObjectAccessorSuper(allocator: std.mem.Allocator, ast: *const ast_mod.Ast) !bool {
+    return hasObjectAccessorSuperForExact(allocator, ast, false);
+}
+fn hasStaticObjectGetterSuper(allocator: std.mem.Allocator, ast: *const ast_mod.Ast) !bool {
+    return hasObjectAccessorSuperForExact(allocator, ast, true);
+}
+fn hasObjectAccessorSuperForExact(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, static_getter: bool) !bool {
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
     defer allocator.free(reachable);
     for (reachable) |raw| {
@@ -7878,7 +7915,12 @@ fn hasComputedObjectAccessorSuper(allocator: std.mem.Allocator, ast: *const ast_
             const flags = ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags);
             if (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) == 0) continue;
             const key = ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
-            if (!key.isNone() and ast.getNode(key).tag == .computed_property_key and methodHasSuperExpression(ast, member)) return true;
+            if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) continue;
+            const selected = if (static_getter)
+                object.data.list.len == 1 and flags == ast_mod.MethodFlags.is_getter and ast.getNode(key).tag == .identifier_reference
+            else
+                ast.getNode(key).tag == .computed_property_key;
+            if (selected and methodHasSuperExpression(ast, member)) return true;
         }
     }
     return false;
@@ -8750,6 +8792,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
+    if ((self.flow or isFlowPath(module.path)) and (hasStaticObjectGetterSuper(self.allocator, ast) catch true)) return false;
     var top_level_statements: ?std.DynamicBitSet = null;
     defer {
         if (top_level_statements) |*mask| mask.deinit();
@@ -12138,6 +12181,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasComputedObjectAccessorSuper(arena_alloc, ast_ptr) catch true
     else
         false;
+    const static_getter_super_requires_exact = if (opts.unsupported.object_extensions)
+        hasStaticObjectGetterSuper(arena_alloc, ast_ptr) catch true
+    else
+        false;
     opts.react_refresh = self.react_refresh and is_user_code;
     opts.styled_components = self.styled_components and is_user_code;
     opts.styled_components_ssr = self.styled_components_ssr;
@@ -12349,7 +12396,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or flow_mapped_values_require_exact or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or static_getter_super_requires_exact or flow_mapped_values_require_exact or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -12742,7 +12789,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
     }
 
-    if (can_keep_semantic_graph and (computed_accessor_super_requires_exact or flow_mapped_values_require_exact)) {
+    if (can_keep_semantic_graph and (computed_accessor_super_requires_exact or static_getter_super_requires_exact or flow_mapped_values_require_exact)) {
         const exact = exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null;
         can_keep_semantic_graph = exact != null and exact.?.isClean();
     }
