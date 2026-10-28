@@ -21901,6 +21901,29 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
       }
       expect(report).toMatch(/clean=1(?:\s|$)/);
+      const providerMode = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+            line.includes('zntc:runtime/super-get'),
+        );
+      expect(providerMode, downlevel.stderr).toContain('semantic_graph=retained');
+      const providerReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') &&
+            line.includes('zntc:runtime/super-get'),
+        );
+      expect(providerReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(providerReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          providerReport,
+        ).toBe(0);
+      }
+      expect(providerReport).toMatch(/clean=1(?:\s|$)/);
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42 49 99 2 1 2 3\n');

@@ -160,6 +160,57 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
         semantic.applyEdit(edited);
         const completed = try certificate.complete(&t, &semantic, loaded.contents, root);
         try std.testing.expect(completed);
+        if (selected.?.externals.len != 0) {
+            try std.testing.expectEqual(@as(usize, 2), selected.?.externals.len);
+            const external = selected.?.externals[0];
+            const output = t.virtual_provider_visits.get(external.node) orelse return error.MissingExternalVisit;
+            try std.testing.expect(semantic.symbol_ids[output] == null);
+            try std.testing.expect(!t.explicit_global_reference_nodes.contains(output));
+            const expected_scope = scope_utils.expectedScope(t.ast, root, &parent_map, &owners, output) orelse return error.MissingExternalActualScope;
+            try std.testing.expectEqual(external.owner.scope, @backingInt(expected_scope));
+            const ids = @constCast(semantic.symbol_ids);
+            const foreign_sid = for (semantic.references) |row| {
+                if (!row.flags.declare and !row.node_index.isNone()) break @backingInt(row.symbol_id);
+            } else return error.MissingActualProviderRead;
+            ids[output] = foreign_sid;
+            const accepted_bound = try certificate.complete(&t, &semantic, loaded.contents, root);
+            ids[output] = null;
+            try std.testing.expect(!accepted_bound);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            const saved_ids = semantic.symbol_ids;
+            semantic.symbol_ids = saved_ids[0..output];
+            const accepted_missing_slot = try certificate.complete(&t, &semantic, loaded.contents, root);
+            semantic.symbol_ids = saved_ids;
+            try std.testing.expect(!accepted_missing_slot);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            const external_rows = @constCast(t.virtual_provider_source.?.externals);
+            const saved_external = external_rows[0];
+            const program_scope = analyzer.scope_owner_map.get(@backingInt(source_root)) orelse return error.MissingInitialProviderRootScope;
+            try std.testing.expect(program_scope != external.owner.scope);
+            external_rows[0].owner.scope = program_scope;
+            const accepted_wrong_use_scope = try certificate.complete(&t, &semantic, loaded.contents, root);
+            external_rows[0] = saved_external;
+            try std.testing.expect(!accepted_wrong_use_scope);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            const saved_second = external_rows[1];
+            external_rows[1] = external_rows[0];
+            const accepted_duplicate_external = try certificate.complete(&t, &semantic, loaded.contents, root);
+            external_rows[1] = saved_second;
+            try std.testing.expect(!accepted_duplicate_external);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            try t.explicit_global_reference_nodes.put(a, output, {});
+            const accepted_generated = try certificate.complete(&t, &semantic, loaded.contents, root);
+            _ = t.explicit_global_reference_nodes.remove(output);
+            try std.testing.expect(!accepted_generated);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            const live_scopes = @constCast(semantic.scopes);
+            const saved_parent = live_scopes[external.owner.scope].parent;
+            live_scopes[external.owner.scope].parent = .none;
+            const accepted_parent = try certificate.complete(&t, &semantic, loaded.contents, root);
+            live_scopes[external.owner.scope].parent = saved_parent;
+            try std.testing.expect(!accepted_parent);
+            try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+        }
         // Each independent mutation keeps every AST edge intact. A fresh exact
         // graph audit alone must not stand in for these stable source roles.
         const saved_symbol = semantic.symbols.items[0];
@@ -535,6 +586,14 @@ fn expectCachedCapture(a: std.mem.Allocator, current: *@import("../bundler/modul
 }
 
 test "virtual provider disk-copy actual producer rejects foreign ownership and restores atomically" {
+    try expectDiskCopyAuthority("public-field");
+}
+
+test "virtual super-get provider disk-copy retains its actual winning constructor and scopes" {
+    try expectDiskCopyAuthority("super-get");
+}
+
+fn expectDiskCopyAuthority(comptime short: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -545,7 +604,7 @@ test "virtual provider disk-copy actual producer rejects foreign ownership and r
     const source_options: helpers.SourceOptions = .{ .es5 = true };
     const plugins = [_]Plugin{helpers.makePlugin(&source_options)};
     const runner = Runner.init(&plugins);
-    const id = helpers.ID_PREFIX ++ "public-field";
+    const id = helpers.ID_PREFIX ++ short;
     var hook: @import("../bundler/plugin.zig").HookContext = .{};
     const winning = (try runner.runLoadWithOrigin(id, a, &hook)).?;
     const origin = helpers.acceptWinningLoad(winning, &source_options).?;
@@ -692,5 +751,43 @@ test "virtual provider disk-copy actual producer rejects foreign ownership and r
         try std.testing.expectEqualDeep(saved_scopes, current.semantic.?.scopes);
         try std.testing.expectEqualDeep(saved_rows, current.semantic.?.references);
         try expectCachedCapture(a, &current, source_options, true);
+    }
+}
+
+test "virtual super-get provider preserves its actual initial graph without post-transform analysis" {
+    const test_helpers = @import("../bundler/test_helpers.zig");
+    const profile = @import("../profile.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try test_helpers.writeFile(tmp.dir, "entry.mjs", "var parent={value:7};var object={get ['value'](){return super.value}};Object.setPrototypeOf(object,parent);console.log(object.value);");
+    const entry = try test_helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.minify_identifiers = true;
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+    try graph.build(std.testing.io, &.{entry});
+    const provider = graph.findModuleByPath(helpers.ID_PREFIX ++ "super-get") orelse return error.MissingActualSuperGetProvider;
+    try std.testing.expect(provider.ast != null and provider.semantic != null);
+    std.debug.print("super-get initial={d} post={d} winning={any}\n", .{ profile.count(.graph_discover_pm_semantic), profile.count(.graph_resync_semantic), provider.runtime_helper_source != null });
+    // Initial parser/analyzer execution is required; only the additional
+    // post-transform refresh of this real provider should disappear.
+    try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+}
+
+test "virtual super-get provider preserves actual external roles and loop owners" {
+    for ([_]bool{ false, true }) |minify| {
+        for ([_]bool{ false, true }) |full_driver| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            try observe(arena.allocator(), helpers.ID_PREFIX ++ "super-get", minify, full_driver);
+        }
     }
 }

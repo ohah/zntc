@@ -13,6 +13,7 @@ const helpers = @import("../runtime_helper_modules.zig");
 const NodeIndex = ast.NodeIndex;
 pub const Error = std.mem.Allocator.Error || error{InvalidProviderPreservation};
 const Owner = struct { node: u32, scope: u32 };
+const External = struct { node: u32, owner: Owner };
 const Export = struct { name: []const u8, span: @import("../lexer/token.zig").Span };
 pub const Source = struct {
     source_domain: *const ast.Ast,
@@ -26,6 +27,7 @@ pub const Source = struct {
     nodes: []const u32,
     node_set: std.AutoHashMapUnmanaged(u32, void),
     leaves: []const NodeIndex,
+    externals: []const External,
     symbols: []const sym.Symbol,
     scopes: []const scopes_mod.Scope,
     references: []const sym.Reference,
@@ -37,7 +39,47 @@ fn invalid() Error {
     return error.InvalidProviderPreservation;
 }
 
-fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transformer.zig").TransformOptions) bool {
+// Only called for the closed super-get catalog. Both walks consume actual
+// scope owners; copied syntax never selects a new scope from a name.
+fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, target: u32, scopes: []const scopes_mod.Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) Error!?Owner {
+    const Work = struct { node: NodeIndex, owner: ?Owner };
+    var stack: std.ArrayList(Work) = .empty;
+    var seen: std.AutoHashMapUnmanaged(u32, ?Owner) = .empty;
+    try stack.append(a, .{ .node = root, .owner = null });
+    while (stack.pop()) |work| {
+        if (work.node.isNone()) continue;
+        const raw = @backingInt(work.node);
+        if (raw >= tree.nodes.items.len) return null;
+        var current = work.owner;
+        if (owners.get(raw)) |scope| {
+            if (scope >= scopes.len) return null;
+            const kind = scopes[scope].kind;
+            const valid = switch (tree.nodes.items[raw].tag) {
+                .program => kind == .module,
+                .function_expression => kind == .function,
+                .block_statement, .while_statement => kind == .block,
+                else => false,
+            };
+            if (!valid) return null;
+            if (work.owner) |parent| {
+                if (parent.scope != scope and @backingInt(scopes[scope].parent) != parent.scope) return null;
+            } else if (!scopes[scope].parent.isNone()) return null;
+            current = .{ .node = raw, .scope = scope };
+        }
+        const prior = try seen.getOrPut(a, raw);
+        if (prior.found_existing) {
+            if (!std.meta.eql(prior.value_ptr.*, current)) return null;
+            continue;
+        }
+        prior.value_ptr.* = current;
+        if (raw == target) return current;
+        var children = walk.children(tree, tree.nodes.items[raw]);
+        while (children.next()) |child| try stack.append(a, .{ .node = child, .owner = current });
+    }
+    return null;
+}
+
+fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transformer.zig").TransformOptions, catalog: origin_mod.Catalog) bool {
     for (nodes) |raw| {
         const node = tree.nodes.items[raw];
         switch (node.tag) {
@@ -78,6 +120,7 @@ fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transfor
             .export_named_declaration,
             .export_specifier,
             => {},
+            .while_statement => if (catalog != .super_get) return false,
             .regexp_literal => if (!std.mem.eql(u8, tree.getText(node.data.string_ref), "/./")) return false,
             else => return false,
         }
@@ -189,11 +232,25 @@ fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mo
     for (options.plugins) |plugin| if (plugin.transform != null or plugin.onFunction != null or plugin.visitor != null or plugin.autoWorkletCallees.len != 0) return null;
     const root = tree.transformed_root orelse @as(NodeIndex, @fromBackingInt(@as(u32, @intCast(tree.nodes.items.len - 1))));
     const nodes = try walk.collectReachableNodeIndicesFrom(a, tree, root);
-    if (!eligible(tree, nodes, options)) return null;
+    if (!eligible(tree, nodes, options, loaded.catalog)) return null;
     var node_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (nodes) |raw| try node_set.put(a, raw, {});
     const leaves = try refs_walk.collectIdentifierReferences(a, tree, root);
-    for (leaves) |leaf| if (@backingInt(leaf) >= semantic.symbol_ids.len or semantic.symbol_ids[@backingInt(leaf)] == null) return null;
+    var externals: std.ArrayList(External) = .empty;
+    for (leaves) |leaf| {
+        const raw = @backingInt(leaf);
+        if (raw >= semantic.symbol_ids.len) return null;
+        if (semantic.symbol_ids[raw] != null) continue;
+        // The constructor/variant/content seal and actual lexical null-ID
+        // leaf establish this role. Spelling is only its fixed invariant;
+        // no name lookup is used to find a binding or decide its ScopeId.
+        if (loaded.catalog != .super_get or tree.getNode(leaf).tag != .identifier_reference or
+            !std.mem.eql(u8, tree.getText(tree.getNode(leaf).data.string_ref), "Object")) return null;
+        const owner = (try nearestOwner(a, tree, root, raw, semantic.scopes, &semantic.scope_owner_map)) orelse return null;
+        try externals.append(a, .{ .node = raw, .owner = owner });
+    }
+    if ((loaded.catalog == .super_get and externals.items.len != 2) or
+        (loaded.catalog != .super_get and externals.items.len != 0)) return null;
     var owners: std.ArrayList(Owner) = .empty;
     for (nodes) |raw| if (semantic.scope_owner_map.get(raw)) |scope| try owners.append(a, .{ .node = raw, .scope = scope });
     var exports: std.ArrayList(Export) = .empty;
@@ -211,6 +268,7 @@ fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mo
         .nodes = nodes,
         .node_set = node_set,
         .leaves = leaves,
+        .externals = try externals.toOwnedSlice(a),
         .symbols = try a.dupe(sym.Symbol, semantic.symbols.items),
         .scopes = try a.dupe(scopes_mod.Scope, semantic.scopes),
         .references = try a.dupe(sym.Reference, semantic.references),
@@ -398,6 +456,23 @@ fn validate(self: anytype, source: Source, view: View, root: NodeIndex) Error!vo
             matches += 1;
         }
         if (matches != 1) return invalid();
+    }
+    if ((source.origin.catalog == .super_get and source.externals.len != 2) or
+        (source.origin.catalog != .super_get and source.externals.len != 0)) return invalid();
+    if (source.externals.len != 0) {
+        var actual_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        for (live) |raw| if (owned(self, view, raw)) |scope| try actual_owners.put(self.allocator, raw, scope);
+        for (source.externals, 0..) |external, index| {
+            for (source.externals[0..index]) |earlier| if (earlier.node == external.node) return invalid();
+            const output = pairs.get(external.node) orelse return invalid();
+            const expected_owner = pairs.get(external.owner.node) orelse return invalid();
+            if (output >= view.ids.len or view.ids[output] != null or
+                self.explicit_global_reference_nodes.contains(output)) return invalid();
+            const actual = (try nearestOwner(self.allocator, self.ast, root, output, view.scopes, &actual_owners)) orelse return invalid();
+            if (actual.node != expected_owner or actual.scope != external.owner.scope) return invalid();
+            for (view.references) |row| if ((!row.node_index.isNone() and @backingInt(row.node_index) == output) or
+                (!row.declaration_node_index.isNone() and @backingInt(row.declaration_node_index) == output)) return invalid();
+        }
     }
     const output_leaves = try refs_walk.collectIdentifierReferences(self.allocator, self.ast, root);
     defer self.allocator.free(output_leaves);
