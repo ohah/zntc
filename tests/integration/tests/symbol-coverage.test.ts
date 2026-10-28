@@ -18956,6 +18956,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const esmOutput = join(dir, 'tla-out.mjs');
     const iifeOutput = join(dir, 'iife-out.js');
     const input = join(dir, 'entry.ts');
+    const dependency = join(dir, 'dep.ts');
     writeFileSync(
       input,
       [
@@ -18968,7 +18969,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ].join('\n'),
     );
 
-    const run = (target: string, format = 'cjs', outputPath = output) =>
+    const run = (target: string, format = 'cjs', outputPath = output, extraArgs: string[] = []) =>
       spawnSync(
         ZNTC_BIN,
         [
@@ -18978,6 +18979,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '--platform=node',
           `--format=${format}`,
           '--minify-identifiers',
+          ...extraArgs,
           '-o',
           outputPath,
         ],
@@ -19160,8 +19162,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(topLevelAwaitOutput.status, topLevelAwaitOutput.stderr).toBe(0);
       expect(topLevelAwaitOutput.stdout).toBe('42\n');
 
-      // TLA downleveling moves await into a generated async IIFE and still
-      // requires the established post-transform semantic analysis.
+      // ESM can defer TLA in its async module factory. That path should keep
+      // the original module graph even when the selected syntax target lacks
+      // native module-level await.
       const loweredTopLevelAwait = run('--target=es2019', 'esm', esmOutput);
       expect(loweredTopLevelAwait.status, loweredTopLevelAwait.stderr).toBe(0);
       const loweredMode = (loweredTopLevelAwait.stderr ?? '')
@@ -19170,13 +19173,26 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(loweredMode, loweredTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+      expect(loweredMode, loweredTopLevelAwait.stderr).toContain('semantic_graph=retained');
+      const loweredReport = (loweredTopLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(loweredReport, loweredTopLevelAwait.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(loweredReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${loweredReport}`,
+        ).toBe(0);
+      }
+      expect(loweredReport).toMatch(/clean=1(?:\s|$)/);
       const loweredOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
       expect(loweredOutput.status, loweredOutput.stderr).toBe(0);
       expect(loweredOutput.stdout).toBe('42\n');
 
-      // The same downlevel veto must hold when neither the ESM export deferral
-      // nor the IIFE async-factory path applies.
+      // The same exact graph supports CJS output where no ESM export deferral
+      // or IIFE async-factory path applies.
       const loweredCjsTopLevelAwait = run('--target=es2019', 'cjs');
       expect(loweredCjsTopLevelAwait.status, loweredCjsTopLevelAwait.stderr).toBe(0);
       const loweredCjsMode = (loweredCjsTopLevelAwait.stderr ?? '')
@@ -19185,10 +19201,176 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(loweredCjsMode, loweredCjsTopLevelAwait.stderr).toContain('semantic_graph=reanalyzed');
+      expect(loweredCjsMode, loweredCjsTopLevelAwait.stderr).toContain('semantic_graph=retained');
+      const loweredCjsReport = (loweredCjsTopLevelAwait.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(loweredCjsReport, loweredCjsTopLevelAwait.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(loweredCjsReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${loweredCjsReport}`,
+        ).toBe(0);
+      }
+      expect(loweredCjsReport).toMatch(/clean=1(?:\s|$)/);
+      expect(
+        Number(loweredCjsReport?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? 0),
+        loweredCjsReport,
+      ).toBeGreaterThan(0);
+      expect(
+        Number(loweredCjsReport?.match(/generated_bindings=(\d+)/)?.[1] ?? 0),
+        loweredCjsReport,
+      ).toBeGreaterThan(0);
       const loweredCjsOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(loweredCjsOutput.status, loweredCjsOutput.stderr).toBe(0);
       expect(loweredCjsOutput.stdout).toBe('42\n');
+
+      // Attack distinct scope/identity boundaries in the generated wrapper.
+      // Every case uses CJS so the transformer really creates the async IIFE;
+      // unlike the ESM async-factory path above, these exercise its new
+      // ScopeId and moved source references.
+      const loweredGraphCases: Array<{
+        name: string;
+        source: string;
+        expected: string;
+        dependency?: string;
+        args?: string[];
+        expectedMode?: 'retained' | 'reanalyzed';
+      }> = [
+        {
+          name: 'wrapper with no source bindings',
+          source: "await Promise.resolve(); console.log('plain');",
+          expected: 'plain\n',
+        },
+        {
+          name: 'pre-await module binding read inside wrapper',
+          source: 'const base = 40; await Promise.resolve(); console.log(base + 2);',
+          expected: '42\n',
+        },
+        {
+          name: 'two awaits with a binding created between them',
+          source:
+            'const base = 40; await Promise.resolve(); const middle = base + 1; ' +
+            'await Promise.resolve(); console.log(middle + 1);',
+          expected: '42\n',
+        },
+        {
+          name: 'post-await binding captured by a nested function',
+          source:
+            'await Promise.resolve(); const value = 42; function read() { return value; } ' +
+            'console.log(read());',
+          expected: '42\n',
+        },
+        {
+          name: 'nested block scope moved under wrapper',
+          source:
+            'await Promise.resolve(); { const inner = 41; await Promise.resolve(); ' +
+            'console.log(inner + 1); }',
+          expected: '42\n',
+        },
+        {
+          name: 'catch binding stays in its source catch scope',
+          source: "try { await Promise.reject('caught'); } catch (error) { console.log(error); }",
+          expected: 'caught\n',
+        },
+        {
+          name: 'top-level for-await creates exact loop binding',
+          source: 'for await (const value of [40, 2]) console.log(value);',
+          expected: '40\n2\n',
+        },
+        {
+          name: 'post-await function declaration hoisted before wrapper',
+          source:
+            'await Promise.resolve(); function answer() { return 42; } console.log(answer());',
+          expected: '42\n',
+        },
+        {
+          name: 'import binding read crosses the wrapper boundary',
+          source: "import { value } from './dep.ts'; await Promise.resolve(); console.log(value);",
+          dependency: 'export const value = 42;',
+          expected: '42\n',
+          expectedMode: 'reanalyzed',
+        },
+        {
+          name: 'syntax minification with no graph edit keeps wrapper scope',
+          source: "await Promise.resolve(); console.log('minified');",
+          args: ['--minify-syntax'],
+          expected: 'minified\n',
+        },
+        {
+          name: 'dropping the only module await refreshes the lowered graph',
+          source: "DEV: await Promise.resolve(); console.log('after');",
+          args: ['--drop-labels=DEV'],
+          expected: 'after\n',
+        },
+        {
+          name: 'syntax minification that removes a binding keeps the analyzer fallback',
+          source:
+            'const base = 40; await Promise.resolve(); const value = base + 2; ' +
+            'console.log(value);',
+          args: ['--minify-syntax'],
+          expected: '42\n',
+          expectedMode: 'reanalyzed',
+        },
+      ];
+
+      for (const entry of loweredGraphCases) {
+        writeFileSync(input, entry.source);
+        writeFileSync(dependency, entry.dependency ?? 'export {};');
+        const result = run('--target=es2019', 'cjs', output, entry.args ?? []);
+        expect(result.status, `${entry.name}: ${result.stderr}`).toBe(0);
+        const mode = (result.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(mode, `${entry.name}: ${result.stderr}`).toContain(
+          `semantic_graph=${entry.expectedMode ?? 'retained'}`,
+        );
+        const report = (result.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, `${entry.name}: ${result.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${entry.name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        expect(
+          Number(report?.match(/generated_bindings=(\d+)/)?.[1] ?? 0),
+          `${entry.name}: ${report}`,
+        ).toBeGreaterThan(0);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${entry.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, entry.name).toBe(entry.expected);
+      }
+
+      // Direct eval can observe wrapper-local generated names. It remains on
+      // the conservative analyzer path while preserving runtime behavior.
+      writeFileSync(
+        input,
+        "const value = 40; await Promise.resolve(); console.log(eval('value + 2'));",
+      );
+      const directEvalTla = run('--target=es2019', 'cjs');
+      expect(directEvalTla.status, directEvalTla.stderr).toBe(0);
+      const directEvalTlaMode = (directEvalTla.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(directEvalTlaMode, directEvalTla.stderr).toContain('semantic_graph=reanalyzed');
+      const directEvalTlaOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalTlaOutput.status, directEvalTlaOutput.stderr).toBe(0);
+      expect(directEvalTlaOutput.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
