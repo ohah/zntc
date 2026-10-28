@@ -52,8 +52,13 @@ fn resolve(module: *const Module, request: Request) ?Witness {
             sem.scope_maps[0].get(ast.getText(symbol.name)) != @as(?usize, sid)) return null;
     }
     for (sem.references) |reference| {
-        if (!reference.flags.declare or reference.scope_id != root_scope or reference.symbol_id.isNone() or
-            @backingInt(reference.symbol_id) >= sem.symbols.items.len or reference.declaration_node_index.isNone()) return null;
+        const anchor = reference.declaration_node_index;
+        if (!std.meta.eql(reference.flags, @import("../semantic/symbol.zig").ReferenceFlags{ .declare = true }) or
+            !reference.node_index.isNone() or reference.scope_id != root_scope or reference.symbol_id.isNone() or
+            @backingInt(reference.symbol_id) >= sem.symbols.items.len or anchor.isNone() or
+            @backingInt(anchor) >= ast.nodes.items.len or @backingInt(anchor) >= sem.symbol_ids.len or
+            ast.nodes.items[@backingInt(anchor)].tag != .binding_identifier or
+            sem.symbol_ids[@backingInt(anchor)] != @as(?u32, @backingInt(reference.symbol_id))) return null;
     }
 
     var selected: ?@TypeOf(module.export_bindings[0]) = null;
