@@ -102,6 +102,7 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
     const mod_ptr = self.modules.at(idx_usize);
     const saved_path = mod_ptr.path;
     const saved_index = mod_ptr.index;
+    mod_ptr.self_namespace_source_receipt = null;
     mod_ptr.deinit(self.allocator);
     mod_ptr.* = @import("../module.zig").Module.init(saved_index, saved_path);
 }

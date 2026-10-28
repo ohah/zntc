@@ -587,6 +587,9 @@ pub const Module = struct {
     /// Borrowed from this module's actual winning builtin load constructor.
     runtime_helper_source: ?@import("../runtime_helper_source_origin.zig").Origin = null,
     runtime_helper_cache_source: ?RuntimeHelperCacheSource = null,
+    /// Arena-owned proof from this Module's actual decoded source installation.
+    /// Never serialized or transferred to another Module owner.
+    self_namespace_source_receipt: ?*const @import("self_namespace_ast.zig").RestoredSourceReceipt = null,
     /// JS plugin load/transform 이 반환한 Source Map V3 JSON chain.
     /// 순서는 transform 실행 순서이며 parse_arena 가 backing 을 소유한다.
     plugin_source_maps: []const []const u8 = &.{},
@@ -1492,6 +1495,7 @@ pub const Module = struct {
     }
 
     pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {
+        self.self_namespace_source_receipt = null;
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
