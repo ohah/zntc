@@ -749,6 +749,7 @@ pub const Linker = struct {
     /// 충돌 후보 판정. 과거 inline 루프(local_name 으로 매칭한 *첫* binding 으로 판정)와 동일
     /// 로직을 추출해 linear-scan 경로와 index-lookup 경로가 공유한다(드리프트 차단).
     fn importBindingGeneratesTopLevelVar(self: *const Linker, m: *const Module, ib: ImportBinding) bool {
+        if (ib.local_role == .materialized_const) return false; // actual AST const owns this SID
         if (self.importBindingIsExternalParam(m, ib)) return false;
         if (ib.kind == .namespace) return true;
         if (ib.import_record_index >= m.import_records.len) return false;

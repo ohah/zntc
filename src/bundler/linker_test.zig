@@ -6120,3 +6120,104 @@ test "namespace holder hygiene same Linker warm cache keeps immutable input foot
         }
     }
 }
+
+test "self namespace AST holder retains the exact import declaration identity" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7; console.log(Reflect.get(ns,'value')); import * as ns from './self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&graph, "self.mjs") orelse return error.MissingSelfModule;
+    const module = graph.moduleAtMut(index).?;
+    try std.testing.expectEqual(@as(usize, 1), module.import_bindings.len);
+    const source_binding = module.import_bindings[0];
+    const source_ast = module.ast orelse return error.MissingSelfAst;
+    const source_sem = module.semantic orelse return error.MissingSelfSemantic;
+    const source_anchor = source_binding.local_symbol_node orelse return error.MissingSelfImportAnchor;
+    const sid = source_sem.symbol_ids[@backingInt(source_anchor)] orelse return error.MissingSelfImportIdentity;
+    try std.testing.expect(source_binding.kind == .namespace);
+    try std.testing.expect(module.import_records[source_binding.import_record_index].resolved == index);
+    try std.testing.expect(module.wrap_kind == .none);
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, source_sem.symbols.items[sid].kind);
+    try std.testing.expect(module.transform_cache == null);
+    try std.testing.expect(source_sem.owner_token == .unassigned);
+    var source_row_count: usize = 0;
+    for (source_sem.references) |reference| {
+        if (@backingInt(reference.symbol_id) != sid or !reference.flags.declare) continue;
+        source_row_count += 1;
+        try std.testing.expect(reference.declaration_node_index == source_anchor);
+    }
+    try std.testing.expectEqual(@as(usize, 1), source_row_count);
+    const source_symbol = source_sem.symbols.items[sid];
+    const source_rows = try a.dupe(semantic_symbol.Reference, source_sem.references);
+    defer a.free(source_rows);
+    const source_root: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@as(u32, @intCast(source_ast.nodes.items.len - 1)));
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try lowering.validate(&graph, module);
+    const plan = graph.self_namespace_holders.get(index.toU32()) orelse return error.MissingSelfNamespacePlan;
+    const output = module.semantic.?;
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.variable_const, output.symbols.items[sid].kind);
+    try std.testing.expect(plan.holder == sid and plan.binding != source_anchor and plan.root != source_root);
+    try std.testing.expectEqual(@as(?u32, sid), output.symbol_ids[@backingInt(plan.binding)]);
+    try std.testing.expect(module.transform_cache != null);
+    try std.testing.expectEqualDeep(source_symbol, source_sem.symbols.items[sid]);
+    try std.testing.expectEqualDeep(source_rows, source_sem.references);
+    try std.testing.expect(source_sem.owner_token == .unassigned);
+    try std.testing.expectEqual(@as(usize, 2), output.scopes.len);
+    try std.testing.expect(output.scopes[plan.getter_scope.toIndex()].parent == plan.root_scope);
+    // Same-graph calls consume the output proof; no second holder is created.
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    try lowering.validate(&graph, module);
+    const ast = if (module.ast) |*value| value else return error.MissingSelfOutput;
+    var metadata = try linker.buildMetadataForAst(ast, index.toU32(), true, null, .esm, true);
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
+    try std.testing.expect(metadata.cjs_import_preamble == null or metadata.cjs_import_preamble.?.len == 0);
+    std.debug.print("self namespace completed sourceSID={d} outputbinding={d} getterScope={d} exportedSID={d} rawholders=0\n", .{ sid, @backingInt(plan.binding), @backingInt(plan.getter_scope), plan.exported });
+}
+
+test "self namespace AST holder observes actual getter creator topology" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, "export const value=7; const holder={get value(){return value;}};");
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    const root = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    try std.testing.expect(parser.ast.has_object_getter);
+    var method_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        method_count += 1;
+        const params = parser.ast.extra_data.items[node.data.extra + 1];
+        const body = parser.ast.extra_data.items[node.data.extra + 2];
+        const method_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        const params_scope = analyzer.scope_owner_map.get(params);
+        const body_scope = analyzer.scope_owner_map.get(body);
+        std.debug.print("self namespace source getter method={d} flags={d} method_scope={any} params={d}/scope={any} body={d}/scope={any} root={d}\n", .{ raw, parser.ast.extra_data.items[node.data.extra + 3], method_scope, params, params_scope, body, body_scope, @backingInt(root) });
+        for (analyzer.references.items) |reference| {
+            if (!reference.flags.read) continue;
+            std.debug.print("self namespace source getter read node={d} sid={d} scope={d} stmt={d}/{d}\n", .{ @backingInt(reference.node_index), @backingInt(reference.symbol_id), @backingInt(reference.scope_id), reference.stmt_idx, reference.scope_stmt_idx });
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), method_count);
+}

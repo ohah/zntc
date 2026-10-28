@@ -366,6 +366,9 @@ pub const ModuleGraph = struct {
     has_unsafe_load_plugins: bool = false,
     has_unsafe_transform_plugins: bool = false,
 
+    /// Graph-local, non-serialized authority for completed self namespace AST.
+    self_namespace_holders: std.AutoHashMapUnmanaged(u32, @import("self_namespace_ast.zig").Completed) = .empty,
+
     pub const PkgInfo = graph_state.PkgInfo;
     pub const WorkerEntry = graph_state.WorkerEntry;
     const RequestedExports = graph_state.RequestedExports;
