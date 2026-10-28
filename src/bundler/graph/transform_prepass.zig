@@ -7977,6 +7977,20 @@ fn refreshRetainedModuleTopLevelAwait(
     return true;
 }
 
+/// A successful TLA lowering must move every top-level await under the
+/// generated async function's exact ScopeId owner. If the retained graph scan
+/// still sees module-level await, a missing or stale wrapper owner must send
+/// the caller to the full analyzer path.
+fn refreshRetainedModuleTopLevelAwaitAfterLowering(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    module: *Module,
+    lowered_tla: bool,
+) bool {
+    if (!refreshRetainedModuleTopLevelAwait(allocator, ast, module)) return false;
+    return !lowered_tla or !module.self_uses_top_level_await;
+}
+
 fn shouldRefreshRetainedModuleTopLevelAwait(
     can_keep_semantic_graph: bool,
     retained_simple_console_drops: bool,
@@ -8179,12 +8193,10 @@ fn canKeepPrepassSemanticGraphPrepared(
             (if (module.semantic) |*sem| !hasLegacyAssignmentFieldSource(self.allocator, ast, sem, options) and
                 !hasNativePrivateFieldSource(self.allocator, ast, sem, options) else true)) or
         (ast.has_decorator and has_legacy_decorator_options and !retained_legacy_decorators)) return false;
-    const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
-    // The parser already records native TLA exactly. Lowered TLA moves await
-    // into a generated async IIFE, so keep that case on the full resync path.
-    // The TLA wrapper/deferral options only affect this program-level lowering
-    // when the module actually contains top-level await.
-    if (has_top_level_await and options.unsupported.top_level_await) return false;
+    // Lowered TLA creates an exact async-function scope and reattaches moved
+    // source scopes/references in the transformer semantic editor. The final
+    // retained-graph audit below remains responsible for rejecting an
+    // incomplete edit; do not veto the whole module before that proof runs.
     // Label and console deletion update the module-local TLA bit from the
     // retained AST after editing.
     const has_mapped_import_split = options.hasMappedImportToSplit(ast);
@@ -10283,6 +10295,7 @@ const RetainedTlaTestCorruption = enum {
     missing_owner_map,
     out_of_range_scope_owner,
     missing_scopes,
+    missing_scope_parent,
 };
 
 fn hasTopLevelAwaitForTest(source: []const u8, corruption: RetainedTlaTestCorruption) !?bool {
@@ -10313,10 +10326,21 @@ fn hasTopLevelAwaitForTest(source: []const u8, corruption: RetainedTlaTestCorrup
             break;
         }
     }
+    const scopes = try allocator.dupe(SemanticScope, analyzer.scopes.items);
+    if (corruption == .missing_scope_parent) {
+        var removed_parent = false;
+        for (scopes) |*scope| {
+            if (scope.kind != .block) continue;
+            scope.parent = .none;
+            removed_parent = true;
+            break;
+        }
+        if (!removed_parent) return error.MissingTestBlockScope;
+    }
     return hasTopLevelAwaitInRetainedGraph(
         allocator,
         &parser.ast,
-        if (corruption == .missing_scopes) &.{} else analyzer.scopes.items,
+        if (corruption == .missing_scopes) &.{} else scopes,
         &scope_owner_map,
     );
 }
@@ -10339,9 +10363,21 @@ test "retained graph TLA scan rejects incomplete scope evidence" {
     try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .missing_owner_map)) == null);
     try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .out_of_range_scope_owner)) == null);
     try std.testing.expect((try hasTopLevelAwaitForTest("await Promise.resolve(1);", .missing_scopes)) == null);
+    try std.testing.expect((try hasTopLevelAwaitForTest("{ await Promise.resolve(1); }", .missing_scope_parent)) == null);
 }
 
-fn refreshRetainedModuleTlaForTest(source: []const u8, initial_self_tla: bool) !?bool {
+const RetainedLoweredTlaCorruption = enum {
+    none,
+    missing_generated_function_owner,
+    out_of_range_await_owner,
+};
+
+fn refreshRetainedModuleTlaForTest(
+    source: []const u8,
+    initial_self_tla: bool,
+    lowered_tla: bool,
+    corruption: RetainedLoweredTlaCorruption,
+) !?bool {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -10378,20 +10414,60 @@ fn refreshRetainedModuleTlaForTest(source: []const u8, initial_self_tla: bool) !
         .numeric_const_texts = analyzer.numeric_const_texts,
         .helper_scope_map = analyzer.helper_scope_map,
     };
-    if (!refreshRetainedModuleTopLevelAwait(allocator, &parser.ast, &module)) return null;
+    if (corruption == .missing_generated_function_owner) {
+        var owners = module.semantic.?.scope_owner_map.iterator();
+        var generated_function_owner: ?u32 = null;
+        while (owners.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (raw >= parser.ast.nodes.items.len) continue;
+            if (parser.ast.nodes.items[raw].tag != .arrow_function_expression) continue;
+            generated_function_owner = raw;
+            break;
+        }
+        _ = module.semantic.?.scope_owner_map.remove(generated_function_owner orelse return error.MissingArrowScopeOwner);
+    }
+    if (corruption == .out_of_range_await_owner) {
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .await_expression and node.tag != .for_await_of_statement) continue;
+            try module.semantic.?.scope_owner_map.put(allocator, @intCast(raw), @intCast(analyzer.scopes.items.len));
+            break;
+        }
+    }
+    if (!refreshRetainedModuleTopLevelAwaitAfterLowering(allocator, &parser.ast, &module, lowered_tla)) return null;
     return module.self_uses_top_level_await;
 }
 
 test "retained graph refreshes only module-local TLA metadata" {
-    try std.testing.expect(!(try refreshRetainedModuleTlaForTest("console.log('ok');", true)).?);
+    try std.testing.expect(!(try refreshRetainedModuleTlaForTest("console.log('ok');", true, false, .none)).?);
     try std.testing.expect((try refreshRetainedModuleTlaForTest(
         "for await (const value of values) { void value; }",
         false,
+        false,
+        .none,
     )).?);
     try std.testing.expect(!(try refreshRetainedModuleTlaForTest(
         "async function read() { await Promise.resolve(1); }",
         true,
+        false,
+        .none,
     )).?);
+}
+
+test "lowered TLA graph fails closed when its generated async scope owner is missing" {
+    const source = "(async () => { await Promise.resolve(1); })();";
+    try std.testing.expect(!(try refreshRetainedModuleTlaForTest(source, true, true, .none)).?);
+    try std.testing.expect((try refreshRetainedModuleTlaForTest(
+        source,
+        true,
+        true,
+        .missing_generated_function_owner,
+    )) == null);
+    try std.testing.expect((try refreshRetainedModuleTlaForTest(
+        source,
+        false,
+        false,
+        .out_of_range_await_owner,
+    )) == null);
 }
 
 fn canRetainDroppedLabelTlaForTest(unsupported_top_level_await: bool) !bool {
@@ -10540,9 +10616,9 @@ fn canRetainDirectEvalConsoleDropForTest(source: []const u8) !bool {
     return canRetainDirectEvalConsoleDropForTestWithOptions(source, options);
 }
 
-test "drop-label TLA retains the graph only for native TLA output" {
+test "drop-label TLA remains eligible for exact retained lowering" {
     try std.testing.expect(try canRetainDroppedLabelTlaForTest(false));
-    try std.testing.expect(!try canRetainDroppedLabelTlaForTest(true));
+    try std.testing.expect(try canRetainDroppedLabelTlaForTest(true));
 }
 
 test "drop-label retention with direct eval requires an unchanged dynamic environment" {
@@ -11919,7 +11995,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         }
     }
 
-    if (shouldRefreshRetainedModuleTopLevelAwait(
+    const lowered_tla = transformer.tla_iife_stmt != null;
+    if (lowered_tla or shouldRefreshRetainedModuleTopLevelAwait(
         can_keep_semantic_graph,
         retained_simple_console_drops,
         has_dropped_labeled_statement,
@@ -11927,7 +12004,12 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     )) {
         // Finalize resets the transitive bit from this module-local bit before
         // propagating TLA through the updated import graph.
-        if (!refreshRetainedModuleTopLevelAwait(arena_alloc, transformer.ast, module)) {
+        if (!refreshRetainedModuleTopLevelAwaitAfterLowering(
+            arena_alloc,
+            transformer.ast,
+            module,
+            lowered_tla,
+        )) {
             can_keep_semantic_graph = false;
         }
     }

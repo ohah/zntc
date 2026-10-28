@@ -2996,6 +2996,7 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
     analyzer.is_module = true;
     try analyzer.analyze();
     const original_symbol_count = analyzer.symbols.items.len;
+    const original_scope_count = analyzer.scopes.items.len;
     const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
 
@@ -3028,6 +3029,24 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
     const decl = transformer.ast.getNode(decl_idx);
     if (decl.tag != .variable_declarator or decl.data.extra >= transformer.ast.extra_data.items.len)
         return error.InvalidTlaPromiseBinding;
+
+    // Follow the actual synthetic promise initializer to the exact async
+    // wrapper. A different generated arrow elsewhere in the reachable AST
+    // cannot satisfy this producer's ScopeId ownership contract.
+    const initializer = transformer.readNodeIdx(decl.data.extra, 2);
+    if (initializer.isNone()) return error.MissingTlaWrapperCall;
+    const call = transformer.ast.getNode(initializer);
+    if (call.tag != .call_expression) return error.InvalidTlaWrapperCall;
+    const wrapper = transformer.readNodeIdx(call.data.extra, 0);
+    if (wrapper.isNone() or transformer.ast.getNode(wrapper).tag != .arrow_function_expression)
+        return error.InvalidTlaWrapperArrow;
+    const wrapper_scope_id = edited.scope_owner_map.get(@backingInt(wrapper)) orelse
+        return error.MissingTlaWrapperScopeOwner;
+    try std.testing.expect(wrapper_scope_id >= original_scope_count);
+    try std.testing.expect(wrapper_scope_id < edited.scopes.len);
+    try std.testing.expectEqual(.function, edited.scopes[wrapper_scope_id].kind);
+    try std.testing.expectEqual(@as(u32, program_scope), @backingInt(edited.scopes[wrapper_scope_id].parent));
+
     const binding_idx: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[decl.data.extra]));
     const binding = transformer.ast.getNode(binding_idx);
     if (binding.tag != .binding_identifier) return error.InvalidTlaPromiseBinding;
