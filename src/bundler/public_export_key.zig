@@ -91,3 +91,41 @@ pub fn fromSyntax(allocator: std.mem.Allocator, syntax: []const u8) Error!Key {
     }
     return .{ .text = try out.toOwnedSlice(allocator), .owned = true };
 }
+
+/// A StringValue is already decoded. In particular a leading quote or backslash
+/// is data and must never be interpreted as another layer of source syntax.
+pub fn fromStringValue(value: []const u8) Key {
+    return .{ .text = value };
+}
+
+/// Call only with the original string_literal producer field.
+pub fn fromLiteralSyntax(allocator: std.mem.Allocator, syntax: []const u8) Error!Key {
+    if (syntax.len < 2 or (syntax[0] != '"' and syntax[0] != 39) or syntax[syntax.len - 1] != syntax[0])
+        return error.InvalidPublicExportName;
+    return fromSyntax(allocator, syntax);
+}
+
+/// Append an ordinary property access from a decoded value, without introducing
+/// an Object helper or changing the receiver's existing authority.
+pub fn appendMember(allocator: std.mem.Allocator, out: anytype, key: Key) !void {
+    if (std.mem.indexOfScalar(u8, key.text, '\\') == null and
+        @import("linker/identifier_name.zig").isIdentifierName(key.text))
+    {
+        try out.append(allocator, '.');
+        try out.appendSlice(allocator, key.text);
+    } else {
+        const quoted = try std.json.Stringify.valueAlloc(allocator, key.text, .{});
+        defer allocator.free(quoted);
+        try out.append(allocator, '[');
+        try out.appendSlice(allocator, quoted);
+        try out.append(allocator, ']');
+    }
+}
+
+test "quoted public key StringValue never decodes literal quote or backslash data" {
+    const value = fromStringValue("\"\\u0061\"");
+    try std.testing.expectEqualStrings("\"\\u0061\"", value.text);
+    try std.testing.expect(!value.owned);
+    try std.testing.expectError(error.InvalidPublicExportName, fromLiteralSyntax(std.testing.allocator, "already_value"));
+    try std.testing.expectError(error.InvalidPublicExportName, fromLiteralSyntax(std.testing.allocator, "\"unterminated"));
+}

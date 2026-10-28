@@ -119,6 +119,10 @@ pub const ScanExportBinding = struct {
     /// Local exports carry the exact AST node whose analyzer SymbolId owns the
     /// exported value. Null for re-exports and synthetic default facades.
     local_symbol_node_index: ?u32 = null,
+    /// Actual producer edge, not a public-name lookup. Rebuilt from restored ASTs.
+    has_public_key_literal: bool = false,
+    public_key_specifier_node_index: ?u32 = null,
+    public_key_literal_node_index: ?u32 = null,
     /// export 종류
     kind: ExportBindingKind,
     /// re-export 시 소스 모듈의 scan_import_records 인덱스

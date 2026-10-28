@@ -143,11 +143,26 @@ fn appendCssLinkPrologue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), 
 /// default→_default→named-default 체인을 해석해 그 이름을 돌려준다. 비예약어 키는
 /// export 명 == 바인딩명(기존 동작 유지). linker 없으면(단위 테스트) 예약어
 /// cross-chunk 가 발생하지 않으므로 export 명 그대로.
-fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const u8 {
+fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) ![]const u8 {
     if (linker) |l| {
         // #4101 전역 일관 네이밍: cross-chunk 심볼은 provider/consumer 가 같은 전역 이름을
         // 써야 한다. 전역 맵에 있으면 그걸 우선(같은 이름 다른 모듈 `v`/`v$1` 구분).
         if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
+        // Only an existing ordinary provider SymbolId authorizes this local.
+        // A public string-literal key is never a lexical binding spelling.
+        if (l.getModule(sym.canonical_module)) |module| {
+            if (!module.wrap_kind.isWrapped()) {
+                if (module.findExportBinding(sym.name)) |export_binding| {
+                    if (try module.ordinaryQuotedExportLiteral(export_binding.*)) |verified| {
+                        const local = l.getCanonicalByRef(export_binding.symbol) orelse verified.binding_value;
+                        if (std.mem.indexOfScalar(u8, local, '\\') != null or
+                            !@import("../linker/identifier_name.zig").isIdentifierName(local) or Linker.isReservedName(local))
+                            return error.InvalidQuotedExportCanonical;
+                        return local;
+                    }
+                }
+            }
+        }
         if (Linker.isReservedName(sym.name)) {
             return l.resolveToLocalName(.{
                 .module_index = @fromBackingInt(@intCast(sym.canonical_module)),
@@ -340,7 +355,7 @@ fn emitPmCjsLiveImport(
 
     var destructure_open = false;
     for (syms) |sym| {
-        const binding = crossChunkBindingName(linker, sym);
+        const binding = try crossChunkBindingName(linker, sym);
         const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
         const key = if (lazy_local_keys or has_global) binding else sym.name;
         const reassigned = isExportReassigned(graph, dep_module, sym.name);
@@ -502,7 +517,8 @@ fn emitHoistedFnExports(
     for (m.export_bindings) |eb| {
         if (!exportBindingIsHoistableFn(m, eb)) continue;
         const local = l.getCanonicalForExport(eb, mod_idx);
-        try appendCjsExportBinding(allocator, out, eb.exported_name, local, false, false);
+        const verified = try m.ordinaryQuotedExportLiteral(eb);
+        try appendCjsExportBinding(allocator, out, eb.exported_name, if (verified) |value| value.literal_syntax else null, local, false, false);
     }
 }
 
@@ -661,10 +677,7 @@ fn emitChunksImpl(
 
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
-        for (outputs.items) |o| {
-            allocator.free(o.contents);
-            allocator.free(o.path);
-        }
+        for (outputs.items) |o| o.deinit(allocator);
         outputs.deinit(allocator);
     }
 
@@ -1050,7 +1063,7 @@ fn emitChunksImpl(
             const dep_ci = @backingInt(dep_chunk_idx);
             const syms = chunk.imports_from.get(dep_ci) orelse continue;
             for (syms.items) |sym| {
-                const b = crossChunkBindingName(linker, sym);
+                const b = try crossChunkBindingName(linker, sym);
                 try natural_bindings.put(allocator, b, {});
                 const hg = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                 if (hg) try used_locals.put(allocator, b, {});
@@ -1250,7 +1263,7 @@ fn emitChunksImpl(
                     defer pm_reads.deinit(allocator);
                     if (pm_esm_wrap_dep_syms) |syms| {
                         for (syms) |sym| {
-                            const bind = crossChunkBindingName(linker, sym);
+                            const bind = try crossChunkBindingName(linker, sym);
                             const global_name: ?[]const u8 = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) else null;
                             const has_g = global_name != null;
                             // (#4576) import 블록과 **같은** used_locals 로 유일 로컬 발급(esm=import 블록 /
@@ -1420,7 +1433,7 @@ fn emitChunksImpl(
                 cjsDepDefaultOnly(allocator, graph, dep_chunk);
             if (bind_whole_default) {
                 const sym = symbols.?.items[0];
-                const binding = crossChunkBindingName(linker, sym);
+                const binding = try crossChunkBindingName(linker, sym);
                 // pm_cjs 라 lazy(reg_split/cjs_split=!preserve_modules)는 여기 안 옴 → has_global 만 고정.
                 const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                 const consumer_module_index = if (options.preserve_modules and chunk.modules.items.len == 1)
@@ -1506,7 +1519,7 @@ fn emitChunksImpl(
 
                 if (cjs_require and (options.transform_options_base.unsupported.block_scoping or options.transform_options_base.unsupported.destructuring)) {
                     for (import_symbols) |sym| {
-                        const binding = crossChunkBindingName(linker, sym);
+                        const binding = try crossChunkBindingName(linker, sym);
                         const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                         const key = if (lazy_local_keys or (has_global and !entryChunkExportsPublicName(graph, dep_chunk, sym.name, options))) binding else sym.name;
                         const consumer = if (options.preserve_modules and chunk.modules.items.len == 1) @as(?u32, @backingInt(chunk.modules.items[0])) else null;
@@ -1525,7 +1538,7 @@ fn emitChunksImpl(
                 }
                 for (import_symbols, 0..) |sym, si| {
                     const name = sym.name;
-                    const binding = crossChunkBindingName(linker, sym);
+                    const binding = try crossChunkBindingName(linker, sym);
                     // #4101 cross-chunk 전역 네이밍: 심볼이 전역 이름을 가지면 그 이름이 곧
                     // provider 노출 키(dev=emitLazyEntryExportAll local-key, production=브리지
                     // `export { local as global }` public)라, 소비자 import key 도 전역명이어야
@@ -2392,7 +2405,7 @@ fn emitChunksImpl(
                         else
                             resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name) orelse name;
                         if (cjs_x) {
-                            try appendCjsExportBinding(allocator, &chunk_output, global, local, pm_wrapped_esm_provider, options.minify_whitespace);
+                            try appendCjsExportBinding(allocator, &chunk_output, global, null, local, pm_wrapped_esm_provider, options.minify_whitespace);
                         } else {
                             if (!first_in_group) try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "," else ", ");
                             try chunk_output.appendSlice(allocator, local);
@@ -2418,7 +2431,7 @@ fn emitChunksImpl(
                         break :blk name;
                     } else name;
                     if (cjs_x) {
-                        try appendCjsExportBinding(allocator, &chunk_output, name, local_name, pm_wrapped_esm_provider, options.minify_whitespace);
+                        try appendCjsExportBinding(allocator, &chunk_output, name, null, local_name, pm_wrapped_esm_provider, options.minify_whitespace);
                     } else {
                         try chunk_output.appendSlice(allocator, local_name);
                         if (!std.mem.eql(u8, local_name, name)) {
@@ -3609,13 +3622,22 @@ fn appendCjsExportBinding(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
     public: []const u8,
+    public_key_literal: ?[]const u8,
     local: []const u8,
     live: bool,
     min: bool,
 ) !void {
     if (!live) {
-        try out.appendSlice(allocator, "exports.");
-        try out.appendSlice(allocator, public);
+        if (public_key_literal) |syntax| {
+            const keys = @import("../public_export_key.zig");
+            const key = try keys.fromLiteralSyntax(allocator, syntax);
+            defer key.deinit(allocator);
+            try out.appendSlice(allocator, "exports");
+            try keys.appendMember(allocator, out, key);
+        } else {
+            try out.appendSlice(allocator, "exports.");
+            try out.appendSlice(allocator, public);
+        }
         try out.appendSlice(allocator, if (min) "=" else " = ");
         try out.appendSlice(allocator, local);
         try out.appendSlice(allocator, if (min) ";" else ";\n");
@@ -5233,7 +5255,7 @@ test "PM plain import alias actual source SID selector metadata and body tuple" 
     try std.testing.expect(!callee.isNone());
     const resolved = linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return error.MissingAliasResolved;
     const sym = chunk_mod.CrossChunkSym{ .canonical_module = resolved.canonical.module_index.toU32(), .name = resolved.canonical.export_name };
-    const actual_binding = crossChunkBindingName(&linker, sym);
+    const actual_binding = try crossChunkBindingName(&linker, sym);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -5416,7 +5438,7 @@ test "PM barrel import target actual source canonical selected export tuple" {
     var used: std.StringHashMapUnmanaged(void) = .empty;
     var natural: std.StringHashMapUnmanaged(void) = .empty;
     var aliases: std.ArrayList([]const u8) = .empty;
-    const selected = try std.testing.allocator.dupe(u8, try deconflictedConsumerLocal(&linker, sym, crossChunkBindingName(&linker, sym), linker.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null, barrel.index.toU32(), a, &used, &natural, &aliases));
+    const selected = try std.testing.allocator.dupe(u8, try deconflictedConsumerLocal(&linker, sym, try crossChunkBindingName(&linker, sym), linker.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null, barrel.index.toU32(), a, &used, &natural, &aliases));
     defer std.testing.allocator.free(selected);
     const target = linker.getConsumerImportTarget(sym.canonical_module, sym.name) orelse return error.MissingBarrelSelected;
     var occupied: std.ArrayList([]const u8) = .empty;
@@ -5598,4 +5620,43 @@ test "PM barrel import target excludes synthetic default namespace and CJS stora
         try std.testing.expectEqual(case.ordinary, actual != null);
     }
     std.debug.print("PM barrel ordinary storage controls=5 syntheticDefaultNamespaceCJSExcluded=true\n", .{});
+}
+
+test "quoted ordinary cross chunk CJS writer preserves literal key role" {
+    const cases = [_]struct { syntax: []const u8, expected: []const u8 }{
+        .{ .syntax = "\"\\\\u0061\"", .expected = "exports[\"\\\\u0061\"] = known;\n" },
+        .{ .syntax = "\"\\\"key\\\"\"", .expected = "exports[\"\\\"key\\\"\"] = known;\n" },
+        .{ .syntax = "\"한글\"", .expected = "exports.한글 = known;\n" },
+    };
+    for (cases) |case| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        try appendCjsExportBinding(std.testing.allocator, &output, case.syntax, case.syntax, "known", false, false);
+        try std.testing.expectEqualStrings(case.expected, output.items);
+    }
+}
+
+test "quoted ordinary consumer preserves no rename and rejects invalid override without name fallback" {
+    const helpers = @import("../test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "dep.mjs", "const value=7;export{value as \"한글\"};");
+    const path = try helpers.absPath(&tmp, "dep.mjs");
+    defer std.testing.allocator.free(path);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{path});
+    const module = graph.modules.at(0);
+    const binding = module.export_bindings[0];
+    var linker = Linker.init(std.testing.allocator, &graph, .cjs);
+    defer linker.deinit();
+    const symbol = chunk_mod.CrossChunkSym{ .canonical_module = module.index.toU32(), .name = binding.exported_name };
+    try std.testing.expectEqualStrings("value", try crossChunkBindingName(&linker, symbol));
+    const known = SymbolID.make(module.index, module.exportBindingSemanticIndex(binding).?);
+    try linker.rename_table.put(std.testing.allocator, known, "\"not a binding\"");
+    try std.testing.expectError(error.InvalidQuotedExportCanonical, crossChunkBindingName(&linker, symbol));
+    try linker.rename_table.put(std.testing.allocator, known, "known_local");
+    try std.testing.expectEqualStrings("known_local", try crossChunkBindingName(&linker, symbol));
 }

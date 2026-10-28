@@ -8,6 +8,19 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const OutputExports = @import("../bundler.zig").OutputExports;
 const FinalExportEntry = LinkingMetadata.FinalExportEntry;
 
+fn appendOrdinaryCjsExport(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: FinalExportEntry) !void {
+    const keys = @import("../public_export_key.zig");
+    const syntax = entry.public_key_literal orelse {
+        try out.print(allocator, "exports.{s} = {s};\n", .{ entry.exported, entry.local });
+        return;
+    };
+    const key = try keys.fromLiteralSyntax(allocator, syntax);
+    defer key.deinit(allocator);
+    try out.appendSlice(allocator, "exports");
+    try keys.appendMember(allocator, out, key);
+    try out.print(allocator, " = {s};\n", .{entry.local});
+}
+
 /// (#4120) CJS interop entry 의 `var <local> = <interop>;` materialize 문을 export 코드 앞에 emit.
 /// require_X 는 같은 청크 모듈 본문에서 정의(var 호이스팅 + __commonJS memoize) — 단, 평가 순서상
 /// CJS 모듈 본문이 이 materialize *전* 에 실행돼야 require_X() 가 함수다(emit 위치는 chunks.zig 보장).
@@ -214,7 +227,7 @@ pub fn emitCjsEntryExports(
         .named => {
             for (entries) |e| {
                 if (skip(skip_hoisted, e)) continue;
-                try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
+                try appendOrdinaryCjsExport(&out, allocator, e);
             }
             if (default_local != null) {
                 try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
@@ -229,7 +242,7 @@ pub fn emitCjsEntryExports(
                     // mixed — named 형태 + esModule flag
                     for (entries) |e| {
                         if (skip(skip_hoisted, e)) continue;
-                        try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
+                        try appendOrdinaryCjsExport(&out, allocator, e);
                     }
                     try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
                 }
@@ -237,7 +250,7 @@ pub fn emitCjsEntryExports(
                 // named-only — esModule flag 없음 (Rollup 기본 auto 동작)
                 for (entries) |e| {
                     if (skip(skip_hoisted, e)) continue;
-                    try out.print(allocator, "exports.{s} = {s};\n", .{ e.exported, e.local });
+                    try appendOrdinaryCjsExport(&out, allocator, e);
                 }
             }
         },
@@ -453,4 +466,19 @@ test "preserved CJS public keys use one StringValue decoding pass" {
         try std.testing.expectEqualStrings(case.value, key.text);
     }
     try std.testing.expectError(error.InvalidPublicExportName, keys.fromSyntax(std.testing.allocator, "\"\\uD800\""));
+}
+
+fn checkOrdinaryQuotedExportAllocation(allocator: std.mem.Allocator) !void {
+    const entries = [_]FinalExportEntry{
+        .{ .local = "known_local", .exported = "\"\\\\u0061\"", .public_key_literal = "\"\\\\u0061\"" },
+        .{ .local = "other_local", .exported = "\"한글\"", .public_key_literal = "\"한글\"" },
+    };
+    const emitted = try emitCjsEntryExports(allocator, &entries, .named, null);
+    defer allocator.free(emitted);
+    try std.testing.expectEqualStrings("exports[\"\\\\u0061\"] = known_local;\nexports.한글 = other_local;\n", emitted);
+}
+
+test "quoted ordinary CJS export writers preserve certified StringValue and allocation ownership" {
+    try checkOrdinaryQuotedExportAllocation(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkOrdinaryQuotedExportAllocation, .{});
 }

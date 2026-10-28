@@ -85,6 +85,18 @@ pub fn materialize(
                     .local_name = sb.local_name,
                     .local_span = sb.local_span,
                     .local_symbol_node = if (sb.local_symbol_node_index) |index| @fromBackingInt(@intCast(index)) else null,
+                    .has_public_key_literal = sb.has_public_key_literal,
+                    .public_key_binding_value = if (sb.has_public_key_literal and eb_kind == .local) sb.local_name else null,
+                    .public_key_literal = if (sb.public_key_literal_node_index) |index| blk: {
+                        const ast = if (module.ast) |*actual| actual else break :blk null;
+                        if (index >= ast.nodes.items.len or ast.nodes.items[index].tag != .string_literal) break :blk null;
+                        break :blk ast.getText(ast.nodes.items[index].span);
+                    } else null,
+                    .public_key_origin = if (sb.public_key_specifier_node_index) |specifier| if (sb.public_key_literal_node_index) |literal| if (module.ast) |*actual| .{
+                        .ast = actual,
+                        .specifier = @fromBackingInt(@intCast(specifier)),
+                        .literal = @fromBackingInt(@intCast(literal)),
+                    } else null else null else null,
                     .kind = eb_kind,
                     .import_record_index = sb.import_record_index,
                     .declared_via_pattern = sb.declared_via_pattern,

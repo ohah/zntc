@@ -1304,6 +1304,53 @@ pub const Module = struct {
     /// + `!is_const && !is_function && !is_class` + 단순 `binding_identifier` 선언(destructuring
     /// 제외 — `exports.A` 를 pattern 안 식별자에 적용하면 `let {A: exports.A}` = SyntaxError).
     /// const/class/function 은 현행·#4584 로직을 그대로 유지하므로 절대 대상이 아니다.
+    /// One shared nonlive authority for ordinary quoted CJS consumers/writers.
+    /// The public key never chooses a symbol; the producer's exact local node
+    /// must still carry the already selected export SymbolRef in this AST.
+    pub const OrdinaryQuotedExport = struct { literal_syntax: []const u8, binding_value: []const u8 };
+
+    pub fn ordinaryQuotedExportLiteral(self: *const Module, eb: ExportBinding) error{InvalidQuotedExportOrigin}!?OrdinaryQuotedExport {
+        if (!eb.has_public_key_literal) {
+            if (eb.public_key_literal != null or eb.public_key_origin != null or eb.public_key_binding_value != null) return error.InvalidQuotedExportOrigin;
+            return null;
+        }
+        if (self.wrap_kind != .none or eb.kind != .local or
+            std.mem.eql(u8, eb.exported_name, "default") or eb.hasSyntheticDefault(self.semanticSymbols())) return null;
+        const sid = self.exportBindingSemanticIndex(eb) orelse return error.InvalidQuotedExportOrigin;
+        const sem = self.semantic orelse return error.InvalidQuotedExportOrigin;
+        const symbol = sem.symbols.items[sid];
+        if (symbol.write_count != 0) return null;
+        if (symbol.synthetic_kind != null or symbol.synthetic_name.len != 0) return error.InvalidQuotedExportOrigin;
+        const origin = eb.public_key_origin orelse return error.InvalidQuotedExportOrigin;
+        const ast = if (self.ast) |*actual| actual else return error.InvalidQuotedExportOrigin;
+        if (origin.ast != ast) return error.InvalidQuotedExportOrigin;
+        const spec = @backingInt(origin.specifier);
+        const literal = @backingInt(origin.literal);
+        const local_node = eb.local_symbol_node orelse return error.InvalidQuotedExportOrigin;
+        const local = @backingInt(local_node);
+        if (origin.specifier.isNone() or origin.literal.isNone() or local_node.isNone() or
+            spec >= ast.nodes.items.len or literal >= ast.nodes.items.len or local >= ast.nodes.items.len or
+            local >= sem.symbol_ids.len) return error.InvalidQuotedExportOrigin;
+        const node = ast.nodes.items[spec];
+        if (node.tag != .export_specifier or node.data.binary.left != local_node or
+            node.data.binary.right != origin.literal or ast.nodes.items[literal].tag != .string_literal or
+            sem.symbol_ids[local] != sid) return error.InvalidQuotedExportOrigin;
+        const syntax = eb.public_key_literal orelse return error.InvalidQuotedExportOrigin;
+        const span = ast.nodes.items[literal].span;
+        if ((span.start & Ast.STRING_TABLE_BIT) != 0 or span.start > span.end or span.end > ast.source.len)
+            return error.InvalidQuotedExportOrigin;
+        const actual_syntax = ast.getText(span);
+        if (syntax.ptr != actual_syntax.ptr or syntax.len != actual_syntax.len) return error.InvalidQuotedExportOrigin;
+        var matches: usize = 0;
+        for (self.export_bindings) |binding| {
+            if (std.mem.eql(u8, binding.exported_name, eb.exported_name)) matches += 1;
+        }
+        if (matches != 1) return error.InvalidQuotedExportOrigin;
+        const value = eb.public_key_binding_value orelse return error.InvalidQuotedExportOrigin;
+        if (value.ptr != eb.local_name.ptr or value.len != eb.local_name.len) return error.InvalidQuotedExportOrigin;
+        return .{ .literal_syntax = syntax, .binding_value = value };
+    }
+
     pub fn exportBindingIsCjsStorage(self: *const Module, eb: ExportBinding) bool {
         // 래핑 모듈(__commonJS/__esm)은 본문이 클로저 안이라 codegen 의 storage 선언 변환
         // (bindings.zig, wrap_kind==.none 게이트)이 안 돈다 — 여기서 storage 로 표시하면

@@ -940,6 +940,9 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .local_name = re.local_name,
                         .local_span = local_node.span,
                         .local_symbol_node_index = @backingInt(local_idx),
+                        .has_public_key_literal = exported_node.tag == .string_literal,
+                        .public_key_specifier_node_index = if (re.kind == .local and exported_node.tag == .string_literal) @backingInt(spec_idx) else null,
+                        .public_key_literal_node_index = if (re.kind == .local and exported_node.tag == .string_literal) @backingInt(exported_idx) else null,
                         .kind = re.kind,
                         .import_record_index = re.import_record_index,
                     }) catch {};

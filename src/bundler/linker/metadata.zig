@@ -2070,9 +2070,18 @@ pub fn buildFinalExports(
                 }
             }
         }
+        // Carry literal syntax only for an already resolved ordinary local export.
+        // Re-export/default/wrapped authority remains on its existing path.
+        const public_key_literal: ?[]const u8 = blk: {
+            const module = self.graph.getModule(@fromBackingInt(@intCast(module_index))) orelse break :blk null;
+            const binding = module.findExportBinding(p.exported) orelse break :blk null;
+            const verified = try module.ordinaryQuotedExportLiteral(binding.*);
+            break :blk if (verified) |value| value.literal_syntax else null;
+        };
         entries.appendAssumeCapacity(.{
             .local = p.local,
             .exported = p.exported,
+            .public_key_literal = public_key_literal,
         });
     }
     return try entries.toOwnedSlice(self.allocator);
