@@ -17931,3 +17931,31 @@ test "Flow value path split rejects poisoned source binding authority and restor
     cache.resolver.alias = &.{};
     try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
 }
+
+test "static getter super retains actual entry graph without semantic resync" {
+    const helpers = @import("../test_helpers.zig");
+    var counts: [2]u32 = undefined;
+    for ([_]bool{ false, true }, 0..) |minify, i| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.mjs", "var parent={value:7};var object={get value(){return super.value}};Object.setPrototypeOf(object,parent);console.log(object.value);");
+        const entry = try helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.minify_identifiers = minify;
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        counts[i] = profile.count(.graph_resync_semantic);
+        std.debug.print("static-getter-super min={any} initial={d} post={d}\n", .{ minify, profile.count(.graph_discover_pm_semantic), counts[i] });
+        try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
+        try std.testing.expect(graph.findModuleByPath(entry).?.transform_cache != null);
+    }
+    try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
+}
