@@ -332,6 +332,20 @@ fn needsAmbientConstEnumExternalNodeProof(options: TranspileOptions, parser: *co
         hasLenientAmbientConstEnum(&parser.ast);
 }
 
+/// A local const enum may be absent from the lenient analyzer's binding graph
+/// while its output read remains a free identifier. Minified transform-graph
+/// reuse needs exact source identity or unresolved-node evidence before detach.
+fn needsLocalConstEnumExternalNodeProof(options: TranspileOptions, parser: *const Parser) bool {
+    if (!options.minify_identifiers or parser.source_mode != .js_lenient or parser.is_flow) return false;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const extra = node.data.extra;
+        if (extra < parser.ast.extra_data.items.len and parser.ast.extra_data.items.len - extra > 3 and
+            parser.ast.extra_data.items[extra + 3] == 1) return true;
+    }
+    return false;
+}
+
 /// Runtime syntax that remains outside the audited transform-semantic graph in
 /// lenient JavaScript mode. Keep this classifier shared by the source-fact gate
 /// and the erased ambient-module containment proof below.
@@ -752,7 +766,9 @@ fn canMangleWithTransformSemantic(options: TranspileOptions, parser: *const Pars
 }
 
 /// After transformation, admit an erased const enum only when its exact source
-/// SymbolId has no binding or reference left in output. A local enum without a
+/// SymbolId has no binding or attached reference left in output. A surviving
+/// local read may remain as an external reference only with an exact source
+/// binding origin and no same-named output binding. A local enum without a
 /// source SymbolId is safe only when its decoded name has no output binding or
 /// reference. An ambient enum reference may survive only when the analyzer
 /// classified that exact node as unresolved and its emitted name stays reserved.
@@ -1955,6 +1971,58 @@ fn runtimeImportEqualsBindingsHaveExactOutputIdentity(
     return true;
 }
 
+fn hasReachableOutputBindingNamed(
+    transformer: *const Transformer,
+    reachable: []const u32,
+    decoded_name: []const u8,
+) bool {
+    for (reachable) |raw| {
+        if (raw >= transformer.ast.nodes.items.len) return true;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag == .binding_identifier and
+            Scanner.identifierValueEquals(transformer.ast.getText(node.span), decoded_name)) return true;
+    }
+    return false;
+}
+
+fn hasExactErasedConstEnumExternalReferenceOrigin(
+    transformer: *const Transformer,
+    reachable: []const u32,
+    enum_symbol_ids: *const std.AutoHashMapUnmanaged(u32, void),
+    output_reference_raw: u32,
+    decoded_name: []const u8,
+) bool {
+    if (output_reference_raw >= transformer.ast.nodes.items.len or
+        transformer.ast.nodes.items[output_reference_raw].tag != .identifier_reference or
+        !transformer.explicit_global_reference_nodes.contains(output_reference_raw)) return false;
+    const binding_raw = transformer.erased_const_enum_external_reference_origins.get(output_reference_raw) orelse return false;
+    if (binding_raw >= transformer.parser_node_count or binding_raw >= transformer.ast.nodes.items.len or
+        binding_raw >= transformer.symbol_ids.items.len or
+        transformer.ast.nodes.items[binding_raw].tag != .binding_identifier or
+        hasReachableOutputBindingNamed(transformer, reachable, decoded_name)) return false;
+    const symbol_id = transformer.symbol_ids.items[binding_raw] orelse return false;
+    if (symbol_id >= transformer.symbols.len or !enum_symbol_ids.contains(symbol_id)) return false;
+    const source_binding = transformer.ast.nodes.items[binding_raw];
+    const symbol = transformer.symbols[symbol_id];
+    if (symbol.scope_id.isNone() or symbol.name.start != source_binding.span.start or
+        symbol.name.end != source_binding.span.end) return false;
+
+    var declaration_matches: usize = 0;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const extra = node.data.extra;
+        if (extra >= transformer.ast.extra_data.items.len or transformer.ast.extra_data.items.len - extra <= 3 or
+            transformer.ast.extra_data.items[extra + 3] != 1 or
+            transformer.ast.extra_data.items[extra] != binding_raw) continue;
+        declaration_matches += 1;
+        if (std.mem.indexOfScalar(u32, reachable, @intCast(raw)) != null) return false;
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(binding_raw));
+        const source_name = transformer.ast.getText(transformer.ast.getNode(binding).span);
+        if (!Scanner.identifierValueEquals(source_name, decoded_name)) return false;
+    }
+    return declaration_matches == 1;
+}
+
 fn constEnumIdentitiesAreAbsentOrExternalInOutput(transformer: *const Transformer, root: ast_mod.NodeIndex) bool {
     const ast = transformer.ast;
     const source_count = transformer.parser_node_count;
@@ -2068,11 +2136,18 @@ fn constEnumIdentitiesAreAbsentOrExternalInOutput(transformer: *const Transforme
                 ast.getText(output_node.span),
             ) catch return false;
             if (enum_names.contains(output_name)) {
-                const unresolved = transformer.unresolved_references orelse return false;
-                const unresolved_nodes = transformer.unresolved_reference_nodes orelse return false;
-                if (!ambient_const_enum_names.contains(output_name) or
-                    output_node.tag != .identifier_reference or raw >= source_count or
-                    !unresolved.contains(output_name) or !unresolved_nodes.contains(@intCast(raw))) return false;
+                if (ambient_const_enum_names.contains(output_name)) {
+                    const unresolved = transformer.unresolved_references orelse return false;
+                    const unresolved_nodes = transformer.unresolved_reference_nodes orelse return false;
+                    if (output_node.tag != .identifier_reference or raw >= source_count or
+                        !unresolved.contains(output_name) or !unresolved_nodes.contains(@intCast(raw))) return false;
+                } else if (!hasExactErasedConstEnumExternalReferenceOrigin(
+                    transformer,
+                    reachable,
+                    &enum_symbol_ids,
+                    @intCast(raw),
+                    output_name,
+                )) return false;
             }
         }
     }
@@ -2306,7 +2381,11 @@ fn reserveGeneratedExternalNames(
             else => continue,
         }
         const name = ast.getText(node.data.string_ref);
-        if (name.len > 0) try reserved.put(allocator, name, {});
+        if (name.len > 0) {
+            try reserved.put(allocator, name, {});
+            const decoded = try Scanner.decodeIdentifierEscapesAlloc(allocator, name);
+            if (decoded.ptr != name.ptr) try reserved.put(allocator, decoded, {});
+        }
     }
 }
 
@@ -3233,7 +3312,8 @@ fn transpileWithCallbackInternal(
         analyzer.es_target = options.es_target;
         analyzer.unsupported = options.unsupported;
         analyzer.collect_unresolved_reference_nodes = symbol_coverage_env.enabled() or
-            needsAmbientConstEnumExternalNodeProof(options, &parser);
+            needsAmbientConstEnumExternalNodeProof(options, &parser) or
+            needsLocalConstEnumExternalNodeProof(options, &parser);
         analyzer.enable_exact_declaration_anchors = symbol_coverage_env.enabled();
         analyzer.analyze() catch return error.SemanticError;
         // tsc 호환: 시맨틱 에러가 있어도 codegen 을 진행한다 — 콜백으로 stderr 통지 후
@@ -3320,6 +3400,7 @@ fn transpileWithCallbackInternal(
         transformer.namespace_member_owners = &analyzer.namespace_member_owners;
         transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
         transformer.semantic_edit_enabled = true;
+        transformer.detach_erased_const_enum_external_reads = needsLocalConstEnumExternalNodeProof(options, &parser);
         transformer.unresolved_references = &analyzer.unresolved_references;
     } else if (binding_lite_storage) |*binding_lite| {
         transformer.binding_lite = binding_lite;
@@ -3461,6 +3542,7 @@ fn transpileWithCallbackInternal(
                 &analyzer.namespace_member_owners,
                 &analyzer.namespace_declaration_owners,
                 pre_transform_scope_count,
+                &transformer.erased_const_enum_external_reference_origins,
             ) catch return error.OutOfMemory;
             coverage.printExact(file_path, exact);
         }
@@ -5581,6 +5663,137 @@ test "#6193 erased nested const enum may lack source identity when its output na
     try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
     try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
     transformer.symbol_ids.items[enum_binding_raw] = source_id;
+}
+
+test "#4819 detached erased local const enum reads fail closed without exact origin proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function read(){const enum Status{Ready=42}return typeof Status}console.log(read());";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    try std.testing.expect(needsLocalConstEnumExternalNodeProof(minify, &parser));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    const source_scope_count = analyzer.scopes.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.detach_erased_const_enum_external_reads = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+
+    const output_root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEdit;
+    analyzer.applyEdit(edited);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+
+    try std.testing.expectEqual(@as(usize, 1), transformer.erased_const_enum_external_reference_origins.count());
+    try std.testing.expect(constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+
+    const report_exact = struct {
+        fn run(
+            allocator_: std.mem.Allocator,
+            t: *const Transformer,
+            analyzer_: *const SemanticAnalyzer,
+            root: ast_mod.NodeIndex,
+            scope_count: usize,
+        ) !@import("transformer/symbol_coverage.zig").ExactReport {
+            return @import("transformer/symbol_coverage.zig").checkExactWithNamespaceMetadataAndDeclarationAnchors(
+                allocator_,
+                t.ast,
+                root,
+                t.parser_node_count,
+                t.symbol_ids.items,
+                analyzer_.symbols.items,
+                analyzer_.scopes.items,
+                analyzer_.scope_maps.items,
+                &analyzer_.scope_owner_map,
+                analyzer_.references.items,
+                t.helper_ref_nodes.items,
+                &analyzer_.helper_scope_map,
+                &analyzer_.unresolved_reference_nodes,
+                &t.explicit_global_reference_nodes,
+                &t.reference_origin_map,
+                &analyzer_.namespace_member_owners,
+                &analyzer_.namespace_declaration_owners,
+                scope_count,
+                &t.erased_const_enum_external_reference_origins,
+            );
+        }
+    }.run;
+    const baseline = try report_exact(allocator, &transformer, &analyzer, output_root, source_scope_count);
+    try std.testing.expect(baseline.isClean());
+
+    var origin_iter = transformer.erased_const_enum_external_reference_origins.keyIterator();
+    const output_reference_raw = origin_iter.next().?.*;
+    const source_binding_raw = transformer.erased_const_enum_external_reference_origins.get(output_reference_raw).?;
+
+    // Removing the exact origin keeps the stale source scope entry visible as
+    // a shadow, so both the graph-reuse gate and exact audit must reject it.
+    try std.testing.expect(transformer.erased_const_enum_external_reference_origins.remove(output_reference_raw));
+    try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    const missing_origin = try report_exact(allocator, &transformer, &analyzer, output_root, source_scope_count);
+    try std.testing.expectEqual(@as(usize, 1), missing_origin.shadowed_external_reference);
+    try std.testing.expect(!missing_origin.isClean());
+    try transformer.erased_const_enum_external_reference_origins.put(allocator, output_reference_raw, source_binding_raw);
+
+    // Explicit-global provenance is independently required; origin metadata
+    // alone cannot make a bound output identifier external.
+    try std.testing.expect(transformer.explicit_global_reference_nodes.remove(output_reference_raw));
+    try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    const missing_external_marker = try report_exact(allocator, &transformer, &analyzer, output_root, source_scope_count);
+    try std.testing.expect(!missing_external_marker.isClean());
+    try transformer.explicit_global_reference_nodes.put(allocator, output_reference_raw, {});
+
+    // An origin that points at the enum declaration rather than its binding
+    // cannot authorize the output name, even if the map key is correct.
+    var enum_decl_raw: ?u32 = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag == .ts_enum_declaration) {
+            enum_decl_raw = @intCast(raw);
+            break;
+        }
+    }
+    const wrong_origin = enum_decl_raw orelse return error.MissingConstEnumDeclaration;
+    try transformer.erased_const_enum_external_reference_origins.put(allocator, output_reference_raw, wrong_origin);
+    try std.testing.expect(!constEnumIdentitiesAreAbsentOrExternalInOutput(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    try transformer.erased_const_enum_external_reference_origins.put(allocator, output_reference_raw, source_binding_raw);
+    const restored = try report_exact(allocator, &transformer, &analyzer, output_root, source_scope_count);
+    try std.testing.expect(restored.isClean());
 }
 
 test "#6193 extensionless ambient global namespace retains the graph only after exact erasure proof" {

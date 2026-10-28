@@ -232,7 +232,7 @@ test "loop body oracle generator references keep their selected names" {
         t.semantic_edit_enabled = true;
         const root = try t.transform();
         const sem = (try t.finishSemanticEdit()).?;
-        var exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(a, t.ast, root, t.parser_node_count, t.symbol_ids.items, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, t.helper_ref_nodes.items, &sem.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, &analyzer.namespace_member_owners, &analyzer.namespace_declaration_owners, analyzer.scopes.items.len);
+        var exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(a, t.ast, root, t.parser_node_count, t.symbol_ids.items, sem.symbols.items, sem.scopes, sem.scope_maps, &sem.scope_owner_map, sem.references, t.helper_ref_nodes.items, &sem.helper_scope_map, &analyzer.unresolved_reference_nodes, &t.explicit_global_reference_nodes, &t.reference_origin_map, &analyzer.namespace_member_owners, &analyzer.namespace_declaration_owners, analyzer.scopes.items.len, null);
         try std.testing.expectEqual(@as(usize, 0), exact.scope_resolution_mismatch);
         try std.testing.expect(exact.isClean());
     };

@@ -10941,6 +10941,7 @@ fn exactPrepassReport(
         // The source/output index boundary is meaningful only when this graph
         // retained source ScopeIds. A reanalyzed graph assigns scopes afresh.
         if (retained_graph) pre_transform_scope_count else null,
+        &transformer.erased_const_enum_external_reference_origins,
     );
 }
 

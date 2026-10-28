@@ -2068,6 +2068,7 @@ const ExactCtx = struct {
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     report: *ExactReport,
     name_positions: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -2150,10 +2151,56 @@ const ExactCtx = struct {
         // unit as dynamic.
         if (!ctx.isDirectEvalCallee(node) and ctx.hasDynamicNameEnvironment(node, expected.scope)) return .unknown_scope;
         if (resolveInExactScopes(ctx, name, @fromBackingInt(@intCast(expected.scope)))) |symbol_id| {
-            if (!ctx.isErasedTypeOnlyImportBinding(name, symbol_id)) return .shadowed;
+            if (!ctx.isErasedTypeOnlyImportBinding(name, symbol_id) and
+                !ctx.isErasedConstEnumExternalReference(node, name, symbol_id)) return .shadowed;
         }
         if (ctx.helper_scope_map.get(name) != null) return .shadowed;
         return .external;
+    }
+
+    /// A minified standalone lenient-JS transform can leave an unsupported
+    /// runtime read after erasing its local const enum. Treat the retained
+    /// source scope-map entry as stale only when the transform carries the
+    /// exact output-reference -> source-enum-binding proof and the declaration
+    /// is a single local const enum that is absent from the output graph.
+    fn isErasedConstEnumExternalReference(ctx: *const ExactCtx, node: u32, name: []const u8, symbol_id: u32) bool {
+        const origins = ctx.erased_const_enum_external_origins orelse return false;
+        const binding_raw = origins.get(node) orelse return false;
+        if (!ctx.explicit_global_nodes.contains(node) or binding_raw >= ctx.parser_node_count or
+            binding_raw >= ctx.ast.nodes.items.len or binding_raw >= ctx.symbol_ids.len or
+            ctx.ast.nodes.items[binding_raw].tag != .binding_identifier or
+            ctx.symbol_ids[binding_raw] != symbol_id or symbol_id >= ctx.symbols.len or
+            hasReachableBindingForSymbol(ctx, symbol_id)) return false;
+        const binding = ctx.ast.nodes.items[binding_raw];
+        const symbol = ctx.symbols[symbol_id];
+        if (symbol.scope_id.isNone() or symbol.name.start != binding.span.start or
+            symbol.name.end != binding.span.end or symbol.isExported() or symbol.isSynthetic() or
+            symbol.synthetic_name.len != 0 or symbol.synthetic_owner_id != null or
+            symbol.output_name_hint.len != 0 or
+            (symbol.kind != .variable_let and symbol.kind != .variable_var)) return false;
+        const source_name = ctx.ast.getText(binding.span);
+        if (!Scanner.identifierValueEquals(source_name, name)) return false;
+
+        var reachable_bindings = ctx.reachable_nodes.keyIterator();
+        while (reachable_bindings.next()) |raw_ptr| {
+            const raw = raw_ptr.*;
+            if (raw >= ctx.ast.nodes.items.len) return false;
+            const output_binding = ctx.ast.nodes.items[raw];
+            if (output_binding.tag == .binding_identifier and
+                Scanner.identifierValueEquals(ctx.ast.getText(output_binding.span), source_name)) return false;
+        }
+
+        var declaration_matches: usize = 0;
+        for (ctx.ast.nodes.items[0..ctx.parser_node_count], 0..) |declaration, raw| {
+            if (declaration.tag != .ts_enum_declaration) continue;
+            const extra = declaration.data.extra;
+            if (extra >= ctx.ast.extra_data.items.len or ctx.ast.extra_data.items.len - extra <= 3 or
+                ctx.ast.extra_data.items[extra] != binding_raw or ctx.ast.extra_data.items[extra + 3] != 1)
+                continue;
+            declaration_matches += 1;
+            if (ctx.reachable_nodes.contains(@intCast(raw))) return false;
+        }
+        return declaration_matches == 1;
     }
 
     /// TypeScript metadata intentionally emits a guarded reference for an
@@ -2848,6 +2895,7 @@ pub fn checkExact(
         null,
         null,
         null,
+        null,
         false,
     );
 }
@@ -2887,6 +2935,7 @@ pub fn checkExactWithDeclarationAnchors(
         unresolved_nodes,
         explicit_global_nodes,
         origins,
+        null,
         null,
         null,
         null,
@@ -2930,6 +2979,7 @@ pub fn checkExactWithCompleteSourceScopeOwners(
         unresolved_nodes,
         explicit_global_nodes,
         origins,
+        null,
         null,
         null,
         0,
@@ -2977,6 +3027,7 @@ pub fn checkExactWithScopeBoundary(
         origins,
         null,
         null,
+        null,
         pre_transform_scope_count,
         false,
     );
@@ -3020,6 +3071,7 @@ pub fn checkExactWithNamespaceMetadata(
         unresolved_nodes,
         explicit_global_nodes,
         origins,
+        null,
         namespace_member_owners,
         namespace_declaration_owners,
         pre_transform_scope_count,
@@ -3048,6 +3100,7 @@ pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
     namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
+    erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32),
 ) std.mem.Allocator.Error!ExactReport {
     return checkExactImpl(
         allocator,
@@ -3065,6 +3118,7 @@ pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
         unresolved_nodes,
         explicit_global_nodes,
         origins,
+        erased_const_enum_external_origins,
         namespace_member_owners,
         namespace_declaration_owners,
         pre_transform_scope_count,
@@ -3088,6 +3142,7 @@ fn checkExactImpl(
     unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    erased_const_enum_external_origins: ?*const std.AutoHashMapUnmanaged(u32, u32),
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
@@ -4314,6 +4369,7 @@ fn checkExactImpl(
         .unresolved_nodes = unresolved_nodes,
         .explicit_global_nodes = explicit_global_nodes,
         .origins = origins,
+        .erased_const_enum_external_origins = erased_const_enum_external_origins,
         .reachable_nodes = &reachable_nodes,
         .report = &report,
     };

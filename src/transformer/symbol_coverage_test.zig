@@ -1722,6 +1722,7 @@ test "exact declaration anchors reject `$N` bindings routed to their unsuffixed 
             &analyzer.namespace_member_owners,
             &analyzer.namespace_declaration_owners,
             analyzer.scopes.items.len,
+            null,
         );
         try std.testing.expect(baseline.isClean());
 
@@ -1761,6 +1762,7 @@ test "exact declaration anchors reject `$N` bindings routed to their unsuffixed 
             &analyzer.namespace_member_owners,
             &analyzer.namespace_declaration_owners,
             analyzer.scopes.items.len,
+            null,
         );
         try std.testing.expectEqual(@as(usize, 1), exact.declaration_identity_mismatch);
         try std.testing.expect(!exact.isClean());

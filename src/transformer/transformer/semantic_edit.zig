@@ -5348,8 +5348,283 @@ pub fn validateDeferredGeneratedTempHandoffs(
 }
 
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
+const ErasedConstEnumExternalReference = struct {
+    node: NodeIndex,
+    binding_node: NodeIndex,
+    symbol_id: u32,
+};
+
+const ErasedConstEnumExternalBinding = struct {
+    binding_node: NodeIndex,
+    symbol_id: u32,
+};
+
+fn hasReachableOutputBindingNamed(
+    self: *const Transformer,
+    live: *const std.AutoHashMapUnmanaged(u32, void),
+    name: []const u8,
+) bool {
+    var nodes = live.keyIterator();
+    while (nodes.next()) |raw_ptr| {
+        const raw = raw_ptr.*;
+        if (raw >= self.ast.nodes.items.len) return true;
+        const node = self.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier) continue;
+        if (Scanner.identifierNamesEqual(self.ast.getText(node.span), name)) return true;
+    }
+    return false;
+}
+
+fn unresolvedOutputReferenceOrigin(self: *const Transformer, node: NodeIndex, expected_name: []const u8) ?u32 {
+    if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len or
+        self.ast.getNode(node).tag != .identifier_reference or
+        !Scanner.identifierNamesEqual(outputReferenceName(self.ast, node) orelse "", expected_name)) return null;
+    const unresolved_nodes = self.unresolved_reference_nodes orelse return null;
+    const unresolved_names = self.unresolved_references orelse return null;
+    const raw = @backingInt(node);
+    const origin = self.reference_origin_map.get(raw) orelse raw;
+    if (origin >= self.parser_node_count or origin >= self.ast.nodes.items.len or
+        self.ast.getNode(@fromBackingInt(origin)).tag != .identifier_reference or
+        !Scanner.identifierNamesEqual(
+            outputReferenceName(self.ast, @fromBackingInt(origin)) orelse "",
+            expected_name,
+        ) or !unresolved_nodes.contains(origin)) return null;
+    var names = unresolved_names.keyIterator();
+    var has_name_evidence = false;
+    while (names.next()) |name| {
+        if (Scanner.identifierNamesEqual(name.*, expected_name)) {
+            has_name_evidence = true;
+            break;
+        }
+    }
+    if (!has_name_evidence) return null;
+    return origin;
+}
+
+/// A lenient-JS const enum is erased even when an unsupported runtime read
+/// survives, for example `typeof E`. Such a read becomes an external lookup
+/// only when no same-spelled binding is emitted anywhere in the output. Keep
+/// writes, shadows, merged declarations, and incomplete source identities on
+/// the post-transform analysis path.
+fn detachErasedConstEnumExternalReads(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    live: *const std.AutoHashMapUnmanaged(u32, void),
+    root: NodeIndex,
+) Transformer.Error!void {
+    if (!self.detach_erased_const_enum_external_reads or self.parser_node_count == 0 or
+        self.parser_node_count > self.ast.nodes.items.len or self.parser_node_count > self.symbol_ids.items.len)
+        return;
+
+    const identifier_references = try reference_walk.collectIdentifierReferences(self.allocator, self.ast, root);
+    defer self.allocator.free(identifier_references);
+    var identifier_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer identifier_reference_nodes.deinit(self.allocator);
+    try identifier_reference_nodes.ensureTotalCapacity(self.allocator, @intCast(identifier_references.len));
+    for (identifier_references) |node| identifier_reference_nodes.putAssumeCapacity(@backingInt(node), {});
+
+    var seen_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen_symbols.deinit(self.allocator);
+    var candidates: std.ArrayList(ErasedConstEnumExternalBinding) = .empty;
+    defer candidates.deinit(self.allocator);
+    var references: std.ArrayList(ErasedConstEnumExternalReference) = .empty;
+    defer references.deinit(self.allocator);
+
+    for (self.ast.nodes.items[0..self.parser_node_count]) |declaration| {
+        if (declaration.tag != .ts_enum_declaration) continue;
+        const extra = declaration.data.extra;
+        if (extra >= self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra <= 3 or
+            self.ast.extra_data.items[extra + 3] != 1) continue;
+        const binding_node: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
+        if (binding_node.isNone() or @backingInt(binding_node) >= self.parser_node_count or
+            self.ast.getNode(binding_node).tag != .binding_identifier) continue;
+        const binding_raw = @backingInt(binding_node);
+        const symbol_raw = self.symbol_ids.items[binding_raw] orelse continue;
+        if (symbol_raw >= editor.symbols.items.len or seen_symbols.contains(symbol_raw)) continue;
+        try seen_symbols.put(self.allocator, symbol_raw, {});
+        const symbol = editor.symbols.items[symbol_raw];
+        const source_name = self.ast.getText(self.ast.getNode(binding_node).span);
+        if (source_name.len == 0 or symbol.isExported() or symbol.isSynthetic() or
+            symbol.synthetic_name.len != 0 or symbol.synthetic_owner_id != null or
+            symbol.output_name_hint.len != 0 or symbol.scope_id.isNone() or
+            symbol.scope_id.toIndex() >= editor.scopes.items.len or
+            (symbol.kind != .variable_let and symbol.kind != .variable_var) or
+            hasReachableOutputBindingNamed(self, live, source_name)) continue;
+
+        var candidate_references: std.ArrayList(NodeIndex) = .empty;
+        var declaration_rows: usize = 0;
+        var safe = true;
+        for (editor.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) != symbol_raw) continue;
+            if (reference.flags.declare) {
+                if ((!reference.declaration_node_index.isNone() and reference.declaration_node_index != binding_node) or
+                    reference.node_index != .none or
+                    reference.scope_id != symbol.scope_id or reference.flags.read or reference.flags.write or
+                    reference.flags.type_context or reference.flags.value_as_type)
+                {
+                    safe = false;
+                    break;
+                }
+                declaration_rows += 1;
+                continue;
+            }
+            if (reference.node_index.isNone()) {
+                safe = false;
+                break;
+            }
+            const reference_raw = @backingInt(reference.node_index);
+            if (!live.contains(reference_raw) or reference_raw >= self.ast.nodes.items.len or
+                reference_raw >= self.symbol_ids.items.len or self.symbol_ids.items[reference_raw] != @as(?u32, symbol_raw) or
+                !reference.flags.read or reference.flags.write or reference.flags.type_context or
+                reference.flags.value_as_type or self.ast.getNode(reference.node_index).tag != .identifier_reference or
+                !Scanner.identifierNamesEqual(outputReferenceName(self.ast, reference.node_index) orelse "", source_name) or
+                self.erased_const_enum_external_reference_origins.contains(reference_raw))
+            {
+                safe = false;
+                break;
+            }
+            try candidate_references.append(self.allocator, reference.node_index);
+        }
+        if (!safe or declaration_rows != 1) {
+            candidate_references.deinit(self.allocator);
+            continue;
+        }
+
+        // Lenient JS intentionally leaves some const-enum reads unresolved in
+        // the source graph. Accept only the exact node and unresolved-name
+        // evidence recorded by the analyzer; a missing SymbolId alone is not
+        // enough to create an external edge.
+        var matching_output_nodes = live.keyIterator();
+        while (matching_output_nodes.next()) |raw_ptr| {
+            const raw = raw_ptr.*;
+            if (raw >= self.ast.nodes.items.len) {
+                safe = false;
+                break;
+            }
+            const node = self.ast.nodes.items[raw];
+            if (node.tag == .identifier_reference and !identifier_reference_nodes.contains(raw)) continue;
+            const output_name = outputReferenceName(self.ast, @fromBackingInt(raw)) orelse continue;
+            if (!Scanner.identifierNamesEqual(output_name, source_name)) continue;
+            switch (node.tag) {
+                .identifier_reference => {
+                    const maybe_id = if (raw < self.symbol_ids.items.len) self.symbol_ids.items[raw] else null;
+                    if (maybe_id) |output_id| {
+                        if (output_id != symbol_raw) {
+                            safe = false;
+                            break;
+                        }
+                        var found = false;
+                        for (candidate_references.items) |reference| {
+                            if (@backingInt(reference) == raw) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) try candidate_references.append(self.allocator, @fromBackingInt(raw));
+                    } else {
+                        if (unresolvedOutputReferenceOrigin(self, @fromBackingInt(raw), source_name) == null) {
+                            safe = false;
+                            break;
+                        }
+                        try candidate_references.append(self.allocator, @fromBackingInt(raw));
+                    }
+                },
+                .assignment_target_identifier, .jsx_identifier => {
+                    safe = false;
+                    break;
+                },
+                .binding_identifier => {
+                    safe = false;
+                    break;
+                },
+                else => {},
+            }
+        }
+        if (!safe or candidate_references.items.len == 0) {
+            candidate_references.deinit(self.allocator);
+            continue;
+        }
+
+        // A stale ID on any other reachable reference-shaped node would make
+        // the graph edit incomplete. Check exact output nodes before mutating.
+        var output_nodes = live.keyIterator();
+        while (output_nodes.next()) |raw_ptr| {
+            const raw = raw_ptr.*;
+            if (raw >= self.ast.nodes.items.len or raw >= self.symbol_ids.items.len or
+                self.symbol_ids.items[raw] != @as(?u32, symbol_raw)) continue;
+            const node = self.ast.nodes.items[raw];
+            if (node.tag == .identifier_reference and !identifier_reference_nodes.contains(raw)) continue;
+            switch (node.tag) {
+                .binding_identifier => safe = false,
+                .identifier_reference => {
+                    var found = false;
+                    for (candidate_references.items) |reference| {
+                        if (@backingInt(reference) == raw) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) safe = false;
+                },
+                .assignment_target_identifier, .jsx_identifier => safe = false,
+                else => {},
+            }
+            if (!safe) break;
+        }
+        if (!safe) {
+            candidate_references.deinit(self.allocator);
+            continue;
+        }
+
+        try candidates.append(self.allocator, .{
+            .binding_node = binding_node,
+            .symbol_id = symbol_raw,
+        });
+        for (candidate_references.items) |reference| {
+            try references.append(self.allocator, .{ .node = reference, .binding_node = binding_node, .symbol_id = symbol_raw });
+        }
+        candidate_references.deinit(self.allocator);
+    }
+
+    if (candidates.items.len == 0) return;
+    const external_reference_count: u32 = @intCast(references.items.len);
+    try self.explicit_global_reference_nodes.ensureUnusedCapacity(self.allocator, external_reference_count);
+    try self.erased_const_enum_external_reference_origins.ensureUnusedCapacity(self.allocator, external_reference_count);
+
+    for (references.items) |reference| {
+        const existing = editor.referenceForNode(reference.node) catch |err| return editError(err);
+        if (existing) |row| {
+            if (@backingInt(row.symbol_id) != reference.symbol_id) return editError(error.InvalidSymbol);
+            try removeReference(self, editor, reference.node);
+        } else {
+            const raw = @backingInt(reference.node);
+            if (raw < editor.symbol_ids.items.len and editor.symbol_ids.items[raw] != null and
+                editor.symbol_ids.items[raw] != @as(?u32, reference.symbol_id)) return editError(error.InvalidSymbol);
+            if (raw < editor.symbol_ids.items.len) editor.symbol_ids.items[raw] = null;
+            if (raw < self.symbol_ids.items.len) self.symbol_ids.items[raw] = null;
+        }
+    }
+    for (candidates.items) |candidate| {
+        editor.symbols.items[candidate.symbol_id].reference_count = 0;
+        editor.symbols.items[candidate.symbol_id].write_count = 0;
+    }
+    for (references.items) |reference| {
+        const raw = @backingInt(reference.node);
+        self.explicit_global_reference_nodes.putAssumeCapacity(raw, {});
+        self.erased_const_enum_external_reference_origins.putAssumeCapacity(
+            raw,
+            @backingInt(reference.binding_node),
+        );
+    }
+}
+
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     if (!self.semantic_edit_enabled) return null;
+    // Most lenient-JS const enums erase without changing the transform graph.
+    // The narrow free-name-read proof still needs an editor to remove stale
+    // output edges, so initialize it even when enum lowering made no edits.
+    if (self.detach_erased_const_enum_external_reads and self.semantic_editor == null)
+        _ = try editorFor(self);
     if (self.static_class_contexts.items.len != 0 or self.static_class_captures.count() != 0)
         std.debug.panic("static class capture has no completed output owner", .{});
     try resolveReachableScopeOwners(self);
@@ -5431,6 +5706,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             while (uses.next()) |node| if (!live.contains(@backingInt(node.*))) try stale_uses.append(self.allocator, node.*);
             for (stale_uses.items) |node| _ = editor.node_scope_provenance.remove(node);
             try elideUnreachableEmptyGeneratedScopes(self, editor, &live);
+            try detachErasedConstEnumExternalReads(self, editor, &live, root);
         }
     }
     const result = editor.finish() catch |err| return editError(err);
