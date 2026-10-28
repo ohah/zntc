@@ -1090,19 +1090,19 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         name: 'declaration-level type import beside a default runtime import',
         file: 'mixed-default-runtime-import.ts',
         expected: '4',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'declaration-level type import beside a namespace runtime import',
         file: 'mixed-namespace-runtime-import.ts',
         expected: '2',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'declaration-level type import mixed with a side-effect import',
         file: 'mixed-side-effect-import.ts',
         expected: '4',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'erased imported binding still used as a runtime reference',
