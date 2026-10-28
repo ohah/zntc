@@ -312,6 +312,11 @@ pub const Transformer = struct {
     /// Provenance for generated refs that intentionally remain external.
     /// Coverage audits and bundler semantic resync both consume this marker set.
     explicit_global_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Standalone lenient-JS mangling may detach exact reads left after a local
+    /// const enum is erased, but only after proving that no output binding of
+    /// the same spelling survives. The value is the source enum binding node.
+    erased_const_enum_external_reference_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    detach_erased_const_enum_external_reads: bool = false,
     /// Graph prepass can retain this provenance across a later semantic resync.
     record_explicit_global_references: bool = false,
     /// Bundler retention must not treat opaque define text as an exact graph

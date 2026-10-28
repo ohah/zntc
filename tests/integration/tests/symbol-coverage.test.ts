@@ -332,7 +332,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-property-name-only',
@@ -355,7 +355,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       "console.log(read('Ready'));",
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-surviving-bare-reference',
@@ -366,7 +366,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-surviving-assignment-target',
@@ -389,7 +389,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-surviving-closure-reference',
@@ -400,7 +400,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(typeof read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'nested-const-enum-shadowed-by-parameter',
@@ -473,7 +473,7 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       '}',
       'console.log(read());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
   },
   {
     name: 'auto-accessor',
@@ -3144,7 +3144,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('reanalyzed enum erasure audits the actual codegen graph across escaped and outer bindings', () => {
+  test('erased enum reads audit the actual codegen graph across escaped and outer bindings', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-enum-codegen-graph-'));
     try {
       for (const name of ['Status', '\\u0053tatus']) {
@@ -3169,10 +3169,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(result.exitCode, result.stderr).toBe(0);
           expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
           expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
-          expect(
-            transpileGraphModeProblems(result.stderr, true, 'reanalyzed'),
-            result.stderr,
-          ).toEqual([]);
+          const graph = prefix.startsWith('let Status') ? 'reanalyzed' : 'retained';
+          expect(transpileGraphModeProblems(result.stderr, true, graph), result.stderr).toEqual([]);
           const post = result.stderr
             .split(/\r?\n/)
             .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
@@ -3181,6 +3179,80 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(actual.status, actual.stderr).toBe(0);
           expect(actual.stdout).toBe(expected.stdout);
         }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('detached erased const-enum reads preserve free-name runtime behavior', () => {
+    const cases = [
+      {
+        name: 'typeof',
+        withEnum:
+          'function read(){const enum Status{Ready=42}return typeof Status}console.log(read());',
+        native: 'function read(){return typeof Status}console.log(read());',
+      },
+      {
+        name: 'global-property',
+        withEnum:
+          'globalThis.Status={Ready:77};function read(){const enum Status{Ready=42}return typeof Status}console.log(read());',
+        native:
+          'globalThis.Status={Ready:77};function read(){return typeof Status}console.log(read());',
+      },
+      {
+        name: 'dynamic-member',
+        withEnum:
+          "function read(key){const enum Status{Ready=42}return Status[key]}console.log(read('Ready'));",
+        native: "function read(key){return Status[key]}console.log(read('Ready'));",
+      },
+      {
+        name: 'bare-reference',
+        withEnum:
+          'function read(){const enum Status{Ready=42}return Status}console.log(typeof read());',
+        native: 'function read(){return Status}console.log(typeof read());',
+      },
+      {
+        name: 'shorthand',
+        withEnum:
+          'function read(){const enum Status{Ready=42}return {Status}}console.log(typeof read());',
+        native: 'function read(){return {Status}}console.log(typeof read());',
+      },
+      {
+        name: 'closure',
+        withEnum:
+          'function read(){const enum Status{Ready=42}return ()=>Status}console.log(typeof read()());',
+        native: 'function read(){return ()=>Status}console.log(typeof read()());',
+      },
+      {
+        name: 'escaped-declaration',
+        withEnum:
+          'function read(){const enum \\u0053tatus{Ready=42}return typeof Status}console.log(read());',
+        native: 'function read(){return typeof Status}console.log(read());',
+      },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-enum-free-reads-'));
+    try {
+      for (const probe of cases) {
+        const input = join(dir, `${probe.name}.unknown`);
+        const native = join(dir, `${probe.name}.js`);
+        writeFileSync(input, probe.withEnum);
+        writeFileSync(native, probe.native);
+        const expected = runNode([native]);
+        const result = runCoverage(input, TARGETS[0], dir, true);
+        expect(result.exitCode, `${probe.name}: ${result.stderr}`).toBe(0);
+        expect(
+          transpileGraphModeProblems(result.stderr, true, 'retained'),
+          `${probe.name}: ${result.stderr}`,
+        ).toEqual([]);
+        expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+        expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+        const actual = runNode([join(dir, 'out.js')]);
+        expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(expected.status);
+        expect(actual.stdout, `${probe.name}: stdout changed`).toBe(expected.stdout);
+        expect(actual.stderr.includes('ReferenceError'), `${probe.name}: error kind changed`).toBe(
+          expected.stderr.includes('ReferenceError'),
+        );
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -3898,15 +3970,16 @@ describe('symbol identity coverage gate (#4819)', () => {
       },
       {
         name: 'surviving-typeof-reference',
-        graph: 'reanalyzed',
+        graph: 'retained',
         // `transpileModule` does not type-check const-enum uses and emits a runtime enum here.
-        // This invalid TS use is covered for conservative graph selection, not oracle parity.
+        // The exact source SymbolId and detached external edge retain the transform graph;
+        // this invalid TS use is still covered for graph selection, not oracle parity.
         runtime: false,
         source: 'const enum Color { Red = 41 } console.log(typeof Color);',
       },
       {
         name: 'surviving-dynamic-member-reference',
-        graph: 'reanalyzed',
+        graph: 'retained',
         runtime: false,
         source: [
           'const enum Color { Red = 41 }',

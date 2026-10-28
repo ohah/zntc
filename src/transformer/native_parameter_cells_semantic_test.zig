@@ -359,6 +359,7 @@ fn checkNativeParameterArrowScope(source: []const u8) !void {
         &analyzer.namespace_member_owners,
         &analyzer.namespace_declaration_owners,
         analyzer.scopes.items.len,
+        null,
     );
     try std.testing.expect(exact.isClean());
 }
