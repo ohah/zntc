@@ -3472,16 +3472,40 @@ describe('symbol identity coverage gate (#4819)', () => {
         files: { 'effect.json': '{"value":42}\n' },
       },
       {
-        name: 'attributed-default-runtime-binding-keeps-fallback',
-        graph: 'reanalyzed',
-        output: null,
+        name: 'attributed-default-runtime-binding-keeps-exact-runtime-import-graph',
+        graph: 'retained',
+        output: '42:loaded',
         source: [
           "import type { Shape } from './types';",
           "import data from './effect.json' with { type: 'json' };",
           'const shape: Shape = data;',
-          'console.log(shape.value);',
+          "process.stdout.write(`${shape.value}:${require.cache[require.resolve('./effect.json')] ? 'loaded' : 'missing'}`);",
         ].join('\n'),
-        files: {},
+        files: { 'effect.json': '{"value":42}\n' },
+      },
+      {
+        name: 'attributed-named-runtime-binding-keeps-exact-runtime-import-graph',
+        graph: 'retained',
+        output: '42',
+        source: [
+          "import type { Shape } from './types';",
+          "import { value } from './values.cjs' with { 'resolution-mode': 'import' };",
+          'const shape: Shape = { answer: value };',
+          'process.stdout.write(String(shape.answer));',
+        ].join('\n'),
+        files: { 'values.cjs': 'exports.value = 42;\n' },
+      },
+      {
+        name: 'attributed-namespace-runtime-binding-keeps-exact-runtime-import-graph',
+        graph: 'retained',
+        output: '42',
+        source: [
+          "import type { Shape } from './types';",
+          "import * as values from './values.cjs' with { 'resolution-mode': 'require' };",
+          'const shape: Shape = { answer: values.answer };',
+          'process.stdout.write(String(shape.answer));',
+        ].join('\n'),
+        files: { 'values.cjs': 'exports.answer = 42;\n' },
       },
     ] as const;
 
