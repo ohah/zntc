@@ -871,10 +871,8 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
 /// their exact identities or decoded local names survive in output. TypeScript
 /// additionally has a narrow mixed case for fully erased type imports beside
 /// separately declared plain named or side-effect runtime imports whose source
-/// identities survive.
-/// Attributes are admitted here only on declaration-level `import type`; the
-/// caller still requires the exact post-transform erasure proof, and attributed
-/// inline type specifiers remain on the conservative path.
+/// identities survive. Attributes on type-only declarations are safe only
+/// after the exact post-transform erasure proof succeeds.
 fn onlyErasableTypeImports(ast: *const Ast) bool {
     var found_import = false;
     for (ast.nodes.items) |node| {
@@ -883,10 +881,11 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
         if ((!import_decl.is_type_only and
-            !importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) or
+            !inline_type_only) or
             import_decl.phase != .none or
-            (import_decl.attrs_len != 0 and !import_decl.is_type_only) or
+            (import_decl.attrs_len != 0 and !import_decl.is_type_only and !inline_type_only) or
             import_decl.attrs_start > ast.extra_data.items.len or
             import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
             import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
@@ -897,10 +896,10 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 
 /// A declaration-level type import may share a source file with plain
 /// named/default/namespace runtime imports, unbound side-effect imports, or
-/// inline type specifiers mixed into a value import. Attributes are allowed
-/// only on declaration-level type imports; attributed runtime imports,
-/// attributed inline-type imports, unsupported specifier shapes, and phases
-/// remain on the conservative reanalysis path.
+/// inline type specifiers mixed into a value import. Import attributes are
+/// allowed on erased type-only imports and on mixed inline-type/runtime imports
+/// whose attribute AST is proved unchanged. Attributed runtime imports without
+/// inline type specifiers, unsupported shapes, and phases remain conservative.
 fn onlyErasableTypeImportsAndStableRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -914,8 +913,9 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        const has_inline_type_specifier = importDeclarationHasInlineTypeSpecifier(ast, import_decl);
         if (import_decl.phase != .none or
-            (import_decl.attrs_len != 0 and !import_decl.is_type_only) or
+            (import_decl.attrs_len != 0 and !import_decl.is_type_only and !has_inline_type_specifier) or
             import_decl.attrs_start > ast.extra_data.items.len or
             import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
             import_decl.specs_start > ast.extra_data.items.len or
@@ -926,7 +926,10 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
             found_type_import = true;
             continue;
         }
-        if (importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) continue;
+        if (importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) {
+            found_type_import = true;
+            continue;
+        }
 
         // Side-effect imports (including `import {} from`) have no local
         // semantic identity. The output proof still requires the exact
@@ -1024,7 +1027,17 @@ const RuntimeImportDeclarationIdentity = struct {
     span: @import("lexer/token.zig").Span,
     source_index: ast_mod.NodeIndex,
     source_node: ast_mod.Node,
+    attributes: []const RuntimeImportAttributeIdentity,
     specifiers: []const RuntimeImportSpecifierIdentity,
+};
+
+const RuntimeImportAttributeIdentity = struct {
+    index: ast_mod.NodeIndex,
+    node: ast_mod.Node,
+    key_index: ast_mod.NodeIndex,
+    key_node: ast_mod.Node,
+    value_index: ast_mod.NodeIndex,
+    value_node: ast_mod.Node,
 };
 
 const RuntimeImportReferenceIdentity = struct {
@@ -1072,11 +1085,47 @@ fn captureRuntimeImportIdentitySnapshot(
         if (!isValidSourceTextSpan(ast, node.span) or import_decl.source.isNone() or
             @backingInt(import_decl.source) >= ast.nodes.items.len or
             import_decl.specs_start > ast.extra_data.items.len or
-            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return null;
+            import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
+            import_decl.attrs_start > ast.extra_data.items.len or
+            import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start) return null;
 
         const source_index = import_decl.source;
         const source_node = ast.getNode(source_index);
         if (source_node.tag != .string_literal or !isValidSourceTextSpan(ast, source_node.span)) return null;
+
+        var attributes: std.ArrayListUnmanaged(RuntimeImportAttributeIdentity) = .empty;
+        defer attributes.deinit(allocator);
+        var attribute_index: u32 = 0;
+        while (attribute_index < import_decl.attrs_len) : (attribute_index += 1) {
+            const index: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[import_decl.attrs_start + attribute_index]),
+            );
+            if (index.isNone() or @backingInt(index) >= ast.nodes.items.len) return null;
+            const node_identity = ast.getNode(index);
+            if (node_identity.tag != .import_attribute or node_identity.data.binary.flags != 0 or
+                !isValidSourceTextSpan(ast, node_identity.span) or
+                node_identity.span.start < node.span.start or node_identity.span.end > node.span.end) return null;
+            const key_index = node_identity.data.binary.left;
+            const value_index = node_identity.data.binary.right;
+            if (key_index.isNone() or value_index.isNone() or
+                @backingInt(key_index) >= ast.nodes.items.len or
+                @backingInt(value_index) >= ast.nodes.items.len) return null;
+            const key_node = ast.getNode(key_index);
+            const value_node = ast.getNode(value_index);
+            if (key_node.tag != .string_literal or value_node.tag != .string_literal or
+                !isValidSourceTextSpan(ast, key_node.span) or
+                !isValidSourceTextSpan(ast, value_node.span) or
+                key_node.span.start < node_identity.span.start or key_node.span.end > node_identity.span.end or
+                value_node.span.start < node_identity.span.start or value_node.span.end > node_identity.span.end) return null;
+            attributes.append(allocator, .{
+                .index = index,
+                .node = node_identity,
+                .key_index = key_index,
+                .key_node = key_node,
+                .value_index = value_index,
+                .value_node = value_node,
+            }) catch return error.OutOfMemory;
+        }
 
         var specifiers: std.ArrayListUnmanaged(RuntimeImportSpecifierIdentity) = .empty;
         defer specifiers.deinit(allocator);
@@ -1192,6 +1241,7 @@ fn captureRuntimeImportIdentitySnapshot(
             .span = node.span,
             .source_index = source_index,
             .source_node = source_node,
+            .attributes = try attributes.toOwnedSlice(allocator),
             .specifiers = try specifiers.toOwnedSlice(allocator),
         }) catch return error.OutOfMemory;
         _ = raw;
@@ -1423,8 +1473,11 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         if (node.data.extra >= ast.extra_data.items.len or
             ast.extra_data.items.len - node.data.extra < 6) return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
+        if (type_imports_only and !import_decl.is_type_only and !inline_type_only) continue;
         if (import_decl.phase != .none or
-            (import_decl.attrs_len != 0 and (!type_imports_only or !import_decl.is_type_only)) or
+            (import_decl.attrs_len != 0 and
+                (!type_imports_only or (!import_decl.is_type_only and !inline_type_only))) or
             import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
@@ -1435,8 +1488,6 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
             source_node.span.start < node.span.start or
             source_node.span.end > node.span.end or source_node.span.end <= source_node.span.start) return false;
 
-        const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
-        if (type_imports_only and !import_decl.is_type_only and !inline_type_only) continue;
         if (import_decl.specs_len == 0) return false;
         if (output_nodes.contains(@intCast(raw))) return false;
         var inside_erased_ambient_namespace = false;
@@ -1600,7 +1651,8 @@ fn runtimeImportsHaveExactOutputIdentity(
         if (output_import_node.data.extra >= output_ast.extra_data.items.len or
             output_ast.extra_data.items.len - output_import_node.data.extra < 6) return false;
         const output_decl = module_parser.readImportDeclExtras(output_ast, output_import_node.data.extra);
-        if (output_decl.is_type_only or output_decl.phase != .none or output_decl.attrs_len != 0 or
+        if (output_decl.is_type_only or output_decl.phase != .none or
+            output_decl.attrs_len != source_import.attributes.len or
             output_decl.specs_len != source_import.specifiers.len or
             output_decl.source != source_import.source_index or output_decl.specs_start > output_ast.extra_data.items.len or
             output_decl.specs_len > output_ast.extra_data.items.len - output_decl.specs_start or
@@ -1610,6 +1662,34 @@ fn runtimeImportsHaveExactOutputIdentity(
             !sameNodeValue(source_import.source_node, output_ast.getNode(source_import.source_index))) return false;
         if (matched_output_imports.contains(output_import_raw)) return false;
         matched_output_imports.put(transformer.allocator, output_import_raw, {}) catch return false;
+        for (source_import.attributes, 0..) |attribute_identity, attribute_offset| {
+            const source_attribute_raw = @backingInt(attribute_identity.index);
+            const key_raw = @backingInt(attribute_identity.key_index);
+            const value_raw = @backingInt(attribute_identity.value_index);
+            const output_attribute_raw = output_ast.extra_data.items[output_decl.attrs_start + attribute_offset];
+            if (source_attribute_raw >= source_count or source_attribute_raw >= output_ast.nodes.items.len or
+                key_raw >= source_count or key_raw >= output_ast.nodes.items.len or
+                value_raw >= source_count or value_raw >= output_ast.nodes.items.len or
+                attribute_identity.node.tag != .import_attribute or
+                attribute_identity.node.data.binary.flags != 0 or
+                attribute_identity.node.data.binary.left != attribute_identity.key_index or
+                attribute_identity.node.data.binary.right != attribute_identity.value_index or
+                attribute_identity.key_node.tag != .string_literal or
+                attribute_identity.value_node.tag != .string_literal or
+                !isValidSourceTextSpan(output_ast, attribute_identity.node.span) or
+                !isValidSourceTextSpan(output_ast, attribute_identity.key_node.span) or
+                !isValidSourceTextSpan(output_ast, attribute_identity.value_node.span) or
+                attribute_identity.node.span.start < source_import.span.start or
+                attribute_identity.node.span.end > source_import.span.end or
+                attribute_identity.key_node.span.start < attribute_identity.node.span.start or
+                attribute_identity.key_node.span.end > attribute_identity.node.span.end or
+                attribute_identity.value_node.span.start < attribute_identity.node.span.start or
+                attribute_identity.value_node.span.end > attribute_identity.node.span.end or
+                source_attribute_raw != output_attribute_raw or
+                !sameNodeValue(attribute_identity.node, output_ast.getNode(attribute_identity.index)) or
+                !sameNodeValue(attribute_identity.key_node, output_ast.getNode(attribute_identity.key_index)) or
+                !sameNodeValue(attribute_identity.value_node, output_ast.getNode(attribute_identity.value_index))) return false;
+        }
         var i: usize = 0;
         while (i < source_import.specifiers.len) : (i += 1) {
             const spec_identity = source_import.specifiers[i];
@@ -1720,6 +1800,7 @@ fn sameNodeValue(expected: ast_mod.Node, actual: ast_mod.Node) bool {
         .import_namespace_specifier,
         => std.meta.eql(expected.data.string_ref, actual.data.string_ref),
         .import_specifier => std.meta.eql(expected.data.binary, actual.data.binary),
+        .import_attribute => std.meta.eql(expected.data.binary, actual.data.binary),
         else => false,
     };
 }
@@ -1742,6 +1823,26 @@ fn importDeclarationHasOnlyInlineTypeSpecifiers(
             spec.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY) return false;
     }
     return true;
+}
+
+fn importDeclarationHasInlineTypeSpecifier(
+    ast: *const Ast,
+    import_decl: module_parser.ImportDeclExtras,
+) bool {
+    if (import_decl.is_type_only or import_decl.specs_len == 0 or
+        import_decl.specs_start > ast.extra_data.items.len or
+        import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
+    var i: u32 = 0;
+    while (i < import_decl.specs_len) : (i += 1) {
+        const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+        );
+        if (spec_idx.isNone() or @backingInt(spec_idx) >= ast.nodes.items.len) return false;
+        const spec = ast.getNode(spec_idx);
+        if (spec.tag == .import_specifier and
+            spec.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY) return true;
+    }
+    return false;
 }
 
 fn isValidSourceTextSpan(ast: *const Ast, span: @import("lexer/token.zig").Span) bool {
@@ -6457,7 +6558,7 @@ test "#4819 type-erased TypeScript reuses transform semantic graph" {
     try std.testing.expect(canMangleWithTransformSemantic(minify, &accessor_parser));
 }
 
-test "#6193 TypeScript declaration-level type imports require exact output erasure" {
+test "#6193 TypeScript declaration and inline-only type imports require exact output erasure" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -6606,6 +6707,16 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     try std.testing.expectEqual(@as(usize, 0), inline_alias_parser.errors.items.len);
     try std.testing.expect(onlyErasableTypeImports(&inline_alias_parser.ast));
 
+    var attributed_inline_only_scanner = try Scanner.init(
+        allocator,
+        "import { type Shape } from './types' with { \"resolution-mode\": \"import\" }; const value: Shape = { value: 6 };",
+    );
+    var attributed_inline_only_parser = Parser.init(allocator, &attributed_inline_only_scanner);
+    attributed_inline_only_parser.configureFromExtension(".ts");
+    _ = try attributed_inline_only_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), attributed_inline_only_parser.errors.items.len);
+    try std.testing.expect(onlyErasableTypeImports(&attributed_inline_only_parser.ast));
+
     var mixed_runtime_scanner = try Scanner.init(
         allocator,
         "import type { Item } from './types'; import { type Flag, runtimeValue } from './values';",
@@ -6621,6 +6732,20 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
         @intCast(mixed_runtime_parser.ast.nodes.items.len),
     ));
 
+    var attributed_mixed_runtime_scanner = try Scanner.init(
+        allocator,
+        "import type { Item } from './types'; import { type Flag, default as runtimeValue } from './values.json' with { type: 'json' };",
+    );
+    var attributed_mixed_runtime_parser = Parser.init(allocator, &attributed_mixed_runtime_scanner);
+    attributed_mixed_runtime_parser.configureFromExtension(".ts");
+    _ = try attributed_mixed_runtime_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), attributed_mixed_runtime_parser.errors.items.len);
+    try std.testing.expect(onlyErasableTypeImportsAndStableRuntimeImports(
+        allocator,
+        &attributed_mixed_runtime_parser.ast,
+        @intCast(attributed_mixed_runtime_parser.ast.nodes.items.len),
+    ));
+
     var attributed_inline_scanner = try Scanner.init(
         allocator,
         "import type { Item } from './types'; import { type Flag } from './types' with { \"resolution-mode\": \"import\" };",
@@ -6629,7 +6754,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     attributed_inline_parser.configureFromExtension(".ts");
     _ = try attributed_inline_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), attributed_inline_parser.errors.items.len);
-    try std.testing.expect(!onlyErasableTypeImports(&attributed_inline_parser.ast));
+    try std.testing.expect(onlyErasableTypeImports(&attributed_inline_parser.ast));
     try std.testing.expect(!onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         &attributed_inline_parser.ast,
@@ -6637,7 +6762,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     ));
 }
 
-test "#6193 erased type imports admit only stable runtime imports" {
+test "#6193 erased type imports admit only stable runtime imports and attributes" {
     const Case = struct {
         name: []const u8,
         source: []const u8,
@@ -6690,6 +6815,11 @@ test "#6193 erased type imports admit only stable runtime imports" {
             .expected = true,
         },
         .{
+            .name = "attributed inline-only type import beside a side-effect runtime import",
+            .source = "import { type Shape } from './types' with { 'resolution-mode': 'import' }; import './effects';",
+            .expected = true,
+        },
+        .{
             .name = "attributed side-effect import remains conservative",
             .source = "import type { Shape } from './types'; import './effects' with { type: 'json' };",
             .expected = false,
@@ -6700,9 +6830,9 @@ test "#6193 erased type imports admit only stable runtime imports" {
             .expected = false,
         },
         .{
-            .name = "inline-only type import does not enter declaration proof",
+            .name = "inline-only type import and side-effect runtime import are eligible",
             .source = "import { type Shape } from './types'; import './effects';",
-            .expected = false,
+            .expected = true,
         },
         .{
             .name = "default runtime binding has an exact local identity",
@@ -6725,9 +6855,9 @@ test "#6193 erased type imports admit only stable runtime imports" {
             .expected = false,
         },
         .{
-            .name = "runtime attributes remain conservative for inline mixed imports",
+            .name = "attributed inline type specifier beside runtime value is eligible",
             .source = "import type { Shape } from './types'; import { type Flag, value } from './values' with { type: 'json' };",
-            .expected = false,
+            .expected = true,
         },
         .{
             .name = "default and namespace runtime bindings may coexist",
@@ -6782,7 +6912,7 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
     defer arena.deinit();
     const allocator = arena.allocator();
     const source = "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
-        "import { type Flag as Trait, runtimeValue as amount } from './values'; " ++
+        "import { type Flag as Trait, runtimeValue as amount } from './values' with { 'resolution-mode': 'import' }; " ++
         "import defaultValue from './default'; " ++
         "import * as namespaceValue from './namespace'; " ++
         "function read(value: Trait): number { return amount + defaultValue + namespaceValue.extra; } console.log(read({ flag: true }));";
@@ -6934,6 +7064,129 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
     if (runtime_import_identity_snapshot.inline_type_specifiers.len != 1) return error.UnexpectedInlineTypeImportCount;
     const inline_type_identity = runtime_import_identity_snapshot.inline_type_specifiers[0];
     try std.testing.expectEqual(inline_type_symbol, inline_type_identity.symbol_id);
+    if (runtime_import_identity_snapshot.declarations[0].attributes.len != 1)
+        return error.UnexpectedRuntimeImportAttributeCount;
+    const runtime_attribute_identity = runtime_import_identity_snapshot.declarations[0].attributes[0];
+
+    var attributed_import_extra: ?u32 = null;
+    const attributed_output_reachable = try ast_walk.collectReachableNodeIndicesFrom(
+        allocator,
+        transformer.ast,
+        output_root,
+    );
+    defer allocator.free(attributed_output_reachable);
+    for (attributed_output_reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.tag == .import_declaration and
+            std.meta.eql(node.span, runtime_import_identity_snapshot.declarations[0].span))
+        {
+            attributed_import_extra = node.data.extra;
+            break;
+        }
+    }
+    const attributed_extra = attributed_import_extra orelse return error.MissingAttributedRuntimeImport;
+    const attributes_start_slot = attributed_extra + 4;
+    const attributes_len_slot = attributed_extra + 5;
+    const original_attributes_start = transformer.ast.extra_data.items[attributes_start_slot];
+    const original_attributes_len = transformer.ast.extra_data.items[attributes_len_slot];
+    transformer.ast.extra_data.items[attributes_len_slot] = 0;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[attributes_len_slot] = original_attributes_len;
+    transformer.ast.extra_data.items[attributes_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[attributes_start_slot] = original_attributes_start;
+
+    const attribute_raw = @backingInt(runtime_attribute_identity.index);
+    const original_attribute = transformer.ast.nodes.items[attribute_raw];
+    transformer.ast.nodes.items[attribute_raw].data.binary.right = runtime_attribute_identity.key_index;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[attribute_raw] = original_attribute;
+
+    transformer.ast.nodes.items[attribute_raw].span.start -= 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[attribute_raw] = original_attribute;
+
+    const mutable_attributes = @constCast(runtime_import_identity_snapshot.declarations[0].attributes);
+    const original_attribute_identity = mutable_attributes[0];
+    mutable_attributes[0].node.data.binary.right = mutable_attributes[0].key_index;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_attributes[0] = original_attribute_identity;
+
+    mutable_attributes[0].value_index = mutable_attributes[0].key_index;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_attributes[0] = original_attribute_identity;
+
+    mutable_attributes[0].node.span.start += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_attributes[0] = original_attribute_identity;
+
+    transformer.ast.extra_data.items[original_attributes_start] =
+        @intCast(@backingInt(runtime_attribute_identity.key_index));
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[original_attributes_start] = @intCast(attribute_raw);
+
+    const key_raw = @backingInt(runtime_attribute_identity.key_index);
+    const original_key_node = transformer.ast.nodes.items[key_raw];
+    transformer.ast.nodes.items[key_raw].span = .{
+        .start = original_key_node.span.end,
+        .end = original_key_node.span.start,
+    };
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[key_raw] = original_key_node;
+
+    transformer.ast.nodes.items[key_raw].span.start += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[key_raw] = original_key_node;
+
+    const value_raw = @backingInt(runtime_attribute_identity.value_index);
+    const original_value_node = transformer.ast.nodes.items[value_raw];
+    transformer.ast.nodes.items[value_raw].span.end -= 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[value_raw] = original_value_node;
 
     const original_inline_symbol = transformer.symbol_ids.items[@backingInt(inline_type_local_idx)];
     transformer.symbol_ids.items[@backingInt(inline_type_local_idx)] = runtime_symbol;
@@ -7673,6 +7926,121 @@ test "#4819 native and downlevel using reuse the transform graph" {
     output_analyzer.is_module = true;
     try output_analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+}
+
+test "#6193 inline-only attributed type imports retain the exact edited graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { type Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
+        "const value: Shape = { value: 6 }; console.log(value.value);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const facts = try collectAstFacts(allocator, &parser.ast);
+    try std.testing.expect(facts.has_inline_type_import_specifier);
+    try std.testing.expect(onlyErasableTypeImports(&parser.ast));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.transform();
+
+    try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
+}
+
+test "#6193 inline type runtime import attributes retain exact graph without declaration type import" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { type Shape, default as data } from './values.json' with { type: 'json' }; " ++
+        "const item: Shape = { value: data.value }; console.log(item.value);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const facts = try collectAstFacts(allocator, &parser.ast);
+    try std.testing.expect(!facts.has_declaration_level_type_import);
+    try std.testing.expect(facts.has_inline_type_import_specifier);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    const snapshot = (try captureRuntimeImportIdentitySnapshot(allocator, &parser, &analyzer)) orelse
+        return error.MissingRuntimeImportIdentitySnapshot;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.transform();
+
+    try std.testing.expect(onlyErasableTypeImportsAndStableRuntimeImports(
+        allocator,
+        &parser.ast,
+        transformer.parser_node_count,
+    ));
+    try std.testing.expectEqual(@as(usize, 1), snapshot.inline_type_specifiers.len);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.declarations.len);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.declarations[0].attributes.len);
+    try std.testing.expect(erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        snapshot,
+    ));
+    try std.testing.expect(runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
+        minify,
+        &parser,
+        &transformer,
+        output_root,
+        null,
+        snapshot,
+    ));
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        source_root,
+        snapshot,
+    ));
 }
 
 test "#6193 side-effect import retains the graph without binding identity rows" {
