@@ -1380,6 +1380,97 @@ pub const SemanticEditor = struct {
         return matches;
     }
 
+    /// Candidate-only import storage handoff. The caller proves the module
+    /// owner/backing and installs the prefix AST plus coordinates atomically.
+    /// This primitive neither publishes a complete holder nor changes uses.
+    pub const KnownNamespaceDeclarationMove = struct {
+        ast: *const Ast,
+        root: NodeIndex,
+        root_scope: ScopeId,
+        symbol: SymbolId,
+        source_specifier: NodeIndex,
+        source_declaration: NodeIndex,
+        declaration_row: usize,
+        expected_source_flags: symbol_mod.DeclFlags,
+        output_binding: NodeIndex,
+        output_declarator: NodeIndex,
+        output_statement: NodeIndex,
+    };
+
+    pub fn moveKnownNamespaceImportToConst(self: *SemanticEditor, input: KnownNamespaceDeclarationMove) Error!void {
+        if (input.ast != self.ast) return error.InvalidNode;
+        const nodes = [_]NodeIndex{ input.root, input.source_specifier, input.source_declaration, input.output_binding, input.output_declarator, input.output_statement };
+        for (nodes) |node| if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) return error.InvalidNode;
+        if (!self.validSymbol(input.symbol)) return error.InvalidSymbol;
+        if (!self.validScope(input.root_scope)) return error.InvalidScope;
+        const root = self.ast.getNode(input.root);
+        const root_scope = self.scopes.items[input.root_scope.toIndex()];
+        if (root.tag != .program or root_scope.kind != .module or !root_scope.parent.isNone() or
+            self.scope_owner_map.get(@backingInt(input.root)) != @as(?u32, @backingInt(input.root_scope))) return error.InvalidScope;
+        const symbol = self.symbols.items[@backingInt(input.symbol)];
+        const namespace_flags: symbol_mod.DeclFlags = .{ .is_import = true, .is_namespace_import = true };
+        if (symbol.kind != .import_binding or symbol.synthetic_kind != null or
+            input.expected_source_flags.toInt() != namespace_flags.toInt() or
+            symbol.decl_flags.toInt() != input.expected_source_flags.toInt() or
+            symbol.scope_id != input.root_scope or symbol.origin_scope != input.root_scope or
+            symbol.synthetic_name.len != 0 or symbol.output_name_hint.len != 0 or symbol.synthetic_owner_id != null)
+            return error.InvalidSymbol;
+        // Keep the source span and its borrowed scope-map key unchanged.
+        if (!self.validTextSpan(symbol.name) or symbol.name.start & Ast.STRING_TABLE_BIT != 0) return error.InvalidSymbol;
+        const name = self.ast.getText(symbol.name);
+        if (name.len == 0 or (!std.ascii.isAlphabetic(name[0]) and name[0] != '_' and name[0] != '$')) return error.InvalidSymbol;
+        for (name) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '$') return error.InvalidSymbol;
+        if (self.scope_maps.items[input.root_scope.toIndex()].get(name) != @as(?usize, @backingInt(input.symbol))) return error.InvalidSymbol;
+        const source_raw = @backingInt(input.source_specifier);
+        const output_raw = @backingInt(input.output_binding);
+        if (input.source_specifier == input.output_binding or source_raw >= self.symbol_ids.items.len or
+            self.symbol_ids.items[source_raw] != @as(?u32, @backingInt(input.symbol)) or
+            (output_raw < self.symbol_ids.items.len and self.symbol_ids.items[output_raw] != null)) return error.InvalidSymbol;
+        const source = self.ast.getNode(input.source_declaration);
+        if (self.ast.getNode(input.source_specifier).tag != .import_namespace_specifier or source.tag != .import_declaration or
+            !self.ast.hasExtra(source.data.extra, 5)) return error.InvalidNode;
+        const extra = self.ast.extra_data.items;
+        const spec_start = extra[source.data.extra];
+        if (extra[source.data.extra + 1] != 1 or spec_start >= extra.len or extra[spec_start] != source_raw or
+            extra[source.data.extra + 3] != 0 or extra[source.data.extra + 5] != 0) return error.InvalidNode;
+        if (root.data.list.start > extra.len or root.data.list.len > extra.len - root.data.list.start) return error.InvalidNode;
+        var source_count: usize = 0;
+        for (extra[root.data.list.start..][0..root.data.list.len]) |raw| {
+            if (raw >= self.ast.nodes.items.len or raw == @backingInt(input.output_statement)) return error.InvalidNode;
+            if (raw == @backingInt(input.source_declaration)) source_count += 1;
+        }
+        if (source_count != 1) return error.InvalidNode;
+        const binding = self.ast.getNode(input.output_binding);
+        const declarator = self.ast.getNode(input.output_declarator);
+        const statement = self.ast.getNode(input.output_statement);
+        if (binding.tag != .binding_identifier or !std.meta.eql(binding.data.string_ref, symbol.name) or
+            declarator.tag != .variable_declarator or !self.ast.hasExtra(declarator.data.extra, 2) or
+            statement.tag != .variable_declaration or !self.ast.hasExtra(statement.data.extra, 2)) return error.InvalidNode;
+        if (extra[declarator.data.extra] != output_raw or extra[declarator.data.extra + 1] != @backingInt(NodeIndex.none) or
+            extra[declarator.data.extra + 2] == @backingInt(NodeIndex.none) or extra[declarator.data.extra + 2] >= self.ast.nodes.items.len or
+            extra[statement.data.extra] != @backingInt(ast_mod.VariableDeclarationKind.@"const") or extra[statement.data.extra + 2] != 1) return error.InvalidNode;
+        const declarations = extra[statement.data.extra + 1];
+        if (declarations >= extra.len or extra[declarations] != @backingInt(input.output_declarator)) return error.InvalidNode;
+        if (input.declaration_row >= self.references.items.len) return error.ReferenceNotFound;
+        var count: usize = 0;
+        for (self.references.items, 0..) |reference, index| {
+            if (!reference.flags.declare or reference.symbol_id != input.symbol) continue;
+            if (index != input.declaration_row or reference.declaration_node_index != input.source_specifier or
+                reference.scope_id != input.root_scope or !reference.node_index.isNone() or
+                reference.flags.read or reference.flags.write or reference.flags.type_context or reference.flags.value_as_type) return error.InvalidSymbol;
+            count += 1;
+        }
+        if (count != 1) return error.ReferenceNotFound;
+        // No fallible operation follows this reservation. A failed call leaves
+        // all logical editor state, source metadata, and AST untouched.
+        try self.symbol_ids.ensureTotalCapacity(self.allocator, @as(usize, output_raw) + 1);
+        while (self.symbol_ids.items.len <= output_raw) self.symbol_ids.appendAssumeCapacity(null);
+        self.symbol_ids.items[output_raw] = @backingInt(input.symbol);
+        self.symbols.items[@backingInt(input.symbol)].kind = .variable_const;
+        self.symbols.items[@backingInt(input.symbol)].decl_flags = SymbolKind.variable_const.declFlags();
+        self.references.items[input.declaration_row].declaration_node_index = input.output_binding;
+    }
+
     pub fn removeDeclarationAtNode(self: *SemanticEditor, binding: NodeIndex, expected: SymbolId) Error!usize {
         if (!self.validSymbol(expected)) return error.InvalidSymbol;
         if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
@@ -2812,4 +2903,152 @@ test "enum outer binding exact reanchor preserves source var tuples and rejects 
         }
     }
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
+}
+
+const NamespaceMoveMutation = enum { none, foreign_ast, wrong_row, wrong_symbol, wrong_scope, no_source, bad_output, prebound_output, duplicate_row, wrong_parent, wrong_name, wrong_const_kind, extra_flags, valid_sibling_symbol, valid_sibling_scope, allocation_failure };
+
+fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "export const value=7; Reflect.get(ns,'value'); import * as ns from './self.mjs'; function sibling(){}");
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    const root = try parser.parse();
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    defer analyzer.deinit();
+    try analyzer.analyze();
+    const root_node = parser.ast.getNode(root);
+    var source_declaration: NodeIndex = .none;
+    for (parser.ast.extra_data.items[root_node.data.list.start..][0..root_node.data.list.len]) |raw| {
+        const node: NodeIndex = @fromBackingInt(raw);
+        if (parser.ast.getNode(node).tag == .import_declaration) source_declaration = node;
+    }
+    if (source_declaration.isNone()) return error.MissingNamespaceImport;
+    const source_extra = parser.ast.getNode(source_declaration).data.extra;
+    const source_specifier: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[parser.ast.extra_data.items[source_extra]]);
+    const raw_sid = analyzer.symbol_ids.items[@backingInt(source_specifier)] orelse return error.MissingNamespaceIdentity;
+    const sid: SymbolId = @fromBackingInt(raw_sid);
+    const scope = analyzer.symbols.items[raw_sid].scope_id;
+    var declaration_row: ?usize = null;
+    for (analyzer.references.items, 0..) |row, index| {
+        if (row.symbol_id == sid and row.flags.declare and row.declaration_node_index == source_specifier) declaration_row = index;
+    }
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    // Ensure the output is beyond the existing ID capacity, so allocation
+    // failure tests the real final reservation rather than a no-op allocator.
+    for (0..editor.symbol_ids.capacity + 1) |_| _ = try parser.ast.addNode(.{ .tag = .null_literal, .span = .EMPTY, .data = .{ .none = 0 } });
+    const name = editor.symbols.items[raw_sid].name;
+    const output_binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const initializer = try parser.ast.addNode(.{ .tag = .object_expression, .span = .EMPTY, .data = .{ .list = .{ .start = 0, .len = 0 } } });
+    const declarator = try parser.ast.addNode(.{ .tag = .variable_declarator, .span = .EMPTY, .data = .{ .extra = try parser.ast.addExtras(&.{ @backingInt(output_binding), @backingInt(NodeIndex.none), @backingInt(initializer) }) } });
+    const list = try parser.ast.addNodeList(&.{declarator});
+    const statement = try parser.ast.addNode(.{ .tag = .variable_declaration, .span = .EMPTY, .data = .{ .extra = try parser.ast.addExtras(&.{ @backingInt(ast_mod.VariableDeclarationKind.@"const"), list.start, list.len }) } });
+    var input: SemanticEditor.KnownNamespaceDeclarationMove = .{
+        .ast = &parser.ast,
+        .root = root,
+        .root_scope = scope,
+        .symbol = sid,
+        .source_specifier = source_specifier,
+        .source_declaration = source_declaration,
+        .declaration_row = declaration_row orelse return error.MissingNamespaceDeclaration,
+        .expected_source_flags = editor.symbols.items[raw_sid].decl_flags,
+        .output_binding = output_binding,
+        .output_declarator = declarator,
+        .output_statement = statement,
+    };
+    const original_input = input;
+    const original_binding = parser.ast.getNode(output_binding);
+    const original_const_kind = parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra];
+    var foreign_ast = parser.ast;
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    switch (mutation) {
+        .none => {},
+        .foreign_ast => input.ast = &foreign_ast,
+        .wrong_row => input.declaration_row = editor.references.items.len,
+        .wrong_symbol => input.symbol = @fromBackingInt(@as(u32, @intCast(editor.symbols.items.len))),
+        .wrong_scope => input.root_scope = .none,
+        .valid_sibling_symbol => {
+            for (analyzer.references.items) |reference| {
+                if (reference.flags.declare and reference.symbol_id != sid) {
+                    input.symbol = reference.symbol_id;
+                    break;
+                }
+            }
+            try std.testing.expect(input.symbol != sid);
+        },
+        .valid_sibling_scope => {
+            for (analyzer.scopes.items, 0..) |sibling, raw| {
+                if (sibling.kind == .function and sibling.parent == scope) {
+                    input.root_scope = @fromBackingInt(@as(u32, @intCast(raw)));
+                    break;
+                }
+            }
+            try std.testing.expect(input.root_scope != scope);
+        },
+        .no_source => input.source_specifier = .none,
+        .bad_output => input.output_binding = @fromBackingInt(@as(u32, @intCast(parser.ast.nodes.items.len))),
+        .prebound_output => {
+            const old_len = editor.symbol_ids.items.len;
+            try editor.symbol_ids.resize(a, @as(usize, @backingInt(output_binding)) + 1);
+            @memset(editor.symbol_ids.items[old_len..], null);
+            editor.symbol_ids.items[@backingInt(output_binding)] = raw_sid;
+        },
+        .duplicate_row => try editor.references.append(a, editor.references.items[input.declaration_row]),
+        .wrong_parent => input.output_declarator = initializer,
+        .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)].data.string_ref = .EMPTY,
+        .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = @backingInt(ast_mod.VariableDeclarationKind.@"var"),
+        .extra_flags => editor.symbols.items[raw_sid].decl_flags.is_exported = true,
+        .allocation_failure => editor.allocator = failing.allocator(),
+    }
+    const before_symbol = editor.symbols.items[raw_sid];
+    const before_rows = try a.dupe(Reference, editor.references.items);
+    const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    if (mutation == .none) {
+        try editor.moveKnownNamespaceImportToConst(input);
+    } else {
+        if (editor.moveKnownNamespaceImportToConst(input)) |_| return error.InvalidNamespaceMoveAccepted else |err| {
+            if (mutation == .allocation_failure) try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+        editor.allocator = a;
+        try std.testing.expectEqualDeep(before_symbol, editor.symbols.items[raw_sid]);
+        try std.testing.expectEqualDeep(before_rows, editor.references.items);
+        try std.testing.expectEqualDeep(before_ids, editor.symbol_ids.items);
+        switch (mutation) {
+            .prebound_output => editor.symbol_ids.items[@backingInt(output_binding)] = null,
+            .duplicate_row => _ = editor.references.pop(),
+            .extra_flags => editor.symbols.items[raw_sid].decl_flags = original_input.expected_source_flags,
+            .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)] = original_binding,
+            .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = original_const_kind,
+            else => {},
+        }
+        try editor.moveKnownNamespaceImportToConst(original_input);
+    }
+    var expected_symbol = analyzer.symbols.items[raw_sid];
+    expected_symbol.kind = .variable_const;
+    expected_symbol.decl_flags = SymbolKind.variable_const.declFlags();
+    try std.testing.expectEqualDeep(expected_symbol, editor.symbols.items[raw_sid]);
+    try std.testing.expectEqual(@as(?u32, raw_sid), editor.symbol_ids.items[@backingInt(output_binding)]);
+    try std.testing.expect(editor.references.items[original_input.declaration_row].declaration_node_index == output_binding);
+    for (analyzer.references.items, 0..) |row, index| {
+        var expected = row;
+        if (index == original_input.declaration_row) expected.declaration_node_index = output_binding;
+        try std.testing.expectEqualDeep(expected, editor.references.items[index]);
+    }
+}
+
+test "known namespace declaration move uses actual parser identity and preserves source metadata" {
+    try namespaceMoveForTest(.none);
+}
+
+test "known namespace declaration move rejects foreign contracts transactionally and restores" {
+    inline for (std.meta.tags(NamespaceMoveMutation)) |mutation| {
+        if (mutation != .none) try namespaceMoveForTest(mutation);
+    }
 }
