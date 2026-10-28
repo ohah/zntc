@@ -3264,6 +3264,58 @@ describe('symbol identity coverage gate (#4819)', () => {
         },
       },
       {
+        name: 'default-runtime-import',
+        graph: 'retained',
+        output: '42',
+        source: [
+          "import type { Shape } from './types';",
+          "import value from './value';",
+          'const shape: Shape = { answer: value };',
+          'process.stdout.write(String(shape.answer));',
+        ].join('\n'),
+        files: { 'value.js': 'exports.default = 42;\n' },
+      },
+      {
+        name: 'default-and-named-in-one-runtime-import',
+        graph: 'retained',
+        output: '42',
+        source: [
+          "import type { Shape } from './types';",
+          "import value, { extra } from './values';",
+          'const shape: Shape = { answer: value + extra };',
+          'process.stdout.write(String(shape.answer));',
+        ].join('\n'),
+        files: { 'values.js': 'exports.default = 35; exports.extra = 7;\n' },
+      },
+      {
+        name: 'namespace-runtime-import',
+        graph: 'retained',
+        output: '42',
+        source: [
+          "import type { Shape } from './types';",
+          "import * as values from './values';",
+          'const shape: Shape = { answer: values.answer };',
+          'process.stdout.write(String(shape.answer));',
+        ].join('\n'),
+        files: { 'values.js': 'exports.answer = 42;\n' },
+      },
+      {
+        name: 'default-plus-namespace-runtime-imports',
+        graph: 'retained',
+        output: '42:7',
+        source: [
+          "import type { Shape } from './types';",
+          "import value from './value';",
+          "import * as values from './values';",
+          'const shape: Shape = { answer: value + values.extra };',
+          'process.stdout.write(`${shape.answer}:${values.extra}`);',
+        ].join('\n'),
+        files: {
+          'value.js': 'exports.default = 35;\n',
+          'values.js': 'exports.extra = 7;\n',
+        },
+      },
+      {
         name: 'attributed-type-plus-side-effect',
         graph: 'retained',
         output: '42:ran',

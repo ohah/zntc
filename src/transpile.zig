@@ -853,10 +853,11 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 }
 
 /// A declaration-level type import may share a source file with separate plain
-/// named runtime imports and unbound side-effect imports. Attributes are allowed
-/// only on the declaration-level type import itself; attributes on runtime or
-/// inline-type imports, inline type specifiers inside value imports, default or
-/// namespace imports, and phases remain on the conservative reanalysis path.
+/// named/default/namespace runtime imports and unbound side-effect imports.
+/// Attributes are allowed only on the declaration-level type import itself;
+/// attributes on runtime or inline-type imports, inline type specifiers inside
+/// value imports, unsupported import shapes, and phases remain on the
+/// conservative reanalysis path.
 fn onlyErasableTypeImportsAndStableRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -895,10 +896,18 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
             );
             if (spec_idx.isNone() or @backingInt(spec_idx) >= ast.nodes.items.len) return false;
             const spec = ast.getNode(spec_idx);
-            if (spec.tag != .import_specifier or spec.data.binary.flags != 0 or
-                spec.data.binary.left.isNone() or spec.data.binary.right.isNone() or
-                @backingInt(spec.data.binary.left) >= ast.nodes.items.len or
-                @backingInt(spec.data.binary.right) >= ast.nodes.items.len) return false;
+            switch (spec.tag) {
+                .import_specifier => {
+                    if (spec.data.binary.flags != 0 or spec.data.binary.left.isNone() or
+                        spec.data.binary.right.isNone() or
+                        @backingInt(spec.data.binary.left) >= ast.nodes.items.len or
+                        @backingInt(spec.data.binary.right) >= ast.nodes.items.len) return false;
+                },
+                .import_default_specifier, .import_namespace_specifier => {
+                    if (!isValidSourceTextSpan(ast, spec.span)) return false;
+                },
+                else => return false,
+            }
         }
     }
     return found_type_import and found_runtime_import and importLocalNamesAreUnique(allocator, ast, source_count);
@@ -946,8 +955,8 @@ fn importLocalNamesAreUnique(allocator: std.mem.Allocator, ast: *const Ast, sour
 const RuntimeImportSpecifierIdentity = struct {
     specifier_index: ast_mod.NodeIndex,
     specifier_node: ast_mod.Node,
-    imported_index: ast_mod.NodeIndex,
-    imported_node: ast_mod.Node,
+    imported_index: ?ast_mod.NodeIndex,
+    imported_node: ?ast_mod.Node,
     local_index: ast_mod.NodeIndex,
     local_node: ast_mod.Node,
     symbol_id: u32,
@@ -1018,17 +1027,34 @@ fn captureRuntimeImportIdentitySnapshot(
             );
             if (specifier_index.isNone() or @backingInt(specifier_index) >= ast.nodes.items.len) return null;
             const specifier_node = ast.getNode(specifier_index);
-            if (specifier_node.tag != .import_specifier or specifier_node.data.binary.flags != 0) return null;
-            const imported_index = specifier_node.data.binary.left;
-            const local_index = specifier_node.data.binary.right;
-            if (imported_index.isNone() or local_index.isNone() or
-                @backingInt(imported_index) >= ast.nodes.items.len or
-                @backingInt(local_index) >= ast.nodes.items.len) return null;
-            const imported_node = ast.getNode(imported_index);
+            var imported_index: ?ast_mod.NodeIndex = null;
+            var imported_node: ?ast_mod.Node = null;
+            const local_index = switch (specifier_node.tag) {
+                .import_specifier => blk: {
+                    if (specifier_node.data.binary.flags != 0) return null;
+                    const imported = specifier_node.data.binary.left;
+                    const local = specifier_node.data.binary.right;
+                    if (imported.isNone() or local.isNone() or
+                        @backingInt(imported) >= ast.nodes.items.len or
+                        @backingInt(local) >= ast.nodes.items.len) return null;
+                    imported_index = imported;
+                    imported_node = ast.getNode(imported);
+                    break :blk local;
+                },
+                .import_default_specifier, .import_namespace_specifier => specifier_index,
+                else => return null,
+            };
             const local_node = ast.getNode(local_index);
-            if ((imported_node.tag != .identifier_reference and imported_node.tag != .string_literal) or
-                local_node.tag != .identifier_reference or !isValidSourceTextSpan(ast, local_node.span) or
-                !isValidSourceTextSpan(ast, imported_node.span)) return null;
+            const local_tag_is_valid = switch (specifier_node.tag) {
+                .import_specifier => local_node.tag == .identifier_reference,
+                .import_default_specifier, .import_namespace_specifier => local_node.tag == specifier_node.tag,
+                else => false,
+            };
+            if (!local_tag_is_valid or !isValidSourceTextSpan(ast, local_node.span)) return null;
+            if (imported_node) |node_identity| {
+                if ((node_identity.tag != .identifier_reference and node_identity.tag != .string_literal) or
+                    !isValidSourceTextSpan(ast, node_identity.span)) return null;
+            }
             if (@backingInt(local_index) >= analyzer.symbol_ids.items.len) return null;
             const local_symbol_id = analyzer.symbol_ids.items[@backingInt(local_index)] orelse return null;
             if (local_symbol_id >= analyzer.symbols.items.len) return null;
@@ -1348,12 +1374,18 @@ fn runtimeImportsHaveExactOutputIdentity(
             const spec_identity = source_import.specifiers[i];
             const source_spec_raw = @backingInt(spec_identity.specifier_index);
             const output_spec_raw = output_ast.extra_data.items[output_decl.specs_start + i];
-            if (source_spec_raw >= source_count or source_spec_raw != output_spec_raw or
+            const imported_identity_matches = if (spec_identity.imported_index) |imported_index| blk: {
+                const imported_node = spec_identity.imported_node orelse return false;
+                break :blk output_nodes.contains(@backingInt(imported_index)) and
+                    sameNodeValue(imported_node, output_ast.getNode(imported_index));
+            } else spec_identity.specifier_node.tag != .import_specifier and
+                spec_identity.imported_node == null;
+            const source_slot_matches = source_spec_raw < source_count and source_spec_raw == output_spec_raw;
+            if (!source_slot_matches or
                 !output_nodes.contains(source_spec_raw) or
                 !sameNodeValue(spec_identity.specifier_node, output_ast.getNode(spec_identity.specifier_index)) or
-                !output_nodes.contains(@backingInt(spec_identity.imported_index)) or
                 !output_nodes.contains(@backingInt(spec_identity.local_index)) or
-                !sameNodeValue(spec_identity.imported_node, output_ast.getNode(spec_identity.imported_index)) or
+                !imported_identity_matches or
                 !sameNodeValue(spec_identity.local_node, output_ast.getNode(spec_identity.local_index))) return false;
 
             const local_name = Scanner.decodeIdentifierEscapesAlloc(
@@ -1440,7 +1472,12 @@ fn runtimeImportsHaveExactOutputIdentity(
 fn sameNodeValue(expected: ast_mod.Node, actual: ast_mod.Node) bool {
     if (expected.tag != actual.tag or !std.meta.eql(expected.span, actual.span)) return false;
     return switch (expected.tag) {
-        .identifier_reference, .string_literal, .assignment_target_identifier => std.meta.eql(expected.data.string_ref, actual.data.string_ref),
+        .identifier_reference,
+        .string_literal,
+        .assignment_target_identifier,
+        .import_default_specifier,
+        .import_namespace_specifier,
+        => std.meta.eql(expected.data.string_ref, actual.data.string_ref),
         .import_specifier => std.meta.eql(expected.data.binary, actual.data.binary),
         else => false,
     };
@@ -6214,8 +6251,43 @@ test "#6193 erased type imports admit only stable side-effect runtime imports" {
             .expected = false,
         },
         .{
-            .name = "default runtime binding remains outside the identity snapshot",
+            .name = "default runtime binding has an exact local identity",
             .source = "import type { Shape } from './types'; import value from './values'; import './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "namespace runtime binding has an exact local identity",
+            .source = "import type { Shape } from './types'; import * as values from './values'; import './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "runtime attributes remain conservative for default imports",
+            .source = "import type { Shape } from './types'; import value from './values' with { type: 'json' };",
+            .expected = false,
+        },
+        .{
+            .name = "runtime attributes remain conservative for namespace imports",
+            .source = "import type { Shape } from './types'; import * as values from './values' with { type: 'json' };",
+            .expected = false,
+        },
+        .{
+            .name = "default and namespace runtime bindings may coexist",
+            .source = "import type { Shape } from './types'; import value from './values'; import * as values from './other';",
+            .expected = true,
+        },
+        .{
+            .name = "default and named runtime bindings may share an import declaration",
+            .source = "import type { Shape } from './types'; import value, { extra } from './values';",
+            .expected = true,
+        },
+        .{
+            .name = "duplicate default and type import locals remain ambiguous",
+            .source = "import type { Shape as Shared } from './types'; import Shared from './values';",
+            .expected = false,
+        },
+        .{
+            .name = "duplicate namespace and type import locals remain ambiguous",
+            .source = "import type { Shape as Shared } from './types'; import * as Shared from './values';",
             .expected = false,
         },
         .{
@@ -6252,7 +6324,9 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const allocator = arena.allocator();
     const source = "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
         "import { runtimeValue as amount } from './values'; " ++
-        "function read(): number { return amount; } console.log(read());";
+        "import defaultValue from './default'; " ++
+        "import * as namespaceValue from './namespace'; " ++
+        "function read(): number { return amount + defaultValue + namespaceValue.extra; } console.log(read());";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
 
     var scanner = try Scanner.init(allocator, source);
@@ -6359,7 +6433,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
         if (import_decl.is_type_only) {
             erased_type_local = local;
             erased_type_source = import_decl.source;
-        } else {
+        } else if (specifier_node.tag == .import_specifier) {
             runtime_local = local;
         }
     }
@@ -6552,15 +6626,17 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     ));
     transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.specifier_index)] = original_runtime_specifier_node;
 
-    const original_runtime_imported_node = transformer.ast.getNode(runtime_specifier_identity.imported_index);
-    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.imported_index)].span =
+    const runtime_imported_index = runtime_specifier_identity.imported_index orelse
+        return error.MissingRuntimeImportedIdentity;
+    const original_runtime_imported_node = transformer.ast.getNode(runtime_imported_index);
+    transformer.ast.nodes.items[@backingInt(runtime_imported_index)].span =
         runtime_specifier_identity.local_node.span;
     try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
     ));
-    transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.imported_index)] = original_runtime_imported_node;
+    transformer.ast.nodes.items[@backingInt(runtime_imported_index)] = original_runtime_imported_node;
 
     const original_local_node = transformer.ast.getNode(runtime_local_idx);
     transformer.ast.nodes.items[@backingInt(runtime_local_idx)].span = original_reference_node.span;
@@ -6580,6 +6656,57 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     ));
     transformer.ast.nodes.items[runtime_reference_raw] = original_reference_node;
     transformer.references = original_references;
+
+    var default_identity: ?RuntimeImportSpecifierIdentity = null;
+    var namespace_identity: ?RuntimeImportSpecifierIdentity = null;
+    for (runtime_import_identity_snapshot.declarations) |declaration| {
+        for (declaration.specifiers) |specifier| {
+            switch (specifier.specifier_node.tag) {
+                .import_default_specifier => default_identity = specifier,
+                .import_namespace_specifier => namespace_identity = specifier,
+                else => {},
+            }
+        }
+    }
+    const default_specifier = default_identity orelse return error.MissingDefaultImportIdentity;
+    const namespace_specifier = namespace_identity orelse return error.MissingNamespaceImportIdentity;
+    const default_local_raw = @backingInt(default_specifier.local_index);
+    const original_default_symbol = transformer.symbol_ids.items[default_local_raw];
+    transformer.symbol_ids.items[default_local_raw] = erased_type_symbol;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[default_local_raw] = original_default_symbol;
+
+    const namespace_local_raw = @backingInt(namespace_specifier.local_index);
+    const original_namespace_symbol = transformer.symbol_ids.items[namespace_local_raw];
+    transformer.symbol_ids.items[namespace_local_raw] = erased_type_symbol;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[namespace_local_raw] = original_namespace_symbol;
+
+    const original_default_node = transformer.ast.nodes.items[default_local_raw];
+    transformer.ast.nodes.items[default_local_raw].span.start += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[default_local_raw] = original_default_node;
+
+    const original_namespace_node = transformer.ast.nodes.items[namespace_local_raw];
+    transformer.ast.nodes.items[namespace_local_raw].span.start += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[namespace_local_raw] = original_namespace_node;
 }
 
 test "#4819 JavaScript and Flow legacy decorators reuse the transform semantic graph" {
