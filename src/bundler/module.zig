@@ -1754,7 +1754,7 @@ test "escaped mutable storage retains exact export identity and existing eligibi
         .{ .raw = "#a", .value = "#a" },
         .{ .raw = "\\u0061", .value = "\\u0061" },
         .{ .raw = "\\uD835\\uDC9C", .value = "𝒜" },
-        .{ .raw = "", .value = "" },
+        .{ .raw = "\xf4\x90\x80\x80", .value = "\xf4\x90\x80\x80" },
     };
     for (malformed) |case| {
         sem.symbols.items[0] = cjsStorageTestSymbol(case.raw, .variable_let, 1);
