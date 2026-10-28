@@ -1857,6 +1857,23 @@ test "empty flattened block scope elision refuses a scope with a local binding" 
     try std.testing.expectEqual(@as(?u32, @backingInt(scope)), editor.scope_owner_map.get(@backingInt(owner)));
 }
 
+test "empty flattened block scope elision refuses a stale scope-map entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .module, true);
+    const owner = try ast.addNode(.{ .tag = .block_statement, .span = Span.EMPTY, .data = .{ .list = try ast.addNodeList(&.{}) } });
+    const scope = try editor.addScope(root, owner, .block, false);
+    try editor.scope_maps.items[scope.toIndex()].put(allocator, "stale", 0);
+
+    try std.testing.expect(!(try editor.elideEmptyGeneratedScopeOwner(owner)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(scope)), editor.scope_owner_map.get(@backingInt(owner)));
+}
+
 test "class self storage relocation preserves identity and rejects occupied target atomically" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
