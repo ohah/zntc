@@ -22833,7 +22833,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('plain TypeScript export-star retains its loader record', () => {
+  test('plain and identifier namespace TypeScript export-stars retain their loader records', () => {
     const cases = [
       {
         name: 'plain export-star',
@@ -22845,7 +22845,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'namespace export-star control',
         source: "export * as ns from './dep.ts';\ninterface Marker { value: number }",
         readExpression: 'api.ns.value',
-        graph: 'reanalyzed',
+        graph: 'retained',
       },
     ];
 

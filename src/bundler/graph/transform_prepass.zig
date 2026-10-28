@@ -401,10 +401,11 @@ fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod
         ast.getNode(arg_idx).tag == .string_literal;
 }
 
-/// Plain top-level `export * from "specifier"` keeps the same re-export
-/// loader record through lowering. Namespace re-exports and import attributes
-/// stay on the full graph-resync path.
-fn isSupportedPlainExportAll(
+/// Top-level `export * from "specifier"` and `export * as name from
+/// "specifier"` keep the same re-export loader record through lowering. Limit
+/// namespace re-exports to source-backed identifier names; string export names
+/// and import attributes stay on the full graph-resync path.
+fn isSupportedExportAll(
     ast: *const ast_mod.Ast,
     node_idx: ast_mod.NodeIndex,
     top_level_statements: *const std.DynamicBitSet,
@@ -413,11 +414,160 @@ fn isSupportedPlainExportAll(
     const node = ast.getNode(node_idx);
     if (node.tag != .export_all_declaration) return false;
     if (!top_level_statements.isSet(@backingInt(node_idx))) return false;
-
+    if (node.data.extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - node.data.extra < 4 or
+        !isSupportedSourceTextSpan(ast, node.span)) return false;
     const export_all = module_parser.readExportAllExtras(ast, node.data.extra);
-    if (!export_all.exported_name.isNone() or export_all.attrs_len != 0) return false;
+    if (export_all.attrs_start > ast.extra_data.items.len or
+        export_all.attrs_len > ast.extra_data.items.len - export_all.attrs_start or
+        export_all.attrs_len != 0) return false;
+    if (!export_all.exported_name.isNone()) {
+        if (@backingInt(export_all.exported_name) >= ast.nodes.items.len) return false;
+        const name = ast.getNode(export_all.exported_name);
+        if (name.tag != .identifier_reference or !isSupportedSourceTextSpan(ast, name.span) or
+            name.span.start < node.span.start or name.span.end > node.span.end) return false;
+    }
     if (export_all.source.isNone() or @backingInt(export_all.source) >= ast.nodes.items.len) return false;
-    return ast.getNode(export_all.source).tag == .string_literal;
+    const source = ast.getNode(export_all.source);
+    return source.tag == .string_literal and isSupportedSourceTextSpan(ast, source.span) and
+        source.span.start >= node.span.start and source.span.end <= node.span.end;
+}
+
+fn isSupportedSourceTextSpan(ast: *const ast_mod.Ast, span: token_mod.Span) bool {
+    return span.start & ast_mod.Ast.STRING_TABLE_BIT == 0 and
+        span.end & ast_mod.Ast.STRING_TABLE_BIT == 0 and
+        span.start < span.end and span.end <= ast.source.len;
+}
+
+test "export-all retained-graph gate accepts only source-backed identifier namespace names" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        expected: bool,
+        exports: usize = 1,
+    };
+    const cases = [_]Case{
+        .{ .name = "plain export-star", .source = "export * from './dep';", .expected = true },
+        .{ .name = "namespace export-star", .source = "export * as ns from './dep';", .expected = true },
+        .{ .name = "different namespace export name", .source = "export * as types from './types';", .expected = true },
+        .{ .name = "escaped namespace identifier", .source = "export * as n\\u0073 from './dep';", .expected = true },
+        .{ .name = "namespace export beside type erasure", .source = "export * as ns from './dep'; interface Marker {}", .expected = true },
+        .{ .name = "namespace export beside same-spelled local", .source = "const ns = 'local'; export * as ns from './dep';", .expected = true },
+        .{ .name = "multiple namespace export records", .source = "export * as first from './one'; export * as second from './two';", .expected = true, .exports = 2 },
+        .{ .name = "mixed namespace and plain export-star records", .source = "export * as ns from './one'; export * from './two';", .expected = true, .exports = 2 },
+        .{ .name = "string namespace export name", .source = "export * as 'public-ns' from './dep';", .expected = false },
+        .{ .name = "attributed namespace export", .source = "export * as ns from './dep' with { type: 'json' };", .expected = false },
+        .{ .name = "attributed plain export-star", .source = "export * from './dep' with { type: 'json' };", .expected = false },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        defer scanner.deinit();
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+        var top_level_statements = try ast_walk.topLevelStatementMask(&parser.ast);
+        defer top_level_statements.deinit();
+        var observed_exports: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .export_all_declaration) continue;
+            observed_exports += 1;
+            try std.testing.expectEqual(
+                case.expected,
+                isSupportedExportAll(
+                    &parser.ast,
+                    @fromBackingInt(@intCast(raw)),
+                    &top_level_statements,
+                ),
+            );
+        }
+        try std.testing.expectEqual(case.exports, observed_exports);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export * as ns from './dep'; const after = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var top_level_statements = try ast_walk.topLevelStatementMask(&parser.ast);
+    defer top_level_statements.deinit();
+
+    var export_idx: ?ast_mod.NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .export_all_declaration) {
+            export_idx = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const export_node_idx = export_idx orelse return error.MissingExportAllNode;
+    const export_raw = @backingInt(export_node_idx);
+    const original_export_node = parser.ast.nodes.items[export_raw];
+    const export_extra = original_export_node.data.extra;
+    const exported_name_idx: ast_mod.NodeIndex = @fromBackingInt(
+        @intCast(parser.ast.extra_data.items[export_extra]),
+    );
+    const source_idx: ast_mod.NodeIndex = @fromBackingInt(
+        @intCast(parser.ast.extra_data.items[export_extra + 1]),
+    );
+    const original_attrs_start = parser.ast.extra_data.items[export_extra + 2];
+    const original_attrs_len = parser.ast.extra_data.items[export_extra + 3];
+    const name_raw = @backingInt(exported_name_idx);
+    const source_raw = @backingInt(source_idx);
+    const original_name_node = parser.ast.nodes.items[name_raw];
+    const original_source_node = parser.ast.nodes.items[source_raw];
+
+    try std.testing.expect(isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+
+    parser.ast.nodes.items[export_raw].data.extra = @intCast(parser.ast.extra_data.items.len);
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.nodes.items[export_raw] = original_export_node;
+
+    parser.ast.extra_data.items[export_extra] = std.math.maxInt(u32) - 1;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.extra_data.items[export_extra] = @backingInt(exported_name_idx);
+
+    parser.ast.extra_data.items[export_extra + 1] = std.math.maxInt(u32) - 1;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.extra_data.items[export_extra + 1] = @backingInt(source_idx);
+
+    parser.ast.nodes.items[source_raw] = original_name_node;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.nodes.items[source_raw] = original_source_node;
+
+    parser.ast.extra_data.items[export_extra + 2] = std.math.maxInt(u32);
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.extra_data.items[export_extra + 2] = original_attrs_start;
+
+    parser.ast.extra_data.items[export_extra + 3] = 1;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.extra_data.items[export_extra + 3] = original_attrs_len;
+
+    parser.ast.nodes.items[name_raw].span.start |= ast_mod.Ast.STRING_TABLE_BIT;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.nodes.items[name_raw] = original_name_node;
+
+    parser.ast.nodes.items[source_raw].span.start |= ast_mod.Ast.STRING_TABLE_BIT;
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.nodes.items[source_raw] = original_source_node;
+
+    parser.ast.nodes.items[export_raw].span.end = std.math.maxInt(u32);
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
+    parser.ast.nodes.items[export_raw] = original_export_node;
+
+    top_level_statements.unset(export_raw);
+    try std.testing.expect(!isSupportedExportAll(&parser.ast, export_node_idx, &top_level_statements));
 }
 
 /// Keeping the semantic graph is safe only when the transform leaves each
@@ -7926,7 +8076,7 @@ fn canKeepPrepassSemanticGraphPrepared(
                     top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
                 }
                 const top_level_mask = if (top_level_statements) |*mask| mask else return false;
-                if (!isSupportedPlainExportAll(ast, node_idx, top_level_mask)) return false;
+                if (!isSupportedExportAll(ast, node_idx, top_level_mask)) return false;
                 found_transform = true;
                 found_other_transform = true;
                 found_non_type_transform = true;

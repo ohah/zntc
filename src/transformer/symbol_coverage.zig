@@ -119,6 +119,19 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             }
             return .descend;
         },
+        .export_all_declaration => {
+            const extra = node.data.extra;
+            if (extra <= ctx.ast.extra_data.items.len and
+                ctx.ast.extra_data.items.len - extra >= 4)
+            {
+                const exported_name: NodeIndex = @fromBackingInt(
+                    @intCast(ctx.ast.extra_data.items[extra]),
+                );
+                if (!exported_name.isNone() and @backingInt(exported_name) < ctx.ast.nodes.items.len)
+                    ctx.markName(exported_name);
+            }
+            return .descend;
+        },
         else => return .descend,
     }
     return checkIdentifier(ctx, idx, node);
@@ -1985,6 +1998,22 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
                         ctx.markName(spec.data.binary.right);
                     }
                 }
+            }
+            return .descend;
+        },
+        .export_all_declaration => {
+            // `export * as ns` stores its exported namespace label in an
+            // identifier node, but the name is a module label, not a lexical
+            // reference and therefore has no SymbolId or Reference row.
+            const extra = node.data.extra;
+            if (extra <= ctx.ast.extra_data.items.len and
+                ctx.ast.extra_data.items.len - extra >= 4)
+            {
+                const exported_name: NodeIndex = @fromBackingInt(
+                    @intCast(ctx.ast.extra_data.items[extra]),
+                );
+                if (!exported_name.isNone() and @backingInt(exported_name) < ctx.ast.nodes.items.len)
+                    ctx.markName(exported_name);
             }
             return .descend;
         },
@@ -7434,6 +7463,51 @@ test "exact identity audit accepts a provenance-backed external at a known ordin
         &origins,
     );
     try std.testing.expectEqual(@as(usize, 1), report.external_references);
+    try std.testing.expectEqual(@as(usize, 0), report.unclassified_reference);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit treats an export-all namespace label as a module name" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export * as ns from './dep';");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    const empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        &.{},
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &empty_nodes,
+        &empty_origins,
+    );
     try std.testing.expectEqual(@as(usize, 0), report.unclassified_reference);
     try std.testing.expect(report.isClean());
 }
