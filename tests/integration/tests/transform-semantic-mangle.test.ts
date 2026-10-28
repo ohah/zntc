@@ -949,7 +949,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(reference.stdout);
   });
 
-  test('standalone TypeScript reuses the transform graph for erased declaration-level type imports', async () => {
+  test('standalone TypeScript reuses the transform graph for erased type imports and exact runtime imports', async () => {
     const retainedCases = [
       {
         name: 'named type import',
@@ -1012,14 +1012,70 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         expected: '14',
       },
     ] as const;
+    const attributedRetainedCases = [
+      {
+        name: 'single inline type specifier with an attributed JSON default import',
+        source: `import { type Shape, default as data } from './data.json' with { type: 'json' }; const item: Shape = { value: data.value }; console.log(item.value);`,
+        expected: '2',
+      },
+      {
+        name: 'aliased inline type specifier with an attributed JSON import',
+        source: `import { type Shape as Model, default as data } from './data.json' with { type: 'json' }; const item: Model = { value: data.value + 1 }; console.log(item.value);`,
+        expected: '3',
+      },
+      {
+        name: 'multiple inline type specifiers with an attributed JSON import',
+        source: `import { type Shape as Left, default as data, type Shape as Right } from './data.json' with { type: 'json' }; const item: Left & Right = { value: data.value + 2 }; console.log(item.value);`,
+        expected: '4',
+      },
+      {
+        name: 'default binding and inline type specifier in one attributed import',
+        source: `import data, { type Shape } from './data.json' with { type: 'json' }; const item: Shape = { value: data.value + 3 }; console.log(item.value);`,
+        expected: '5',
+      },
+      {
+        name: 'inline type specifier after the JSON default alias',
+        source: `import { default as data, type Shape } from './data.json' with { type: 'json' }; const item: Shape = { value: data.value + 4 }; console.log(item.value);`,
+        expected: '6',
+      },
+      {
+        name: 'declaration type import and attributed inline runtime import',
+        source: `import type { Item } from './types' with { 'resolution-mode': 'import' }; import { type Shape, default as data } from './data.json' with { type: 'json' }; const item: Item & Shape = { value: data.value + 5 }; console.log(item.value);`,
+        expected: '7',
+      },
+      {
+        name: 'quoted attribute key on an attributed inline runtime import',
+        source: `import { type Shape, default as data } from './data.json' with { "type": 'json' }; const item: Shape = { value: data.value + 6 }; console.log(item.value);`,
+        expected: '8',
+      },
+      {
+        name: 'escaped attribute key on an attributed inline runtime import',
+        source: `import { type Shape, default as data } from './data.json' with { "t\\u0079pe": 'json' }; const item: Shape = { value: data.value + 7 }; console.log(item.value);`,
+        expected: '9',
+      },
+      {
+        name: 'line break before the import attributes keyword',
+        source: `import { type Shape, default as data } from './data.json'\nwith { type: 'json' }; const item: Shape = { value: data.value + 8 }; console.log(item.value);`,
+        expected: '10',
+      },
+      {
+        name: 'attributed inline-only type import is erased without loading JSON',
+        source: `import { type Shape } from './data.json' with { type: 'json' }; const item: Shape = { value: 11 }; console.log(item.value);`,
+        expected: '11',
+      },
+    ] as const;
     const fixture = await createFixture({
       ...Object.fromEntries(retainedCases.map((item, index) => [`case-${index}.ts`, item.source])),
+      ...Object.fromEntries(
+        attributedRetainedCases.map((item, index) => [`attributed-case-${index}.ts`, item.source]),
+      ),
       'types.ts': `export interface Item { value: number } export interface Flag { flag: boolean } export interface Base { value: number } export interface Shape { value: number }`,
       'default-types.ts': 'export default interface Item { value: number }',
       'values.mjs': 'export const runtimeValue = 2;',
       'other-values.mjs': 'export const otherValue = 5;',
       'default-values.mjs': 'export default 4;',
       'effects.mjs': 'globalThis.__typeImportEffect = 3;',
+      'data.json': '{"value":2}',
       'mixed-import.ts': `import type { Item } from './types'; import { runtimeValue } from './values.mjs'; const item: Item = { value: runtimeValue }; console.log(item.value);`,
       'mixed-aliased-runtime-import.ts': `import type { Item } from './types'; import { runtimeValue as amount } from './values.mjs'; const item: Item = { value: amount }; function read() { return amount; } console.log(item.value + read());`,
       'mixed-multiple-runtime-imports.ts': `import type { Item } from './types'; import { runtimeValue } from './values.mjs'; import { otherValue as extra } from './other-values.mjs'; const item: Item = { value: runtimeValue + extra }; console.log(item.value);`,
@@ -1030,6 +1086,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'inline-type-import-multiple-mixed-with-value.ts': `import type { Item } from './types'; import { type Flag as Trait, runtimeValue, type Base } from './values.mjs'; const item: Item & Trait & Base = { value: 8, flag: false }; console.log(item.value + Number(item.flag) + runtimeValue);`,
       'inline-type-import-only-mixed-with-value.ts': `import { type Flag, runtimeValue } from './values.mjs'; const item: Flag = { flag: true }; console.log(Number(item.flag) + runtimeValue);`,
       'inline-type-import-used-as-value.ts': `import { type Shape, runtimeValue } from './values.mjs'; globalThis.Shape = 21; console.log(Shape + runtimeValue);`,
+      'inline-type-import-used-as-value-with-attributes.ts': `import { type Shape, default as data } from './data.json' with { type: 'json' }; globalThis.Shape = 12; console.log(Shape + data.value);`,
+      'runtime-attributes-without-inline-type.ts': `import type { Shape } from './types' with { 'resolution-mode': 'import' }; import data from './data.json' with { type: 'json' }; const item: Shape = data; console.log(item.value);`,
       'mixed-default-runtime-import.ts': `import type { Item } from './types'; import value from './default-values.mjs'; const item: Item = { value }; console.log(item.value);`,
       'mixed-namespace-runtime-import.ts': `import type { Item } from './types'; import * as values from './values.mjs'; const item: Item = { value: values.runtimeValue }; console.log(item.value);`,
       'mixed-side-effect-import.ts': `import type { Item } from './types'; import './effects.mjs'; const item: Item = { value: globalThis.__typeImportEffect }; console.log(item.value + 1);`,
@@ -1044,6 +1102,12 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       ...retainedCases.map((item, index) => ({
         name: item.name,
         file: `case-${index}.ts`,
+        expected: item.expected,
+        graph: 'retained' as const,
+      })),
+      ...attributedRetainedCases.map((item, index) => ({
+        name: item.name,
+        file: `attributed-case-${index}.ts`,
         expected: item.expected,
         graph: 'retained' as const,
       })),
@@ -1108,6 +1172,18 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         graph: 'reanalyzed' as const,
       },
       {
+        name: 'attributed erased inline type binding still used as a runtime reference',
+        file: 'inline-type-import-used-as-value-with-attributes.ts',
+        expected: '14',
+        graph: 'reanalyzed' as const,
+      },
+      {
+        name: 'runtime attributes without an inline type specifier remain conservative',
+        file: 'runtime-attributes-without-inline-type.ts',
+        expected: '2',
+        graph: 'reanalyzed' as const,
+      },
+      {
         name: 'declaration-level type import beside a default runtime import',
         file: 'mixed-default-runtime-import.ts',
         expected: '4',
@@ -1147,7 +1223,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         name: 'inline-only type import with import attributes',
         file: 'inline-type-import-with-attributes.ts',
         expected: '13',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
     ];
 
