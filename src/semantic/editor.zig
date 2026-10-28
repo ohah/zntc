@@ -1457,7 +1457,7 @@ pub const SemanticEditor = struct {
             if (!reference.flags.declare or reference.symbol_id != input.symbol) continue;
             if (index != input.declaration_row or reference.declaration_node_index != input.source_specifier or
                 reference.scope_id != input.root_scope or !reference.node_index.isNone() or
-                reference.flags.read or reference.flags.write or reference.flags.type_context or reference.flags.value_as_type) return error.InvalidSymbol;
+                !std.meta.eql(reference.flags, ReferenceFlags{ .declare = true })) return error.InvalidSymbol;
             count += 1;
         }
         if (count != 1) return error.ReferenceNotFound;
@@ -2905,7 +2905,7 @@ test "enum outer binding exact reanchor preserves source var tuples and rejects 
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
 }
 
-const NamespaceMoveMutation = enum { none, foreign_ast, wrong_row, wrong_symbol, wrong_scope, no_source, bad_output, prebound_output, duplicate_row, wrong_parent, wrong_name, wrong_const_kind, extra_flags, valid_sibling_symbol, valid_sibling_scope, allocation_failure };
+const NamespaceMoveMutation = enum { none, foreign_ast, wrong_row, wrong_symbol, wrong_scope, no_source, bad_output, prebound_output, duplicate_row, wrong_parent, wrong_name, wrong_const_kind, extra_flags, reserved_row, mixed_row, node_index_row, valid_sibling_symbol, valid_sibling_scope, allocation_failure };
 
 fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2964,6 +2964,7 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         .output_statement = statement,
     };
     const original_input = input;
+    const original_row = editor.references.items[input.declaration_row];
     const original_binding = parser.ast.getNode(output_binding);
     const original_const_kind = parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra];
     var foreign_ast = parser.ast;
@@ -3005,11 +3006,18 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)].data.string_ref = .EMPTY,
         .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = @backingInt(ast_mod.VariableDeclarationKind.@"var"),
         .extra_flags => editor.symbols.items[raw_sid].decl_flags.is_exported = true,
+        .reserved_row => editor.references.items[input.declaration_row].flags._reserved = 1,
+        .mixed_row => editor.references.items[input.declaration_row].flags.read = true,
+        .node_index_row => editor.references.items[input.declaration_row].node_index = source_specifier,
         .allocation_failure => editor.allocator = failing.allocator(),
     }
     const before_symbol = editor.symbols.items[raw_sid];
     const before_rows = try a.dupe(Reference, editor.references.items);
     const before_ids = try a.dupe(?u32, editor.symbol_ids.items);
+    const before_scopes = try a.dupe(Scope, editor.scopes.items);
+    const before_nodes = try a.dupe(ast_mod.Node, parser.ast.nodes.items);
+    const before_extra = try a.dupe(u32, parser.ast.extra_data.items);
+    const before_scope_map_count = editor.scope_maps.items[scope.toIndex()].count();
     if (mutation == .none) {
         try editor.moveKnownNamespaceImportToConst(input);
     } else {
@@ -3020,12 +3028,18 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         try std.testing.expectEqualDeep(before_symbol, editor.symbols.items[raw_sid]);
         try std.testing.expectEqualDeep(before_rows, editor.references.items);
         try std.testing.expectEqualDeep(before_ids, editor.symbol_ids.items);
+        try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
+        try std.testing.expectEqualDeep(before_nodes, parser.ast.nodes.items);
+        try std.testing.expectEqualDeep(before_extra, parser.ast.extra_data.items);
+        try std.testing.expectEqual(before_scope_map_count, editor.scope_maps.items[scope.toIndex()].count());
+        try std.testing.expectEqual(@as(?usize, raw_sid), editor.scope_maps.items[scope.toIndex()].get(parser.ast.getText(name)));
         switch (mutation) {
             .prebound_output => editor.symbol_ids.items[@backingInt(output_binding)] = null,
             .duplicate_row => _ = editor.references.pop(),
             .extra_flags => editor.symbols.items[raw_sid].decl_flags = original_input.expected_source_flags,
             .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)] = original_binding,
             .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = original_const_kind,
+            .reserved_row, .mixed_row, .node_index_row => editor.references.items[input.declaration_row] = original_row,
             else => {},
         }
         try editor.moveKnownNamespaceImportToConst(original_input);
