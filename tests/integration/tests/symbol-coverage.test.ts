@@ -230,6 +230,19 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     ],
   },
   {
+    file: '4819-namespace-generated-scopes.ts',
+    target: TARGETS[0],
+    expectedStdout: '',
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 23 },
+      { report: 'exact', field: 'generated_references', minimum: 80 },
+      { report: 'exact', field: 'generated_scope_owners_checked', minimum: 18 },
+      { report: 'exact', field: 'declaration_anchors_checked', minimum: 32 },
+      { report: 'exact', field: 'namespace_iife_params', minimum: 2 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 79 },
+    ],
+  },
+  {
     file: '4819-enum-iife-params.ts',
     target: TARGETS[0],
     expectedStdout: '[3,1,3,23]\n',
@@ -2089,6 +2102,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,exact.generated_scope_owners_checked>=2,strict.marked_synthetic>=1',
       '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
       '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=3,exact.generated_references>=6,exact.declaration_anchors_checked>=13',
+      '4819-namespace-generated-scopes.ts:es5:exact.generated_bindings>=23,exact.generated_references>=80,exact.generated_scope_owners_checked>=18,exact.declaration_anchors_checked>=32,exact.namespace_iife_params>=2,strict.marked_synthetic>=79',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
       '4819-native-parameter-arrow-cells.mjs:es2015:exact.generated_bindings>=2,exact.generated_references>=5,exact.declaration_anchors_checked>=5,strict.marked_synthetic>=1',
     ]);
@@ -2243,6 +2257,40 @@ describe('symbol identity coverage gate (#4819)', () => {
             ),
           ).toContain('exact.generated_references=8, required >=9');
         }
+        if (entry.file === '4819-namespace-generated-scopes.ts') {
+          // Removing both namespace declarations keeps this input executable,
+          // but removes four transform-created scope owners. The generic exact
+          // report remains clean; this per-producer floor must catch the lost
+          // namespace scope coverage instead of letting aggregate totals hide it.
+          const source = readFileSync(file, 'utf8');
+          const withoutNamespaceScopes = source
+            .replace('namespace X {\n  export class MyPromise<T> extends Promise<T> {}\n}\n', '')
+            .replace('namespace M {\n  export async function f1() {}\n}\n', '');
+          expect(withoutNamespaceScopes).not.toBe(source);
+          const mutantFile = join(outDir, 'namespace-generated-scopes-removed.ts');
+          writeFileSync(mutantFile, withoutNamespaceScopes);
+          const mutant = runCoverage(mutantFile, entry.target, outDir, true);
+          expect(mutant.exitCode, mutant.stderr).toBe(0);
+          expect(transformIdentityAuditProblems(mutant.stderr), mutant.stderr).toEqual([]);
+          const mutantRuntime = runNode([join(outDir, 'out.js')]);
+          expect(mutantRuntime.status, mutantRuntime.stderr).toBe(0);
+          expect(mutantRuntime.stdout).toBe(entry.expectedStdout);
+          expect(mutantRuntime.stderr).toBe('');
+          const mutantLines = mutant.stderr.split(/\r?\n/);
+          const mutantExact = mutantLines.find((line) => line.startsWith('zntc: symbol-identity '));
+          const mutantStrict = mutantLines.find((line) =>
+            line.startsWith('zntc: synthetic-coverage '),
+          );
+          expect(mutantExact, mutant.stderr).toBeDefined();
+          expect(mutantStrict, mutant.stderr).toBeDefined();
+          expect(
+            requiredProducerObservationProblems(
+              { exact: mutantExact ?? '', strict: mutantStrict ?? '' },
+              entry.observations,
+              mutantFile,
+            ),
+          ).toContain('exact.generated_scope_owners_checked=14, required >=18');
+        }
       }
       expect(runs).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length * 2);
     } finally {
@@ -2312,16 +2360,16 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
 
     const windowsPath = expectedPath.replaceAll('/', '\\');
-    expect(
-      requiredProducerObservationProblems(
-        {
-          exact: correctReports.exact.replace(expectedPath, windowsPath),
-          strict: correctReports.strict.replace(expectedPath, windowsPath),
-        },
-        requirements,
-        expectedFile,
-      ),
-    ).toEqual([]);
+    const windowsReports = {
+      exact: correctReports.exact.replace(expectedPath, windowsPath),
+      strict: correctReports.strict.replace(expectedPath, windowsPath),
+    };
+    expect(requiredProducerObservationProblems(windowsReports, requirements, expectedFile)).toEqual(
+      [],
+    );
+    expect(requiredProducerObservationProblems(windowsReports, requirements, windowsPath)).toEqual(
+      [],
+    );
   });
 
   test('exact scope observations exclude live scopes that came from source analysis', () => {
