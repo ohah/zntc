@@ -771,6 +771,8 @@ test "static getter super preserves actual births before the generic walker" {
     const a = arena.allocator();
     var f = try Fixture.prepare(a, "var seed=7;var object={get value(){return super.value+seed+this.extra}};");
     f.transformer.computed_object_helper_source = null;
+    // This producer must mark Object even without generic global recording.
+    f.transformer.record_explicit_global_references = false;
     const source = f.transformer.semantic_source_ast.?;
     var object: NodeIndex = .none;
     var getter: NodeIndex = .none;
