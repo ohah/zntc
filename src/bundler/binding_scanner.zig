@@ -47,7 +47,7 @@ pub const ImportBinding = struct {
 
     /// The producer may materialize an imported value as real local storage.
     /// Its exact current declaration anchor keeps the same source SymbolId.
-    local_role: enum { import_binding, materialized_var } = .import_binding,
+    local_role: enum { import_binding, materialized_var, materialized_const } = .import_binding,
     kind: Kind,
     /// 이 모듈에서 사용하는 로컬 이름 (e.g. "bar" in `import { foo as bar }`)
     local_name: []const u8,
@@ -168,13 +168,14 @@ pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymb
         const expected_kind: semantic_symbol.SymbolKind = switch (binding.local_role) {
             .import_binding => .import_binding,
             .materialized_var => .variable_var,
+            .materialized_const => .variable_const,
         };
         if (sid >= context.symbols.len or context.symbols[sid].kind != expected_kind) return symbol_mod.SymbolRef.invalid;
-        if (binding.local_role == .materialized_var and (ast.nodes.items[raw].tag != .binding_identifier or context.symbols[sid].scope_id.isNone())) return symbol_mod.SymbolRef.invalid;
+        if (binding.local_role != .import_binding and (ast.nodes.items[raw].tag != .binding_identifier or context.symbols[sid].scope_id.isNone())) return symbol_mod.SymbolRef.invalid;
         return symbol_mod.SymbolRef.makeSemantic(context.module_index, sid);
     }
 
-    if (binding.local_role == .materialized_var) return symbol_mod.SymbolRef.invalid;
+    if (binding.local_role != .import_binding) return symbol_mod.SymbolRef.invalid;
     const scope = if (binding.is_helper) context.helper_scope else context.module_scope;
     const symbol_index = (scope orelse return symbol_mod.SymbolRef.invalid).get(binding.local_name) orelse
         return symbol_mod.SymbolRef.invalid;

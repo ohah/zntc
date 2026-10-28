@@ -1147,6 +1147,22 @@ pub fn buildMetadataForAstWithHolderReservations(
                 }
             }
 
+            if (ib.local_role == .materialized_const) {
+                if (ib.kind != .namespace) return error.InvalidSelfNamespaceHolder;
+                const actual_module = m_opt.?;
+                try @import("../self_namespace_ast.zig").validate(self.graph, actual_module);
+                const actual_ast = if (actual_module.ast) |*value| value else return error.InvalidSelfNamespaceHolder;
+                if (ast.nodes.items.ptr != actual_ast.nodes.items.ptr or ast.nodes.items.len != actual_ast.nodes.items.len or
+                    ast.extra_data.items.ptr != actual_ast.extra_data.items.ptr or ast.extra_data.items.len != actual_ast.extra_data.items.len or
+                    ast.source.ptr != actual_ast.source.ptr or ast.source.len != actual_ast.source.len) return error.InvalidSelfNamespaceHolder;
+                if (override_symbol_ids) |ids| {
+                    const expected = actual_module.semantic.?.symbol_ids;
+                    if (ids.len != expected.len) return error.InvalidSelfNamespaceHolder;
+                    for (ids, expected) |current, known| if (current != known) return error.InvalidSelfNamespaceHolder;
+                }
+                continue; // the actual const/getter AST supplies storage and uses
+            }
+
             // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
             // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.

@@ -1748,6 +1748,14 @@ pub const Bundler = struct {
             });
         }
 
+        // First bounded self-namespace producer: main single-output path only.
+        // The worker path intentionally retains the existing implementation.
+        try @import("self_namespace_ast.zig").lower(graph, .{
+            .format = self.options.format,
+            .scope_hoist = self.options.scope_hoist,
+            .minify_syntax = self.options.minify_syntax,
+        });
+
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.

@@ -1729,7 +1729,9 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
         // exact foreign handles can be rebound across graph reconstruction,
         // invalidate this consumer rather than reuse a stale generated graph.
         var has_callsite_targets = false;
-        for (m.import_bindings) |binding| if (binding.callsite_target != null) {
+        for (m.import_bindings) |binding| if (binding.callsite_target != null or
+            (binding.kind == .namespace and binding.local_role == .materialized_const))
+        {
             has_callsite_targets = true;
             break;
         };

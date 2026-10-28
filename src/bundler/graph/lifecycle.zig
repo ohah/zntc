@@ -96,6 +96,7 @@ pub fn reset(self: *ModuleGraph) void {
 /// 실제로는 module.deinit 가 importers/dependencies 둘 다 해제하지만, init 후 caller
 /// 가 build flow 에서 importers 재기록함.
 pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
+    _ = self.self_namespace_holders.remove(idx.toU32());
     const idx_usize = @backingInt(idx);
     std.debug.assert(idx_usize < self.modules.count());
     const mod_ptr = self.modules.at(idx_usize);
@@ -143,6 +144,7 @@ pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
 /// reset() 는 path_arena 를 유지해 키가 살아있으니 pkg_info_cache 를 보존(doc 계약)하지만,
 /// 여기서는 path_arena 가 회수되므로 보존이 불가능 — value 메모리 해제 후 clearRetainingCapacity.
 pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
+    self.self_namespace_holders.clearRetainingCapacity();
     // 1) 모든 모듈 슬롯 해제 (parse_arena 가 아직 graph 소유면 함께 해제 —
     //    transferModulesToStore 가 이미 store 로 넘긴 경우 parse_arena=null 이라 no-op).
     var mod_it = self.modules.iterator(0);
@@ -179,6 +181,7 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
 }
 
 pub fn deinit(self: *ModuleGraph) void {
+    self.self_namespace_holders.deinit(self.allocator);
     self.entry_guard_invocations.deinit(self.allocator);
     // 0.16: entry_dir 는 graph-owned dupe (build_flow). project_root 는 entry_dir
     // 로의 borrow 또는 user-set borrow 라 별도 free 안 함.
