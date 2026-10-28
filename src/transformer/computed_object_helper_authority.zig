@@ -764,3 +764,85 @@ test "computed accessor super authority exact audit rejects wrong identity scope
     try f.semantic.scope_owner_map.put(a, owner, @backingInt(saved.scope_id));
     try std.testing.expect((try accessorExact(&f, a)).isClean());
 }
+
+test "static getter super preserves actual births before the generic walker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.prepare(a, "var seed=7;var object={get value(){return super.value+seed+this.extra}};");
+    f.transformer.computed_object_helper_source = null;
+    const source = f.transformer.semantic_source_ast.?;
+    var object: NodeIndex = .none;
+    var getter: NodeIndex = .none;
+    var binding: NodeIndex = .none;
+    for (source.nodes.items, 0..) |node, raw| {
+        if (node.tag == .object_expression) object = @fromBackingInt(@intCast(raw));
+        if (node.tag == .method_definition) getter = @fromBackingInt(@intCast(raw));
+        if (node.tag == .variable_declarator and binding.isNone()) binding = node.data.binary.left;
+    }
+    const source_sid = f.semantic.symbol_ids[@backingInt(binding)].?;
+    const g: ScopeId = @fromBackingInt(f.semantic.scope_owner_map.get(@backingInt(getter)).?);
+    const source_symbol_count = f.semantic.symbols.items.len;
+    f.transformer.current_scope = f.transformer.programScope();
+    const output = try f.transformer.visitNode(object);
+    const live = try walk.collectReachableNodeIndicesFrom(a, f.transformer.ast, output);
+    const editor = &(f.transformer.semantic_editor orelse return error.MissingStaticGetterBirthEditor);
+    const utils = @import("output_scope_test_utils.zig");
+    var parents = try utils.buildParentMap(a, f.transformer.ast, output);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var actual_getters: usize = 0;
+    var this_uses: usize = 0;
+    for (live) |raw| {
+        if (f.transformer.outputOwnedScope(@fromBackingInt(raw))) |scope| try owners.put(a, raw, @backingInt(scope));
+        const node = f.transformer.ast.nodes.items[raw];
+        if (node.tag == .method_definition and f.transformer.outputOwnedScope(@fromBackingInt(raw)) == g) actual_getters += 1;
+        if (node.tag == .this_expression) this_uses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), actual_getters);
+    try std.testing.expect(this_uses >= 2);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[g.toIndex()].kind);
+    try std.testing.expectEqual(source_sid, f.transformer.symbol_ids.items[@backingInt(binding)].?);
+    var home_sid: ?u32 = null;
+    for (live) |raw| {
+        const node = f.transformer.ast.nodes.items[raw];
+        if (node.tag != .assignment_expression or f.transformer.ast.getNode(node.data.binary.right).tag != .object_expression) continue;
+        const sid = f.transformer.getSymbolIdAt(node.data.binary.left) orelse continue;
+        if (sid < source_symbol_count) continue;
+        try std.testing.expect(home_sid == null);
+        home_sid = sid;
+    }
+    const known_home_sid = home_sid orelse return error.MissingActualHomeAssignment;
+    var seed_reads: usize = 0;
+    var home_reads: usize = 0;
+    var generated_objects: usize = 0;
+    const leaves = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, f.transformer.ast, output);
+    for (leaves) |leaf| {
+        const raw = @backingInt(leaf);
+        const actual_scope = utils.expectedScope(f.transformer.ast, output, &parents, &owners, raw) orelse return error.MissingStaticGetterActualScope;
+        if (f.transformer.explicit_global_reference_nodes.contains(raw)) {
+            try std.testing.expectEqual(g, actual_scope);
+            try std.testing.expect(f.transformer.getSymbolIdAt(leaf) == null);
+            try std.testing.expectEqualStrings("Object", f.transformer.ast.getText(f.transformer.ast.getNode(leaf).data.string_ref));
+            generated_objects += 1;
+            continue;
+        }
+        const sid = f.transformer.getSymbolIdAt(leaf) orelse continue;
+        const row = (try editor.referenceForNode(leaf)) orelse return error.MissingStaticGetterBornRead;
+        try std.testing.expectEqual(sid, @backingInt(row.symbol_id));
+        try std.testing.expectEqual(actual_scope, row.scope_id);
+        if (sid == source_sid and row.flags.read) {
+            try std.testing.expectEqual(g, row.scope_id);
+            seed_reads += 1;
+        }
+        if (sid == known_home_sid and row.flags.read and row.scope_id == g) {
+            const storage = editor.symbols.items[sid];
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, storage.kind);
+            try std.testing.expect(storage.scope_id != g);
+            try std.testing.expectEqual(storage.scope_id, editor.scopes.items[g.toIndex()].parent);
+            home_reads += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), seed_reads);
+    try std.testing.expectEqual(@as(usize, 1), home_reads);
+    try std.testing.expectEqual(@as(usize, 1), generated_objects);
+}
