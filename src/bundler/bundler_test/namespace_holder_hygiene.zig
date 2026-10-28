@@ -4,7 +4,7 @@ const Bundler = @import("../bundler.zig").Bundler;
 const helpers = @import("../test_helpers.zig");
 const Case = struct { name: []const u8, entry: []const u8, dep: []const u8, expected: []const u8, lazy: ?[]const u8 = null, barrel: ?[]const u8 = null, forbidden_output: ?[]const u8 = null, owner_placeholder: bool = false, provider_probe: ?[]const u8 = null, provider_expected: []const u8 = "" };
 const Format = @import("../types.zig").Format;
-const Profile = struct { format: Format = .cjs, preserve: bool = true, split: bool = false, minify: bool = false, syntax: bool = false };
+const Profile = struct { format: Format = .cjs, preserve: bool = true, split: bool = false, minify: bool = false, syntax: bool = false, legacy: bool = false };
 fn run(case: Case, profile: Profile) !void {
     errdefer std.debug.print("namespace holder hygiene case={s} format={s} preserve={any} split={any} minify={any}\n", .{ case.name, @tagName(profile.format), profile.preserve, profile.split, profile.minify });
     var tmp = std.testing.tmpDir(.{});
@@ -32,7 +32,7 @@ fn run(case: Case, profile: Profile) !void {
     defer std.testing.allocator.free(native.stderr);
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expectEqualStrings(case.expected, native.stdout);
-    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = profile.format, .platform = .node, .preserve_modules = profile.preserve, .code_splitting = profile.split, .minify_identifiers = profile.minify, .minify_syntax = profile.syntax });
+    var bundler = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = profile.format, .platform = .node, .preserve_modules = profile.preserve, .code_splitting = profile.split, .minify_identifiers = profile.minify, .minify_syntax = profile.syntax, .unsupported = if (profile.legacy) @import("../../transformer/compat.zig").fromESTarget(.es5) else .{} });
     defer bundler.deinit();
     const result = try bundler.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
@@ -292,4 +292,18 @@ test "quoted ordinary hoisted function provider standalone exposes actual callab
         .provider_expected = "actual callable keys and values\n",
     };
     for ([_]Profile{ .{}, .{ .minify = true } }) |profile| try run(case, profile);
+}
+
+test "quoted ordinary legacy property consumers preserve original keys and mixed live controls" {
+    const quoted = [_]Case{
+        .{ .name = "quoted-legacy-backslash", .entry = "import{\"\\\\u0061\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"\\\\u0061\"}", .expected = "7\n" },
+        .{ .name = "quoted-legacy-quotes", .entry = "import{\"\\\"key\\\"\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"\\\"key\\\"\"}", .expected = "7\n" },
+        .{ .name = "quoted-legacy-unicode", .entry = "import{\"한글\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"한글\"}", .expected = "7\n" },
+    };
+    for (quoted) |case| for ([_]Profile{ .{ .legacy = true }, .{ .legacy = true, .minify = true } }) |profile| try run(case, profile);
+    const mixed = [_]Case{
+        .{ .name = "quoted-mixed-live-counter", .entry = "import{\"한글\" as read,count,bump}from './dep.mjs';bump();console.log(read.n,count)", .dep = "let count=6;export{count};export function bump(){count++};const value={n:7};export{value as \"한글\"}", .expected = "7 7\n" },
+        .{ .name = "ASCII-mixed-live-counter", .entry = "import{item as read,count,bump}from './dep.mjs';bump();console.log(read.n,count)", .dep = "let count=6;export{count};export function bump(){count++};const value={n:7};export{value as item}", .expected = "7 7\n" },
+    };
+    for (mixed) |case| for ([_]Profile{ .{}, .{ .minify = true }, .{ .legacy = true }, .{ .legacy = true, .minify = true } }) |profile| try run(case, profile);
 }

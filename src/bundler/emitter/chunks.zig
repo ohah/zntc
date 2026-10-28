@@ -317,6 +317,33 @@ fn consumerImportPropertyValue(allocator: std.mem.Allocator, spelling: []const u
     }
 }
 
+/// The selector carries its existing role explicitly. Binding spellings come
+/// from canonical/source identifier producers; public keys may be decoded only
+/// from the same verified ordinary provider's actual string-literal edge.
+fn ordinaryConsumerPropertyKey(
+    allocator: std.mem.Allocator,
+    linker: ?*Linker,
+    sym: chunk_mod.CrossChunkSym,
+    spelling: []const u8,
+    origin: ConsumerPropertyOrigin,
+) !@import("../public_export_key.zig").Key {
+    const keys = @import("../public_export_key.zig");
+    if (origin == .binding_spelling) {
+        const value = try consumerImportPropertyValue(allocator, spelling, .binding_spelling);
+        return .{ .text = value, .owned = value.ptr != spelling.ptr };
+    }
+    if (!std.mem.eql(u8, spelling, sym.name)) return error.InvalidQuotedConsumerKey;
+    if (linker) |l| if (l.getModule(sym.canonical_module)) |module| {
+        if (module.findExportBinding(sym.name)) |binding| {
+            if (try module.ordinaryQuotedExportLiteral(binding.*)) |verified|
+                return keys.fromLiteralSyntax(allocator, verified.literal_syntax);
+        }
+    };
+    // Not applicable keeps its pre-existing property interpretation. This is
+    // not permission to decode arbitrary strings or select another SymbolId.
+    return keys.fromStringValue(spelling);
+}
+
 /// (#4587 target a) preserve-modules CJS 라이브 바인딩 소비자 import 방출.
 /// dep 의 재할당(storage) export 를 구조분해로 잡으면 순환에서 로드 시점 undefined 를 박제하므로:
 ///   1. `const <ns> = require("<bind_arg>");` holder 를 발급하고
@@ -396,7 +423,9 @@ fn emitPmCjsLiveImport(
             // 비재할당 심볼: 현행 스냅샷 구조분해.
             const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, null, allocator, used_locals, natural_bindings, alias_strs);
             if (legacy_syntax) {
-                const quoted = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                const property_key = try ordinaryConsumerPropertyKey(allocator, linker, sym, key, if (lazy_local_keys or has_global) .binding_spelling else .module_export_name);
+                defer property_key.deinit(allocator);
+                const quoted = try std.json.Stringify.valueAlloc(allocator, property_key.text, .{});
                 defer allocator.free(quoted);
                 try chunk_output.print(allocator, "var {s}={s}[{s}];\n", .{ local, ns_local, quoted });
             } else if (!std.mem.eql(u8, key, local)) {
@@ -1521,10 +1550,13 @@ fn emitChunksImpl(
                     for (import_symbols) |sym| {
                         const binding = try crossChunkBindingName(linker, sym);
                         const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
-                        const key = if (lazy_local_keys or (has_global and !entryChunkExportsPublicName(graph, dep_chunk, sym.name, options))) binding else sym.name;
+                        const binding_key = lazy_local_keys or (has_global and !entryChunkExportsPublicName(graph, dep_chunk, sym.name, options));
+                        const key = if (binding_key) binding else sym.name;
                         const consumer = if (options.preserve_modules and chunk.modules.items.len == 1) @as(?u32, @backingInt(chunk.modules.items[0])) else null;
                         const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, consumer, allocator, &used_locals, &natural_bindings, &alias_strs);
-                        const quoted = try std.json.Stringify.valueAlloc(allocator, key, .{});
+                        const property_key = try ordinaryConsumerPropertyKey(allocator, linker, sym, key, if (binding_key) .binding_spelling else .module_export_name);
+                        defer property_key.deinit(allocator);
+                        const quoted = try std.json.Stringify.valueAlloc(allocator, property_key.text, .{});
                         defer allocator.free(quoted);
                         try chunk_output.print(allocator, "var {s}=require(\"{s}\")[{s}];\n", .{ local, bind_arg, quoted });
                     }
