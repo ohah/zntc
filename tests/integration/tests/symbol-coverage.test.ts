@@ -5677,7 +5677,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
@@ -6094,7 +6094,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42:elided',
       },
       {
-        name: 'class implements keeps its conservative reanalysis boundary',
+        name: 'native class implements retains graph while preserving its runtime value import',
         source: [
           "import { value } from './values';",
           "import { Shape } from './shape';",
@@ -6107,11 +6107,11 @@ describe('symbol identity coverage gate (#4819)', () => {
           'shape.ts':
             'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:elided',
       },
       {
-        name: 'multiple class implements imports keep the class path on reanalysis',
+        name: 'native class implements removes multiple type-only imports',
         source: [
           "import { value } from './values';",
           "import { Shape } from './shape';",
@@ -6126,11 +6126,11 @@ describe('symbol identity coverage gate (#4819)', () => {
             'globalThis.__implementsShapeRan = true; export interface Shape { value: number }\n',
           'marker.ts': 'globalThis.__implementsMarkerRan = true; export interface Marker {}\n',
         },
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42:',
       },
       {
-        name: 'generic class implements keeps the class path on reanalysis',
+        name: 'generic native class implements retains the exact graph',
         source: [
           "import { value } from './values';",
           "import { Shape } from './shape';",
@@ -6142,6 +6142,101 @@ describe('symbol identity coverage gate (#4819)', () => {
           'values.ts': 'export const value = 42;\n',
           'shape.ts':
             'globalThis.__genericImplementsRan = true; export interface Shape<T> { value: T }\n',
+        },
+        graph: 'retained',
+        stdout: '42:elided',
+      },
+      {
+        name: 'native class extends keeps its runtime import and elides its implemented type',
+        source: [
+          "import { Base } from './base';",
+          "import { Shape } from './shape';",
+          'class Model extends Base implements Shape { read(): number { return this.value; } }',
+          "process.stdout.write(`${new Model().read()}:${globalThis.__baseClassRan ? 'base' : ''}${globalThis.__implementedShapeRan ? 'shape' : ''}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'base.ts': 'globalThis.__baseClassRan = true; export class Base { value = 42; }\n',
+          'shape.ts':
+            'globalThis.__implementedShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'retained',
+        stdout: '42:base',
+      },
+      {
+        name: 'native class type import remains live when it also has a runtime read',
+        source: [
+          "import { Shape } from './shape';",
+          'class Model implements Shape { static kind = Shape.kind; }',
+          "process.stdout.write(`${Model.kind}:${globalThis.__runtimeShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__runtimeShapeRan = true; export class Shape { static kind = 42; }\n',
+        },
+        graph: 'retained',
+        stdout: '42:loaded',
+      },
+      {
+        name: 'parameter property keeps class type import on reanalysis',
+        source: [
+          "import { Shape } from './shape';",
+          'class Model implements Shape { constructor(public value: number) {} }',
+          "process.stdout.write(`${new Model(42).value}:${globalThis.__parameterPropertyShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__parameterPropertyShapeRan = true; export interface Shape { value: number }\n',
+        },
+        graph: 'reanalyzed',
+        stdout: '42:elided',
+      },
+      {
+        name: 'downlevel class keeps type import on reanalysis',
+        source: [
+          "import { Shape } from './shape';",
+          'class Model implements Shape { value: number = 42; read(): number { return this.value; } }',
+          "process.stdout.write(`${new Model().read()}:${globalThis.__downlevelShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__downlevelShapeRan = true; export interface Shape { value: number }\n',
+        },
+        args: ['--target=es2015'],
+        graph: 'reanalyzed',
+        stdout: '42:elided',
+      },
+      {
+        name: 'legacy class field assignment keeps type import on reanalysis',
+        source: [
+          "import { Shape } from './shape';",
+          'class Model implements Shape { value: number = 42; }',
+          "process.stdout.write(`${new Model().value}:${globalThis.__legacyFieldShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__legacyFieldShapeRan = true; export interface Shape { value: number }\n',
+        },
+        args: ['--use-define-for-class-fields=false'],
+        graph: 'reanalyzed',
+        stdout: '42:elided',
+      },
+      {
+        name: 'decorated class keeps type import on reanalysis',
+        source: [
+          "import { Shape } from './shape';",
+          'function dec(value: any) {}',
+          '@dec class Model implements Shape { value = 42; }',
+          "process.stdout.write(`${new Model().value}:${globalThis.__decoratedShapeRan ? 'loaded' : 'elided'}`);",
+          '',
+        ].join('\n'),
+        dependencies: {
+          'shape.ts':
+            'globalThis.__decoratedShapeRan = true; export interface Shape { value: number }\n',
         },
         graph: 'reanalyzed',
         stdout: '42:elided',

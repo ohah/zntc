@@ -2768,6 +2768,231 @@ fn isRetainableBoundStaticFieldOptionalMemberCall(
     );
 }
 
+/// Native classes can coexist with TypeScript import elision when transforming
+/// them only strips type syntax. Keep classes that create assignments, helper
+/// bindings, or lower scopes on the conservative import path.
+fn canRetainTypeOnlyImportsWithNativeClasses(
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+) bool {
+    if (options.unsupported.hasAny() or ast.has_decorator or
+        (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast))) return false;
+
+    for (ast.nodes.items) |node| {
+        if (node.tag != .formal_parameter) continue;
+        const extra = node.data.extra;
+        if (extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - extra <= ast_mod.FormalParameterExtra.flags or
+            ast.extra_data.items[extra + ast_mod.FormalParameterExtra.flags] != 0) return false;
+    }
+    return true;
+}
+
+test "native class type-only import gate rejects class graph edits" {
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        options: TransformOptions = .{},
+        corrupt_parameter_extra_out_of_range: bool = false,
+        corrupt_parameter_extra_truncated: bool = false,
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{
+            .name = "native class implements",
+            .source = "import { Shape } from './shape'; class Model implements Shape { value: number = 42; }",
+            .expected = true,
+        },
+        .{
+            .name = "generic native class implements",
+            .source = "import { Shape } from './shape'; class Model<T> implements Shape<T> { read(value: T): T { return value; } }",
+            .expected = true,
+        },
+        .{
+            .name = "parameter property generates a runtime assignment",
+            .source = "import { Shape } from './shape'; class Model implements Shape { constructor(public value: number) {} }",
+            .expected = false,
+        },
+        .{
+            .name = "legacy field semantics transform class fields",
+            .source = "import { Shape } from './shape'; class Model implements Shape { value: number = 42; }",
+            .options = .{ .use_define_for_class_fields = false },
+            .expected = false,
+        },
+        .{
+            .name = "legacy field mode without class fields stays native",
+            .source = "import type { Shape } from './shape'; class Model implements Shape { read(): number { return 42; } }",
+            .options = .{ .use_define_for_class_fields = false },
+            .expected = true,
+        },
+        .{
+            .name = "decorated classes use the decorated graph path",
+            .source = "import { Shape } from './shape'; function dec(value: any) {} @dec class Model implements Shape {}",
+            .expected = false,
+        },
+        .{
+            .name = "class downlevel target is excluded",
+            .source = "import { Shape } from './shape'; class Model implements Shape {}",
+            .options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+            .expected = false,
+        },
+        .{
+            .name = "out-of-range parameter extras fail closed",
+            .source = "import { Shape } from './shape'; class Model implements Shape { constructor(public value: number) {} }",
+            .corrupt_parameter_extra_out_of_range = true,
+            .expected = false,
+        },
+        .{
+            .name = "truncated parameter extras fail closed",
+            .source = "import { Shape } from './shape'; class Model implements Shape { constructor(public value: number) {} }",
+            .corrupt_parameter_extra_truncated = true,
+            .expected = false,
+        },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        if (case.corrupt_parameter_extra_out_of_range or case.corrupt_parameter_extra_truncated) {
+            var corrupted = false;
+            for (parser.ast.nodes.items) |*node| {
+                if (node.tag != .formal_parameter) continue;
+                node.data.extra = if (case.corrupt_parameter_extra_out_of_range)
+                    std.math.maxInt(u32)
+                else
+                    @intCast(parser.ast.extra_data.items.len - ast_mod.FormalParameterExtra.flags);
+                corrupted = true;
+                break;
+            }
+            try std.testing.expect(corrupted);
+        }
+        try std.testing.expectEqual(
+            case.expected,
+            canRetainTypeOnlyImportsWithNativeClasses(&parser.ast, case.options),
+        );
+        _ = case.name;
+    }
+}
+
+test "native class type-only import graph retention is narrowly gated" {
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        options: TransformOptions = .{ .strip_types = true },
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{
+            .name = "native class with erased implements import",
+            .source = "import { Shape } from './shape'; class Model implements Shape { value: number = 42; }",
+            .expected = true,
+        },
+        .{
+            .name = "native generic class with erased implements import",
+            .source = "import { Shape } from './shape'; class Model<T> implements Shape<T> { read(value: T): T { return value; } }",
+            .expected = true,
+        },
+        .{
+            .name = "parameter property creates a class graph edit",
+            .source = "import { Shape } from './shape'; class Model implements Shape { constructor(public value: number) {} }",
+            .expected = false,
+        },
+        .{
+            .name = "legacy class field semantics create a class graph edit",
+            .source = "import { Shape } from './shape'; class Model implements Shape { value: number = 42; }",
+            .options = .{ .strip_types = true, .use_define_for_class_fields = false },
+            .expected = false,
+        },
+        .{
+            .name = "decorator lowering creates a class graph edit",
+            .source = "import { Shape } from './shape'; function dec(value: any) {} @dec class Model implements Shape {}",
+            .expected = false,
+        },
+        .{
+            .name = "downlevel class lowering creates a class graph edit",
+            .source = "import { Shape } from './shape'; class Model implements Shape {}",
+            .options = .{ .strip_types = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+            .expected = false,
+        },
+    };
+    const Plugin = @import("../plugin.zig").Plugin;
+    const no_plugins: []const Plugin = &.{};
+
+    for (cases, 0..) |case, case_index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        analyzer.is_ts = true;
+        try analyzer.analyze();
+
+        var module = Module.init(@fromBackingInt(@intCast(case_index)), "input.ts");
+        module.source = case.source;
+        module.module_type = .ts;
+        module.ast = parser.ast;
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .node_scope_provenance = analyzer.node_scope_provenance,
+            .class_self_symbol_map = analyzer.class_self_symbol_map,
+            .namespace_member_owners = analyzer.namespace_member_owners,
+            .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+            .numeric_const_texts = analyzer.numeric_const_texts,
+            .helper_scope_map = analyzer.helper_scope_map,
+        };
+        module.import_records = try import_scanner.extractImports(allocator, &parser.ast);
+        module.import_bindings = try binding_scanner_mod.extractImportBindings(
+            allocator,
+            &parser.ast,
+            module.import_records,
+            null,
+        );
+        for (module.import_bindings) |*binding| binding.source_type_only = true;
+        const context = .{
+            .allocator = allocator,
+            .flow = false,
+            .worklet_transform = false,
+            .plugins = no_plugins,
+            .styled_components = false,
+            .emotion = false,
+            .minify_identifiers = true,
+        };
+        var allow_super_get = false;
+        var allow_super_set = false;
+        const retained = canKeepPrepassSemanticGraph(
+            &context,
+            &module,
+            case.options,
+            no_plugins,
+            &allow_super_get,
+            &allow_super_set,
+            null,
+        );
+        if (retained != case.expected) std.debug.print("native class graph case mismatch: {s}\n", .{case.name});
+        try std.testing.expectEqual(case.expected, retained);
+    }
+}
+
 fn isRetainableStaticFieldOptionalMemberCall(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -8012,9 +8237,11 @@ fn canKeepPrepassSemanticGraphPrepared(
         safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var found_transform = found_other_transform or retained_define_references or retained_simple_console_drops;
-    // Type erasure is the only transform currently admitted by the TS import
-    // gate. Track all other transforms separately and keep each one fail-closed.
+    // Type erasure may combine with native class visitation that only removes
+    // type syntax. Other runtime transforms remain fail-closed at the TS import gate.
     var found_non_type_transform = found_transform;
+    const native_classes_preserve_type_import_elision =
+        canRetainTypeOnlyImportsWithNativeClasses(ast, options);
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
         if (scope.subtree_has_direct_eval) {
@@ -8135,7 +8362,8 @@ fn canKeepPrepassSemanticGraphPrepared(
                 // helper, class reference, and scopes are tracked.
                 found_transform = true;
                 found_other_transform = true;
-                found_non_type_transform = true;
+                if (!native_classes_preserve_type_import_elision)
+                    found_non_type_transform = true;
             },
             .identifier_reference => {
                 const raw_name = ast.identifierNameText(node);
