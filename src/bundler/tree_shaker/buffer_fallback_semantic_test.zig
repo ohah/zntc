@@ -88,6 +88,57 @@ const Fixture = struct {
     }
 };
 
+const DirectVarAlternateNodes = struct {
+    if_index: NodeIndex,
+    alternate: NodeIndex,
+    declarator: NodeIndex,
+    binding: NodeIndex,
+    initializer: NodeIndex,
+};
+
+fn findDirectVarAlternate(ast: *const ast_mod.Ast) ?DirectVarAlternateNodes {
+    if (ast.nodes.items.len == 0) return null;
+    const root: NodeIndex = ast.transformed_root orelse @fromBackingInt(
+        @as(u32, @intCast(ast.nodes.items.len - 1)),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return null;
+    const program = ast.getNode(root);
+    if (program.tag != .program or program.data.list.start > ast.extra_data.items.len or
+        program.data.list.len > ast.extra_data.items.len - program.data.list.start) return null;
+    for (ast.extra_data.items[program.data.list.start..][0..program.data.list.len]) |raw| {
+        if (raw >= ast.nodes.items.len) return null;
+        const statement = ast.nodes.items[raw];
+        if (statement.tag != .if_statement or statement.data.ternary.c.isNone() or
+            @backingInt(statement.data.ternary.c) >= ast.nodes.items.len) continue;
+        const alternate = statement.data.ternary.c;
+        const declaration = ast.nodes.items[@backingInt(alternate)];
+        if (declaration.tag != .variable_declaration or !ast.hasExtra(declaration.data.extra, 2)) continue;
+        const start = ast.readExtra(declaration.data.extra, 1);
+        const len = ast.readExtra(declaration.data.extra, 2);
+        if (len != 1 or start >= ast.extra_data.items.len or len > ast.extra_data.items.len - start) continue;
+        const declarator: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[start]));
+        if (@backingInt(declarator) >= ast.nodes.items.len or
+            ast.getNode(declarator).tag != .variable_declarator or
+            !ast.hasExtra(ast.getNode(declarator).data.extra, 2)) continue;
+        const declaration_node = ast.getNode(declarator);
+        const binding = ast.readExtraNode(declaration_node.data.extra, 0);
+        const initializer = ast.readExtraNode(declaration_node.data.extra, 2);
+        if (binding.isNone() or initializer.isNone() or
+            !std.mem.eql(u8, ast.getText(ast.getNode(binding).span), "fallback")) continue;
+        return .{
+            .if_index = @fromBackingInt(@intCast(raw)),
+            .alternate = alternate,
+            .declarator = declarator,
+            .binding = binding,
+            .initializer = initializer,
+        };
+    }
+    return null;
+}
+
+const direct_var_alternate_source = prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else var fallback=SafeBuffer;function SafeBuffer(){return 1}module.exports=fallback;";
+const async_fallback_source = prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}async function SafeBuffer(){return 1}module.exports=buffer;";
+
 const sources = [_][]const u8{
     prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 1}",
     "function SafeBuffer(){return 1}" ++ prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}",
@@ -100,6 +151,53 @@ const sources = [_][]const u8{
     prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 1}function other(){const SafeBuffer=2;return SafeBuffer}",
     prefix ++ "if(" ++ condition ++ "){module.exports=buffer}else{exports.Buffer=SafeBuffer}if(" ++ condition ++ "){exports.Buffer=B}else{exports.Buffer=SafeBuffer}function SafeBuffer(){return 1}",
 };
+
+test "Buffer direct var alternate keeps the hoisted binding and removes one exact read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, direct_var_alternate_source);
+    const nodes = findDirectVarAlternate(&f.module.ast.?) orelse return error.MissingVarAlternate;
+    const fallback_sid = f.module.semantic.?.symbol_ids[@backingInt(nodes.binding)] orelse return error.MissingFallbackSymbol;
+    try std.testing.expectEqual(nodes.initializer, f.read);
+    const old_fallback_reads = f.module.semantic.?.symbols.items[f.sid].reference_count;
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    try std.testing.expect(try f.fold(a, &removed));
+    try std.testing.expectEqual(@as(usize, 1), removed.items.len);
+    try std.testing.expectEqual(nodes.initializer, removed.items[0]);
+    try std.testing.expectEqual(nodes.alternate, f.module.ast.?.getNode(nodes.if_index).data.ternary.c);
+    try std.testing.expect(f.module.ast.?.readExtraNode(
+        f.module.ast.?.getNode(nodes.declarator).data.extra,
+        2,
+    ).isNone());
+
+    const context = .{
+        .allocator = a,
+        .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{},
+        .wrapper_symbols_registered = false,
+        .wrap_kinds_finalized = true,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try std.testing.expect(try prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &context,
+        &f.module,
+        a,
+        removed.items,
+    ));
+    const semantic = &f.module.semantic.?;
+    try std.testing.expectEqual(@as(?u32, fallback_sid), semantic.symbol_ids[@backingInt(nodes.binding)]);
+    try std.testing.expect(semantic.symbol_ids[@backingInt(nodes.initializer)] == null);
+    try std.testing.expect(semantic.symbols.items[f.sid].reference_count < old_fallback_reads);
+    var fallback_declarations: usize = 0;
+    for (semantic.references) |row| {
+        if (row.flags.declare and row.declaration_node_index == nodes.binding) {
+            try std.testing.expectEqual(fallback_sid, @backingInt(row.symbol_id));
+            fallback_declarations += 1;
+        }
+        try std.testing.expect(row.node_index != nodes.initializer);
+    }
+    try std.testing.expectEqual(@as(usize, 1), fallback_declarations);
+}
 
 test "Buffer fallback functions retain exact declaration identity at ten actual fold callers" {
     for (sources, 0..) |input, index| {
@@ -136,7 +234,161 @@ test "Buffer fallback functions retain exact declaration identity at ten actual 
     }
 }
 
-const Mutation = enum { read_sid, read_row_sid, read_flags, read_type_context, read_scope, declaration_sid, declaration_flags, declaration_missing, declaration_duplicate, declaration_scope, function_scope_kind, function_scope_parent, function_owner_missing, symbol_kind, symbol_role, symbol_scope, symbol_writes, symbol_count, wrapper_missing, wrapper_role, direct_eval };
+test "async Buffer fallback declaration also stays on the retained graph" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, async_fallback_source);
+    try std.testing.expect(patterns.nodeBufferCapabilityValuesAreStable(&f.module));
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    try std.testing.expect(try f.fold(a, &removed));
+    const context = .{
+        .allocator = a,
+        .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{},
+        .wrapper_symbols_registered = false,
+        .wrap_kinds_finalized = true,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try std.testing.expect(try prepass.resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &context,
+        &f.module,
+        a,
+        removed.items,
+    ));
+}
+
+const VarAlternateMutation = enum {
+    non_cjs_module,
+    missing_root_owner,
+    lexical_declaration,
+    multiple_declarators,
+    destructuring_binding,
+    missing_initializer,
+    call_initializer,
+    binding_sid_missing,
+    binding_sid_wrong,
+    binding_declaration_missing,
+    initializer_sid_missing,
+    initializer_sid_wrong,
+    initializer_row_wrong_sid,
+    initializer_flags,
+    initializer_duplicate,
+    initializer_wrong_scope,
+    initializer_symbol_scope_wrong,
+    initializer_provenance,
+    initializer_helper_cache,
+    initializer_class_self_owner,
+    initializer_scope_owner,
+    initializer_tla_owner,
+};
+
+test "Buffer direct var alternate rejects malformed exact evidence before any write" {
+    inline for (std.meta.tags(VarAlternateMutation)) |mutation| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var f = try Fixture.init(a, direct_var_alternate_source);
+        const nodes = findDirectVarAlternate(&f.module.ast.?) orelse return error.MissingVarAlternate;
+        const ast = &f.module.ast.?;
+        const semantic = &f.module.semantic.?;
+        const declaration = ast.getNode(nodes.alternate);
+        const declarator = ast.getNode(nodes.declarator);
+        const root_scope_owner: NodeIndex = ast.transformed_root orelse @fromBackingInt(
+            @as(u32, @intCast(ast.nodes.items.len - 1)),
+        );
+        const root_scope_id = semantic.scope_owner_map.get(@backingInt(root_scope_owner)).?;
+        const wrapper = f.module.cjs_wrapper_exports_parameter_symbol.?;
+        var declaration_row: ?usize = null;
+        var initializer_row: ?usize = null;
+        for (semantic.references, 0..) |row, index| {
+            if (row.flags.declare and row.declaration_node_index == nodes.binding) declaration_row = index;
+            if (row.node_index == nodes.initializer) initializer_row = index;
+        }
+        switch (mutation) {
+            .non_cjs_module => f.module.wrap_kind = .esm,
+            .missing_root_owner => _ = semantic.scope_owner_map.remove(@backingInt(root_scope_owner)),
+            .lexical_declaration => ast.extra_data.items[declaration.data.extra] = @backingInt(ast_mod.VariableDeclarationKind.let),
+            .multiple_declarators => ast.extra_data.items[declaration.data.extra + 2] = 2,
+            .destructuring_binding => @constCast(ast.nodes.items)[@backingInt(nodes.binding)].tag = .object_pattern,
+            .missing_initializer => ast.extra_data.items[declarator.data.extra + 2] = @backingInt(NodeIndex.none),
+            .call_initializer => @constCast(ast.nodes.items)[@backingInt(nodes.initializer)].tag = .call_expression,
+            .binding_sid_missing => @constCast(semantic.symbol_ids)[@backingInt(nodes.binding)] = null,
+            .binding_sid_wrong => @constCast(semantic.symbol_ids)[@backingInt(nodes.binding)] = f.sid,
+            .binding_declaration_missing => @constCast(semantic.references)[declaration_row.?].flags.declare = false,
+            .initializer_sid_missing => @constCast(semantic.symbol_ids)[@backingInt(nodes.initializer)] = null,
+            .initializer_sid_wrong => @constCast(semantic.symbol_ids)[@backingInt(nodes.initializer)] = @backingInt(wrapper),
+            .initializer_row_wrong_sid => @constCast(semantic.references)[initializer_row.?].symbol_id = wrapper,
+            .initializer_flags => @constCast(semantic.references)[initializer_row.?].flags.write = true,
+            .initializer_duplicate => {
+                const rows = try a.alloc(Reference, semantic.references.len + 1);
+                @memcpy(rows[0..semantic.references.len], semantic.references);
+                rows[semantic.references.len] = semantic.references[initializer_row.?];
+                semantic.references = rows;
+            },
+            .initializer_wrong_scope => @constCast(semantic.references)[initializer_row.?].scope_id = @fromBackingInt(f.function_scope),
+            .initializer_symbol_scope_wrong => {
+                const initializer_id = semantic.symbol_ids[@backingInt(nodes.initializer)].?;
+                semantic.symbols.items[initializer_id].scope_id = @fromBackingInt(f.function_scope);
+            },
+            .initializer_provenance => try semantic.node_scope_provenance.put(a, nodes.initializer, .{
+                .scope = semantic.symbols.items[f.sid].scope_id,
+                .source_node = nodes.initializer,
+            }),
+            .initializer_helper_cache => f.module.transform_cache = .{
+                .runtime_helpers = .{},
+                .symbol_ids = semantic.symbol_ids,
+                .helper_ref_nodes = &.{@backingInt(nodes.initializer)},
+            },
+            .initializer_class_self_owner => try semantic.class_self_symbol_map.put(
+                a,
+                @backingInt(nodes.initializer),
+                f.sid,
+            ),
+            .initializer_scope_owner => try semantic.scope_owner_map.put(
+                a,
+                @backingInt(nodes.initializer),
+                root_scope_id,
+            ),
+            .initializer_tla_owner => f.module.tla_iife_stmt = @backingInt(nodes.initializer),
+        }
+
+        const before_nodes = try a.dupe(ast_mod.Node, ast.nodes.items);
+        const before_extra = try a.dupe(u32, ast.extra_data.items);
+        const before_symbols = try a.dupe(Symbol, semantic.symbols.items);
+        const before_references = try a.dupe(Reference, semantic.references);
+        const before_scopes = try a.dupe(Scope, semantic.scopes);
+        const before_ids = try a.dupe(?u32, semantic.symbol_ids);
+        const before_owner_map = try semantic.scope_owner_map.clone(a);
+        const before_provenance_count = semantic.node_scope_provenance.count();
+        const before_class_self_count = semantic.class_self_symbol_map.count();
+        var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        var needs = false;
+        const accepted = try patterns.foldNodeBufferCapabilityIfsForModule(
+            a,
+            &f.module,
+            ast,
+            &removed,
+            &needs,
+        );
+        if (accepted) std.debug.print("Buffer var alternate admitted hostile {s}\n", .{@tagName(mutation)});
+        try std.testing.expect(!accepted);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(ast.nodes.items));
+        try std.testing.expectEqualSlices(u32, before_extra, ast.extra_data.items);
+        try std.testing.expectEqualDeep(before_symbols, semantic.symbols.items);
+        try std.testing.expectEqualDeep(before_references, semantic.references);
+        try std.testing.expectEqualDeep(before_scopes, semantic.scopes);
+        try std.testing.expectEqualDeep(before_ids, semantic.symbol_ids);
+        try std.testing.expectEqual(before_owner_map.count(), semantic.scope_owner_map.count());
+        try std.testing.expectEqual(before_provenance_count, semantic.node_scope_provenance.count());
+        try std.testing.expectEqual(before_class_self_count, semantic.class_self_symbol_map.count());
+        var owners = before_owner_map.iterator();
+        while (owners.next()) |entry| {
+            try std.testing.expectEqual(@as(?u32, entry.value_ptr.*), semantic.scope_owner_map.get(entry.key_ptr.*));
+        }
+    }
+}
+
+const Mutation = enum { read_sid, read_row_sid, read_flags, read_type_context, read_scope, declaration_sid, declaration_flags, declaration_missing, declaration_duplicate, declaration_scope, function_scope_kind, function_scope_parent, function_owner_missing, function_ast_flags, symbol_kind, symbol_role, symbol_scope, symbol_writes, symbol_count, wrapper_missing, wrapper_role, direct_eval };
 
 test "Buffer fallback function preflight rejects hostile tuples before any AST or graph write" {
     inline for (std.meta.tags(Mutation)) |mutation| {
@@ -183,6 +435,9 @@ test "Buffer fallback function preflight rejects hostile tuples before any AST o
             .function_owner_missing => {
                 _ = sem.scope_owner_map.remove(@backingInt(f.function));
             },
+            .function_ast_flags => @constCast(f.module.ast.?.extra_data.items)[
+                f.module.ast.?.getNode(f.function).data.extra + ast_mod.FunctionExtra.flags
+            ] = ast_mod.FunctionFlags.is_async,
             .symbol_kind => sem.symbols.items[f.sid].kind = .variable_var,
             .symbol_role => sem.symbols.items[f.sid].synthetic_kind = .implicit_arguments,
             .symbol_scope => sem.symbols.items[f.sid].scope_id = @fromBackingInt(f.function_scope),
@@ -226,6 +481,11 @@ test "Buffer fallback function preflight rejects hostile tuples before any AST o
         @memcpy(@constCast(sem.symbol_ids), original_ids);
         sem.scope_owner_map = original_owners;
         f.module.cjs_wrapper_exports_parameter_symbol = wrapper;
+        if (mutation == .function_ast_flags) {
+            @constCast(f.module.ast.?.extra_data.items)[
+                f.module.ast.?.getNode(f.function).data.extra + ast_mod.FunctionExtra.flags
+            ] = 0;
+        }
         removed.clearRetainingCapacity();
         try std.testing.expect(try f.fold(a, &removed));
     }
