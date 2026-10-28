@@ -3458,6 +3458,69 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'export function getValue() { return 7 }',
         "console.log('VALUE_PROVIDER_SIDE_EFFECT')",
       ].join('\n'),
+      'attributed.json': '{"value":9}',
+      'attributed-inline-import.ts': [
+        `import data, { type Shape } from './attributed.json' with { type: 'json' }`,
+        'const item: Shape = data',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-runtime-import.ts': [
+        `import data from './attributed.json' with { type: 'json' }`,
+        'console.log(data.value)',
+      ].join('\n'),
+      'attributed-named-import.ts': [
+        `import { value, type Shape } from './attributed.json' with { type: 'json' }`,
+        'const item: Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-type-first-import.ts': [
+        `import { type Shape, value } from './attributed.json' with { type: 'json' }`,
+        'const item: Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-aliased-import.ts': [
+        `import { value as loaded, type Shape as Model } from './attributed.json' with { type: 'json' }`,
+        'const item: Model = { value: loaded }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-multiple-types-import.ts': [
+        `import { type Shape as Left, value, type Shape as Right } from './attributed.json' with { type: 'json' }`,
+        'const item: Left & Right = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-default-as-import.ts': [
+        `import { default as data, type Shape } from './attributed.json' with { type: 'json' }`,
+        'const item: Shape = data',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-quoted-key-import.ts': [
+        `import { type Shape, value } from './attributed.json' with { "type": "json" }`,
+        'const item: Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-escaped-key-import.ts': [
+        `import { type Shape, value } from './attributed.json' with { "t\\u0079pe": "json" }`,
+        'const item: Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-newline-import.ts': [
+        `import { type Shape, value } from './attributed.json'`,
+        `with { type: 'json' }`,
+        'const item: Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-type-declaration-import.ts': [
+        `import type { Shape as LocalShape } from './types.ts' with { "resolution-mode": "import" }`,
+        `import { type Shape, value } from './attributed.json' with { type: 'json' }`,
+        'const item: LocalShape & Shape = { value }',
+        'console.log(item.value)',
+      ].join('\n'),
+      'attributed-two-runtime-imports.ts': [
+        `import { value, type Shape } from './attributed.json' with { type: 'json' }`,
+        `import data, { type Shape as Model } from './attributed.json' with { type: 'json' }`,
+        'const item: Shape & Model = { value: value + data.value }',
+        'console.log(item.value)',
+      ].join('\n'),
       'named-only.ts': [
         "import { Shape } from './types.ts'",
         "import { token as unused } from './values.ts'",
@@ -3631,6 +3694,21 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
     await run('mixed-named.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
     await run('mixed-query.ts', 'retained', 'VALUE_PROVIDER_SIDE_EFFECT\n12');
+    for (const entry of [
+      'attributed-inline-import.ts',
+      'attributed-named-import.ts',
+      'attributed-type-first-import.ts',
+      'attributed-aliased-import.ts',
+      'attributed-multiple-types-import.ts',
+      'attributed-default-as-import.ts',
+      'attributed-quoted-key-import.ts',
+      'attributed-escaped-key-import.ts',
+      'attributed-newline-import.ts',
+      'attributed-type-declaration-import.ts',
+    ] as const) {
+      await run(entry, 'retained', '9');
+    }
+    await run('attributed-two-runtime-imports.ts', 'retained', '18');
 
     const retainedTypeErasureCases = [
       ['alias-type.ts', '5'],
@@ -3645,6 +3723,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
 
     const conservativeCases = [
+      ['attributed-runtime-import.ts', '9', []],
       ['enum-lowering.ts', '7', []],
       ['namespace-lowering.ts', '7', []],
       ['class-lowering.ts', '7', ['--target=es5']],
