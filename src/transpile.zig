@@ -796,13 +796,13 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         facts.has_declaration_level_type_import and
         ((onlyErasableTypeImports(&parser.ast) and
             erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
-            (onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+            (onlyErasableTypeImportsAndStableRuntimeImports(
                 parser.allocator,
                 &parser.ast,
                 transformer.parser_node_count,
             ) and
                 erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root) and
-                plainNamedRuntimeImportsHaveExactOutputIdentity(transformer, root, runtime_import_identity_snapshot)));
+                runtimeImportsHaveExactOutputIdentity(transformer, root, runtime_import_identity_snapshot)));
     const may_admit_erased_ambient_namespace_import_equals = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
         erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(transformer, root);
@@ -827,7 +827,8 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
 /// Reuse a transform graph for erased imports only after proving that none of
 /// their exact identities or decoded local names survive in output. TypeScript
 /// additionally has a narrow mixed case for fully erased type imports beside
-/// separately declared plain named runtime imports whose source identities survive.
+/// separately declared plain named or side-effect runtime imports whose source
+/// identities survive.
 /// Attributes are admitted here only on declaration-level `import type`; the
 /// caller still requires the exact post-transform erasure proof, and attributed
 /// inline type specifiers remain on the conservative path.
@@ -852,11 +853,11 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 }
 
 /// A declaration-level type import may share a source file with separate plain
-/// named value imports. Attributes are allowed only on the declaration-level
-/// type import itself; attributes on runtime or inline-type imports, inline type
-/// specifiers inside value imports, default or namespace imports, side-effect
-/// imports, and phases remain on the conservative reanalysis path.
-fn onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+/// named runtime imports and unbound side-effect imports. Attributes are allowed
+/// only on the declaration-level type import itself; attributes on runtime or
+/// inline-type imports, inline type specifiers inside value imports, default or
+/// namespace imports, and phases remain on the conservative reanalysis path.
+fn onlyErasableTypeImportsAndStableRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     source_count: u32,
@@ -873,15 +874,20 @@ fn onlyErasableTypeImportsAndPlainNamedRuntimeImports(
             (import_decl.attrs_len != 0 and !import_decl.is_type_only) or
             import_decl.attrs_start > ast.extra_data.items.len or
             import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
-            import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
 
         if (import_decl.is_type_only or importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) {
+            if (import_decl.is_type_only and import_decl.specs_len == 0) return false;
             found_type_import = found_type_import or import_decl.is_type_only;
             continue;
         }
 
         found_runtime_import = true;
+        // Side-effect imports (including `import {} from`) have no local
+        // semantic identity. The output proof still requires the exact
+        // declaration and source literal to survive unchanged.
+        if (import_decl.specs_len == 0) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
             const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
@@ -907,8 +913,9 @@ fn importLocalNamesAreUnique(allocator: std.mem.Allocator, ast: *const Ast, sour
         if (node.data.extra >= ast.extra_data.items.len or ast.extra_data.items.len - node.data.extra < 6)
             return false;
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
-        if (import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+        if (import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
+        if (import_decl.specs_len == 0) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
             const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
@@ -933,7 +940,7 @@ fn importLocalNamesAreUnique(allocator: std.mem.Allocator, ast: *const Ast, sour
             names.put(allocator, name, {}) catch return false;
         }
     }
-    return names.count() != 0;
+    return true;
 }
 
 const RuntimeImportSpecifierIdentity = struct {
@@ -967,15 +974,16 @@ const RuntimeImportIdentitySnapshot = struct {
 };
 
 /// Capture exact source identities before the standalone transformer takes
-/// ownership of and mutates the parser AST. This is intentionally limited to
-/// the narrow mixed-import proof so ordinary transpilation pays no cost.
-fn capturePlainNamedRuntimeImportIdentitySnapshot(
+/// ownership of and mutates the parser AST. Side-effect imports contribute an
+/// exact declaration/source anchor but no binding rows. This is intentionally
+/// limited to the narrow mixed-import proof so ordinary transpilation pays no cost.
+fn captureRuntimeImportIdentitySnapshot(
     allocator: std.mem.Allocator,
     parser: *const Parser,
     analyzer: *const SemanticAnalyzer,
 ) error{OutOfMemory}!?RuntimeImportIdentitySnapshot {
     const ast = &parser.ast;
-    if (!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    if (!onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         ast,
         @intCast(ast.nodes.items.len),
@@ -1054,7 +1062,7 @@ fn capturePlainNamedRuntimeImportIdentitySnapshot(
         }) catch return error.OutOfMemory;
         _ = raw;
     }
-    if (declarations.items.len == 0 or runtime_symbol_ids.count() == 0) return null;
+    if (declarations.items.len == 0) return null;
 
     var references: std.ArrayListUnmanaged(RuntimeImportReferenceIdentity) = .empty;
     defer references.deinit(allocator);
@@ -1150,7 +1158,7 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
         if (import_decl.phase != .none or
             (import_decl.attrs_len != 0 and (!type_imports_only or !import_decl.is_type_only)) or
-            import_decl.specs_len == 0 or import_decl.specs_start > ast.extra_data.items.len or
+            import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
             @backingInt(import_decl.source) >= source_count or
@@ -1162,6 +1170,7 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
 
         const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
         if (type_imports_only and !import_decl.is_type_only and !inline_type_only) continue;
+        if (import_decl.specs_len == 0) return false;
         if (output_nodes.contains(@intCast(raw))) return false;
         var inside_erased_ambient_namespace = false;
         if (!import_decl.is_type_only and !inline_type_only) {
@@ -1263,10 +1272,11 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
     return true;
 }
 
-/// Prove that every separate named runtime import remains the same source-backed
-/// import after transformation, and that its local binding and every surviving
-/// value reference still use the exact source SymbolId and reference ScopeId.
-fn plainNamedRuntimeImportsHaveExactOutputIdentity(
+/// Prove that each supported runtime import remains the same source-backed
+/// declaration after transformation. Named imports also require their local
+/// binding and every surviving value reference to retain exact source SymbolId
+/// and reference ScopeId; side-effect imports have no local graph rows.
+fn runtimeImportsHaveExactOutputIdentity(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
     maybe_snapshot: ?RuntimeImportIdentitySnapshot,
@@ -1308,7 +1318,7 @@ fn plainNamedRuntimeImportsHaveExactOutputIdentity(
     var matched_output_imports: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer matched_output_imports.deinit(transformer.allocator);
     for (snapshot.declarations) |source_import| {
-        if (source_import.specifiers.len == 0 or !isValidSourceTextSpan(output_ast, source_import.span)) return false;
+        if (!isValidSourceTextSpan(output_ast, source_import.span)) return false;
         var output_import: ?ast_mod.NodeIndex = null;
         for (output_reachable) |output_raw| {
             const candidate_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_raw));
@@ -1366,7 +1376,7 @@ fn plainNamedRuntimeImportsHaveExactOutputIdentity(
             runtime_symbol_ids.put(transformer.allocator, symbol_id, {}) catch return false;
         }
     }
-    if (runtime_symbol_ids.count() == 0 or matched_output_imports.count() != snapshot.declarations.len) return false;
+    if (matched_output_imports.count() != snapshot.declarations.len) return false;
 
     var output_import_count: usize = 0;
     for (output_reachable) |raw| {
@@ -3252,7 +3262,7 @@ fn transpileWithCallbackInternal(
     var runtime_import_identity_snapshot: ?RuntimeImportIdentitySnapshot = null;
     if (options.minify_identifiers and parser.source_mode == .ts) {
         if (analyzer_storage) |*analyzer| {
-            runtime_import_identity_snapshot = capturePlainNamedRuntimeImportIdentitySnapshot(
+            runtime_import_identity_snapshot = captureRuntimeImportIdentitySnapshot(
                 arena_alloc,
                 &parser,
                 analyzer,
@@ -6139,11 +6149,101 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     _ = try attributed_inline_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), attributed_inline_parser.errors.items.len);
     try std.testing.expect(!onlyErasableTypeImports(&attributed_inline_parser.ast));
-    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    try std.testing.expect(!onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         &attributed_inline_parser.ast,
         @intCast(attributed_inline_parser.ast.nodes.items.len),
     ));
+}
+
+test "#6193 erased type imports admit only stable side-effect runtime imports" {
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        expected: bool,
+    };
+    const cases = [_]Case{
+        .{
+            .name = "single side-effect import after erased type import",
+            .source = "import type { Shape } from './types'; import './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "multiple side-effect imports",
+            .source = "import type { Shape } from './types'; import './first'; import './second';",
+            .expected = true,
+        },
+        .{
+            .name = "side-effect-only source does not satisfy the mixed import proof",
+            .source = "import './effects';",
+            .expected = false,
+        },
+        .{
+            .name = "empty named import is a runtime module edge",
+            .source = "import type { Shape } from './types'; import {} from './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "side-effect import before erased type import",
+            .source = "import './effects'; import type { Shape } from './types';",
+            .expected = true,
+        },
+        .{
+            .name = "attributed declaration type import beside side effect",
+            .source = "import type { Shape } from './types' with { 'resolution-mode': 'import' }; import './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "side-effect import beside separate named runtime import",
+            .source = "import type { Shape } from './types'; import { value } from './values'; import './effects';",
+            .expected = true,
+        },
+        .{
+            .name = "attributed side-effect import remains conservative",
+            .source = "import type { Shape } from './types'; import './effects' with { type: 'json' };",
+            .expected = false,
+        },
+        .{
+            .name = "phased runtime import remains conservative",
+            .source = "import type { Shape } from './types'; import defer * as effects from './effects';",
+            .expected = false,
+        },
+        .{
+            .name = "inline-only type import does not enter declaration proof",
+            .source = "import { type Shape } from './types'; import './effects';",
+            .expected = false,
+        },
+        .{
+            .name = "default runtime binding remains outside the identity snapshot",
+            .source = "import type { Shape } from './types'; import value from './values'; import './effects';",
+            .expected = false,
+        },
+        .{
+            .name = "duplicate local names remain ambiguous",
+            .source = "import type { Shape as Shared } from './types'; import { value as Shared } from './values'; import './effects';",
+            .expected = false,
+        },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    for (cases) |case| {
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        if (parser.errors.items.len != 0) std.debug.print("invalid mixed import case: {s}\n", .{case.name});
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        try std.testing.expectEqual(
+            case.expected,
+            onlyErasableTypeImportsAndStableRuntimeImports(
+                allocator,
+                &parser.ast,
+                @intCast(parser.ast.nodes.items.len),
+            ),
+        );
+    }
 }
 
 test "#6193 erased declaration type imports preserve separate runtime import identities" {
@@ -6162,7 +6262,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     const source_facts = try collectAstFacts(allocator, &parser.ast);
     try std.testing.expect(source_facts.has_declaration_level_type_import);
-    try std.testing.expect(onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    try std.testing.expect(onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         &parser.ast,
         @intCast(parser.ast.nodes.items.len),
@@ -6177,7 +6277,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     duplicate_import_parser.configureFromExtension(".ts");
     _ = try duplicate_import_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), duplicate_import_parser.errors.items.len);
-    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    try std.testing.expect(!onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         &duplicate_import_parser.ast,
         @intCast(duplicate_import_parser.ast.nodes.items.len),
@@ -6192,7 +6292,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     attributed_runtime_parser.configureFromExtension(".ts");
     _ = try attributed_runtime_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), attributed_runtime_parser.errors.items.len);
-    try std.testing.expect(!onlyErasableTypeImportsAndPlainNamedRuntimeImports(
+    try std.testing.expect(!onlyErasableTypeImportsAndStableRuntimeImports(
         allocator,
         &attributed_runtime_parser.ast,
         @intCast(attributed_runtime_parser.ast.nodes.items.len),
@@ -6204,7 +6304,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.is_ts = true;
     try analyzer.analyze();
-    const runtime_import_identity_snapshot = (try capturePlainNamedRuntimeImportIdentitySnapshot(
+    const runtime_import_identity_snapshot = (try captureRuntimeImportIdentitySnapshot(
         allocator,
         &parser,
         &analyzer,
@@ -6227,7 +6327,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
-    try std.testing.expect(plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6282,14 +6382,14 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_references = transformer.references;
     const mutable_references = try allocator.dupe(@import("semantic/symbol.zig").Reference, original_references);
     transformer.references = mutable_references;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         null,
     ));
     const original_reference = mutable_references[runtime_reference_index];
     mutable_references[runtime_reference_index].symbol_id = @fromBackingInt(@intCast(erased_type_symbol));
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6308,7 +6408,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_reference_node = transformer.ast.getNode(original_reference.node_index);
     const original_reference_symbol = transformer.symbol_ids.items[runtime_reference_raw];
     transformer.symbol_ids.items[runtime_reference_raw] = erased_type_symbol;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6317,7 +6417,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     const original_binding_symbol = transformer.symbol_ids.items[@backingInt(runtime_local_idx)];
     transformer.symbol_ids.items[@backingInt(runtime_local_idx)] = erased_type_symbol;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6330,7 +6430,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const mutable_specifier_identities = @constCast(runtime_import_identity_snapshot.declarations[0].specifiers);
     const original_snapshot_symbol_id = mutable_specifier_identities[0].symbol_id;
     mutable_specifier_identities[0].symbol_id = erased_type_symbol;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6339,7 +6439,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     const original_snapshot_symbol_scope = mutable_specifier_identities[0].symbol_scope;
     mutable_specifier_identities[0].symbol_scope = @fromBackingInt(@intCast(alternative_scope));
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6347,7 +6447,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     mutable_specifier_identities[0].symbol_scope = original_snapshot_symbol_scope;
 
     @constCast(transformer.symbols)[runtime_symbol].scope_id = @fromBackingInt(@intCast(alternative_scope));
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6357,7 +6457,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_reference_scope = mutable_references[runtime_reference_index].scope_id;
     const alternative_reference_scope = @as(u32, if (original_reference_scope.toIndex() == 0) 1 else 0);
     mutable_references[runtime_reference_index].scope_id = @fromBackingInt(@intCast(alternative_reference_scope));
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6367,7 +6467,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const mutable_reference_identities = @constCast(runtime_import_identity_snapshot.references);
     const original_snapshot_reference_scope = mutable_reference_identities[0].reference.scope_id;
     mutable_reference_identities[0].reference.scope_id = @fromBackingInt(@intCast(alternative_reference_scope));
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6395,7 +6495,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_output_import_span = output_runtime_import_node.span;
     transformer.ast.nodes.items[@backingInt(output_runtime_import_idx)].span =
         parser.ast.getNode(erased_type_source_idx).span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6405,7 +6505,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const runtime_specs_start = transformer.ast.extra_data.items[runtime_import_extra];
     const original_runtime_spec = transformer.ast.extra_data.items[runtime_specs_start];
     transformer.ast.extra_data.items[runtime_specs_start] = @backingInt(erased_type_local_idx);
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6414,7 +6514,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     const original_runtime_phase = transformer.ast.extra_data.items[runtime_import_extra + 3];
     transformer.ast.extra_data.items[runtime_import_extra + 3] = 1;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6423,7 +6523,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     const original_runtime_source = transformer.ast.extra_data.items[runtime_import_extra + 2];
     transformer.ast.extra_data.items[runtime_import_extra + 2] = @backingInt(erased_type_source_idx);
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6434,7 +6534,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_runtime_source_node = transformer.ast.getNode(runtime_source_idx);
     transformer.ast.nodes.items[@backingInt(runtime_source_idx)].span =
         parser.ast.getNode(erased_type_source_idx).span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6445,7 +6545,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_runtime_specifier_node = transformer.ast.getNode(runtime_specifier_identity.specifier_index);
     transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.specifier_index)].span =
         runtime_specifier_identity.local_node.span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6455,7 +6555,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_runtime_imported_node = transformer.ast.getNode(runtime_specifier_identity.imported_index);
     transformer.ast.nodes.items[@backingInt(runtime_specifier_identity.imported_index)].span =
         runtime_specifier_identity.local_node.span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6464,7 +6564,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     const original_local_node = transformer.ast.getNode(runtime_local_idx);
     transformer.ast.nodes.items[@backingInt(runtime_local_idx)].span = original_reference_node.span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6473,7 +6573,7 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
 
     transformer.ast.nodes.items[runtime_reference_raw].span =
         transformer.ast.getNode(runtime_local_idx).span;
-    try std.testing.expect(!plainNamedRuntimeImportsHaveExactOutputIdentity(
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
         runtime_import_identity_snapshot,
@@ -6792,6 +6892,130 @@ test "#4819 native and downlevel using reuse the transform graph" {
     output_analyzer.is_module = true;
     try output_analyzer.analyze();
     try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+}
+
+test "#6193 side-effect import retains the graph without binding identity rows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Shape } from './types'; import './effects'; " ++
+        "type Alias = Shape; const value: Alias = { answer: 42 }; console.log(value.answer);";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    const snapshot = (try captureRuntimeImportIdentitySnapshot(allocator, &parser, &analyzer)) orelse
+        return error.MissingRuntimeImportIdentitySnapshot;
+    try std.testing.expectEqual(@as(usize, 1), snapshot.declarations.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.declarations[0].specifiers.len);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.references.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
+        .{ .minify_identifiers = true },
+        &parser,
+        &transformer,
+        output_root,
+        null,
+        snapshot,
+    ));
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, null));
+
+    const output_import_index = blk: {
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+        defer allocator.free(reachable);
+        for (reachable) |raw| {
+            const index: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+            const node = transformer.ast.getNode(index);
+            if (node.tag != .import_declaration) continue;
+            break :blk index;
+        }
+        return error.MissingSideEffectImport;
+    };
+    const output_import = transformer.ast.getNode(output_import_index);
+    const import_extra = output_import.data.extra;
+    const output_decl = module_parser.readImportDeclExtras(transformer.ast, import_extra);
+    const original_import_node = transformer.ast.nodes.items[@backingInt(output_import_index)];
+    transformer.ast.nodes.items[@backingInt(output_import_index)].span.end += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.nodes.items[@backingInt(output_import_index)] = original_import_node;
+
+    const original_source_index = transformer.ast.extra_data.items[import_extra + 2];
+    const type_import_source = blk: {
+        for (transformer.ast.nodes.items[0..transformer.parser_node_count]) |node| {
+            if (node.tag != .import_declaration) continue;
+            const import_decl = module_parser.readImportDeclExtras(transformer.ast, node.data.extra);
+            if (import_decl.is_type_only) break :blk @backingInt(import_decl.source);
+        }
+        return error.MissingDeclarationTypeImportSource;
+    };
+    transformer.ast.extra_data.items[import_extra + 2] = type_import_source;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.extra_data.items[import_extra + 2] = original_source_index;
+
+    const source_raw = @backingInt(output_decl.source);
+    const original_source_node = transformer.ast.nodes.items[source_raw];
+    transformer.ast.nodes.items[source_raw].data.string_ref.start += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.nodes.items[source_raw] = original_source_node;
+
+    const original_attrs_start = transformer.ast.extra_data.items[import_extra + 4];
+    const original_attrs_len = transformer.ast.extra_data.items[import_extra + 5];
+    transformer.ast.extra_data.items[import_extra + 4] = std.math.maxInt(u32);
+    transformer.ast.extra_data.items[import_extra + 5] = 0;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.extra_data.items[import_extra + 4] = original_attrs_start;
+    transformer.ast.extra_data.items[import_extra + 5] = original_attrs_len;
+
+    transformer.ast.extra_data.items[import_extra + 5] = 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.extra_data.items[import_extra + 5] = original_attrs_len;
+
+    const original_phase = transformer.ast.extra_data.items[import_extra + 3];
+    transformer.ast.extra_data.items[import_extra + 3] = @backingInt(module_parser.ImportPhase.defer_);
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.extra_data.items[import_extra + 3] = original_phase;
+
+    const original_specs_start = transformer.ast.extra_data.items[import_extra];
+    const original_specs_len = transformer.ast.extra_data.items[import_extra + 1];
+    transformer.ast.extra_data.items[import_extra] = 0;
+    transformer.ast.extra_data.items[import_extra + 1] = 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    transformer.ast.extra_data.items[import_extra] = original_specs_start;
+    transformer.ast.extra_data.items[import_extra + 1] = original_specs_len;
+
+    const mutable_snapshot_declarations = @constCast(snapshot.declarations);
+    const original_snapshot_span = mutable_snapshot_declarations[0].span;
+    mutable_snapshot_declarations[0].span.end += 1;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
+    mutable_snapshot_declarations[0].span = original_snapshot_span;
+
+    try std.testing.expect(runtimeImportsHaveExactOutputIdentity(&transformer, output_root, snapshot));
 }
 
 test "#6193 lenient typed using reuses exact transform graph" {
