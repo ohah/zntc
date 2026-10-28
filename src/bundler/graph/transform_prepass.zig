@@ -8792,7 +8792,8 @@ fn canKeepPrepassSemanticGraphPrepared(
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
-    if ((self.flow or isFlowPath(module.path)) and (hasStaticObjectGetterSuper(self.allocator, ast) catch true)) return false;
+    if (options.unsupported.object_extensions and (self.flow or isFlowPath(module.path)) and
+        (hasStaticObjectGetterSuper(self.allocator, ast) catch true)) return false;
     var top_level_statements: ?std.DynamicBitSet = null;
     defer {
         if (top_level_statements) |*mask| mask.deinit();
@@ -18043,4 +18044,57 @@ test "static getter super source admission rejects wrong actual getter Scope kin
     try std.testing.expect(!computedAccessorSuperSourceAdmissionForTest(&f));
     @constCast(f.semantic.scopes)[g] = saved;
     try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
+}
+
+test "static getter super preserves native Flow graph admission" {
+    const helpers = @import("../test_helpers.zig");
+    var counts: [2]u32 = undefined;
+    for ([_]bool{ false, true }, 0..) |minify, i| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.js", "var parent:any={value:7};var object={get value(){return super.value}};Object.setPrototypeOf(object,parent);console.log(object.value);");
+        const entry = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.flow = true;
+        graph.minify_identifiers = minify;
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        counts[i] = profile.count(.graph_resync_semantic);
+        std.debug.print("static-getter-native-flow min={any} initial={d} post={d}\n", .{ minify, profile.count(.graph_discover_pm_semantic), counts[i] });
+    }
+    try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
+}
+
+test "static getter super keeps ES5 Flow fallback separate" {
+    const helpers = @import("../test_helpers.zig");
+    var counts: [2]u32 = undefined;
+    for ([_]bool{ false, true }, 0..) |minify, i| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.js", "var parent:any={value:7};var object={get value(){return super.value}};Object.setPrototypeOf(object,parent);console.log(object.value);");
+        const entry = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.flow = true;
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+        graph.minify_identifiers = minify;
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        counts[i] = profile.count(.graph_resync_semantic);
+        std.debug.print("static-getter-es5-flow min={any} initial={d} post={d}\n", .{ minify, profile.count(.graph_discover_pm_semantic), counts[i] });
+    }
+    try std.testing.expectEqual([_]u32{ 1, 1 }, counts);
 }
