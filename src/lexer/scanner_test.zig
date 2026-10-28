@@ -1599,3 +1599,73 @@ test "Scanner: identifier escapes decode full Unicode StringValue" {
     try std.testing.expect(Scanner.decodeIdentifierEscapesInto("\\u{}", &scratch) == null);
     try std.testing.expect(Scanner.decodeIdentifierEscapesInto("\\u{110000}", &scratch) == null);
 }
+
+test "escaped mutable storage compares identifier values without a scratch length limit" {
+    const a = std.testing.allocator;
+    const widths = [_]usize{ 255, 256, 257, 4096 };
+    const encodings = [_]struct { value: []const u8, raw: []const u8 }{
+        .{ .value = "a", .raw = "\\u0061" },
+        .{ .value = "é", .raw = "\\u00E9" },
+        .{ .value = "𝒜", .raw = "\\u{1D49C}" },
+    };
+    for (widths) |length| for (encodings) |encoding| {
+        var raw: std.ArrayList(u8) = .empty;
+        defer raw.deinit(a);
+        var value: std.ArrayList(u8) = .empty;
+        defer value.deinit(a);
+        for (0..length / encoding.value.len) |_| {
+            try raw.appendSlice(a, encoding.raw);
+            try value.appendSlice(a, encoding.value);
+        }
+        for (0..length % encoding.value.len) |_| {
+            try raw.append(a, 'a');
+            try value.append(a, 'a');
+        }
+        try std.testing.expectEqual(length, value.items.len);
+        try std.testing.expect(Scanner.identifierValueEquals(raw.items, value.items));
+        try std.testing.expect(!Scanner.identifierValueEquals(raw.items, value.items[0 .. value.items.len - 1]));
+        try value.append(a, 'a');
+        try std.testing.expect(!Scanner.identifierValueEquals(raw.items, value.items));
+    };
+}
+
+test "escaped mutable storage preserves Unicode token and decoded value roles" {
+    const cases = [_]struct { raw: []const u8, value: []const u8, equal: bool }{
+        .{ .raw = "c\\u0073s", .value = "css", .equal = true },
+        .{ .raw = "\\u{E9}", .value = "é", .equal = true },
+        .{ .raw = "\\u{1D49C}", .value = "𝒜", .equal = true },
+        .{ .raw = "𝒜", .value = "𝒜", .equal = true },
+        .{ .raw = "a\\u200C", .value = "a‌", .equal = true },
+        .{ .raw = "a\\u200D", .value = "a‍", .equal = true },
+        .{ .raw = "_$a1", .value = "_$a1", .equal = true },
+        .{ .raw = "default", .value = "default", .equal = true },
+        .{ .raw = "\\uD835\\uDC9C", .value = "𝒜", .equal = false },
+        .{ .raw = "a\\uD835\\uDC9C", .value = "a𝒜", .equal = false },
+        .{ .raw = "\\uD835", .value = "𝒜", .equal = false },
+        .{ .raw = "\\uDC9C", .value = "𝒜", .equal = false },
+        .{ .raw = "\\u{D835}", .value = "𝒜", .equal = false },
+        .{ .raw = "\\u{110000}", .value = "a", .equal = false },
+        .{ .raw = "\\u{}", .value = "a", .equal = false },
+        .{ .raw = "\\u00ZZ", .value = "a", .equal = false },
+        .{ .raw = "\\u005c", .value = "\\", .equal = false },
+        .{ .raw = "\\\\u0061", .value = "a", .equal = false },
+        .{ .raw = "\\u0061", .value = "\\u0061", .equal = false },
+        .{ .raw = "\\u0061", .value = "\"a\"", .equal = false },
+        .{ .raw = "\\u0061", .value = "a.b", .equal = false },
+        .{ .raw = "\\u0061", .value = "a b", .equal = false },
+        .{ .raw = "#a", .value = "#a", .equal = false },
+        .{ .raw = "\\u200C", .value = "‌", .equal = false },
+        .{ .raw = "\\u00E9", .value = "é", .equal = false },
+        .{ .raw = "\xff", .value = "\xff", .equal = false },
+        .{ .raw = "\xc0\xaf", .value = "\xc0\xaf", .equal = false },
+        .{ .raw = "\xed\xa0\x80", .value = "\xed\xa0\x80", .equal = false },
+        .{ .raw = "a", .value = "\xff", .equal = false },
+        .{ .raw = "", .value = "", .equal = false },
+        .{ .raw = "a", .value = "aa", .equal = false },
+    };
+    for (cases) |case| try std.testing.expectEqual(case.equal, Scanner.identifierValueEquals(case.raw, case.value));
+    // The general decoder's existing utility contract remains different from
+    // IdentifierName admission. Do not silently alter it for storage lowering.
+    var scratch: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("𝒜", Scanner.decodeIdentifierEscapesInto("\\uD835\\uDC9C", &scratch).?);
+}

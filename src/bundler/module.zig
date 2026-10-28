@@ -1320,7 +1320,7 @@ pub const Module = struct {
         // v1: identity export 만. aliased(`export { A as B }`)는 provider 가 storage 를 안 해
         // 소비자 ns-access 와 어긋나므로 제외. 이름 비교는 외부 export 계약만 판정하며
         // semantic symbol 선택에는 쓰지 않는다.
-        if (!std.mem.eql(u8, local, eb.exported_name)) return false;
+        if (!@import("../lexer/scanner.zig").Scanner.identifierValueEquals(local, eb.exported_name)) return false;
         if (sym.write_count == 0) return false;
         if (sym.decl_flags.is_const or sym.decl_flags.is_function or sym.decl_flags.is_class) return false;
         // v1: destructuring 선언(`export let { A } = obj`)은 제외. renames[sid]="exports.A" 를
@@ -1698,4 +1698,130 @@ test "semantic owner tokens are unique and saturate without ABA reuse" {
     try std.testing.expectEqual(SemanticOwnerToken.unassigned, nextSemanticOwnerToken(&sequence));
     try std.testing.expectEqual(SemanticOwnerToken.unassigned, nextSemanticOwnerToken(&sequence));
     try std.testing.expectEqual(std.math.maxInt(u64), sequence.load(.monotonic));
+}
+
+test "escaped mutable storage retains exact export identity and existing eligibility guards" {
+    const a = std.testing.allocator;
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "escaped.mjs");
+    defer module.deinit(a);
+    var sem: ModuleSemanticData = .{ .symbols = .empty, .scopes = &.{}, .scope_maps = &.{}, .exported_names = .empty, .symbol_ids = &.{}, .unresolved_references = .empty };
+    defer sem.symbols.deinit(a);
+    try sem.symbols.append(a, cjsStorageTestSymbol("\\uAC12", .variable_let, 1));
+    try sem.symbols.append(a, cjsStorageTestSymbol("decoy", .variable_const, 0));
+    module.semantic = sem;
+    const binding: ExportBinding = .{ .exported_name = "값", .local_name = "decoy", .local_span = Span.EMPTY, .kind = .local, .symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 0) };
+    try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    const kinds = [_]semantic_symbol.SymbolKind{ .variable_const, .function_decl, .class_decl };
+    for (kinds) |kind| {
+        sem.symbols.items[0] = cjsStorageTestSymbol("\\uAC12", kind, 1);
+        try std.testing.expect(!module.exportBindingIsCjsStorage(binding));
+        sem.symbols.items[0] = cjsStorageTestSymbol("\\uAC12", .variable_let, 1);
+        try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    }
+    sem.symbols.items[0].write_count = 0;
+    try std.testing.expect(!module.exportBindingIsCjsStorage(binding));
+    sem.symbols.items[0].write_count = 1;
+    try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    for (0..8) |case| {
+        var bad = binding;
+        switch (case) {
+            0 => bad.symbol = symbol_mod.SymbolRef.makeSemantic(@fromBackingInt(@as(u32, 1)), 0),
+            1 => bad.symbol = symbol_mod.SymbolRef.invalid,
+            2 => bad.symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 2),
+            3 => bad.declared_via_pattern = true,
+            4 => bad.init_is_fn_or_class = true,
+            5 => bad.exported_name = "alias",
+            6 => bad.exported_name = "\\uAC12",
+            7 => bad.kind = .re_export,
+            else => unreachable,
+        }
+        try std.testing.expect(!module.exportBindingIsCjsStorage(bad));
+        try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    }
+    module.wrap_kind = .cjs;
+    try std.testing.expect(!module.exportBindingIsCjsStorage(binding));
+    module.wrap_kind = .none;
+    try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+    module.semantic = null;
+    try std.testing.expect(!module.exportBindingIsCjsStorage(binding));
+    module.semantic = sem;
+    try std.testing.expect(module.exportBindingIsCjsStorage(binding));
+}
+
+test "escaped mutable storage actual Bundler preserves declaration and update values" {
+    const cases = [_]struct { declaration: []const u8, update: []const u8, value: []const u8 }{
+        .{ .declaration = "\\uAC12", .update = "값", .value = "값" },
+        .{ .declaration = "값", .update = "\\uAC12", .value = "값" },
+        .{ .declaration = "\\uAC12", .update = "\\uAC12", .value = "값" },
+        .{ .declaration = "\\u{1D49C}", .update = "𝒜", .value = "𝒜" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |minify| {
+        try checkEscapedMutableStorage(case.declaration, case.update, case.value, minify);
+    };
+    std.debug.print("escaped mutable storage original source4 profiles2 native8\n", .{});
+}
+
+fn checkEscapedMutableStorage(declaration: []const u8, update: []const u8, value: []const u8, minify: bool) !void {
+    const a = std.testing.allocator;
+    const helpers = @import("test_helpers.zig");
+    const Bundler = @import("bundler.zig").Bundler;
+    errdefer std.debug.print("escaped mutable storage failed decoded_bytes={d} minify={any}\n", .{ value.len, minify });
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = try std.fmt.allocPrint(a, "export let {s}=6;export function bump(){{{s}++}}", .{ declaration, update });
+    defer a.free(source);
+    const entry_source = try std.fmt.allocPrint(a, "import{{{s} as value,bump}}from './dep.mjs';bump();console.log(value);", .{value});
+    defer a.free(entry_source);
+    try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"commonjs\"}");
+    try helpers.writeFile(tmp.dir, "dep.mjs", source);
+    try helpers.writeFile(tmp.dir, "entry.mjs", entry_source);
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("7\n", native.stdout);
+    var bundler = Bundler.init(a, .{ .entry_points = &.{entry}, .format = .cjs, .platform = .node, .preserve_modules = true, .minify_identifiers = minify });
+    defer bundler.deinit();
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(a);
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.MissingStorageModuleOutputs;
+    for (outputs) |output| try helpers.writeFile(tmp.dir, std.fs.path.basename(output.path), output.contents);
+    const emitted = try helpers.absPath(&tmp, "entry.js");
+    defer a.free(emitted);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", emitted } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (!(actual.term == .exited and actual.term.exited == 0)) std.debug.print("escaped mutable storage runtime: {s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "escaped mutable storage actual long provider and consumer preserve live values" {
+    const a = std.testing.allocator;
+    const encodings = [_]struct { value: []const u8, raw: []const u8 }{
+        .{ .value = "a", .raw = "\\u0061" },
+        .{ .value = "é", .raw = "\\u00E9" },
+        .{ .value = "𝒜", .raw = "\\u{1D49C}" },
+    };
+    for ([_]usize{ 255, 256, 257, 4096 }) |length| for (encodings) |encoding| {
+        var raw: std.ArrayList(u8) = .empty;
+        defer raw.deinit(a);
+        var value: std.ArrayList(u8) = .empty;
+        defer value.deinit(a);
+        for (0..length / encoding.value.len) |_| {
+            try raw.appendSlice(a, encoding.raw);
+            try value.appendSlice(a, encoding.value);
+        }
+        for (0..length % encoding.value.len) |_| {
+            try raw.append(a, 'a');
+            try value.append(a, 'a');
+        }
+        try std.testing.expectEqual(length, value.items.len);
+        for ([_]bool{ false, true }) |minify|
+            try checkEscapedMutableStorage(raw.items, value.items, value.items, minify);
+    };
+    std.debug.print("escaped mutable storage long source12 profiles2 native24\n", .{});
 }

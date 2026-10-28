@@ -2128,6 +2128,41 @@ pub const Scanner = struct {
         return std.mem.eql(u8, a_name, b_name);
     }
 
+    /// Compare source IdentifierName syntax with an already decoded value.
+    /// Only the source side admits escapes. This follows identifier token
+    /// admission, so surrogate escapes are rejected rather than combined as
+    /// they are by the general decoding utility below. No scratch limit or
+    /// allocator participates in this predicate.
+    pub fn identifierValueEquals(raw_identifier: []const u8, decoded_value: []const u8) bool {
+        if (raw_identifier.len == 0 or decoded_value.len == 0) return false;
+        var raw_offset: usize = 0;
+        var value_offset: usize = 0;
+        var first = true;
+        while (raw_offset < raw_identifier.len and value_offset < decoded_value.len) {
+            const raw_cp = identifierValueCodepoint(raw_identifier, &raw_offset, true) orelse return false;
+            const value_cp = identifierValueCodepoint(decoded_value, &value_offset, false) orelse return false;
+            const valid_raw = if (first) unicode.isIdentifierStart(raw_cp) else unicode.isIdentifierContinue(raw_cp);
+            const valid_value = if (first) unicode.isIdentifierStart(value_cp) else unicode.isIdentifierContinue(value_cp);
+            if (!valid_raw or !valid_value or raw_cp != value_cp) return false;
+            first = false;
+        }
+        return raw_offset == raw_identifier.len and value_offset == decoded_value.len;
+    }
+
+    fn identifierValueCodepoint(text: []const u8, offset: *usize, allow_escape: bool) ?u21 {
+        if (text[offset.*] == '\\') {
+            if (!allow_escape) return null;
+            const cp = string_escape.decodeUnicodeHexEscape(text, offset) orelse return null;
+            if (cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF)) return null;
+            return @intCast(cp);
+        }
+        const len = std.unicode.utf8ByteSequenceLength(text[offset.*]) catch return null;
+        if (len > text.len - offset.*) return null;
+        const cp = std.unicode.utf8Decode(text[offset.*..][0..len]) catch return null;
+        offset.* += len;
+        return cp;
+    }
+
     /// Caller-owned scratch buffer를 사용해 identifier의 Unicode escape를
     /// StringValue UTF-8 표기로 디코딩한다. 이스케이프가 없으면 원본 슬라이스를 반환한다.
     pub fn decodeIdentifierEscapesInto(raw: []const u8, decode_buf: []u8) ?[]const u8 {
