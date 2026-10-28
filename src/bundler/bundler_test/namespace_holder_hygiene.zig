@@ -91,6 +91,58 @@ test "namespace holder hygiene ten value and lifetime inputs" {
     std.debug.print("namespace holder hygiene positives=10 profiles=4 native=40\n", .{});
 }
 
+test "foreign namespace holder ESM output observes the exact provider export" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "package.json", "{\"type\":\"module\"}");
+    try helpers.writeFile(tmp.dir, "provider.mjs", "export const value=7;export const unused=9;");
+    try helpers.writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+
+    var bundler = Bundler.init(a, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .scope_hoist = true, .tree_shaking = false });
+    defer bundler.deinit();
+    const result = bundler.bundle(std.testing.io) catch |err| {
+        std.debug.print("foreign namespace holder bundling error={s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer result.deinit(a);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "unused") != null);
+    try helpers.writeFile(tmp.dir, "bundle.mjs", result.output);
+    const output = try helpers.absPath(&tmp, "bundle.mjs");
+    defer a.free(output);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (!(actual.term == .exited and actual.term.exited == 0)) std.debug.print("foreign namespace holder output error:\n{s}\n", .{actual.stderr});
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+
+    var default_bundler = Bundler.init(a, .{ .entry_points = &.{entry}, .format = .esm, .platform = .node, .scope_hoist = true, .tree_shaking = true });
+    defer default_bundler.deinit();
+    const default_result = default_bundler.bundle(std.testing.io) catch |err| {
+        std.debug.print("foreign namespace holder tree-shaking bundling error={s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer default_result.deinit(a);
+    try std.testing.expect(!default_result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, default_result.output, "unused") == null);
+    try helpers.writeFile(tmp.dir, "default-bundle.mjs", default_result.output);
+    const default_output = try helpers.absPath(&tmp, "default-bundle.mjs");
+    defer a.free(default_output);
+    const default_actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", default_output } });
+    defer a.free(default_actual.stdout);
+    defer a.free(default_actual.stderr);
+    try std.testing.expect(default_actual.term == .exited and default_actual.term.exited == 0);
+    try std.testing.expectEqualStrings(native.stdout, default_actual.stdout);
+}
+
 test "namespace holder hygiene preserves ordinary call and existing reflection controls" {
     const controls = [_]Case{
         .{ .name = "ordinary-named-call", .entry = "import{read}from './dep.mjs';console.log(read()===undefined);", .dep = "export function read(){return this}", .expected = "true\n" },

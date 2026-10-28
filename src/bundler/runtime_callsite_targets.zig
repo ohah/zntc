@@ -22,6 +22,10 @@ pub fn validateTargetRole(graph: anytype, target: anytype) !void {
         },
         .esm_init => try module.esmInitSymbol(),
         .esm_namespace => try module.esmNamespaceSymbol(),
+        .namespace_export_value => blk: {
+            const witness = @import("namespace_export_witness.zig").resolveSymbol(module, @backingInt(target.symbol.inner)) orelse return error.InvalidCallsiteTarget;
+            break :blk witness.symbol;
+        },
     };
     if (expected.module != target.symbol.module or expected.inner != target.symbol.inner) return error.InvalidCallsiteTarget;
 }

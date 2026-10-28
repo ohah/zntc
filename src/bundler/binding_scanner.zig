@@ -28,7 +28,7 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SemanticSymbol = semantic_symbol.Symbol;
 
-pub const CallsiteRole = enum { schedule, to_esm, require, esm_init, esm_namespace, entry_guard };
+pub const CallsiteRole = enum { schedule, to_esm, require, esm_init, esm_namespace, entry_guard, namespace_export_value };
 pub const CallsiteTarget = struct {
     role: CallsiteRole,
     symbol: symbol_mod.SymbolID,

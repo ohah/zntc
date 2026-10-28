@@ -1735,6 +1735,16 @@ pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_sto
             has_callsite_targets = true;
             break;
         };
+        if (!has_callsite_targets) {
+            var holder_plans = self.self_namespace_holders.valueIterator();
+            while (holder_plans.next()) |plan| {
+                const target = plan.foreign_target orelse continue;
+                if (target.symbol.module == m.index) {
+                    has_callsite_targets = true;
+                    break;
+                }
+            }
+        }
         if (has_callsite_targets) {
             store.evict(m.path);
             continue;

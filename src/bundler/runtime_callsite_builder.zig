@@ -73,10 +73,33 @@ pub const Builder = struct {
     }
 
     pub fn imported(self: *Builder, target: SymbolID, role: @import("binding_scanner.zig").CallsiteRole) !SymbolId {
+        if (role == .namespace_export_value) return error.InvalidCallsiteTarget;
         const foreign = self.graph.moduleAtMut(target.module) orelse return error.InvalidCallsiteTarget;
         const foreign_sem = if (foreign.semantic) |*value| value else return error.InvalidCallsiteTarget;
         if (@backingInt(target.inner) >= foreign_sem.symbols.items.len) return error.InvalidCallsiteTarget;
         const owner = foreign_sem.captureOwnerToken();
+        return self.importedWithOwner(target, role, owner, "__exact_target", true);
+    }
+
+    /// Build an exact callsite against a candidate provider owner. The caller
+    /// publishes that provider semantic copy only after the consumer graph is
+    /// complete. Existing dependency edges can be reused without linking a
+    /// duplicate graph edge.
+    pub fn importedWithOwner(
+        self: *Builder,
+        target: SymbolID,
+        role: @import("binding_scanner.zig").CallsiteRole,
+        owner: @import("module.zig").SemanticOwnerToken,
+        imported_name: []const u8,
+        link_dependency: bool,
+    ) !SymbolId {
+        const foreign = self.graph.getModule(target.module) orelse return error.InvalidCallsiteTarget;
+        const foreign_sem = foreign.semantic orelse return error.InvalidCallsiteTarget;
+        if (@backingInt(target.inner) >= foreign_sem.symbols.items.len or owner == .unassigned) return error.InvalidCallsiteTarget;
+        if (role == .namespace_export_value) {
+            const witness = @import("namespace_export_witness.zig").resolveName(foreign, imported_name) orelse return error.InvalidCallsiteTarget;
+            if (witness.symbol.inner != target.inner or !std.mem.eql(u8, witness.exported_name, imported_name)) return error.InvalidCallsiteTarget;
+        }
         try self.reserveImportSlot();
         const root_scope: ScopeId = @fromBackingInt(@as(u32, 0));
         if (self.editor.scopes.items.len == 0 or self.editor.scope_maps.items.len == 0) return error.InvalidCallsiteScope;
@@ -90,7 +113,7 @@ pub const Builder = struct {
         const span = try self.ast.addString(name);
         const binding = try self.ast.addNode(.{ .tag = .binding_identifier, .span = span, .data = .{ .string_ref = span } });
         const sid = try self.editor.declare(binding, span, span, root_scope, .import_binding, Reference.NO_STMT, Reference.NO_STMT);
-        const exported_span = try self.ast.addString("__exact_target");
+        const exported_span = try self.ast.addString(imported_name);
         const exported = try self.ast.addNode(.{ .tag = .identifier_reference, .span = exported_span, .data = .{ .string_ref = exported_span } });
         const specifier = try self.ast.addNode(.{ .tag = .import_specifier, .span = span, .data = .{ .binary = .{ .left = exported, .right = binding, .flags = 0 } } });
         const specs = try self.ast.addNodeList(&.{specifier});
@@ -106,7 +129,7 @@ pub const Builder = struct {
         self.bindings.appendAssumeCapacity(.{
             .kind = .named,
             .local_name = name,
-            .imported_name = "__exact_target",
+            .imported_name = imported_name,
             .local_span = span,
             .import_record_index = record_index,
             .local_symbol_node = binding,
@@ -118,7 +141,7 @@ pub const Builder = struct {
         });
         self.module.import_records = self.records.items;
         self.module.import_bindings = self.bindings.items;
-        try self.graph.linkDependency(self.module.index, target.module);
+        if (link_dependency) try self.graph.linkDependency(self.module.index, target.module);
         return sid;
     }
 

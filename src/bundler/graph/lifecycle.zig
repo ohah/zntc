@@ -97,6 +97,16 @@ pub fn reset(self: *ModuleGraph) void {
 /// 가 build flow 에서 importers 재기록함.
 pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
     _ = self.self_namespace_holders.remove(idx.toU32());
+    var stale_holder: ?u32 = null;
+    var holder_plans = self.self_namespace_holders.iterator();
+    while (holder_plans.next()) |entry| {
+        const target = entry.value_ptr.foreign_target orelse continue;
+        if (target.symbol.module == idx) {
+            stale_holder = entry.key_ptr.*;
+            break;
+        }
+    }
+    if (stale_holder) |key| _ = self.self_namespace_holders.remove(key);
     const idx_usize = @backingInt(idx);
     std.debug.assert(idx_usize < self.modules.count());
     const mod_ptr = self.modules.at(idx_usize);

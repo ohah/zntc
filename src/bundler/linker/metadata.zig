@@ -2151,6 +2151,12 @@ pub fn buildCrossModuleConstValuesProfiled(
     var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .empty;
     if (m.import_bindings.len == 0) return const_values;
     for (m.import_bindings) |ib| {
+        // Namespace-holder P edges keep their graph-local provider witness
+        // through tree-shaker output validation. Inlining the constant here
+        // would erase that binding and invalidate the atomic holder plan.
+        if (ib.callsite_target) |target| {
+            if (target.role == .namespace_export_value) continue;
+        }
         if (ib.kind == .namespace) continue;
         if (ib.import_record_index >= m.import_records.len) continue;
         const rec = m.import_records[ib.import_record_index];
