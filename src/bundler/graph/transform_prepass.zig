@@ -17672,24 +17672,36 @@ test "computed accessor super authority source admission rejects a foreign scope
     try std.testing.expect(computedAccessorSuperSourceAdmissionForTest(&f));
 }
 
-test "Flow value path split retains the actual bundler source owner" {
+test "Flow value path split avoids actual bundler semantic resync" {
     const helpers = @import("../test_helpers.zig");
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try helpers.writeFile(tmp.dir, "entry.js", "import {map} from './library.mjs';var result:number=map(7);console.log(result);");
-    try helpers.writeFile(tmp.dir, "library.mjs", "export function map(value){return value+1}");
-    try helpers.writeFile(tmp.dir, "parts/map.mjs", "export default function map(value){return value+1}");
-    const entry = try helpers.absPath(&tmp, "entry.js");
-    defer std.testing.allocator.free(entry);
-    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
-    defer cache.deinit();
-    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
-    defer graph.deinit();
-    const mapping = [_]@import("../../transformer/options.zig").ModuleSpecifierMapEntry{.{ .module = "./library.mjs", .template = "./parts/{name}.mjs" }};
-    graph.flow = true;
-    graph.transform_options_base.module_specifier_map = &mapping;
-    try graph.build(std.testing.io, &.{entry});
-    const actual = graph.findModuleByPath(entry) orelse return error.MissingFlowEntry;
-    try std.testing.expect(actual.transform_cache != null);
-    try std.testing.expect(actual.semantic.?.owner_token != .unassigned);
+    const counters = @import("../../profile.zig");
+    for ([_]bool{ false, true }) |flow| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.js", if (flow)
+            "import {map} from './library.mjs';var result:number=map(7);console.log(result);"
+        else
+            "import {map} from './library.mjs';var result=map(7);console.log(result);");
+        try helpers.writeFile(tmp.dir, "library.mjs", "export function map(value){return value+1}");
+        try helpers.writeFile(tmp.dir, "parts/map.mjs", "export default function map(value){return value+1}");
+        const entry = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        const mapping = [_]@import("../../transformer/options.zig").ModuleSpecifierMapEntry{.{ .module = "./library.mjs", .template = "./parts/{name}.mjs" }};
+        graph.flow = flow;
+        graph.transform_options_base.module_specifier_map = &mapping;
+        counters.resetForTest();
+        defer counters.resetForTest();
+        counters.setIoForTest(std.testing.io);
+        counters.setLevel(.detailed);
+        counters.addFromCsv("graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        const actual = graph.findModuleByPath(entry) orelse return error.MissingFlowEntry;
+        try std.testing.expect(actual.transform_cache != null);
+        std.debug.print("Flow value path split flow={any} owner={any} semantic_resync={d}\n", .{ flow, actual.semantic.?.owner_token, counters.count(.graph_resync_semantic) });
+        try std.testing.expectEqual(@as(u32, 0), counters.count(.graph_resync_semantic));
+    }
 }
