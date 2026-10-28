@@ -106,6 +106,72 @@ test "module map preserves exact declaration SID Scope and references before fin
     try expectMapBindingIdentity(true);
 }
 
+test "Flow value path split keeps source binding identity before any finalizer" {
+    const sources = [_][]const u8{
+        "import {map} from 'library'; var result:number=map(7);",
+        "import {map,filter} from 'library'; var result:number=filter(map(7));",
+        "import {map} from 'library'; var result:string=String(map(7));",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.is_module = true;
+        parser.is_flow = true;
+        const root = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = Analyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        const declaration: NodeIndex = @fromBackingInt(parser.ast.extra_data.items[parser.ast.getNode(root).data.list.start]);
+        const original = module_parser.readImportDeclExtras(&parser.ast, parser.ast.getNode(declaration).data.extra);
+        var anchors: std.ArrayList(NodeIndex) = .empty;
+        for (0..original.specs_len) |i| {
+            const specifier = parser.ast.nodes.items[parser.ast.extra_data.items[original.specs_start + i]];
+            try anchors.append(a, specifier.data.binary.right);
+        }
+        const rows = try a.dupe(@import("../semantic/symbol.zig").Reference, analyzer.references.items);
+        const mapping = [_]@import("options.zig").ModuleSpecifierMapEntry{.{ .module = "library", .template = "./parts/{name}.mjs" }};
+        var t = try Transformer.init(a, &parser.ast, .{ .module_specifier_map = &mapping });
+        try t.initSymbolIds(analyzer.symbol_ids.items);
+        t.symbols = analyzer.symbols.items;
+        t.references = analyzer.references.items;
+        t.scopes = analyzer.scopes.items;
+        t.scope_maps = analyzer.scope_maps.items;
+        t.scope_owner_map = analyzer.scope_owner_map;
+        t.semantic_edit_enabled = true;
+        // Call the import producer directly: transform(), its generic binder,
+        // type erasure and finishSemanticEdit have not run.
+        const first = try @import("transformer/import_export.zig").visitImportDeclaration(&t, t.ast.getNode(declaration));
+        for (anchors.items, 0..) |anchor, i| {
+            const output = if (i == 0) first else t.trailing_nodes.items[i - 1];
+            const actual = module_parser.readImportDeclExtras(t.ast, t.ast.getNode(output).data.extra);
+            try std.testing.expectEqual(@as(u32, 1), actual.specs_len);
+            try std.testing.expectEqual(@backingInt(anchor), t.ast.extra_data.items[actual.specs_start]);
+            try std.testing.expectEqual(ast_mod.Node.Tag.import_default_specifier, t.ast.getNode(anchor).tag);
+            const sid = analyzer.symbol_ids.items[@backingInt(anchor)] orelse return error.MissingSourceImportSid;
+            try std.testing.expectEqual(@as(?u32, sid), t.getSymbolIdAt(anchor));
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, t.symbols[sid].kind);
+            try std.testing.expectEqual(analyzer.symbols.items[sid].scope_id, t.symbols[sid].scope_id);
+            try std.testing.expect(std.meta.eql(analyzer.symbols.items[sid].decl_flags, t.symbols[sid].decl_flags));
+            var declarations: usize = 0;
+            for (t.references) |row| {
+                if (@backingInt(row.symbol_id) != sid or !row.flags.declare) continue;
+                declarations += 1;
+                try std.testing.expectEqual(anchor, row.declaration_node_index);
+                try std.testing.expect(row.node_index.isNone());
+                try std.testing.expect(std.meta.eql(row.flags, @import("../semantic/symbol.zig").ReferenceFlags{ .declare = true }));
+            }
+            try std.testing.expectEqual(@as(usize, 1), declarations);
+        }
+        try std.testing.expectEqualDeep(rows, t.references);
+    }
+}
+
 fn checkAtomicSplitAllocation(allocator: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
