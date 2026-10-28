@@ -980,6 +980,9 @@ pub const TreeShaker = struct {
         const arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
         for (arr) |*a| a.* = null;
         for (mod.import_bindings, 0..) |ib, ib_idx| {
+            // The retained namespace metadata is for linker compatibility;
+            // its real tree-shaker edge is the typed exact provider callsite.
+            if (self.canSkipCompletedForeignNamespace(mod_idx, ib_idx)) continue;
             const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
             if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
         }
@@ -1346,6 +1349,72 @@ pub const TreeShaker = struct {
         return &self.re_export_namespace_sources[mod_idx].?;
     }
 
+    /// Skip the retained namespace import only while a graph-local completion
+    /// plan proves the exact generated provider-value edge that replaces it.
+    fn canSkipCompletedForeignNamespace(self: *TreeShaker, mod_idx: u32, ib_idx: usize) bool {
+        const consumer = self.graph.getModule(ModuleIndex.fromUsize(@intCast(mod_idx))) orelse return false;
+        if (ib_idx >= consumer.import_bindings.len) return false;
+        const binding = consumer.import_bindings[ib_idx];
+        if (binding.kind != .namespace or binding.local_role != .materialized_const) return false;
+        const plan = self.graph.self_namespace_holders.get(mod_idx) orelse return false;
+        const target = plan.foreign_target orelse return false;
+        if (plan.module != consumer or target.role != .namespace_export_value) return false;
+        @import("self_namespace_ast.zig").validate(self.graph, consumer) catch return false;
+        for (consumer.import_bindings) |candidate| {
+            const candidate_target = candidate.callsite_target orelse continue;
+            if (candidate.kind == .named and candidate_target.role == .namespace_export_value and
+                std.meta.eql(candidate_target, target)) return true;
+        }
+        return false;
+    }
+
+    /// Follow the compiler-created provider edge by its captured SymbolId.
+    /// The imported name is checked as a witness, never used to recover target
+    /// identity. Invalid or unavailable proof falls back to ordinary analysis.
+    fn seedExactNamespaceExportValue(
+        self: *TreeShaker,
+        importer_idx: u32,
+        ib_idx: usize,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!bool {
+        const importer = self.graph.getModule(ModuleIndex.fromUsize(@intCast(importer_idx))) orelse return false;
+        if (ib_idx >= importer.import_bindings.len) return false;
+        const binding = importer.import_bindings[ib_idx];
+        const target = binding.callsite_target orelse return false;
+        if (target.role != .namespace_export_value or target.owner == .unassigned or
+            binding.kind != .named or binding.import_record_index >= importer.import_records.len) return false;
+        const record = importer.import_records[binding.import_record_index];
+        if (record.resolved != target.symbol.module) return false;
+        const plan = self.graph.self_namespace_holders.get(importer_idx) orelse return false;
+        if (plan.foreign_target == null or !std.meta.eql(plan.foreign_target.?, target)) return false;
+        @import("self_namespace_ast.zig").validate(self.graph, importer) catch return false;
+        @import("runtime_callsite_targets.zig").validateTargetRole(self.graph, target) catch return false;
+
+        const provider = self.graph.getModule(target.symbol.module) orelse return false;
+        const semantic = provider.semantic orelse return false;
+        if (semantic.owner_token != target.owner) return false;
+        const witness = @import("namespace_export_witness.zig").resolveSymbol(provider, @backingInt(target.symbol.inner)) orelse return false;
+        if (!std.mem.eql(u8, witness.exported_name, binding.imported_name)) return false;
+        const provider_idx = @backingInt(target.symbol.module);
+        if (provider_idx >= module_stmt_infos.len or module_stmt_infos[provider_idx] == null) {
+            try self.markAndSeedAllStmts(provider_idx, queue, module_stmt_infos, reachable_stmts);
+            return true;
+        }
+        const infos = module_stmt_infos[provider_idx].?;
+        if (infos.declaredStmtBySymbol(@backingInt(target.symbol.inner)) == null) {
+            try self.markAndSeedAllStmts(provider_idx, queue, module_stmt_infos, reachable_stmts);
+            return true;
+        }
+        if (!try self.markSeedExportVisited(provider_idx, witness.exported_name)) return true;
+        try self.markExportUsed(provider_idx, witness.exported_name);
+        self.included.set(provider_idx);
+        try self.seedSideEffectStmts(provider_idx, infos, queue, reachable_stmts);
+        try self.enqueueSymbolLiveStatements(provider_idx, infos, @backingInt(target.symbol.inner), reachable_stmts, queue);
+        return true;
+    }
+
     fn followImport(
         self: *TreeShaker,
         mod_idx: u32,
@@ -1368,6 +1437,8 @@ pub const TreeShaker = struct {
         if (rec.resolved.isNone()) return;
         const target = @backingInt(rec.resolved);
         const target_module_for_import = self.graph.getModule(rec.resolved) orelse return;
+
+        if (try self.seedExactNamespaceExportValue(mod_idx, @intCast(ib_idx), queue, module_stmt_infos, reachable_stmts)) return;
 
         if (ib.kind == .namespace) {
             if (target_module_for_import.wrap_kind == .cjs) {
@@ -1879,17 +1950,20 @@ pub const TreeShaker = struct {
         }
         if (self.opaque_visited) |*ov| ov.set(mod_idx);
 
-        for (m.import_bindings) |ib| {
+        for (m.import_bindings, 0..) |ib, ib_idx| {
             // StmtInfo/reachability가 있으면 dead statement의 import는 배제.
             // 없으면(wrapped 등) 보수적으로 모두 시드 — 모듈 전체 포함되는 경로.
             if (mod_idx < self.reachable_stmts.len and self.reachable_stmts[mod_idx] != null) {
                 if (!self.isImportLiveInModule(mod_idx, ib.local_name)) continue;
             }
+            if (self.canSkipCompletedForeignNamespace(mod_idx, ib_idx)) continue;
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target = @backingInt(rec.resolved);
             const target_module = self.graph.getModule(rec.resolved) orelse continue;
+
+            if (try self.seedExactNamespaceExportValue(mod_idx, ib_idx, queue, module_stmt_infos, reachable_stmts)) continue;
 
             if (target_module.wrap_kind == .cjs) {
                 if (ib.kind == .namespace) {

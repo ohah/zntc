@@ -6187,6 +6187,387 @@ test "self namespace AST holder retains the exact import declaration identity" {
     std.debug.print("self namespace completed sourceSID={d} outputbinding={d} getterScope={d} exportedSID={d} rawholders=0\n", .{ sid, @backingInt(plan.binding), @backingInt(plan.getter_scope), plan.exported });
 }
 
+test "foreign namespace AST holder preserves the importer binding for a provider scalar export" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+
+    const importer_index = findModuleIdx(&graph, "entry.mjs") orelse return error.MissingForeignImporter;
+    const provider_index = findModuleIdx(&graph, "provider.mjs") orelse return error.MissingForeignProvider;
+    const importer = graph.moduleAtMut(importer_index).?;
+    const provider = graph.moduleAtMut(provider_index).?;
+    try std.testing.expectEqual(@as(usize, 1), importer.import_bindings.len);
+    try std.testing.expectEqual(@as(usize, 1), provider.export_bindings.len);
+    const original_import = importer.import_bindings[0];
+    const import_anchor = original_import.local_symbol_node orelse return error.MissingForeignImportAnchor;
+    const original_sid = importer.semantic.?.symbol_ids[@backingInt(import_anchor)] orelse return error.MissingForeignImportIdentity;
+    const provider_anchor = provider.export_bindings[0].local_symbol_node orelse return error.MissingProviderExportAnchor;
+    const provider_sid = provider.semantic.?.symbol_ids[@backingInt(provider_anchor)] orelse return error.MissingProviderExportIdentity;
+    const previous_provider_owner = provider.semantic.?.owner_token;
+
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+
+    try std.testing.expectEqual(.materialized_const, importer.import_bindings[0].local_role);
+    try std.testing.expectEqual(@as(usize, 2), importer.import_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), importer.import_records.len);
+    try std.testing.expectEqual(@as(?u32, original_sid), importer.semantic.?.symbol_ids[@backingInt(importer.import_bindings[0].local_symbol_node.?)]);
+    try std.testing.expectEqual(@as(?u32, provider_sid), provider.semantic.?.symbol_ids[@backingInt(provider_anchor)]);
+    const callsite = importer.import_bindings[1].callsite_target orelse return error.MissingNamespaceProviderCallsite;
+    try std.testing.expectEqual(.namespace_export_value, callsite.role);
+    try std.testing.expectEqual(provider.index, callsite.symbol.module);
+    try std.testing.expectEqual(@as(u32, provider_sid), @backingInt(callsite.symbol.inner));
+    try std.testing.expectEqual(provider.semantic.?.owner_token, callsite.owner);
+    try std.testing.expect(callsite.owner != .unassigned);
+    if (previous_provider_owner != .unassigned) try std.testing.expectEqual(previous_provider_owner, callsite.owner);
+    try std.testing.expect(importer.import_records[1].callsite_lowered);
+    try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, callsite);
+    try @import("self_namespace_ast.zig").validate(&graph, importer);
+    const completed_ast_nodes = importer.ast.?.nodes.items.ptr;
+    const completed_sem_ids = importer.semantic.?.symbol_ids.ptr;
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expect(importer.ast.?.nodes.items.ptr == completed_ast_nodes);
+    try std.testing.expect(importer.semantic.?.symbol_ids.ptr == completed_sem_ids);
+}
+
+test "foreign namespace AST holder rejects unsupported sources without publication" {
+    const Case = struct { provider: []const u8, consumer: []const u8, extra: bool = false };
+    const cases = [_]Case{
+        .{ .provider = "export let value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export function value(){return 7}", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export const value=7;export const extra=()=>8;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export const value=7;console.log('side effect');", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export const value=[];", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export const value={};", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';const alias=ns;console.log(Reflect.get(alias,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';console.log(ns.value);" },
+        .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'other'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.ownKeys(ns));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';import'./side.mjs';console.log(Reflect.get(ns,'value'));", .extra = true },
+    };
+    const a = std.testing.allocator;
+    for (cases, 0..) |case, index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "provider.mjs", case.provider);
+        try writeFile(tmp.dir, "entry.mjs", case.consumer);
+        if (case.extra) try writeFile(tmp.dir, "side.mjs", "console.log('side');");
+        const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+        defer a.free(entry);
+        var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+        defer cache.deinit();
+        var graph = ModuleGraph.init(a, &cache);
+        defer graph.deinit();
+        try graph.build(std.testing.io, &.{entry});
+        const importer = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(0)).?;
+        const provider = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(1)).?;
+        const importer_nodes = importer.ast.?.nodes.items.ptr;
+        const provider_owner = provider.semantic.?.owner_token;
+        const expected_modules: usize = if (case.extra) 3 else 2;
+        try std.testing.expectEqual(expected_modules, graph.moduleCount());
+        try @import("self_namespace_ast.zig").lower(&graph, .{
+            .format = .esm,
+            .scope_hoist = true,
+            .minify_syntax = false,
+        });
+        try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+        try std.testing.expect(importer.ast.?.nodes.items.ptr == importer_nodes);
+        try std.testing.expectEqual(.import_binding, importer.import_bindings[0].local_role);
+        try std.testing.expectEqual(provider_owner, provider.semantic.?.owner_token);
+        std.debug.print("foreign namespace hostile admission case={d} selected=false source_unchanged=true\n", .{index});
+    }
+}
+
+fn foreignNamespaceAllocationFailure(offset: usize) !bool {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var failing = std.testing.FailingAllocator.init(a, .{});
+    const controlled = failing.allocator();
+    var cache = resolve_cache_mod.ResolveCache.init(controlled, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(controlled, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const importer = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(0)).?;
+    const provider = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(1)).?;
+    const importer_ast = importer.ast.?;
+    const importer_sem = importer.semantic.?;
+    const provider_ast = provider.ast.?;
+    const provider_sem = provider.semantic.?;
+    const original_bindings = importer.import_bindings;
+    const original_records = importer.import_records;
+    failing.resize_fail_index = failing.resize_index;
+    failing.fail_index = failing.alloc_index + offset;
+    if (@import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false })) |_| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try @import("self_namespace_ast.zig").validate(&graph, importer);
+        return true;
+    } else |err| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+        try std.testing.expect(importer.ast.?.nodes.items.ptr == importer_ast.nodes.items.ptr);
+        try std.testing.expect(importer.semantic.?.symbol_ids.ptr == importer_sem.symbol_ids.ptr);
+        try std.testing.expectEqual(importer_sem.owner_token, importer.semantic.?.owner_token);
+        try std.testing.expectEqual(provider_ast.nodes.items.ptr, provider.ast.?.nodes.items.ptr);
+        try std.testing.expectEqual(provider_sem.symbol_ids.ptr, provider.semantic.?.symbol_ids.ptr);
+        try std.testing.expectEqual(provider_sem.owner_token, provider.semantic.?.owner_token);
+        try std.testing.expectEqual(original_bindings.ptr, importer.import_bindings.ptr);
+        try std.testing.expectEqual(original_records.ptr, importer.import_records.ptr);
+        try std.testing.expectEqual(.import_binding, importer.import_bindings[0].local_role);
+        try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try @import("self_namespace_ast.zig").validate(&graph, importer);
+        return false;
+    }
+}
+
+test "foreign namespace AST holder allocation failures leave both modules unchanged" {
+    var failures: usize = 0;
+    var reached_success = false;
+    for (0..192) |offset| {
+        if (try foreignNamespaceAllocationFailure(offset)) {
+            reached_success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(reached_success and failures > 0);
+    std.debug.print("foreign namespace transaction actual OOM points={d} importer_and_provider_unchanged=true\n", .{failures});
+}
+
+const ForeignNamespaceCorruption = enum {
+    missing_plan,
+    target_role,
+    target_owner,
+    target_symbol,
+    target_declaration,
+    callsite_record,
+    imported_name,
+    consumer_ast,
+    consumer_symbol,
+    provider_ast,
+    provider_owner,
+    provider_symbol,
+    provider_scope_map,
+    provider_export_binding,
+};
+
+fn checkForeignNamespaceCorruption(attack: ForeignNamespaceCorruption) !void {
+    errdefer std.debug.print("foreign namespace corruption failed attack={s}\n", .{@tagName(attack)});
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;export const unused=9;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const importer_index = @import("types.zig").ModuleIndex.fromUsize(0);
+    const provider_index = @import("types.zig").ModuleIndex.fromUsize(1);
+    const importer = graph.moduleAtMut(importer_index).?;
+    const provider = graph.moduleAtMut(provider_index).?;
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    const lowering = @import("self_namespace_ast.zig");
+    const plan = graph.self_namespace_holders.get(importer_index.toU32()).?;
+    const saved_binding = importer.import_bindings[1];
+    const saved_record = importer.import_records[1];
+    const saved_consumer_ast = importer.ast.?;
+    const saved_consumer_node = importer.ast.?.getNode(plan.statement);
+    const saved_provider_ast = provider.ast.?;
+    const saved_provider_owner = provider.semantic.?.owner_token;
+    const saved_unused_export = provider.export_bindings[1];
+    const value_export_anchor = provider.export_bindings[0].local_symbol_node.?;
+    const provider_witness = @import("namespace_export_witness.zig").resolveName(provider, "value").?;
+    var initializer_raw: ?usize = null;
+    for (provider.ast.?.nodes.items, 0..) |node, raw| if (node.tag == .numeric_literal) {
+        initializer_raw = raw;
+        break;
+    };
+    const initializer_index = initializer_raw orelse return error.MissingForeignProviderInitializer;
+    const saved_initializer = provider.ast.?.nodes.items[initializer_index];
+    switch (attack) {
+        .missing_plan => _ = graph.self_namespace_holders.remove(importer_index.toU32()),
+        .target_role => {
+            var target = saved_binding.callsite_target.?;
+            target.role = .require;
+            @constCast(importer.import_bindings)[1].callsite_target = target;
+        },
+        .target_owner => {
+            var target = saved_binding.callsite_target.?;
+            target.owner = .unassigned;
+            @constCast(importer.import_bindings)[1].callsite_target = target;
+        },
+        .target_symbol => {
+            var target = saved_binding.callsite_target.?;
+            target.symbol = .invalid;
+            @constCast(importer.import_bindings)[1].callsite_target = target;
+        },
+        .target_declaration => {
+            var target = saved_binding.callsite_target.?;
+            target.declaration = .none;
+            @constCast(importer.import_bindings)[1].callsite_target = target;
+        },
+        .callsite_record => @constCast(importer.import_records)[1].callsite_lowered = false,
+        .imported_name => @constCast(importer.import_bindings)[1].imported_name = "other",
+        .consumer_ast => @constCast(importer.ast.?.nodes.items)[@backingInt(plan.statement)].span.start +%= 1,
+        .consumer_symbol => @constCast(importer.semantic.?.symbol_ids)[@backingInt(saved_binding.local_symbol_node.?)] = plan.holder,
+        .provider_ast => @constCast(provider.ast.?.nodes.items)[initializer_index].tag = .string_literal,
+        .provider_owner => provider.semantic.?.owner_token = .unassigned,
+        .provider_symbol => @constCast(provider.semantic.?.symbol_ids)[@backingInt(provider_witness.local_symbol_node)] = std.math.maxInt(u32),
+        .provider_scope_map => try @constCast(provider.semantic.?.scope_maps)[0].put(a, "value", 999),
+        .provider_export_binding => @constCast(provider.export_bindings)[1].local_symbol_node = value_export_anchor,
+    }
+    var rejected = false;
+    lowering.validate(&graph, importer) catch {
+        rejected = true;
+    };
+    if (!rejected) return error.ForeignNamespaceCorruptionAccepted;
+    switch (attack) {
+        .missing_plan => graph.self_namespace_holders.putAssumeCapacity(importer_index.toU32(), plan),
+        .target_role, .target_owner, .target_symbol, .target_declaration, .imported_name => @constCast(importer.import_bindings)[1] = saved_binding,
+        .callsite_record => @constCast(importer.import_records)[1] = saved_record,
+        .consumer_ast => {
+            importer.ast = saved_consumer_ast;
+            @constCast(importer.ast.?.nodes.items)[@backingInt(plan.statement)] = saved_consumer_node;
+        },
+        .consumer_symbol => @constCast(importer.semantic.?.symbol_ids)[@backingInt(saved_binding.local_symbol_node.?)] = saved_binding.local_symbol.semanticIndex().?,
+        .provider_ast => provider.ast = saved_provider_ast,
+        .provider_owner => provider.semantic.?.owner_token = saved_provider_owner,
+        .provider_symbol => @constCast(provider.semantic.?.symbol_ids)[@backingInt(provider_witness.local_symbol_node)] = @backingInt(provider_witness.symbol.inner),
+        .provider_scope_map => try @constCast(provider.semantic.?.scope_maps)[0].put(a, "value", @backingInt(provider_witness.symbol.inner)),
+        .provider_export_binding => @constCast(provider.export_bindings)[1] = saved_unused_export,
+    }
+    if (attack == .provider_ast) @constCast(provider.ast.?.nodes.items)[initializer_index] = saved_initializer;
+    try lowering.validate(&graph, importer);
+    try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+}
+
+test "foreign namespace AST holder rejects fourteen poisoned identities and restores" {
+    inline for (std.meta.tags(ForeignNamespaceCorruption)) |attack| try checkForeignNamespaceCorruption(attack);
+}
+
+test "foreign namespace holder lifecycle evicts both cached owners" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "control.mjs", "export const control=11;");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const provider_path = try @import("test_helpers.zig").absPath(&tmp, "provider.mjs");
+    defer a.free(provider_path);
+    const control_path = try @import("test_helpers.zig").absPath(&tmp, "control.mjs");
+    defer a.free(control_path);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(a);
+    defer store.deinit();
+
+    var seed = ModuleGraph.init(a, &cache);
+    defer seed.deinit();
+    try seed.build(std.testing.io, &.{entry});
+    seed.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(store.modules.contains(entry) and store.modules.contains(provider_path));
+
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    const importer_index = @import("types.zig").ModuleIndex.fromUsize(0);
+    const provider_index = @import("types.zig").ModuleIndex.fromUsize(1);
+    const importer = graph.moduleAtMut(importer_index).?;
+    const provider = graph.moduleAtMut(provider_index).?;
+    const control_index = try graph.addModule(std.testing.io, control_path);
+    graph.parseModule(std.testing.io, control_index);
+    const control = graph.moduleAtMut(control_index).?;
+    const control_mtime = try ModuleGraph.getMtime(std.testing.io, control_path);
+
+    graph.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expect(!store.modules.contains(entry));
+    try std.testing.expect(!store.modules.contains(provider_path));
+    try std.testing.expect(store.getIfFresh(control_path, control_mtime) != null);
+    try std.testing.expectEqual(@as(usize, 1), store.modules.count());
+    try std.testing.expect(importer.parse_arena != null and provider.parse_arena != null);
+    try std.testing.expect(control.parse_arena == null);
+    graph.invalidateModule(provider_index);
+    try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
+    try std.testing.expectError(error.MissingSelfNamespaceHolder, @import("self_namespace_ast.zig").validate(&graph, importer));
+}
+
+test "foreign namespace holder admits exact one-symbol provider from disk receipt" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const cache_path = try @import("test_helpers.zig").absPath(&tmp, "disk-cache");
+    defer a.free(cache_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, cache_path);
+    defer disk.deinit();
+    var resolve = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve.deinit();
+
+    var cold = ModuleGraph.init(a, &resolve);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 0), cold.disk_load_hits.load(.monotonic));
+
+    var warm = ModuleGraph.init(a, &resolve);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 2), warm.disk_load_hits.load(.monotonic));
+    const importer_index = @import("types.zig").ModuleIndex.fromUsize(0);
+    const provider_index = @import("types.zig").ModuleIndex.fromUsize(1);
+    const importer = warm.moduleAtMut(importer_index).?;
+    const provider = warm.moduleAtMut(provider_index).?;
+    try std.testing.expect(importer.self_namespace_source_receipt != null);
+    try std.testing.expect(provider.self_namespace_source_receipt != null);
+    try std.testing.expect(importer.source.ptr != importer.ast.?.source.ptr);
+    try std.testing.expect(provider.source.ptr != provider.ast.?.source.ptr);
+
+    const lowering = @import("self_namespace_ast.zig");
+    try lowering.lower(&warm, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expectEqual(@as(usize, 1), warm.self_namespace_holders.count());
+    try std.testing.expect(importer.self_namespace_source_receipt == null);
+    try std.testing.expect(provider.self_namespace_source_receipt == null);
+    try lowering.validate(&warm, importer);
+    var linker = Linker.init(a, &warm, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    try lowering.validate(&warm, importer);
+}
+
 test "self namespace AST holder observes actual getter creator topology" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -6330,7 +6711,7 @@ test "self namespace AST holder unsupported valid sources preserve the existing 
         .{ .name = "hoisted-var", .source = "console.log(Reflect.get(ns,'value'));export var value=7;import*as ns from'./self.mjs';", .selected = false },
         .{ .name = "hoisted-function", .source = "console.log(Reflect.get(ns,'value')());export function value(){return 7}import*as ns from'./self.mjs';", .selected = false },
         .{ .name = "early-const", .source = "console.log(Reflect.get(ns,'value'));export const value=7;import*as ns from'./self.mjs';", .selected = false },
-        .{ .name = "foreign", .source = "import*as ns from'./dep.mjs';console.log(Reflect.get(ns,'value'));", .selected = false },
+        .{ .name = "foreign", .source = "import*as ns from'./dep.mjs';console.log(Reflect.get(ns,'value'));", .selected = true },
         .{ .name = "direct-callee", .source = "export const value=7;ns.value();import*as ns from'./self.mjs';", .selected = false },
         .{ .name = "protocol", .source = "export const value=7;console.log(Object.getPrototypeOf(ns));import*as ns from'./self.mjs';", .selected = false },
         .{ .name = "wrong-key", .source = "export const value=7;console.log(Reflect.get(ns,'other'));import*as ns from'./self.mjs';", .selected = false },
