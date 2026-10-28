@@ -775,6 +775,126 @@ test "exact scope audit rejects distinct live owners sharing one ScopeId" {
     try std.testing.expect(!shared_owner.isClean());
 }
 
+test "exact identity audit resolves long escaped references before walking outer scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const tail = try allocator.alloc(u8, 300);
+    defer allocator.free(tail);
+    @memset(tail, 'b');
+    const decoded_name = try std.fmt.allocPrint(allocator, "a{s}", .{tail});
+    defer allocator.free(decoded_name);
+    const escaped_name = try std.fmt.allocPrint(allocator, "\\u0061{s}", .{tail});
+    defer allocator.free(escaped_name);
+    const alternate_escaped_name = try std.fmt.allocPrint(allocator, "\\u{{61}}{s}", .{tail});
+    defer allocator.free(alternate_escaped_name);
+    const source = try std.fmt.allocPrint(
+        allocator,
+        "const {s}=1;function read(){{const {s}=2;return {s};}}",
+        .{ escaped_name, decoded_name, alternate_escaped_name },
+    );
+    defer allocator.free(source);
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var outer_binding: ?AstNodeIndex = null;
+    var inner_binding: ?AstNodeIndex = null;
+    var read_reference: ?AstNodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+        const name = parser.ast.getText(node.span);
+        if (!Scanner.identifierValueEquals(name, decoded_name)) continue;
+        if (node.tag == .identifier_reference) {
+            read_reference = @fromBackingInt(@intCast(raw));
+        } else if (outer_binding == null) {
+            outer_binding = @fromBackingInt(@intCast(raw));
+        } else {
+            inner_binding = @fromBackingInt(@intCast(raw));
+        }
+    }
+    const outer = outer_binding orelse return error.MissingOuterBinding;
+    const inner = inner_binding orelse return error.MissingInnerBinding;
+    const read = read_reference orelse return error.MissingEscapedReference;
+    const outer_id = analyzer.symbol_ids.items[@backingInt(outer)] orelse return error.MissingOuterSymbol;
+    const inner_id = analyzer.symbol_ids.items[@backingInt(inner)] orelse return error.MissingInnerSymbol;
+    try std.testing.expect(outer_id != inner_id);
+    try std.testing.expectEqual(@as(?u32, inner_id), analyzer.symbol_ids.items[@backingInt(read)]);
+
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const exact = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        &.{},
+        &helpers,
+        &analyzer.unresolved_reference_nodes,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(exact.isClean());
+
+    const mutated_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    defer allocator.free(mutated_ids);
+    mutated_ids[@backingInt(read)] = outer_id;
+    const mutated_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    defer allocator.free(mutated_symbols);
+    try std.testing.expectEqual(@as(u32, 0), mutated_symbols[outer_id].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), mutated_symbols[inner_id].reference_count);
+    mutated_symbols[outer_id].reference_count += 1;
+    mutated_symbols[inner_id].reference_count -= 1;
+    const mutated_references = try allocator.dupe(Reference, analyzer.references.items);
+    defer allocator.free(mutated_references);
+    var changed_reference = false;
+    for (mutated_references) |*reference| {
+        if (reference.node_index != read) continue;
+        reference.symbol_id = @fromBackingInt(outer_id);
+        changed_reference = true;
+    }
+    try std.testing.expect(changed_reference);
+
+    const corrupted = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        mutated_ids,
+        mutated_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        mutated_references,
+        &.{},
+        &helpers,
+        &analyzer.unresolved_reference_nodes,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(!corrupted.isClean());
+    try std.testing.expect(corrupted.scope_resolution_mismatch > 0);
+}
+
 test "exact identity audit rejects declaration rows assigned to a visible descendant scope" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");

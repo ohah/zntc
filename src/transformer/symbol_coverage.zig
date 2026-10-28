@@ -1182,7 +1182,7 @@ fn namespaceMemberForOwner(ctx: *const ExactCtx, owner_id: u32, name: []const u8
     while (entries.next()) |entry| {
         if (entry.value_ptr.* != owner_id or entry.key_ptr.* >= ctx.symbols.len) continue;
         const symbol_name = exactSymbolName(ctx.ast, &ctx.symbols[entry.key_ptr.*]);
-        if (std.mem.eql(u8, symbol_name, name)) return entry.key_ptr.*;
+        if (Scanner.identifierNamesEqual(symbol_name, name)) return entry.key_ptr.*;
     }
     return null;
 }
@@ -1192,7 +1192,7 @@ fn hasNamespaceMemberNamed(ctx: *const ExactCtx, name: []const u8) bool {
     var entries = owners.keyIterator();
     while (entries.next()) |member_id| {
         if (member_id.* < ctx.symbols.len and
-            std.mem.eql(u8, exactSymbolName(ctx.ast, &ctx.symbols[member_id.*]), name)) return true;
+            Scanner.identifierNamesEqual(exactSymbolName(ctx.ast, &ctx.symbols[member_id.*]), name)) return true;
     }
     return false;
 }
@@ -1202,32 +1202,27 @@ fn hasNamespaceMemberNamed(ctx: *const ExactCtx, name: []const u8) bool {
 /// moving to the parent scope. Proxies intentionally do not live in scope_maps.
 fn resolveInExactScopes(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
     if (!exactValidScope(ctx.scopes, use_scope)) return null;
-    // semantic scope map 은 escape 로 선언된 이름을 원문과 디코딩 키 둘 다로 넣지만, 평범하게
-    // 선언된 이름은 디코딩 키 하나뿐이다. escape 로 쓴 참조(`\u0078`)는 디코딩 이름으로
-    // 찾아야 `let x` 에 닿는다 (#5667).
-    // 스코프마다 원문·디코딩 키를 함께 봐야 안쪽 스코프가 이긴다.
-    var decode_buf: [256]u8 = undefined;
-    const decoded = Scanner.decodeIdentifierEscapesInto(name, &decode_buf) orelse name;
-    if (resolveInExactScopesByNames(ctx, name, decoded, use_scope)) |symbol_id| return symbol_id;
+    // Escaped references must be compared against each lexical scope's decoded
+    // keys before walking outward. The streaming comparison has no fixed-size
+    // decode buffer, so long names preserve normal shadowing too (#5667).
+    if (resolveInExactScopesByName(ctx, name, use_scope)) |symbol_id| return symbol_id;
     const normalized = baseName(name);
     if (std.mem.eql(u8, name, normalized)) return null;
     return resolveInExactScopesByName(ctx, normalized, use_scope);
 }
 
 fn resolveInExactScopesByName(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
-    return resolveInExactScopesByNames(ctx, name, name, use_scope);
-}
-
-/// `alt_name` 은 같은 식별자의 다른 표기(escape 디코딩) — 같은 스코프에서 함께 조회한다.
-fn resolveInExactScopesByNames(ctx: *const ExactCtx, name: []const u8, alt_name: []const u8, use_scope: ScopeId) ?u32 {
     var current = use_scope;
     var hops: usize = 0;
     while (exactValidScope(ctx.scopes, current) and hops < ctx.scopes.len) : (hops += 1) {
         const scope_index = current.toIndex();
         if (scope_index < ctx.scope_maps.len) {
             if (ctx.scope_maps[scope_index].get(name)) |sid| return @intCast(sid);
-            if (alt_name.ptr != name.ptr) {
-                if (ctx.scope_maps[scope_index].get(alt_name)) |sid| return @intCast(sid);
+            if (std.mem.indexOfScalar(u8, name, '\\') != null) {
+                var entries = ctx.scope_maps[scope_index].iterator();
+                while (entries.next()) |entry| {
+                    if (Scanner.identifierNamesEqual(name, entry.key_ptr.*)) return @intCast(entry.value_ptr.*);
+                }
             }
         }
         if (ctx.namespace_scope_owners) |namespace_owners| {
