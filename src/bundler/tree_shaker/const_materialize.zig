@@ -15,6 +15,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const ScopeKind = @import("../../semantic/scope.zig").ScopeKind;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const constant_facts = @import("../constant_facts.zig");
 const ConstValue = @import("../../semantic/symbol.zig").ConstValue;
@@ -101,6 +102,55 @@ const ConstMaterializeProfile = struct {
     minify_skip: ?profile.Category = null,
     inner: constant_facts.MaterializeProfile = .{},
 };
+
+const MinifiedScopeOwnerSnapshot = struct {
+    owner_node: u32,
+    scope_id: u32,
+    owner_tag: Node.Tag,
+    scope_kind: ScopeKind,
+};
+
+/// Syntax minification may detach a lexical block that owns a semantic scope.
+/// Snapshot the exact live owner pairs before minification so only scopes whose
+/// owners were live and later removed by this pass can be considered for elision.
+fn snapshotMinifiedScopeOwners(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    semantic: ModuleSemanticData,
+) ?[]MinifiedScopeOwnerSnapshot {
+    if (semantic.scope_owner_map.count() != semantic.scopes.len) return null;
+    const reachable_nodes = ast_walk.collectReachableNodeIndices(allocator, ast) catch return null;
+    defer allocator.free(reachable_nodes);
+    var reachable = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return null;
+    defer reachable.deinit();
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return null;
+        reachable.set(raw);
+    }
+
+    var seen_scopes = std.DynamicBitSet.initEmpty(allocator, semantic.scopes.len) catch return null;
+    defer seen_scopes.deinit();
+    var snapshots: std.ArrayListUnmanaged(MinifiedScopeOwnerSnapshot) = .empty;
+    defer snapshots.deinit(allocator);
+    var owners = semantic.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner_node = entry.key_ptr.*;
+        const scope_id = entry.value_ptr.*;
+        if (owner_node >= ast.nodes.items.len or !reachable.isSet(owner_node) or
+            scope_id >= semantic.scopes.len or seen_scopes.isSet(scope_id)) return null;
+        seen_scopes.set(scope_id);
+        snapshots.append(allocator, .{
+            .owner_node = owner_node,
+            .scope_id = scope_id,
+            .owner_tag = ast.nodes.items[owner_node].tag,
+            .scope_kind = semantic.scopes[scope_id].kind,
+        }) catch return null;
+    }
+    for (0..seen_scopes.capacity()) |scope_id| {
+        if (!seen_scopes.isSet(scope_id)) return null;
+    }
+    return snapshots.toOwnedSlice(allocator) catch null;
+}
 
 fn prepassProfile() ConstMaterializeProfile {
     return .{
@@ -326,6 +376,7 @@ fn markConstMaterializedRetainingMinifiedGraph(
     self: *TreeShaker,
     m: *Module,
     materialized_nodes: []const NodeIndex,
+    scope_owner_snapshot: []const MinifiedScopeOwnerSnapshot,
     refresh_module_metadata: bool,
 ) bool {
     std.debug.assert(m.parse_arena != null);
@@ -333,6 +384,7 @@ fn markConstMaterializedRetainingMinifiedGraph(
         m,
         m.parse_arena.?.allocator(),
         materialized_nodes,
+        scope_owner_snapshot,
         refresh_module_metadata,
     ) catch false;
     if (!retained) return false;
@@ -388,6 +440,9 @@ fn minifyAndResyncModule(
     var scope = profile.beginMaybe(const_profile.minify_resync);
     defer scope.end();
 
+    var scope_owner_snapshot: ?[]MinifiedScopeOwnerSnapshot = null;
+    defer if (scope_owner_snapshot) |snapshot| self.allocator.free(snapshot);
+
     if (skip_minify) {
         var skip_scope = profile.beginMaybe(const_profile.minify_skip);
         defer skip_scope.end();
@@ -398,6 +453,9 @@ fn minifyAndResyncModule(
         const minify_mod = @import("../../transformer/minify.zig");
         const root = ast.transformed_root orelse NodeIndex.none;
         const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
+        if (m.semantic) |semantic| {
+            scope_owner_snapshot = snapshotMinifiedScopeOwners(self.allocator, ast, semantic);
+        }
         minify_mod.minify(ast, ctx, self.allocator, root);
     }
 
@@ -407,10 +465,12 @@ fn minifyAndResyncModule(
 
         const retained = if (m.semantic != null and materialized.tracked_nodes_complete) blk: {
             if (skip_minify) break :blk markConstMaterializedRetainingGraph(self, m, materialized_nodes);
+            const snapshot = scope_owner_snapshot orelse break :blk false;
             break :blk markConstMaterializedRetainingMinifiedGraph(
                 self,
                 m,
                 materialized_nodes,
+                snapshot,
                 !const_profile.policy.stableImportExportSyntax(),
             );
         } else false;
@@ -732,6 +792,11 @@ const MinifiedConstInputMutation = enum {
     none,
     stale_sidecar,
     incomplete_tracking,
+    nonempty_dead_block_scope,
+    nonempty_dead_block_const,
+    preexisting_detached_block_owner,
+    misassigned_dead_block_owner,
+    wrong_dead_block_owner_tag,
     empty_targets,
     none_target,
     duplicate_target,
@@ -760,12 +825,20 @@ fn expectConstMaterializeGraphHandoff(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
-    const source = if (skip_minify)
+    const source = if (mutation == .nonempty_dead_block_scope)
+        "export const value=7; if(value - 7) { let local=value; console.log(local); } console.log(value + 2); export function read(input){return value + input;}"
+    else if (mutation == .nonempty_dead_block_const)
+        "export const value=7; if(value - 7) { const local=value; console.log(local); } console.log(value + 2); export function read(input){return value + input;}"
+    else if (mutation == .preexisting_detached_block_owner)
+        "export const value=7; if(false) { console.log(value); } console.log(value + 2); export function read(input){return value + input;}"
+    else if (mutation == .misassigned_dead_block_owner or mutation == .wrong_dead_block_owner_tag)
+        "export const value=7; if(value - 7) { console.log(value); } console.log(value + 2); export function read(input){return value + input;}"
+    else if (skip_minify)
         "const value=7; if(false) console.log(value); console.log(value); function read(){return value;}"
     else if (policy == .pre_pass)
         "export const value=7; console.log(value + 2, readAlias()); export function read(input){return value + input;} function readAlias(){const local=value;return local;}"
     else
-        "export const value=7; console.log(value + 2); export function read(input){return value + input;}";
+        "export const value=7; if(value - 7) { console.log(value); } console.log(value + 2); export function read(input){return value + input;}";
 
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
@@ -785,6 +858,47 @@ fn expectConstMaterializeGraphHandoff(
     analyzer.enable_exact_declaration_anchors = !skip_minify;
     try analyzer.analyze();
 
+    if (mutation == .wrong_dead_block_owner_tag) {
+        var owner_found = false;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .if_statement or node.data.ternary.b.isNone()) continue;
+            const owner = @backingInt(node.data.ternary.b);
+            if (owner >= parser.ast.nodes.items.len or parser.ast.nodes.items[owner].tag != .block_statement) continue;
+            parser.ast.nodes.items[owner] = .{
+                .tag = .empty_statement,
+                .span = parser.ast.nodes.items[owner].span,
+                .data = .{ .none = 0 },
+            };
+            owner_found = true;
+            break;
+        }
+        if (!owner_found) return error.MissingDeadBlockOwner;
+    }
+
+    if (mutation == .misassigned_dead_block_owner) {
+        var dead_owner: ?u32 = null;
+        var dead_scope: ?u32 = null;
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .if_statement or node.data.ternary.b.isNone()) continue;
+            const owner = @backingInt(node.data.ternary.b);
+            if (owner >= parser.ast.nodes.items.len or parser.ast.nodes.items[owner].tag != .block_statement) continue;
+            dead_owner = owner;
+            dead_scope = analyzer.scope_owner_map.get(owner) orelse return error.MissingDeadBlockScope;
+            break;
+        }
+        const owner = dead_owner orelse return error.MissingDeadBlockOwner;
+        const scope = dead_scope orelse return error.MissingDeadBlockScope;
+        var alternate_scope: ?u32 = null;
+        var owners = analyzer.scope_owner_map.iterator();
+        while (owners.next()) |entry| {
+            if (entry.value_ptr.* != scope) {
+                alternate_scope = entry.value_ptr.*;
+                break;
+            }
+        }
+        try analyzer.scope_owner_map.put(arena_alloc, owner, alternate_scope orelse return error.MissingAlternateScope);
+    }
+
     var value_symbol: ?u32 = null;
     for (analyzer.symbols.items, 0..) |symbol, index| {
         if (symbol.kind == .variable_const and std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) {
@@ -793,6 +907,22 @@ fn expectConstMaterializeGraphHandoff(
         }
     }
     const value_id = value_symbol orelse return error.MissingValueSymbol;
+
+    var expected_elided_block_owner: ?u32 = null;
+    var expected_elided_block_scope: ?u32 = null;
+    if (policy == .numeric_post_pass and !skip_minify and mutation != .wrong_dead_block_owner_tag) {
+        for (parser.ast.nodes.items) |node| {
+            if (node.tag != .if_statement or node.data.ternary.b.isNone()) continue;
+            const consequent = @backingInt(node.data.ternary.b);
+            if (consequent >= parser.ast.nodes.items.len or
+                parser.ast.nodes.items[consequent].tag != .block_statement) continue;
+            expected_elided_block_owner = consequent;
+            expected_elided_block_scope = analyzer.scope_owner_map.get(consequent) orelse
+                return error.MissingDeadBlockScope;
+            break;
+        }
+        if (expected_elided_block_owner == null) return error.MissingDeadBlockOwner;
+    }
 
     // This field is graph-owned naming metadata. A full analyzer rebuild drops
     // it, so preserving it proves this call took the same-graph path.
@@ -926,7 +1056,15 @@ fn expectConstMaterializeGraphHandoff(
         const other_symbol = if (value_id == 0) @as(u32, 1) else @as(u32, 0);
         if (other_symbol >= analyzer.symbols.items.len) return error.MissingDistinctTargetSymbol;
         switch (mutation) {
-            .none, .stale_sidecar, .incomplete_tracking => {},
+            .none,
+            .stale_sidecar,
+            .incomplete_tracking,
+            .nonempty_dead_block_scope,
+            .nonempty_dead_block_const,
+            .preexisting_detached_block_owner,
+            .misassigned_dead_block_owner,
+            .wrong_dead_block_owner_tag,
+            => {},
             .empty_targets => materialized_nodes.clearRetainingCapacity(),
             .none_target => materialized_nodes.items[0] = .none,
             .duplicate_target => try materialized_nodes.append(arena_alloc, target_node),
@@ -1032,6 +1170,20 @@ fn expectConstMaterializeGraphHandoff(
         return;
     }
     try std.testing.expectEqualStrings("retained-graph-marker", semantic.symbols.items[value_id].output_name_hint);
+    if (expected_elided_block_owner) |owner| {
+        const scope_id = expected_elided_block_scope orelse return error.MissingDeadBlockScope;
+        try std.testing.expect(!semantic.scope_owner_map.contains(owner));
+        try std.testing.expectEqual(analyzer.scopes.items[scope_id].kind, semantic.scopes[scope_id].kind);
+        try std.testing.expectEqual(@as(u16, 0), semantic.scopes[scope_id].symbol_count);
+        try std.testing.expectEqual(@as(usize, 0), semantic.scope_maps[scope_id].count());
+        for (semantic.symbols.items) |symbol| {
+            try std.testing.expect(symbol.scope_id != @as(@TypeOf(symbol.scope_id), @fromBackingInt(@intCast(scope_id))));
+            try std.testing.expect(symbol.origin_scope != @as(@TypeOf(symbol.origin_scope), @fromBackingInt(@intCast(scope_id))));
+        }
+        for (semantic.references) |reference| {
+            try std.testing.expect(@backingInt(reference.scope_id) != scope_id);
+        }
+    }
     try std.testing.expectEqual(semantic.symbol_ids.ptr, module.transform_cache.?.symbol_ids.ptr);
     for (materialized_nodes.items) |materialized_index| {
         try std.testing.expect(semantic.symbol_ids[@backingInt(materialized_index)] == null);
@@ -1106,10 +1258,37 @@ test "numeric post-pass falls back when minification strands a graph sidecar" {
 test "numeric post-pass rejects malformed materialized read handoffs" {
     inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
         switch (mutation) {
-            .none, .stale_sidecar => {},
+            .none,
+            .stale_sidecar,
+            .nonempty_dead_block_scope,
+            .nonempty_dead_block_const,
+            .preexisting_detached_block_owner,
+            .misassigned_dead_block_owner,
+            .wrong_dead_block_owner_tag,
+            => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass),
         }
     }
+}
+
+test "numeric post-pass falls back for dead blocks with surviving lexical bindings" {
+    try expectConstMaterializeGraphHandoff(false, .nonempty_dead_block_scope, .numeric_post_pass);
+}
+
+test "numeric post-pass falls back for dead blocks with local const declarations" {
+    try expectConstMaterializeGraphHandoff(false, .nonempty_dead_block_const, .numeric_post_pass);
+}
+
+test "numeric post-pass rejects a scope owner detached before its snapshot" {
+    try expectConstMaterializeGraphHandoff(false, .preexisting_detached_block_owner, .numeric_post_pass);
+}
+
+test "numeric post-pass rejects a dead block assigned to a foreign ScopeId" {
+    try expectConstMaterializeGraphHandoff(false, .misassigned_dead_block_owner, .numeric_post_pass);
+}
+
+test "numeric post-pass rejects a changed dead block owner node kind" {
+    try expectConstMaterializeGraphHandoff(false, .wrong_dead_block_owner_tag, .numeric_post_pass);
 }
 
 test "full const pre-pass retains the exact graph when minification drops a local const alias" {
@@ -1119,7 +1298,13 @@ test "full const pre-pass retains the exact graph when minification drops a loca
 test "full const pre-pass rejects malformed materialized read handoffs" {
     inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
         switch (mutation) {
-            .none => {},
+            .none,
+            .nonempty_dead_block_scope,
+            .nonempty_dead_block_const,
+            .preexisting_detached_block_owner,
+            .misassigned_dead_block_owner,
+            .wrong_dead_block_owner_tag,
+            => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .pre_pass),
         }
     }

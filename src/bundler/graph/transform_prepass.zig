@@ -8662,6 +8662,7 @@ fn canRetainMinifiedSemanticGraph(
     symbol_ids: []const ?u32,
     unresolved_references: *const std.StringHashMapUnmanaged(void),
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    allowed_orphan_scopes: ?*const std.DynamicBitSet,
     failure: ?*MinifiedGraphGateFailure,
 ) bool {
     const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch
@@ -8696,8 +8697,24 @@ fn canRetainMinifiedSemanticGraph(
             return rejectMinifiedGraphGate(failure, .scope_owners);
         scopes_with_owner[scope_id] = true;
     }
-    for (scopes_with_owner) |has_owner| {
-        if (!has_owner) return rejectMinifiedGraphGate(failure, .scope_owners);
+    for (scopes_with_owner, 0..) |has_owner, scope_raw| {
+        if (has_owner) continue;
+        const allowed = allowed_orphan_scopes orelse
+            return rejectMinifiedGraphGate(failure, .scope_owners);
+        if (scope_raw >= allowed.capacity() or !allowed.isSet(scope_raw))
+            return rejectMinifiedGraphGate(failure, .scope_owners);
+        const scope_id: ScopeId = @fromBackingInt(@intCast(scope_raw));
+        const scope = scopes[scope_raw];
+        if ((scope.kind != .block and scope.kind != .switch_block) or scope.symbol_count != 0)
+            return rejectMinifiedGraphGate(failure, .scope_owners);
+        for (symbols) |symbol| {
+            if (symbol.scope_id == scope_id or symbol.origin_scope == scope_id)
+                return rejectMinifiedGraphGate(failure, .scope_owners);
+        }
+        for (references) |reference| {
+            if (reference.scope_id == scope_id)
+                return rejectMinifiedGraphGate(failure, .scope_owners);
+        }
     }
 
     var reference_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -8915,6 +8932,7 @@ fn importDeclarationGraphRetainableForTest(mutation: ImportDeclarationGraphMutat
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
         null,
+        null,
     );
 }
 
@@ -8947,6 +8965,7 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
         null,
+        null,
     )) return error.InvalidPreMinifyGraph;
 
     const minify_mod = @import("../../transformer/minify.zig");
@@ -8977,7 +8996,103 @@ fn syntaxMinifyGraphRetainableForTest(source: []const u8) !bool {
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
         null,
+        null,
     );
+}
+
+test "minified graph gate requires explicit permission for an orphan block scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "if (true) {}");
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    defer parser.deinit();
+    const root = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    var block_owner: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .block_statement) {
+            block_owner = @intCast(raw);
+            break;
+        }
+    }
+    const owner = block_owner orelse return error.MissingBlockOwner;
+    const scope_id = analyzer.scope_owner_map.get(owner) orelse return error.MissingBlockScope;
+    parser.ast.nodes.items[owner] = .{
+        .tag = .empty_statement,
+        .span = parser.ast.nodes.items[owner].span,
+        .data = .{ .none = 0 },
+    };
+    _ = analyzer.scope_owner_map.remove(owner);
+
+    var allowed_orphans = try std.DynamicBitSet.initEmpty(allocator, analyzer.scopes.items.len);
+    defer allowed_orphans.deinit();
+    try std.testing.expect(!canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        &allowed_orphans,
+        null,
+    ));
+    allowed_orphans.set(scope_id);
+    try std.testing.expect(canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        &allowed_orphans,
+        null,
+    ));
+    const saved_kind = analyzer.scopes.items[scope_id].kind;
+    analyzer.scopes.items[scope_id].kind = .function;
+    try std.testing.expect(!canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        &allowed_orphans,
+        null,
+    ));
+    analyzer.scopes.items[scope_id].kind = saved_kind;
+    analyzer.scopes.items[scope_id].symbol_count = 1;
+    try std.testing.expect(!canRetainMinifiedSemanticGraph(
+        allocator,
+        &parser.ast,
+        root,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.references.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        &analyzer.scope_owner_map,
+        &allowed_orphans,
+        null,
+    ));
 }
 
 const MinifiedGraphMutation = enum {
@@ -9097,6 +9212,7 @@ fn minifiedGraphMutationIsRejected(mutation: MinifiedGraphMutation) !bool {
         symbol_ids,
         &analyzer.unresolved_references,
         &scope_owner_map,
+        null,
         &failure,
     );
     return !retained and failure != .allocation;
@@ -9338,6 +9454,7 @@ test "implicit arguments minified graph requires an exact engine declaration" {
                 analyzer.symbol_ids.items,
                 &analyzer.unresolved_references,
                 &analyzer.scope_owner_map,
+                null,
                 &failure,
             );
             if (retained != (mutation == 0)) std.debug.print("engine gate source={s} mutation={d} reason={s}\n", .{ source, mutation, @tagName(failure) });
@@ -9354,6 +9471,7 @@ test "implicit arguments minified graph requires an exact engine declaration" {
             analyzer.symbol_ids.items,
             &analyzer.unresolved_references,
             &analyzer.scope_owner_map,
+            null,
             null,
         ));
     }
@@ -9399,6 +9517,7 @@ test "syntax minification repairs statement coordinates without changing identit
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        null,
         &failure,
     ));
     try std.testing.expectEqual(MinifiedGraphGateFailure.invalid_statement_context, failure);
@@ -9450,6 +9569,7 @@ test "syntax minification repairs statement coordinates without changing identit
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
         &analyzer.scope_owner_map,
+        null,
         null,
     ));
 }
@@ -11696,6 +11816,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                         &semantic.unresolved_references,
                         &semantic.scope_owner_map,
                         null,
+                        null,
                     );
             } else {
                 can_keep_semantic_graph = false;
@@ -11798,6 +11919,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                         transformer.symbol_ids.items,
                         &semantic.unresolved_references,
                         &semantic.scope_owner_map,
+                        null,
                         null,
                     );
                 } else {
@@ -15234,6 +15356,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     module: *Module,
     arena_alloc: std.mem.Allocator,
     materialized_nodes: []const ast_mod.NodeIndex,
+    scope_owner_snapshot: anytype,
     refresh_module_metadata: bool,
 ) !bool {
     var resync_scope = profile.begin(.graph_resync);
@@ -15256,6 +15379,37 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         reachable.set(raw);
     }
     if (!minifiedConstGraphSidecarsRemainReachable(module, semantic, &reachable)) return false;
+
+    // A scope owner can become unreachable only because syntax minification
+    // removed its subtree. Accept only the exact owner/scope pairs captured
+    // while the source graph was live, and only for empty block boundaries.
+    if (scope_owner_snapshot.len != semantic.scope_owner_map.count()) return false;
+    var snapshot_scope_ids = try std.DynamicBitSet.initEmpty(scratch_alloc, semantic.scopes.len);
+    var snapshot_owner_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    var detached_scope_owners: std.ArrayListUnmanaged(@TypeOf(scope_owner_snapshot[0])) = .empty;
+    for (scope_owner_snapshot) |snapshot| {
+        const owner_node = snapshot.owner_node;
+        const scope_id = snapshot.scope_id;
+        if (owner_node >= ast.nodes.items.len or scope_id >= semantic.scopes.len or
+            snapshot_scope_ids.isSet(scope_id) or snapshot_owner_nodes.isSet(owner_node)) return false;
+        const mapped_scope = semantic.scope_owner_map.get(owner_node) orelse return false;
+        if (mapped_scope != scope_id or semantic.scopes[scope_id].kind != snapshot.scope_kind or
+            ast.nodes.items[owner_node].tag != snapshot.owner_tag) return false;
+        snapshot_scope_ids.set(scope_id);
+        snapshot_owner_nodes.set(owner_node);
+        if (!reachable.isSet(owner_node)) {
+            const eligible_owner = switch (snapshot.scope_kind) {
+                .block => snapshot.owner_tag == .block_statement,
+                .switch_block => snapshot.owner_tag == .switch_statement,
+                else => false,
+            };
+            if (!eligible_owner) return false;
+            try detached_scope_owners.append(scratch_alloc, snapshot);
+        }
+    }
+    for (0..semantic.scopes.len) |scope_id| {
+        if (!snapshot_scope_ids.isSet(scope_id)) return false;
+    }
 
     var tracked_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
     for (materialized_nodes) |node_index| {
@@ -15355,6 +15509,12 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         editor.symbols.items[symbol_raw].const_kind = .none;
         try removed_local_const_ids.append(scratch_alloc, symbol_raw);
     }
+    var elided_scope_ids = try std.DynamicBitSet.initEmpty(scratch_alloc, editor.scopes.items.len);
+    for (detached_scope_owners.items) |snapshot| {
+        const owner: ast_mod.NodeIndex = @fromBackingInt(snapshot.owner_node);
+        if (!try editor.elideEmptyGeneratedScopeOwner(owner)) return false;
+        elided_scope_ids.set(snapshot.scope_id);
+    }
     const updated_references = (try reindexMinifiedSemanticReferences(
         scratch_alloc,
         ast,
@@ -15371,6 +15531,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         editor.symbol_ids.items,
         &semantic.unresolved_references,
         &editor.scope_owner_map,
+        &elided_scope_ids,
         null,
     )) return false;
     editor.references.clearRetainingCapacity();
