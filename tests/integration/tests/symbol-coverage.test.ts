@@ -26040,6 +26040,77 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Flow value path-split imports retain exact source identity through the public build API', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-value-pathsplit-'));
+    const entry = join(dir, 'entry-flow.js');
+    const output = join(dir, 'out.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    mkdirSync(join(dir, 'parts'));
+    writeFileSync(
+      entry,
+      "import {map} from './library.mjs';var result:number=map(7);console.log(result);",
+    );
+    writeFileSync(join(dir, 'library.mjs'), 'export function map(value){return value+99}');
+    writeFileSync(join(dir, 'parts/map.mjs'), 'export default function map(value){return value+1}');
+    // Native oracle uses only type erasure and the explicitly selected dependency.
+    const native = join(dir, 'native.mjs');
+    writeFileSync(
+      native,
+      "import map from './parts/map.mjs';var result=map(7);console.log(result);",
+    );
+    try {
+      const expected = spawnSync('node', [native], { encoding: 'utf8' });
+      expect(expected.status, expected.stderr).toBe(0);
+      expect(expected.stdout).toBe('8\n');
+      for (const minifyIdentifiers of [false, true]) {
+        const runner = [
+          `import { build } from ${JSON.stringify(coreEntry)};`,
+          `const result = await build(${JSON.stringify({
+            entryPoints: [entry],
+            platform: 'node',
+            format: 'cjs',
+            target: 'esnext',
+            flow: true,
+            minifyIdentifiers,
+            write: false,
+            moduleSpecifierMap: { './library.mjs': './parts/{name}.mjs' },
+          })});`,
+          'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+          'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+        ].join('\n');
+        const proc = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        const stderr = proc.stderr ?? '';
+        expect(proc.status, stderr).toBe(0);
+        const lines = stderr.split(/\r?\n/);
+        const identity = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry-flow.js'),
+        );
+        expect(identity, stderr).toBeDefined();
+        expect(exactSchemaProblems(identity!), identity).toEqual([]);
+        expect(identity).toMatch(/clean=1(?:\s|$)/);
+        const mode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+            line.includes('entry-flow.js'),
+        );
+        expect(mode, stderr).toContain('semantic_graph=retained');
+        const outputs = JSON.parse(proc.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        writeFileSync(output, outputs[0]);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(expected.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Reanimated worklet nested in another function stays on semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-reanalysis-'));
     const entry = join(dir, 'entry.js');
