@@ -1321,6 +1321,126 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
     return everyTypeScriptImportBindingHasValueUse(self, module, ast, false, false);
 }
 
+// Flow's value-only path split uses the same physical source binding as the
+// existing JS producer. Admit only that transfer, not Flow import elision or
+// resolver aliases. The final edited graph still needs the exact audit.
+fn canRetainFlowMappedValueImports(self: anytype, module: *const Module, ast: *const ast_mod.Ast, options: TransformOptions) bool {
+    if ((!self.flow and !isFlowPath(module.path)) or module.module_type != .js or
+        options.unsupported.hasAny() or !options.strip_types or options.minify_syntax or
+        options.drop_console or options.drop_debugger or options.drop_labels.len != 0 or
+        ast.has_jsx or ast.has_decorator or !options.hasMappedImportToSplit(ast) or
+        define_mod.astUsesDefine(ast, options.define)) return false;
+    if (comptime @hasField(@TypeOf(self.*), "resolve_cache")) {
+        if (self.resolve_cache.resolver.alias.len != 0 or self.resolve_cache.resolver.fallback.len != 0 or
+            self.resolve_cache.external_alias.len != 0) return false;
+    } else return false;
+    const semantic = if (module.semantic) |*value| value else return false;
+    if (ast.nodes.items.len == 0 or ast.transformed_root != null or ast.transform_boundary != null) return false;
+    for (semantic.scopes) |scope| if (scope.blocksMangling()) return false;
+    const root: ast_mod.NodeIndex = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    if (ast.getNode(root).tag != .program) return false;
+    const root_raw = semantic.scope_owner_map.get(@backingInt(root)) orelse return false;
+    if (root_raw >= semantic.scopes.len or root_raw >= semantic.scope_maps.len or
+        semantic.scopes[root_raw].kind != .module or !semantic.scopes[root_raw].parent.isNone()) return false;
+
+    var scratch = std.heap.ArenaAllocator.init(self.allocator);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    var import_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var specifier_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var specifier_count: usize = 0;
+    for (statements) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .directive, .variable_declaration, .expression_statement => {},
+            .import_declaration => {
+                if (!ast.hasExtra(node.data.extra, 6)) return false;
+                const x = module_parser.readImportDeclExtras(ast, node.data.extra);
+                if (x.is_type_only or x.phase != .none or x.attrs_len != 0 or x.specs_len == 0 or
+                    x.specs_start > ast.extra_data.items.len or x.specs_len > ast.extra_data.items.len - x.specs_start) return false;
+                import_nodes.put(a, raw, {}) catch return false;
+                for (ast.extra_data.items[x.specs_start..][0..x.specs_len]) |spec| {
+                    if (spec >= ast.nodes.items.len) return false;
+                    const n = ast.nodes.items[spec];
+                    if (n.tag != .import_specifier or n.data.binary.flags != 0 or
+                        n.data.binary.left != n.data.binary.right) return false;
+                    const local = @backingInt(n.data.binary.right);
+                    if (local >= ast.nodes.items.len or specifier_owners.contains(local)) return false;
+                    specifier_owners.put(a, local, raw) catch return false;
+                    specifier_count += 1;
+                }
+            },
+            else => return false,
+        }
+    }
+    if (specifier_count == 0 or specifier_count != module.import_bindings.len or
+        module.import_records.len != import_nodes.count()) return false;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(a, ast, root) catch return false;
+    for (reachable) |raw| switch (ast.nodes.items[raw].tag) {
+        .function_declaration,
+        .function_expression,
+        .function,
+        .arrow_function_expression,
+        .class_declaration,
+        .class_expression,
+        .method_definition,
+        .with_statement,
+        .await_expression,
+        .yield_expression,
+        .import_expression,
+        .flow_match_expression,
+        .flow_component_wrapper,
+        .flow_enum_declaration,
+        => return false,
+        else => {},
+    };
+    const Bucket = struct { index: usize, count: usize };
+    var anchored: std.AutoHashMapUnmanaged(u32, Bucket) = .empty;
+    const declarations = a.alloc(usize, semantic.symbols.items.len) catch return false;
+    const value_used = a.alloc(bool, semantic.symbols.items.len) catch return false;
+    @memset(declarations, 0);
+    @memset(value_used, false);
+    for (semantic.references, 0..) |row, i| {
+        const sid = @backingInt(row.symbol_id);
+        if (sid >= declarations.len) return false;
+        if (row.flags.declare) declarations[sid] += 1;
+        if (row.isValueUse()) value_used[sid] = true;
+        if (row.declaration_node_index.isNone()) continue;
+        const bucket = anchored.getOrPut(a, @backingInt(row.declaration_node_index)) catch return false;
+        if (bucket.found_existing) bucket.value_ptr.count += 1 else bucket.value_ptr.* = .{ .index = i, .count = 1 };
+    }
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (module.import_bindings) |binding| {
+        if (binding.kind != .named or binding.local_role != .import_binding or binding.is_helper or
+            binding.callsite_target != null or binding.source_type_only == true or binding.import_record_index >= module.import_records.len) return false;
+        const local = binding.local_symbol_node orelse return false;
+        const owner = binding.local_declaration_node orelse return false;
+        const raw = @backingInt(local);
+        if (local.isNone() or raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len or
+            ast.nodes.items[raw].tag != .identifier_reference or !import_nodes.contains(@backingInt(owner)) or seen.contains(raw)) return false;
+        seen.put(a, raw, {}) catch return false;
+        const sid = semantic.symbol_ids[raw] orelse return false;
+        if (sid >= semantic.symbols.items.len or !value_used[sid] or declarations[sid] != 1) return false;
+        const symbol = semantic.symbols.items[sid];
+        if (symbol.kind != .import_binding or
+            !std.meta.eql(symbol.decl_flags, @import("../../semantic/symbol.zig").DeclFlags.IMPORT) or
+            @backingInt(symbol.scope_id) != root_raw or symbol.origin_scope != symbol.scope_id or
+            symbol.synthetic_kind != null or symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0) return false;
+        const bucket = anchored.get(raw) orelse return false;
+        const row = semantic.references[bucket.index];
+        if (bucket.count != 1 or @backingInt(row.symbol_id) != sid or !row.node_index.isNone() or
+            @backingInt(row.scope_id) != root_raw or !std.meta.eql(row.flags, @import("../../semantic/symbol.zig").ReferenceFlags{ .declare = true })) return false;
+        if (specifier_owners.get(raw) != @as(?u32, @backingInt(owner))) return false;
+        const x = module_parser.readImportDeclExtras(ast, ast.getNode(owner).data.extra);
+        const record = module.import_records[binding.import_record_index];
+        if (record.kind != .static_import or record.source_node != x.source or record.callsite_lowered or
+            record.ts_elided or record.is_lazy_resolved) return false;
+    }
+    return true;
+}
+
 /// The parser marks imports with no source value read as type-only for default
 /// TypeScript import elision (including unused imports). Identifier-only
 /// minification can keep this graph when each remaining import binding is
@@ -8729,10 +8849,11 @@ fn canKeepPrepassSemanticGraphPrepared(
     // Label and console deletion update the module-local TLA bit from the
     // retained AST after editing.
     const has_mapped_import_split = options.hasMappedImportToSplit(ast);
-    if (has_mapped_import_split and (self.flow or isFlowPath(module.path))) return false;
+    const flow_mapped_values = has_mapped_import_split and canRetainFlowMappedValueImports(self, module, ast, options);
+    if (has_mapped_import_split and (self.flow or isFlowPath(module.path)) and !flow_mapped_values) return false;
     if (!hasSupportedTopLevelExportDeclarations(module, has_mapped_import_split)) return false;
-    const allow_mapped_runtime_imports = has_mapped_import_split and
-        canRetainMappedRuntimeImports(self, module, ast);
+    const allow_mapped_runtime_imports = flow_mapped_values or (has_mapped_import_split and
+        canRetainMappedRuntimeImports(self, module, ast));
     const possible_plain_javascript_imports_for_identifier_minification =
         canRetainUnchangedPlainJavaScriptImportsForIdentifierMinification(
             self,
@@ -12063,6 +12184,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var allow_es5_async_method_super_set = false;
     var retained_simple_console_drops = false;
     const has_mapped_import_split = opts.hasMappedImportToSplit(ast_ptr);
+    const flow_mapped_values_require_exact = has_mapped_import_split and (self.flow or isFlowPath(module.path));
     var selective_class_source = if (module.semantic) |*semantic|
         @import("../../transformer/selective_class_certificate.zig").sourcePlan(arena_alloc, ast_ptr, semantic, opts) catch null
     else
@@ -12225,7 +12347,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(arena_alloc);
-    if (debug_symbol_coverage or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
+    if (debug_symbol_coverage or flow_mapped_values_require_exact or transformer.entry_graph_source != null or transformer.native_noop_source != null or transformer.optional_nullish_source != null or transformer.virtual_provider_source != null or transformer.selective_class_candidate != null or transformer.legacy_assignment_field_source != null or transformer.native_private_field_source != null or transformer.class_initializer_source != null or transformer.computed_object_helper_source != null) {
         if (module.semantic) |*sem| {
             collectParserUnresolvedNodes(
                 arena_alloc,
@@ -12618,7 +12740,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph = completed and exact != null and exact.?.isClean();
     }
 
-    if (can_keep_semantic_graph and computed_accessor_super_requires_exact) {
+    if (can_keep_semantic_graph and (computed_accessor_super_requires_exact or flow_mapped_values_require_exact)) {
         const exact = exactPrepassReport(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, true) catch null;
         can_keep_semantic_graph = exact != null and exact.?.isClean();
     }
@@ -17704,4 +17826,91 @@ test "Flow value path split avoids actual bundler semantic resync" {
         std.debug.print("Flow value path split flow={any} owner={any} semantic_resync={d}\n", .{ flow, actual.semantic.?.owner_token, counters.count(.graph_resync_semantic) });
         try std.testing.expectEqual(@as(u32, 0), counters.count(.graph_resync_semantic));
     }
+}
+
+test "Flow value path split rejects poisoned source binding authority and restores" {
+    const helpers = @import("../test_helpers.zig");
+    const symbols = @import("../../semantic/symbol.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.js", "import {map} from './library.mjs';var result:number=map(7);console.log(result);");
+    try helpers.writeFile(tmp.dir, "library.mjs", "export function map(value){return value+1}");
+    const entry = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.flow = true;
+    // Build the untouched, unmapped Flow source first. The gate receives its
+    // real initial parser/analyzer tuple, not an already transformed module.
+    try graph.build(std.testing.io, &.{entry});
+    const found = graph.findModuleByPath(entry) orelse return error.MissingFlowEntry;
+    const actual = graph.moduleAtMut(found.index) orelse return error.MissingFlowEntry;
+    const mapping = [_]@import("../../transformer/options.zig").ModuleSpecifierMapEntry{.{ .module = "./library.mjs", .template = "./parts/{name}.mjs" }};
+    var options = graph.transform_options_base;
+    options.module_specifier_map = &mapping;
+    const ast = &actual.ast.?;
+    const sem = &actual.semantic.?;
+    try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    const local = actual.import_bindings[0].local_symbol_node orelse return error.MissingFlowSourceAnchor;
+    const sid = sem.symbol_ids[@backingInt(local)] orelse return error.MissingFlowSourceSid;
+    var declaration: ?usize = null;
+    var foreign: ?usize = null;
+    for (sem.references, 0..) |row, i| {
+        if (!row.flags.declare) continue;
+        if (@backingInt(row.symbol_id) == sid) declaration = i else foreign = i;
+    }
+    const index = declaration orelse return error.MissingFlowDeclareRow;
+    const other = foreign orelse return error.MissingFlowSiblingDeclaration;
+    const a = actual.parse_arena.?.allocator();
+    const original_rows = sem.references;
+    const rows = try a.dupe(symbols.Reference, original_rows);
+    sem.references = rows;
+    defer sem.references = original_rows;
+    const original_ids = sem.symbol_ids;
+    const ids = try a.dupe(?u32, original_ids);
+    sem.symbol_ids = ids;
+    defer sem.symbol_ids = original_ids;
+    const saved = sem.symbols.items[sid];
+    const saved_node = ast.getNode(local);
+    for (0..13) |poison| {
+        @memcpy(rows, original_rows);
+        @memcpy(ids, original_ids);
+        sem.symbols.items[sid] = saved;
+        ast.nodes.items[@backingInt(local)] = saved_node;
+        switch (poison) {
+            0 => sem.symbols.items[sid].decl_flags.is_exported = true,
+            1 => sem.symbols.items[sid].origin_scope = .none,
+            2 => sem.symbols.items[sid].synthetic_kind = .implicit_arguments,
+            3 => rows[index].flags.read = true,
+            4 => rows[index].node_index = local,
+            5 => rows[index].scope_id = .none,
+            6 => rows[other].declaration_node_index = local,
+            7 => ids[@backingInt(local)] = @backingInt(rows[other].symbol_id),
+            8 => ast.nodes.items[@backingInt(local)].tag = .binding_identifier,
+            9 => rows[index].flags._reserved = 1,
+            10 => for (rows) |*row| {
+                if (@backingInt(row.symbol_id) == sid and !row.flags.declare) row.flags.type_context = true;
+            },
+            11 => sem.symbols.items[sid].synthetic_owner_id = rows[other].symbol_id,
+            12 => rows[other].symbol_id = @fromBackingInt(sid),
+            else => unreachable,
+        }
+        const expected_symbol = sem.symbols.items[sid];
+        const expected_row = rows[index];
+        try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
+        try std.testing.expectEqualDeep(expected_symbol, sem.symbols.items[sid]);
+        try std.testing.expectEqualDeep(expected_row, rows[index]);
+        @memcpy(rows, original_rows);
+        @memcpy(ids, original_ids);
+        sem.symbols.items[sid] = saved;
+        ast.nodes.items[@backingInt(local)] = saved_node;
+        try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    }
+    const aliases = [_]@import("../types.zig").AliasEntry{.{ .from = "unmatched", .to = "unmatched-other" }};
+    cache.resolver.alias = &aliases;
+    try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    cache.resolver.alias = &.{};
+    try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
 }

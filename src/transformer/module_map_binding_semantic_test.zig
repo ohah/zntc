@@ -133,6 +133,14 @@ test "Flow value path split keeps source binding identity before any finalizer" 
         for (0..original.specs_len) |i| {
             const specifier = parser.ast.nodes.items[parser.ast.extra_data.items[original.specs_start + i]];
             try anchors.append(a, specifier.data.binary.right);
+            const sid = analyzer.symbol_ids.items[@backingInt(specifier.data.binary.right)] orelse return error.MissingSourceImportSid;
+            const symbol = analyzer.symbols.items[sid];
+            std.debug.print("Flow split source same_node={any} spec_flags={d} sid={d} scope={d} decl_flags={d} origin={d} synthetic={any}\n", .{ specifier.data.binary.left == specifier.data.binary.right, specifier.data.binary.flags, sid, @backingInt(symbol.scope_id), symbol.decl_flags.toInt(), @backingInt(symbol.origin_scope), symbol.synthetic_kind });
+            try std.testing.expect(specifier.data.binary.left == specifier.data.binary.right);
+            try std.testing.expectEqual(@as(u32, 0), specifier.data.binary.flags);
+            try std.testing.expect(std.meta.eql(symbol.decl_flags, @import("../semantic/symbol.zig").DeclFlags.IMPORT));
+            try std.testing.expectEqual(symbol.scope_id, symbol.origin_scope);
+            try std.testing.expect(symbol.synthetic_kind == null and symbol.synthetic_owner_id == null and symbol.synthetic_name.len == 0);
         }
         const rows = try a.dupe(@import("../semantic/symbol.zig").Reference, analyzer.references.items);
         const mapping = [_]@import("options.zig").ModuleSpecifierMapEntry{.{ .module = "library", .template = "./parts/{name}.mjs" }};
