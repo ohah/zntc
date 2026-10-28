@@ -21788,7 +21788,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 computed object getter/setter super keeps the home-object reanalysis path', () => {
+  test('ES5 computed object getter/setter super retains exact home-object scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-computed-object-accessor-super-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -21841,7 +21841,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(

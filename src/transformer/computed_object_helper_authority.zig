@@ -261,7 +261,7 @@ const Fixture = struct {
     transformer: @import("transformer.zig").Transformer,
     semantic: module.ModuleSemanticData,
     root: NodeIndex,
-    fn init(a: std.mem.Allocator, text: []const u8) !Fixture {
+    fn prepare(a: std.mem.Allocator, text: []const u8) !Fixture {
         var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, text);
         var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
         parser.configureFromExtension(".mjs");
@@ -272,6 +272,7 @@ const Fixture = struct {
         var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, ast);
         analyzer.enable_stmt_info = true;
         analyzer.enable_exact_declaration_anchors = true;
+        analyzer.collect_unresolved_reference_nodes = true;
         try analyzer.analyze();
         var sem: module.ModuleSemanticData = .{ .symbols = analyzer.symbols, .scopes = analyzer.scopes.items, .scope_maps = analyzer.scope_maps.items, .scope_owner_map = analyzer.scope_owner_map, .node_scope_provenance = analyzer.node_scope_provenance, .symbol_ids = analyzer.symbol_ids.items, .exported_names = analyzer.exported_names, .unresolved_references = analyzer.unresolved_references, .references = analyzer.references.items, .class_self_symbol_map = analyzer.class_self_symbol_map, .helper_scope_map = analyzer.helper_scope_map };
         _ = sem.captureOwnerToken();
@@ -285,14 +286,23 @@ const Fixture = struct {
         t.node_scope_provenance = sem.node_scope_provenance;
         t.class_self_symbol_map = sem.class_self_symbol_map;
         t.helper_scope_map = sem.helper_scope_map;
-        t.unresolved_references = &analyzer.unresolved_references;
+        const unresolved_names = try a.create(@TypeOf(analyzer.unresolved_references));
+        unresolved_names.* = analyzer.unresolved_references;
+        const unresolved_nodes = try a.create(@TypeOf(analyzer.unresolved_reference_nodes));
+        unresolved_nodes.* = analyzer.unresolved_reference_nodes;
+        t.unresolved_references = unresolved_names;
+        t.unresolved_reference_nodes = unresolved_nodes;
         t.semantic_edit_enabled = true;
         t.record_explicit_global_references = true;
         t.computed_object_helper_source = .{ .source_ast = ast, .output_ast = t.ast, .owner = sem.owner_token };
-        const result = try t.transform();
-        sem.applyEdit((try t.finishSemanticEdit()).?);
-        _ = try publishPositions(&t, &sem, result);
-        return .{ .transformer = t, .semantic = sem, .root = result };
+        return .{ .transformer = t, .semantic = sem, .root = .none };
+    }
+    fn init(a: std.mem.Allocator, text: []const u8) !Fixture {
+        var f = try prepare(a, text);
+        f.root = try f.transformer.transform();
+        f.semantic.applyEdit((try f.transformer.finishSemanticEdit()).?);
+        _ = try publishPositions(&f.transformer, &f.semantic, f.root);
+        return f;
     }
 };
 
@@ -563,4 +573,193 @@ test "computed object helper authority super wrapper explicitly hands off the ca
         try std.testing.expectEqual(@as(usize, 1), count);
     }
     try std.testing.expect(try complete(&f.transformer, &f.semantic, f.root));
+}
+
+test "computed accessor super authority retains actual getter scope and home references" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.mjs", "var base={value:7};var object={get ['value'](){return super.value}};Object.setPrototypeOf(object,base);console.log(object.value);");
+    const entry = try helpers.absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+    try graph.build(std.testing.io, &.{entry});
+    const source_module = graph.findModuleByPath(entry) orelse return error.MissingSourceModule;
+    try std.testing.expect(source_module.transform_cache != null);
+    // Reanalysis discards the producer's same-graph owner. Retention must
+    // preserve the actual source owner before any linker target captures it.
+    try std.testing.expect(source_module.semantic.?.owner_token != .unassigned);
+}
+
+test "computed accessor super authority preserves birth scopes before the final walker" {
+    for ([_]bool{ false, true }) |mixed| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var f = try Fixture.prepare(a, if (mixed)
+            "var key='value';var object={method(){return 0},get[key](){return super.value},set[key](value){super.value=value}};"
+        else
+            "var key='value';var object={get[key](){return super.value},set[key](value){super.value=value}};");
+        const source = f.transformer.semantic_source_ast.?;
+        const Pair = struct { method: NodeIndex, scope: ScopeId, parameter: ?u32 };
+        var pairs: [2]Pair = undefined;
+        var count: usize = 0;
+        var object: NodeIndex = .none;
+        for (source.nodes.items, 0..) |node, raw| {
+            if (node.tag != .object_expression) continue;
+            var members = source.iterateExtraList(node.data.list);
+            while (members.next()) |member_idx| {
+                const member = source.getNode(member_idx);
+                if (member.tag != .method_definition) continue;
+                const flags = source.readExtra(member.data.extra, ast_mod.MethodExtra.flags);
+                if (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter) == 0) continue;
+                object = @fromBackingInt(@intCast(raw));
+                const scope = f.semantic.scope_owner_map.get(@backingInt(member_idx)) orelse return error.MissingSourceAccessorScope;
+                var parameter: ?u32 = null;
+                const params = source.readExtraNode(member.data.extra, ast_mod.MethodExtra.params);
+                const leaves = try walk.collectReachableNodeIndicesFrom(a, source, params);
+                for (leaves) |leaf| {
+                    if (source.nodes.items[leaf].tag == .binding_identifier) parameter = f.semantic.symbol_ids[leaf];
+                }
+                pairs[count] = .{ .method = member_idx, .scope = @fromBackingInt(scope), .parameter = parameter };
+                count += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 2), count);
+        const source_symbol_count = f.semantic.symbols.items.len;
+        f.transformer.current_scope = f.transformer.programScope();
+        // This visits only the known object. transform()'s final generic
+        // binder/owner resolution has not run and cannot repair a lost birth.
+        const output = try f.transformer.visitNode(object);
+        const reachable = try walk.collectReachableNodeIndicesFrom(a, f.transformer.ast, output);
+        const editor = &(f.transformer.semantic_editor orelse return error.MissingBirthEditor);
+        for (pairs) |pair| {
+            var owners: usize = 0;
+            for (reachable) |raw| {
+                if (f.transformer.ast.nodes.items[raw].tag != .function_expression) continue;
+                if (f.transformer.transformed_scope_owner_map.get(raw) == @backingInt(pair.scope)) owners += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), owners);
+            try std.testing.expectEqual(@backingInt(pair.method), f.transformer.scope_owner_origins.get(f.transformer.scope_owner_remaps.get(@backingInt(pair.method)).?).?);
+            if (pair.parameter) |sid| {
+                try std.testing.expectEqual(pair.scope, editor.symbols.items[sid].scope_id);
+                var reads: usize = 0;
+                for (editor.references.items) |row| {
+                    if (@backingInt(row.symbol_id) != sid or row.node_index.isNone() or !row.flags.read) continue;
+                    try std.testing.expectEqual(pair.scope, row.scope_id);
+                    try std.testing.expectEqual(sid, f.transformer.symbol_ids.items[@backingInt(row.node_index)].?);
+                    reads += 1;
+                }
+                try std.testing.expect(reads != 0);
+            }
+        }
+        var home_symbols: usize = 0;
+        for (reachable) |raw| {
+            const function = f.transformer.ast.nodes.items[raw];
+            if (function.tag != .function_expression) continue;
+            const params = f.transformer.ast.readExtraNode(function.data.extra, ast_mod.FunctionExtra.params);
+            const leaves = try walk.collectReachableNodeIndicesFrom(a, f.transformer.ast, params);
+            for (leaves) |leaf| {
+                if (f.transformer.ast.nodes.items[leaf].tag != .binding_identifier) continue;
+                const sid = f.transformer.symbol_ids.items[leaf] orelse continue;
+                if (sid < source_symbol_count) continue;
+                var getter_reads: usize = 0;
+                var setter_reads: usize = 0;
+                var writes: usize = 0;
+                for (editor.references.items) |row| {
+                    if (@backingInt(row.symbol_id) != sid or row.node_index.isNone()) continue;
+                    try std.testing.expectEqual(sid, f.transformer.symbol_ids.items[@backingInt(row.node_index)].?);
+                    if (row.flags.write) writes += 1;
+                    if (!row.flags.read) continue;
+                    try std.testing.expect(!row.flags.write and !row.flags.declare);
+                    if (row.scope_id == pairs[0].scope) getter_reads += 1;
+                    if (row.scope_id == pairs[1].scope) setter_reads += 1;
+                }
+                if (getter_reads == 0 and setter_reads == 0) continue;
+                home_symbols += 1;
+                try std.testing.expect(getter_reads != 0 and setter_reads != 0 and writes != 0);
+                try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.parameter, editor.symbols.items[sid].kind);
+                try std.testing.expectEqual(f.transformer.outputOwnedScope(@fromBackingInt(raw)).?, editor.symbols.items[sid].scope_id);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), home_symbols);
+    }
+}
+
+fn accessorExact(f: *Fixture, a: std.mem.Allocator) !@import("symbol_coverage.zig").ExactReport {
+    return @import("symbol_coverage.zig").checkExactWithCompleteSourceScopeOwners(
+        a,
+        f.transformer.ast,
+        f.root,
+        f.transformer.parser_node_count,
+        f.semantic.symbol_ids,
+        f.semantic.symbols.items,
+        f.semantic.scopes,
+        f.semantic.scope_maps,
+        &f.semantic.scope_owner_map,
+        f.semantic.references,
+        try f.transformer.ownedHelperRefNodes(a),
+        &f.semantic.helper_scope_map,
+        f.transformer.unresolved_reference_nodes.?,
+        &f.transformer.explicit_global_reference_nodes,
+        &f.transformer.reference_origin_map,
+    );
+}
+
+test "computed accessor super authority exact audit rejects wrong identity scope flags and positions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = try Fixture.init(a, "var base={value:7};var key='value';var object={get[key](){return super.value},set[key](value){super.value=value}};Object.setPrototypeOf(object,base);");
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
+    var index: ?usize = null;
+    for (f.semantic.references, 0..) |row, i| {
+        if (row.node_index.isNone() or !row.flags.read or row.scope_id == f.transformer.programScope()) continue;
+        if (@backingInt(row.node_index) < f.transformer.parser_node_count) continue;
+        index = i;
+        break;
+    }
+    const selected = index orelse return error.MissingAccessorGeneratedRead;
+    const saved = f.semantic.references[selected];
+    const rows = @constCast(f.semantic.references);
+    rows[selected].symbol_id = @fromBackingInt(if (@backingInt(saved.symbol_id) == 0) 1 else 0);
+    const bad_identity_mismatch = try accessorExact(&f, a);
+    try std.testing.expect(!bad_identity_mismatch.isClean());
+    try std.testing.expect(bad_identity_mismatch.identity_mismatch > 0);
+    rows[selected] = saved;
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
+    rows[selected].scope_id = f.transformer.programScope();
+    const bad_reference_scope_mismatch = try accessorExact(&f, a);
+    try std.testing.expect(!bad_reference_scope_mismatch.isClean());
+    try std.testing.expect(bad_reference_scope_mismatch.reference_scope_mismatch > 0);
+    rows[selected] = saved;
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
+    rows[selected].flags = .{ .write = true };
+    const bad_write_count_mismatch = try accessorExact(&f, a);
+    try std.testing.expect(!bad_write_count_mismatch.isClean());
+    try std.testing.expect(bad_write_count_mismatch.write_count_mismatch > 0);
+    rows[selected] = saved;
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
+    rows[selected].stmt_idx = saved.stmt_idx +% 1;
+    const bad_reference_statement_mismatch = try accessorExact(&f, a);
+    try std.testing.expect(!bad_reference_statement_mismatch.isClean());
+    try std.testing.expect(bad_reference_statement_mismatch.reference_statement_mismatch > 0);
+    rows[selected] = saved;
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
+    var actual_owner: ?u32 = null;
+    var owners = f.semantic.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* == @backingInt(saved.scope_id)) actual_owner = entry.key_ptr.*;
+    }
+    const owner = actual_owner orelse return error.MissingAccessorOutputOwner;
+    try f.semantic.scope_owner_map.put(a, owner, @backingInt(f.transformer.programScope()));
+    const bad_scope_owner_mismatch = try accessorExact(&f, a);
+    try std.testing.expect(!bad_scope_owner_mismatch.isClean());
+    try std.testing.expect(bad_scope_owner_mismatch.scope_owner_mismatch > 0);
+    try f.semantic.scope_owner_map.put(a, owner, @backingInt(saved.scope_id));
+    try std.testing.expect((try accessorExact(&f, a)).isClean());
 }
