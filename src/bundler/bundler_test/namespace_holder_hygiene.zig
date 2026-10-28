@@ -45,6 +45,18 @@ fn run(case: Case, profile: Profile) !void {
             for (outputs) |output| try std.testing.expect(std.mem.indexOf(u8, output.contents, marker) == null);
         } else try std.testing.expect(std.mem.indexOf(u8, result.output, marker) == null);
     }
+    if (case.provider_probe) |probe| {
+        try std.testing.expect(profile.format == .cjs and profile.preserve);
+        const provider = try helpers.absPath(&tmp, "dep.js");
+        defer std.testing.allocator.free(provider);
+        const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", probe, provider } });
+        defer std.testing.allocator.free(observed.stdout);
+        defer std.testing.allocator.free(observed.stderr);
+        if (!(observed.term == .exited and observed.term.exited == 0))
+            std.debug.print("quoted provider standalone stderr:\n{s}\n", .{observed.stderr});
+        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
+        try std.testing.expectEqualStrings(case.provider_expected, observed.stdout);
+    }
     const emitted = try helpers.absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(emitted);
     const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", emitted } });
@@ -58,16 +70,6 @@ fn run(case: Case, profile: Profile) !void {
         } else std.debug.print("holder output:\n{s}\n", .{result.output});
     }
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
-    if (case.provider_probe) |probe| {
-        try std.testing.expect(profile.format == .cjs and profile.preserve);
-        const provider = try helpers.absPath(&tmp, "dep.js");
-        defer std.testing.allocator.free(provider);
-        const observed = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", probe, provider } });
-        defer std.testing.allocator.free(observed.stdout);
-        defer std.testing.allocator.free(observed.stderr);
-        try std.testing.expect(observed.term == .exited and observed.term.exited == 0);
-        try std.testing.expectEqualStrings(case.provider_expected, observed.stdout);
-    }
 }
 
 const positives = [_]Case{
