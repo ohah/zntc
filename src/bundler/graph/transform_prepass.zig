@@ -1326,6 +1326,7 @@ fn canRetainMappedRuntimeImports(self: anytype, module: *const Module, ast: *con
 // resolver aliases. The final edited graph still needs the exact audit.
 fn canRetainFlowMappedValueImports(self: anytype, module: *const Module, ast: *const ast_mod.Ast, options: TransformOptions) bool {
     if ((!self.flow and !isFlowPath(module.path)) or module.module_type != .js or
+        module.wrap_kind != .none or module.has_cjs_export_signal or module.exports_kind != .esm or
         options.unsupported.hasAny() or !options.strip_types or options.minify_syntax or
         options.drop_console or options.drop_debugger or options.drop_labels.len != 0 or
         ast.has_jsx or ast.has_decorator or !options.hasMappedImportToSplit(ast) or
@@ -1427,7 +1428,8 @@ fn canRetainFlowMappedValueImports(self: anytype, module: *const Module, ast: *c
         if (symbol.kind != .import_binding or
             !std.meta.eql(symbol.decl_flags, @import("../../semantic/symbol.zig").DeclFlags.IMPORT) or
             @backingInt(symbol.scope_id) != root_raw or symbol.origin_scope != symbol.scope_id or
-            symbol.synthetic_kind != null or symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0) return false;
+            symbol.synthetic_kind != null or symbol.synthetic_owner_id != null or symbol.synthetic_name.len != 0 or
+            symbol.output_name_hint.len != 0) return false;
         const bucket = anchored.get(raw) orelse return false;
         const row = semantic.references[bucket.index];
         if (bucket.count != 1 or @backingInt(row.symbol_id) != sid or !row.node_index.isNone() or
@@ -17852,6 +17854,8 @@ test "Flow value path split rejects poisoned source binding authority and restor
     options.module_specifier_map = &mapping;
     const ast = &actual.ast.?;
     const sem = &actual.semantic.?;
+    try std.testing.expect(ast.transformed_root == null);
+    try std.testing.expect(ast.transform_boundary == null);
     try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
     const local = actual.import_bindings[0].local_symbol_node orelse return error.MissingFlowSourceAnchor;
     const sid = sem.symbol_ids[@backingInt(local)] orelse return error.MissingFlowSourceSid;
@@ -17874,7 +17878,7 @@ test "Flow value path split rejects poisoned source binding authority and restor
     defer sem.symbol_ids = original_ids;
     const saved = sem.symbols.items[sid];
     const saved_node = ast.getNode(local);
-    for (0..13) |poison| {
+    for (0..14) |poison| {
         @memcpy(rows, original_rows);
         @memcpy(ids, original_ids);
         sem.symbols.items[sid] = saved;
@@ -17895,6 +17899,7 @@ test "Flow value path split rejects poisoned source binding authority and restor
             },
             11 => sem.symbols.items[sid].synthetic_owner_id = rows[other].symbol_id,
             12 => rows[other].symbol_id = @fromBackingInt(sid),
+            13 => sem.symbols.items[sid].output_name_hint = "generated-only",
             else => unreachable,
         }
         const expected_symbol = sem.symbols.items[sid];
@@ -17908,6 +17913,18 @@ test "Flow value path split rejects poisoned source binding authority and restor
         ast.nodes.items[@backingInt(local)] = saved_node;
         try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
     }
+    const saved_wrap = actual.wrap_kind;
+    actual.wrap_kind = .cjs;
+    try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    actual.wrap_kind = saved_wrap;
+    actual.has_cjs_export_signal = true;
+    try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    actual.has_cjs_export_signal = false;
+    const saved_exports = actual.exports_kind;
+    actual.exports_kind = .esm_with_dynamic_fallback;
+    try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
+    actual.exports_kind = saved_exports;
+    try std.testing.expect(canRetainFlowMappedValueImports(&graph, actual, ast, options));
     const aliases = [_]@import("../types.zig").AliasEntry{.{ .from = "unmatched", .to = "unmatched-other" }};
     cache.resolver.alias = &aliases;
     try std.testing.expect(!canRetainFlowMappedValueImports(&graph, actual, ast, options));
