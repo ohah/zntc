@@ -618,8 +618,48 @@ describe('CJS Node Buffer capability graph retention', () => {
     });
   }
 
-  test('direct var alternate remains on the conservative analyzer path', () => {
+  test('direct var alternate removes only the dead initializer and preserves its hoisted binding', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-var-alternate-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    try {
+      writeFileSync(
+        input,
+        `import lib from "./lib.js";\nconsole.log(lib.Buffer.alloc(2).length, lib.fallback === undefined);\n`,
+      );
+      writeFileSync(
+        join(dir, 'lib.js'),
+        `var buffer = require("buffer");
+var Buffer = buffer.Buffer;
+if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) var native = buffer;
+else var fallback = SafeBuffer;
+module.exports = { Buffer: native.Buffer, fallback: fallback };
+function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
+`,
+      );
+      const result = runCaptured(ZNTC_BIN, [
+        '--bundle',
+        input,
+        '--platform=node',
+        '--format=cjs',
+        '--profile=graph.resync.semantic',
+        '--profile-level=detailed',
+        '--profile-format=json',
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const profileOutput = `${result.stderr}\n${result.stdout}`;
+      expect(semanticResyncCount(profileOutput), profileOutput).toBe(0);
+      const actual = runCaptured('node', [output]);
+      expect(actual.exitCode, actual.stderr).toBe(0);
+      expect(actual.stdout.trim()).toBe('2 true');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test('direct var alternate with a non-identifier initializer stays on analyzer path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-var-call-alternate-'));
     const input = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
     try {
@@ -632,9 +672,9 @@ describe('CJS Node Buffer capability graph retention', () => {
         `var buffer = require("buffer");
 var Buffer = buffer.Buffer;
 if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) var native = buffer;
-else var fallback = SafeBuffer;
+else var fallback = makeFallback();
 module.exports = native;
-function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
+function makeFallback() { return "fallback"; }
 `,
       );
       const result = runCaptured(ZNTC_BIN, [

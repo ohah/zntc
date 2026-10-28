@@ -11,6 +11,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Scope = @import("../../semantic/scope.zig").Scope;
+const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
@@ -293,16 +294,26 @@ fn foldNodeBufferCapabilityIfsWithContext(
         } else null;
         if (!isRetainableNodeBufferCapabilityBranch(kept_node.tag, kept_variable_kind)) return false;
         const alternate = node.data.ternary.c;
+        var retained_var_initializer: ?NodeIndex = null;
         if (!alternate.isNone()) {
             if (@backingInt(alternate) >= ast.nodes.items.len) return false;
             const alternate_tag = ast.nodes.items[@backingInt(alternate)].tag;
-            if (alternate_tag != .expression_statement and alternate_tag != .block_statement) return false;
-            try collectDeadAlternateCjsExportIdentifiers(allocator, ast, alternate, &dead_fallback_names);
+            if (alternate_tag == .expression_statement or alternate_tag == .block_statement) {
+                try collectDeadAlternateCjsExportIdentifiers(allocator, ast, alternate, &dead_fallback_names);
+            } else if (alternate_tag == .variable_declaration and module != null) {
+                retained_var_initializer = exactSimpleVarAlternateInitializer(
+                    module.?,
+                    ast,
+                    @fromBackingInt(@intCast(i)),
+                    alternate,
+                ) orelse return false;
+            } else return false;
         }
         try branches.append(allocator, .{
             .if_index = @fromBackingInt(@intCast(i)),
             .kept = kept,
             .alternate = alternate,
+            .retained_var_initializer = retained_var_initializer,
         });
     }
     if (branches.items.len == 0) return false;
@@ -317,7 +328,13 @@ fn foldNodeBufferCapabilityIfsWithContext(
     var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
     defer seen.deinit();
     for (branches.items) |branch| {
-        try appendSubtreeNodes(allocator, ast, branch.alternate, &seen, removed_nodes);
+        try appendSubtreeNodes(
+            allocator,
+            ast,
+            branch.retained_var_initializer orelse branch.alternate,
+            &seen,
+            removed_nodes,
+        );
     }
 
     var setup_statements: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -359,7 +376,15 @@ fn foldNodeBufferCapabilityIfsWithContext(
     // No AST write happens until all candidate node indexes are captured. This
     // keeps allocation or shape failures on the existing full-analysis path.
     for (branches.items) |branch| {
-        ast.nodes.items[@backingInt(branch.if_index)].data.ternary.c = .none;
+        if (branch.retained_var_initializer) |_| {
+            const alternate = ast.nodes.items[@backingInt(branch.alternate)];
+            const declaration_list_start = ast.extra_data.items[alternate.data.extra + 1];
+            const declaration_raw = ast.extra_data.items[declaration_list_start];
+            const declarator = ast.nodes.items[declaration_raw];
+            ast.extra_data.items[declarator.data.extra + 2] = @backingInt(NodeIndex.none);
+        } else {
+            ast.nodes.items[@backingInt(branch.if_index)].data.ternary.c = .none;
+        }
     }
     for (setup_statements.items) |stmt_idx| {
         const stmt = ast.nodes.items[@backingInt(stmt_idx)];
@@ -761,6 +786,8 @@ fn fallbackFunctionGraphIsStable(
     if (selected.count() == 0) return false;
     var declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer declarations.deinit(allocator);
+    var function_declaration_counts: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer function_declaration_counts.deinit(allocator);
     const root = programNode(ast) orelse return false;
     const list = root.data.list;
     if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return false;
@@ -776,31 +803,54 @@ fn fallbackFunctionGraphIsStable(
             if (dead_names.contains(ast.getText(ast.getNode(binding).span))) return false;
             continue;
         }
-        if (id >= sem.symbols.items.len or declarations.contains(id)) return false;
+        if (id >= sem.symbols.items.len) return false;
         const symbol = sem.symbols.items[id];
-        if (symbol.kind != .function_decl or symbol.synthetic_kind != null or symbol.isExported() or
+        if (!functionDeclarationKindMatches(ast, node, symbol.kind) or symbol.synthetic_kind != null or symbol.isExported() or
             symbol.decl_flags.is_annex_b_function or symbol.scope_id.toIndex() != program_scope or symbol.write_count != 0) return false;
         const function_scope = sem.scope_owner_map.get(raw) orelse return false;
         if (function_scope >= sem.scopes.len or sem.scopes[function_scope].kind != .function or
             sem.scopes[function_scope].parent != symbol.scope_id) return false;
+        const first_declaration_for_symbol = !declarations.contains(id);
         var anchored: usize = 0;
         var reads: usize = 0;
         for (sem.references) |row| {
             if (@backingInt(row.symbol_id) != id) continue;
             if (row.flags.declare) {
+                const declaration_node: NodeIndex = @fromBackingInt(@intCast(raw));
+                const belongs_to_this_declaration = row.node_index == binding or
+                    row.declaration_node_index == binding or row.declaration_node_index == declaration_node;
+                if (!belongs_to_this_declaration) continue;
                 if (!std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .declare = true })) or
-                    row.scope_id != symbol.scope_id or (row.node_index != binding and row.declaration_node_index != binding and row.declaration_node_index != @as(NodeIndex, @fromBackingInt(raw)))) return false;
+                    row.scope_id != symbol.scope_id) return false;
                 anchored += 1;
-            } else {
+            } else if (first_declaration_for_symbol) {
                 if (!std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true })) or row.node_index.isNone() or @backingInt(row.node_index) >= sem.symbol_ids.len or
                     sem.symbol_ids[@backingInt(row.node_index)] != id) return false;
                 reads += 1;
             }
         }
-        if (anchored != 1 or reads != symbol.reference_count) return false;
-        try declarations.put(allocator, id, {});
+        if (anchored != 1) return false;
+        if (first_declaration_for_symbol) {
+            if (reads != symbol.reference_count) return false;
+            try declarations.put(allocator, id, {});
+        }
+        const declaration_count = try function_declaration_counts.getOrPut(allocator, id);
+        if (!declaration_count.found_existing) declaration_count.value_ptr.* = 0;
+        if (declaration_count.value_ptr.* == std.math.maxInt(u32)) return false;
+        declaration_count.value_ptr.* += 1;
     }
     if (declarations.count() != selected.count()) return false;
+    var selected_ids = selected.keyIterator();
+    while (selected_ids.next()) |selected_id| {
+        const expected_declarations = function_declaration_counts.get(selected_id.*) orelse return false;
+        var actual_declarations: u32 = 0;
+        for (sem.references) |row| {
+            if (@backingInt(row.symbol_id) != selected_id.* or !row.flags.declare) continue;
+            if (actual_declarations == std.math.maxInt(u32)) return false;
+            actual_declarations += 1;
+        }
+        if (actual_declarations != expected_declarations) return false;
+    }
     for (setup_statements) |statement| {
         const node = ast.getNode(statement);
         if (node.tag != .expression_statement) return false;
@@ -814,6 +864,20 @@ fn fallbackFunctionGraphIsStable(
         if (!declarations.contains(id)) return false;
     }
     return true;
+}
+
+fn functionDeclarationKindMatches(ast: *const Ast, node: Node, symbol_kind: SymbolKind) bool {
+    if (node.tag != .function_declaration or !ast.hasExtra(node.data.extra, ast_mod.FunctionExtra.flags)) return false;
+    const flags = ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags);
+    const expected_kind: SymbolKind = if (flags & ast_mod.FunctionFlags.is_async != 0 and flags & ast_mod.FunctionFlags.is_generator != 0)
+        .async_generator_decl
+    else if (flags & ast_mod.FunctionFlags.is_async != 0)
+        .async_function_decl
+    else if (flags & ast_mod.FunctionFlags.is_generator != 0)
+        .generator_decl
+    else
+        .function_decl;
+    return symbol_kind == expected_kind;
 }
 
 test "retained Node Buffer fold keeps the graph when fallback function reads are removed" {
@@ -941,7 +1005,119 @@ const BufferCapabilityFoldBranch = struct {
     if_index: NodeIndex,
     kept: NodeIndex,
     alternate: NodeIndex,
+    /// Preserve the hoisted var declaration while removing its dead branch
+    /// initializer. Other shapes remove the full alternate subtree.
+    retained_var_initializer: ?NodeIndex = null,
 };
+
+/// Keep one direct else-var alternate on the same graph. Clearing its
+/// initializer preserves the var binding's hoisted declaration and removes
+/// only the exact identifier edge from the dead assignment.
+fn exactSimpleVarAlternateInitializer(
+    module: *const Module,
+    ast: *const Ast,
+    if_index: NodeIndex,
+    alternate: NodeIndex,
+) ?NodeIndex {
+    if (module.wrap_kind != .cjs or module.ast == null or &module.ast.? != ast) return null;
+    const semantic = &(module.semantic orelse return null);
+    if (semantic.scopes.len == 0 or alternate.isNone() or @backingInt(alternate) >= ast.nodes.items.len) return null;
+    if (ast.nodes.items.len == 0) return null;
+    const root: NodeIndex = ast.transformed_root orelse @fromBackingInt(
+        @as(u32, @intCast(ast.nodes.items.len - 1)),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return null;
+    const root_node = ast.getNode(root);
+    const root_scope = semantic.scope_owner_map.get(@backingInt(root)) orelse return null;
+    if (root_scope >= semantic.scopes.len or
+        (semantic.scopes[root_scope].kind != .global and semantic.scopes[root_scope].kind != .module) or
+        root_node.tag != .program or root_node.data.list.start > ast.extra_data.items.len or
+        root_node.data.list.len > ast.extra_data.items.len - root_node.data.list.start) return null;
+    var top_level_if_count: usize = 0;
+    for (ast.extra_data.items[root_node.data.list.start..][0..root_node.data.list.len]) |raw| {
+        if (raw == @backingInt(if_index)) top_level_if_count += 1;
+    }
+    if (top_level_if_count != 1) return null;
+    const declaration = ast.nodes.items[@backingInt(alternate)];
+    if (declaration.tag != .variable_declaration or !ast.hasExtra(declaration.data.extra, 2) or
+        ast.readExtra(declaration.data.extra, 0) != @backingInt(ast_mod.VariableDeclarationKind.@"var")) return null;
+    const list_start = ast.readExtra(declaration.data.extra, 1);
+    const list_len = ast.readExtra(declaration.data.extra, 2);
+    if (list_len != 1 or list_start >= ast.extra_data.items.len or list_len > ast.extra_data.items.len - list_start) return null;
+    const declarator_raw = ast.extra_data.items[list_start];
+    if (declarator_raw >= ast.nodes.items.len) return null;
+    const declarator = ast.nodes.items[declarator_raw];
+    if (declarator.tag != .variable_declarator or !ast.hasExtra(declarator.data.extra, 2)) return null;
+    const binding = ast.readExtraNode(declarator.data.extra, 0);
+    const initializer = ast.readExtraNode(declarator.data.extra, 2);
+    if (binding.isNone() or @backingInt(binding) >= semantic.symbol_ids.len or
+        ast.getNode(binding).tag != .binding_identifier or initializer.isNone() or
+        @backingInt(initializer) >= semantic.symbol_ids.len or
+        ast.getNode(initializer).tag != .identifier_reference or
+        semantic.node_scope_provenance.contains(initializer)) return null;
+    const initializer_raw = @backingInt(initializer);
+    if (semantic.class_self_symbol_map.contains(initializer_raw) or
+        semantic.namespace_member_owners.contains(initializer_raw) or
+        semantic.namespace_declaration_owners.contains(initializer_raw) or
+        semantic.scope_owner_map.contains(initializer_raw)) return null;
+
+    if (module.transform_cache) |cache| {
+        for (cache.helper_ref_nodes) |raw| if (raw == initializer_raw) return null;
+        for (cache.explicit_global_ref_nodes) |raw| if (raw == initializer_raw) return null;
+        for (cache.opaque_define_scope_owner_nodes) |raw| if (raw == initializer_raw) return null;
+        for (cache.preserved_class_name_nodes) |raw| if (raw == initializer_raw) return null;
+        for (cache.worklet_factory_local_bindings) |binding_row| {
+            if (binding_row.node_index == initializer_raw) return null;
+        }
+        for (cache.post_graph_output_bindings) |binding_row| {
+            if (binding_row.node_index == initializer_raw) return null;
+        }
+        var temp_bindings = cache.destructuring_temp_bindings.keyIterator();
+        while (temp_bindings.next()) |raw| if (raw.* == initializer_raw) return null;
+    }
+    if (module.tla_iife_stmt) |raw| if (raw == initializer_raw) return null;
+    if (module.tla_promise_reference) |promise_ref| {
+        if (promise_ref.binding_node_index == initializer_raw) return null;
+    }
+
+    const binding_id = semantic.symbol_ids[@backingInt(binding)] orelse return null;
+    if (binding_id >= semantic.symbols.items.len) return null;
+    const binding_symbol = semantic.symbols.items[binding_id];
+    if (binding_symbol.kind != .variable_var or binding_symbol.synthetic_kind != null or
+        binding_symbol.scope_id.toIndex() != root_scope) return null;
+    var declaration_rows: usize = 0;
+    for (semantic.references) |row| {
+        if (!row.flags.declare or row.declaration_node_index != binding) continue;
+        if (@backingInt(row.symbol_id) != binding_id or
+            !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .declare = true })) or
+            row.scope_id != binding_symbol.scope_id) return null;
+        declaration_rows += 1;
+    }
+    if (declaration_rows != 1) return null;
+
+    const initializer_id = semantic.symbol_ids[@backingInt(initializer)] orelse return null;
+    if (initializer_id >= semantic.symbols.items.len) return null;
+    const initializer_symbol = semantic.symbols.items[initializer_id];
+    if (initializer_symbol.scope_id.toIndex() != root_scope or
+        initializer_symbol.reference_count == std.math.maxInt(u32)) return null;
+    var observed_initializer_edges: u32 = 0;
+    for (semantic.references) |row| {
+        if (@backingInt(row.symbol_id) != initializer_id or row.flags.declare) continue;
+        if (observed_initializer_edges == std.math.maxInt(u32)) return null;
+        observed_initializer_edges += 1;
+    }
+    if (observed_initializer_edges != initializer_symbol.reference_count) return null;
+    var initializer_rows: usize = 0;
+    for (semantic.references) |row| {
+        if (row.node_index != initializer) continue;
+        if (@backingInt(row.symbol_id) != initializer_id or
+            !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .read = true })) or
+            !row.declaration_node_index.isNone() or @backingInt(row.scope_id) != root_scope) return null;
+        initializer_rows += 1;
+    }
+    if (initializer_rows != 1) return null;
+    return initializer;
+}
 
 fn appendSingleNode(
     allocator: std.mem.Allocator,
