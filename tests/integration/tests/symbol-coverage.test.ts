@@ -20125,7 +20125,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(loweredTopLevelMode, loweredTopLevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(loweredTopLevelMode, loweredTopLevel.stderr).toContain('semantic_graph=retained');
+      const loweredTopLevelReport = (loweredTopLevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(loweredTopLevelReport, loweredTopLevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(loweredTopLevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${loweredTopLevelReport}`,
+        ).toBe(0);
+      }
+      expect(loweredTopLevelReport).toMatch(/clean=1(?:\s|$)/);
+      expect(
+        Number(loweredTopLevelReport?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? -1),
+        loweredTopLevelReport,
+      ).toBeGreaterThan(0);
       const loweredTopLevelOutput = spawnSync('node', [esmOutput], { encoding: 'utf8' });
       expect(loweredTopLevelOutput.status, loweredTopLevelOutput.stderr).toBe(0);
       expect(loweredTopLevelOutput.stdout).toBe('closed\n3\n');
