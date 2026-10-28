@@ -3477,11 +3477,11 @@ describe('symbol identity coverage gate (#4819)', () => {
         output: '42:loaded',
         source: [
           "import type { Shape } from './types';",
-          "import data from './effect.json' with { type: 'json' };",
+          "import data from './default-values.cjs' with { 'resolution-mode': 'require' };",
           'const shape: Shape = data;',
-          "process.stdout.write(`${shape.value}:${require.cache[require.resolve('./effect.json')] ? 'loaded' : 'missing'}`);",
+          "process.stdout.write(`${shape.value}:${require.cache[require.resolve('./default-values.cjs')] ? 'loaded' : 'missing'}`);",
         ].join('\n'),
-        files: { 'effect.json': '{"value":42}\n' },
+        files: { 'default-values.cjs': 'exports.default = { value: 42 };\n' },
       },
       {
         name: 'attributed-named-runtime-binding-keeps-exact-runtime-import-graph',
