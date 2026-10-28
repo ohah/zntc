@@ -792,11 +792,21 @@ const MinifiedConstInputMutation = enum {
     none,
     stale_sidecar,
     incomplete_tracking,
-    nonempty_dead_block_scope,
-    nonempty_dead_block_const,
+    dead_block_local_let,
+    dead_block_local_const,
     preexisting_detached_block_owner,
     misassigned_dead_block_owner,
     wrong_dead_block_owner_tag,
+    unsupported_dead_block_var,
+    unsupported_dead_block_function,
+    unsupported_dead_block_class,
+    unsupported_dead_block_loop,
+    unsupported_dead_nested_arrow,
+    unsupported_dead_nested_function,
+    unsupported_dead_generator,
+    unsupported_dead_catch_scope,
+    unsupported_dead_class_body_scope,
+    unsupported_dead_static_block_scope,
     empty_targets,
     none_target,
     duplicate_target,
@@ -825,9 +835,28 @@ fn expectConstMaterializeGraphHandoff(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
-    const source = if (mutation == .nonempty_dead_block_scope)
+    const unsupported_dead_block_body: ?[]const u8 = switch (mutation) {
+        .unsupported_dead_block_var => "var local=value; console.log(local);",
+        .unsupported_dead_block_function => "function local(){return value;} console.log(local());",
+        .unsupported_dead_block_class => "class Local {} console.log(Local);",
+        .unsupported_dead_block_loop => "for(let local=0;local<1;local++){console.log(value);}",
+        .unsupported_dead_nested_arrow => "const local=()=>value; console.log(local());",
+        .unsupported_dead_nested_function => "const local=function(){return value;}; console.log(local());",
+        .unsupported_dead_generator => "function* local(){yield value;} console.log(local().next().value);",
+        .unsupported_dead_catch_scope => "try{throw value;}catch(local){console.log(local);}",
+        .unsupported_dead_class_body_scope => "class Local { method(){return value;} } console.log(Local);",
+        .unsupported_dead_static_block_scope => "class Local { static { const local=value; console.log(local); } }",
+        else => null,
+    };
+    const source = if (unsupported_dead_block_body) |body|
+        try std.fmt.allocPrint(
+            arena_alloc,
+            "export const value=7; if(value - 7) {{{s}}} console.log(value + 2); export function read(input){{return value + input;}}",
+            .{body},
+        )
+    else if (mutation == .dead_block_local_let)
         "export const value=7; if(value - 7) { let local=value; console.log(local); } console.log(value + 2); export function read(input){return value + input;}"
-    else if (mutation == .nonempty_dead_block_const)
+    else if (mutation == .dead_block_local_const)
         "export const value=7; if(value - 7) { const local=value; console.log(local); } console.log(value + 2); export function read(input){return value + input;}"
     else if (mutation == .preexisting_detached_block_owner)
         "export const value=7; if(false) { console.log(value); } console.log(value + 2); export function read(input){return value + input;}"
@@ -907,6 +936,27 @@ fn expectConstMaterializeGraphHandoff(
         }
     }
     const value_id = value_symbol orelse return error.MissingValueSymbol;
+
+    var dead_local_symbol_id: ?u32 = null;
+    var dead_local_binding: ?NodeIndex = null;
+    if (mutation == .dead_block_local_let or mutation == .dead_block_local_const) {
+        for (analyzer.symbols.items, 0..) |symbol, index| {
+            if (std.mem.eql(u8, symbol.nameText(parser.ast.source), "local")) {
+                dead_local_symbol_id = @intCast(index);
+                break;
+            }
+        }
+        const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and raw < analyzer.symbol_ids.items.len and
+                analyzer.symbol_ids.items[raw] == local_id)
+            {
+                dead_local_binding = @fromBackingInt(@intCast(raw));
+                break;
+            }
+        }
+        if (dead_local_binding == null) return error.MissingDeadLocalBinding;
+    }
 
     var expected_elided_block_owner: ?u32 = null;
     var expected_elided_block_scope: ?u32 = null;
@@ -1059,11 +1109,21 @@ fn expectConstMaterializeGraphHandoff(
             .none,
             .stale_sidecar,
             .incomplete_tracking,
-            .nonempty_dead_block_scope,
-            .nonempty_dead_block_const,
+            .dead_block_local_let,
+            .dead_block_local_const,
             .preexisting_detached_block_owner,
             .misassigned_dead_block_owner,
             .wrong_dead_block_owner_tag,
+            .unsupported_dead_block_var,
+            .unsupported_dead_block_function,
+            .unsupported_dead_block_class,
+            .unsupported_dead_block_loop,
+            .unsupported_dead_nested_arrow,
+            .unsupported_dead_nested_function,
+            .unsupported_dead_generator,
+            .unsupported_dead_catch_scope,
+            .unsupported_dead_class_body_scope,
+            .unsupported_dead_static_block_scope,
             => {},
             .empty_targets => materialized_nodes.clearRetainingCapacity(),
             .none_target => materialized_nodes.items[0] = .none,
@@ -1163,7 +1223,8 @@ fn expectConstMaterializeGraphHandoff(
         try std.testing.expectEqual(@as(usize, 2), module.export_bindings.len);
     }
     const semantic = &module.semantic.?;
-    if (mutation != .none) {
+    const expect_dead_local_graph = mutation == .dead_block_local_let or mutation == .dead_block_local_const;
+    if (mutation != .none and !expect_dead_local_graph) {
         try std.testing.expectEqualStrings("", semantic.symbols.items[value_id].output_name_hint);
         try std.testing.expect(module.prebuilt_stmt_info != null);
         try std.testing.expect(shaker.ast_mutated_after_link);
@@ -1183,6 +1244,20 @@ fn expectConstMaterializeGraphHandoff(
         for (semantic.references) |reference| {
             try std.testing.expect(@backingInt(reference.scope_id) != scope_id);
         }
+    }
+    if (expect_dead_local_graph) {
+        const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+        const binding = dead_local_binding orelse return error.MissingDeadLocalBinding;
+        const local_symbol = semantic.symbols.items[local_id];
+        const scope_id = expected_elided_block_scope orelse return error.MissingDeadBlockScope;
+        const parent_scope = analyzer.scopes.items[scope_id].parent;
+        try std.testing.expectEqual(@as(u32, 0), local_symbol.reference_count);
+        try std.testing.expectEqual(@as(u32, 0), local_symbol.write_count);
+        try std.testing.expectEqual(parent_scope, local_symbol.scope_id);
+        try std.testing.expectEqual(parent_scope, local_symbol.origin_scope);
+        try std.testing.expectEqual(@as(?u32, null), semantic.symbol_ids[@backingInt(binding)]);
+        try std.testing.expectEqual(@as(?usize, null), semantic.scope_maps[scope_id].get("local"));
+        for (semantic.references) |reference| try std.testing.expect(@backingInt(reference.symbol_id) != local_id);
     }
     try std.testing.expectEqual(semantic.symbol_ids.ptr, module.transform_cache.?.symbol_ids.ptr);
     for (materialized_nodes.items) |materialized_index| {
@@ -1260,23 +1335,51 @@ test "numeric post-pass rejects malformed materialized read handoffs" {
         switch (mutation) {
             .none,
             .stale_sidecar,
-            .nonempty_dead_block_scope,
-            .nonempty_dead_block_const,
+            .dead_block_local_let,
+            .dead_block_local_const,
             .preexisting_detached_block_owner,
             .misassigned_dead_block_owner,
             .wrong_dead_block_owner_tag,
+            .unsupported_dead_block_var,
+            .unsupported_dead_block_function,
+            .unsupported_dead_block_class,
+            .unsupported_dead_block_loop,
+            .unsupported_dead_nested_arrow,
+            .unsupported_dead_nested_function,
+            .unsupported_dead_generator,
+            .unsupported_dead_catch_scope,
+            .unsupported_dead_class_body_scope,
+            .unsupported_dead_static_block_scope,
             => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass),
         }
     }
 }
 
-test "numeric post-pass falls back for dead blocks with surviving lexical bindings" {
-    try expectConstMaterializeGraphHandoff(false, .nonempty_dead_block_scope, .numeric_post_pass);
+test "numeric post-pass retains the graph after removing dead block let declarations" {
+    try expectConstMaterializeGraphHandoff(false, .dead_block_local_let, .numeric_post_pass);
 }
 
-test "numeric post-pass falls back for dead blocks with local const declarations" {
-    try expectConstMaterializeGraphHandoff(false, .nonempty_dead_block_const, .numeric_post_pass);
+test "numeric post-pass retains the graph after removing dead block const declarations" {
+    try expectConstMaterializeGraphHandoff(false, .dead_block_local_const, .numeric_post_pass);
+}
+
+test "numeric post-pass keeps ten unsupported dead-block declaration shapes on fallback" {
+    const cases = [_]MinifiedConstInputMutation{
+        .unsupported_dead_block_var,
+        .unsupported_dead_block_function,
+        .unsupported_dead_block_class,
+        .unsupported_dead_block_loop,
+        .unsupported_dead_nested_arrow,
+        .unsupported_dead_nested_function,
+        .unsupported_dead_generator,
+        .unsupported_dead_catch_scope,
+        .unsupported_dead_class_body_scope,
+        .unsupported_dead_static_block_scope,
+    };
+    inline for (cases) |mutation| {
+        try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass);
+    }
 }
 
 test "numeric post-pass rejects a scope owner detached before its snapshot" {
@@ -1299,11 +1402,21 @@ test "full const pre-pass rejects malformed materialized read handoffs" {
     inline for (std.meta.tags(MinifiedConstInputMutation)) |mutation| {
         switch (mutation) {
             .none,
-            .nonempty_dead_block_scope,
-            .nonempty_dead_block_const,
+            .dead_block_local_let,
+            .dead_block_local_const,
             .preexisting_detached_block_owner,
             .misassigned_dead_block_owner,
             .wrong_dead_block_owner_tag,
+            .unsupported_dead_block_var,
+            .unsupported_dead_block_function,
+            .unsupported_dead_block_class,
+            .unsupported_dead_block_loop,
+            .unsupported_dead_nested_arrow,
+            .unsupported_dead_nested_function,
+            .unsupported_dead_generator,
+            .unsupported_dead_catch_scope,
+            .unsupported_dead_class_body_scope,
+            .unsupported_dead_static_block_scope,
             => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .pre_pass),
         }
