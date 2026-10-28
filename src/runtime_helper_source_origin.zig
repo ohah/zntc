@@ -5,7 +5,7 @@ pub const SourceOptions = struct {
     es5: bool = false,
     configurable_exports: bool = false,
 };
-pub const Catalog = enum { public_field, to_property_key, keep_names };
+pub const Catalog = enum { public_field, to_property_key, keep_names, super_get };
 pub const Variant = enum { plain, min, es5, es5_min, configurable, configurable_min };
 pub const Origin = struct {
     catalog: Catalog,

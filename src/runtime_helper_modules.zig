@@ -545,6 +545,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "public-field", .catalog = .public_field },
         .{ .short = "to-property-key", .catalog = .to_property_key },
         .{ .short = "keep-names", .catalog = .keep_names },
+        .{ .short = "super-get", .catalog = .super_get },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -554,6 +555,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .public_field => "public-field",
         .to_property_key => "to-property-key",
         .keep_names => "keep-names",
+        .super_get => "super-get",
     }).?;
 }
 
