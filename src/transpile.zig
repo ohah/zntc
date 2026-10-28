@@ -897,9 +897,10 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
 /// A declaration-level type import may share a source file with plain
 /// named/default/namespace runtime imports, unbound side-effect imports, or
 /// inline type specifiers mixed into a value import. Import attributes are
-/// allowed on erased type-only imports and on mixed inline-type/runtime imports
-/// whose attribute AST is proved unchanged. Attributed runtime imports without
-/// inline type specifiers, unsupported shapes, and phases remain conservative.
+/// allowed on erased type-only imports, mixed inline-type/runtime imports, and
+/// unbound side-effect/empty imports whose attribute AST is proved unchanged.
+/// Attributed runtime imports with local bindings but no inline type specifier,
+/// unsupported shapes, and phases remain conservative.
 fn onlyErasableTypeImportsAndStableRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -915,7 +916,8 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
         const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
         const has_inline_type_specifier = importDeclarationHasInlineTypeSpecifier(ast, import_decl);
         if (import_decl.phase != .none or
-            (import_decl.attrs_len != 0 and !import_decl.is_type_only and !has_inline_type_specifier) or
+            (import_decl.attrs_len != 0 and !import_decl.is_type_only and
+                !has_inline_type_specifier and import_decl.specs_len != 0) or
             import_decl.attrs_start > ast.extra_data.items.len or
             import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
             import_decl.specs_start > ast.extra_data.items.len or
@@ -6785,6 +6787,11 @@ test "#6193 erased type imports admit only stable runtime imports and attributes
             .expected = false,
         },
         .{
+            .name = "erased type import without a runtime edge is not a mixed import graph",
+            .source = "import type { Shape } from './types';",
+            .expected = false,
+        },
+        .{
             .name = "empty named import is a runtime module edge",
             .source = "import type { Shape } from './types'; import {} from './effects';",
             .expected = true,
@@ -6820,9 +6827,14 @@ test "#6193 erased type imports admit only stable runtime imports and attributes
             .expected = true,
         },
         .{
-            .name = "attributed side-effect import remains conservative",
+            .name = "attributed side-effect import without local bindings is eligible",
             .source = "import type { Shape } from './types'; import './effects' with { type: 'json' };",
-            .expected = false,
+            .expected = true,
+        },
+        .{
+            .name = "attributed empty named import without local bindings is eligible",
+            .source = "import type { Shape } from './types'; import {} from './effects' with { type: 'json' };",
+            .expected = true,
         },
         .{
             .name = "phased runtime import remains conservative",
@@ -6915,6 +6927,7 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
         "import { type Flag as Trait, runtimeValue as amount } from './values' with { 'resolution-mode': 'import' }; " ++
         "import defaultValue from './default'; " ++
         "import * as namespaceValue from './namespace'; " ++
+        "import './effect.json' with { type: 'json' }; " ++
         "function read(value: Trait): number { return amount + defaultValue + namespaceValue.extra; } console.log(read({ flag: true }));";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
 
@@ -7000,6 +7013,66 @@ test "#6193 erased declaration and inline type imports preserve runtime identiti
         output_root,
         runtime_import_identity_snapshot,
     ));
+    var side_effect_identity: ?RuntimeImportDeclarationIdentity = null;
+    for (runtime_import_identity_snapshot.declarations) |declaration| {
+        if (declaration.specifiers.len == 0 and declaration.attributes.len == 1) {
+            side_effect_identity = declaration;
+            break;
+        }
+    }
+    const side_effect_import = side_effect_identity orelse return error.MissingAttributedSideEffectImport;
+    const side_effect_reachable = try ast_walk.collectReachableNodeIndicesFrom(
+        allocator,
+        transformer.ast,
+        output_root,
+    );
+    defer allocator.free(side_effect_reachable);
+    var side_effect_output_node: ?ast_mod.Node = null;
+    for (side_effect_reachable) |raw| {
+        const candidate = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (candidate.tag == .import_declaration and std.meta.eql(candidate.span, side_effect_import.span)) {
+            side_effect_output_node = candidate;
+            break;
+        }
+    }
+    const side_effect_output = side_effect_output_node orelse return error.MissingOutputAttributedSideEffectImport;
+    const side_effect_extra = side_effect_output.data.extra;
+    const side_effect_attrs_start_slot = side_effect_extra + 4;
+    const side_effect_attrs_len_slot = side_effect_extra + 5;
+    const side_effect_attrs_start = transformer.ast.extra_data.items[side_effect_attrs_start_slot];
+    const side_effect_attrs_len = transformer.ast.extra_data.items[side_effect_attrs_len_slot];
+    const side_effect_attribute = side_effect_import.attributes[0];
+    const side_effect_attribute_raw = @backingInt(side_effect_attribute.index);
+    const side_effect_attribute_node = transformer.ast.nodes.items[side_effect_attribute_raw];
+
+    transformer.ast.extra_data.items[side_effect_attrs_len_slot] = 0;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[side_effect_attrs_len_slot] = side_effect_attrs_len;
+    transformer.ast.extra_data.items[side_effect_attrs_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[side_effect_attrs_start_slot] = side_effect_attrs_start;
+    transformer.ast.extra_data.items[side_effect_attrs_start] = @backingInt(side_effect_attribute.key_index);
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.extra_data.items[side_effect_attrs_start] = side_effect_attribute_raw;
+    transformer.ast.nodes.items[side_effect_attribute_raw].data.binary.right = side_effect_attribute.key_index;
+    try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[side_effect_attribute_raw] = side_effect_attribute_node;
     try std.testing.expect(canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         minify,
         &parser,
