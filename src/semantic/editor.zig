@@ -1516,6 +1516,27 @@ pub const SemanticEditor = struct {
         binding_node: NodeIndex,
         reachable: *const std.DynamicBitSet,
     ) Error!SymbolId {
+        return self.removeUnreachableLocalLexicalDeclarationImpl(binding_node, reachable, true);
+    }
+
+    /// Remove an unreachable local `let` or `const` declaration after its
+    /// exact references have been removed. The stable SymbolId remains in the
+    /// symbol array; callers may later rehome it if its lexical scope is also
+    /// elided.
+    pub fn removeUnreachableLocalLexicalDeclaration(
+        self: *SemanticEditor,
+        binding_node: NodeIndex,
+        reachable: *const std.DynamicBitSet,
+    ) Error!SymbolId {
+        return self.removeUnreachableLocalLexicalDeclarationImpl(binding_node, reachable, false);
+    }
+
+    fn removeUnreachableLocalLexicalDeclarationImpl(
+        self: *SemanticEditor,
+        binding_node: NodeIndex,
+        reachable: *const std.DynamicBitSet,
+        const_only: bool,
+    ) Error!SymbolId {
         if (binding_node.isNone()) return error.InvalidNode;
         const raw = @backingInt(binding_node);
         if (raw >= self.ast.nodes.items.len or raw >= self.symbol_ids.items.len or
@@ -1525,7 +1546,9 @@ pub const SemanticEditor = struct {
         if (symbol_raw >= self.symbols.items.len) return error.InvalidSymbol;
         const symbol_id: SymbolId = @fromBackingInt(symbol_raw);
         const symbol = self.symbols.items[symbol_raw];
-        if (symbol.kind != .variable_const or symbol.isExported() or symbol.isSynthetic() or
+        if ((const_only and symbol.kind != .variable_const) or
+            (!const_only and symbol.kind != .variable_const and symbol.kind != .variable_let) or
+            symbol.isExported() or symbol.isSynthetic() or
             symbol.synthetic_name.len != 0 or symbol.synthetic_owner_id != null or
             symbol.output_name_hint.len != 0 or symbol.reference_count != 0 or
             symbol.write_count != 0 or symbol.scope_id.isNone() or
@@ -1570,6 +1593,48 @@ pub const SemanticEditor = struct {
         self.symbol_ids.items[raw] = null;
         _ = self.node_scope_provenance.remove(binding_node);
         return symbol_id;
+    }
+
+    /// Move an unreachable lexical SymbolId out of a block scope that will be
+    /// elided. Its declaration and every AST/reference identity must already
+    /// be gone; the stable row is retained under the live parent scope.
+    pub fn rehomeUnreachableLocalLexicalSymbol(
+        self: *SemanticEditor,
+        symbol_id: SymbolId,
+        source_scope: ScopeId,
+    ) Error!void {
+        if (!self.validSymbol(symbol_id) or !self.validScope(source_scope)) return error.InvalidSymbol;
+        const source_raw = source_scope.toIndex();
+        const scope = self.scopes.items[source_raw];
+        if ((scope.kind != .block and scope.kind != .switch_block) or
+            scope.parent.isNone() or !self.validScope(scope.parent)) return error.InvalidScope;
+
+        const symbol_raw = @backingInt(symbol_id);
+        const symbol = &self.symbols.items[symbol_raw];
+        if ((symbol.kind != .variable_const and symbol.kind != .variable_let) or
+            symbol.scope_id != source_scope or symbol.origin_scope != source_scope or
+            symbol.isExported() or symbol.isSynthetic() or symbol.synthetic_name.len != 0 or
+            symbol.synthetic_owner_id != null or symbol.output_name_hint.len != 0 or
+            symbol.reference_count != 0 or symbol.write_count != 0 or
+            !symbol.annex_b_alias.variable.isNone() or symbol.annex_b_alias.state != .native or
+            symbol.annex_b_alias.source_assignment_count != 0 or symbol.scope_id.isNone()) return error.InvalidSymbol;
+
+        for (self.references.items) |reference| {
+            if (reference.symbol_id == symbol_id) return error.InvalidSymbol;
+        }
+        for (self.symbol_ids.items) |mapped_symbol| {
+            if (mapped_symbol == symbol_raw) return error.InvalidSymbol;
+        }
+        for (self.scope_maps.items) |scope_map| {
+            var entries = scope_map.iterator();
+            while (entries.next()) |entry| {
+                if (entry.value_ptr.* == symbol_raw) return error.InvalidScope;
+            }
+        }
+
+        symbol.scope_id = scope.parent;
+        symbol.origin_scope = scope.parent;
+        symbol.const_kind = .none;
     }
 };
 
@@ -1713,6 +1778,134 @@ fn deadLocalConstRemovalForTest(mutation: DeadLocalConstMutation) !void {
 test "dead local const removal keeps SymbolId stable and rejects hostile graph mutations" {
     inline for (std.meta.tags(DeadLocalConstMutation)) |mutation| {
         try deadLocalConstRemovalForTest(mutation);
+    }
+}
+
+const DeadLocalLexicalRehomeMutation = enum {
+    none,
+    nonlexical_kind,
+    wrong_scope_id,
+    wrong_origin_scope,
+    exported,
+    synthetic_name,
+    reference_count,
+    write_count,
+    live_ast_identity,
+    source_scope_map_alias,
+    parent_scope_map_alias,
+    reference_row,
+    annex_b_identity,
+    wrong_scope_kind,
+};
+
+fn deadLocalLexicalRehomeForTest(kind: SymbolKind, mutation: DeadLocalLexicalRehomeMutation) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const declaration = if (kind == .variable_let) "let local=1;" else "const local=1;";
+    const source = try std.fmt.allocPrint(allocator, "if (true) {{{s}}}", .{declaration});
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+    const root = try parser.parse();
+    var analyzer = @import("analyzer.zig").SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.enable_stmt_info = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    defer analyzer.deinit();
+    try analyzer.analyze();
+
+    var local_id: ?u32 = null;
+    var binding: ?NodeIndex = null;
+    var owner: ?NodeIndex = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (std.mem.eql(u8, symbol.nameText(source), "local")) local_id = @intCast(index);
+    }
+    const symbol_raw = local_id orelse return error.MissingLocalSymbol;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and raw < analyzer.symbol_ids.items.len and
+            analyzer.symbol_ids.items[raw] == symbol_raw) binding = @fromBackingInt(@intCast(raw));
+        if (node.tag == .block_statement) owner = @fromBackingInt(@intCast(raw));
+    }
+    const binding_node = binding orelse return error.MissingLocalBinding;
+    const owner_node = owner orelse return error.MissingBlockOwner;
+    const source_scope = analyzer.symbols.items[symbol_raw].scope_id;
+    const parent_scope = analyzer.scopes.items[source_scope.toIndex()].parent;
+    if (parent_scope.isNone()) return error.MissingParentScope;
+
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    parser.ast.nodes.items[@backingInt(root)].data.list.len = 0;
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, parser.ast.nodes.items.len);
+    defer reachable.deinit();
+    const live_nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(
+        allocator,
+        &parser.ast,
+        root,
+    );
+    defer allocator.free(live_nodes);
+    for (live_nodes) |raw| reachable.set(raw);
+
+    const removed = try editor.removeUnreachableLocalLexicalDeclaration(binding_node, &reachable);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(symbol_raw)), removed);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(binding_node)]);
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[source_scope.toIndex()].get("local"));
+    try std.testing.expectEqual(@as(u16, 0), editor.scopes.items[source_scope.toIndex()].symbol_count);
+
+    switch (mutation) {
+        .none => {},
+        .nonlexical_kind => editor.symbols.items[symbol_raw].kind = .parameter,
+        .wrong_scope_id => editor.symbols.items[symbol_raw].scope_id = parent_scope,
+        .wrong_origin_scope => editor.symbols.items[symbol_raw].origin_scope = parent_scope,
+        .exported => editor.symbols.items[symbol_raw].decl_flags.is_exported = true,
+        .synthetic_name => editor.symbols.items[symbol_raw].synthetic_name = "generated",
+        .reference_count => editor.symbols.items[symbol_raw].reference_count = 1,
+        .write_count => editor.symbols.items[symbol_raw].write_count = 1,
+        .live_ast_identity => editor.symbol_ids.items[@backingInt(binding_node)] = symbol_raw,
+        .source_scope_map_alias => try editor.scope_maps.items[source_scope.toIndex()].put(allocator, "alias", symbol_raw),
+        .parent_scope_map_alias => try editor.scope_maps.items[parent_scope.toIndex()].put(allocator, "alias", symbol_raw),
+        .reference_row => try editor.references.append(allocator, .{
+            .node_index = .none,
+            .scope_id = source_scope,
+            .symbol_id = removed,
+        }),
+        .annex_b_identity => {
+            editor.symbols.items[symbol_raw].annex_b_alias.variable = removed;
+            editor.symbols.items[symbol_raw].annex_b_alias.state = .lowered;
+        },
+        .wrong_scope_kind => editor.scopes.items[source_scope.toIndex()].kind = .function,
+    }
+    const rehome_result = editor.rehomeUnreachableLocalLexicalSymbol(removed, source_scope);
+    if (mutation == .none) {
+        try rehome_result;
+    } else if (mutation == .source_scope_map_alias or mutation == .parent_scope_map_alias) {
+        try std.testing.expectError(error.InvalidScope, rehome_result);
+        return;
+    } else if (mutation == .wrong_scope_kind) {
+        try std.testing.expectError(error.InvalidScope, rehome_result);
+        return;
+    } else {
+        try std.testing.expectError(error.InvalidSymbol, rehome_result);
+        return;
+    }
+
+    try std.testing.expectEqual(parent_scope, editor.symbols.items[symbol_raw].scope_id);
+    try std.testing.expectEqual(parent_scope, editor.symbols.items[symbol_raw].origin_scope);
+    try std.testing.expect(try editor.elideEmptyGeneratedScopeOwner(owner_node));
+    try std.testing.expect(!editor.scope_owner_map.contains(@backingInt(owner_node)));
+    _ = try editor.finish();
+}
+
+test "dead local let and const declarations retain SymbolId through scope elision" {
+    try deadLocalLexicalRehomeForTest(.variable_let, .none);
+    try deadLocalLexicalRehomeForTest(.variable_const, .none);
+}
+
+test "dead local lexical rehome rejects hostile graph mutations" {
+    inline for (std.meta.tags(DeadLocalLexicalRehomeMutation)) |mutation| {
+        try deadLocalLexicalRehomeForTest(.variable_const, mutation);
     }
 }
 

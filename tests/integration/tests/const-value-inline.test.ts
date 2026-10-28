@@ -355,6 +355,29 @@ describe('const_value cross-module 인라인 correctness', () => {
     expect(r.bundleOutput).not.toContain('dead');
   });
 
+  test('numeric post-pass가 dead block의 let/const 심볼을 유지한 채 선언과 스코프를 정리한다', async () => {
+    const r = await bundleAndRun(
+      {
+        'seed.ts': `export const base = 7;`,
+        'index.ts': `
+          import { base } from "./seed";
+          if (base - 7) {
+            let local = base;
+            const snapshot = local;
+            console.log("dead", snapshot);
+          }
+          console.log(base + 1);
+        `,
+      },
+      'index.ts',
+      ['--platform=node'],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe('8');
+    expect(r.bundleOutput).not.toContain('dead');
+  });
+
   test('numeric const는 object shorthand를 구문 깨지는 literal로 materialize하지 않는다', async () => {
     const r = await bundleAndRun(
       {
