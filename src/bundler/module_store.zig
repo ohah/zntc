@@ -254,6 +254,8 @@ pub const PersistentModuleStore = struct {
 
         // Module 복사 — parse_arena 소유권 이전
         var cached_module = module.*;
+        // Installed source authority is local to the original Module owner.
+        cached_module.self_namespace_source_receipt = null;
         // dependencies/importers/dynamic_imports/dynamic_importers를 빈 상태로 —
         // graph deinit에서 원본이 해제되므로 store에 shallow copy를 남기면 안 된다.
         cached_module.dependencies = .empty;
@@ -310,6 +312,7 @@ pub const PersistentModuleStore = struct {
         // store 의 복사본이 dangling pointer 로 남고, 다음 rebuild cache-hit 에서
         // 그 포인터를 통해 setCanonicalName 이 uaf 쓰기를 해 임의의 heap 영역
         // (특히 nested_name_sets HashMap backing 의 Header.capacity) 을 덮어쓴다.
+        module.self_namespace_source_receipt = null;
         module.parse_arena = null;
         module.resolve_dir = null;
         module.alias_table = null;

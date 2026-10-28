@@ -51,6 +51,96 @@ pub const Completed = struct {
     cache: @import("module.zig").TransformCache,
 };
 
+/// An actual decoded source pair installed into one Module by the disk loader.
+/// Header addresses are not authority: this arena-owned proof names backing.
+pub const RestoredSourceReceipt = struct {
+    module: *const Module,
+    index: @import("types.zig").ModuleIndex,
+    arena: *std.heap.ArenaAllocator,
+    key: u64,
+    root: NodeIndex,
+    owner: @import("module.zig").SemanticOwnerToken,
+    winning_source: []const u8,
+    decoded_source: []const u8,
+    source_hash: u64,
+    nodes: []const ast_mod.Node,
+    extras: []const u32,
+    strings: []const u8,
+    ids: []const ?u32,
+    symbols: []const sem_mod.Symbol,
+    scopes: []const @import("../semantic/scope.zig").Scope,
+    references: []const sem_mod.Reference,
+    maps: []const std.StringHashMapUnmanaged(usize),
+    owners: std.AutoHashMapUnmanaged(u32, u32),
+};
+
+fn sameBacking(comptime T: type, left: []const T, right: []const T) bool {
+    return left.ptr == right.ptr and left.len == right.len;
+}
+
+/// Only the successful dc.load -> Module installation calls this creator.
+/// OOM leaves the installed source pair intact and the receipt unpublished.
+pub fn captureInstalledDiskSource(module: *Module, pair: *const @import("module_codec.zig").DeserializedModule) void {
+    if (module.self_namespace_source_receipt != null) return;
+    const arena = module.parse_arena orelse return;
+    const ast = if (module.ast) |*value| value else return;
+    const sem = if (module.semantic) |*value| value else return;
+    if (ast.nodes.items.len == 0 or ast.is_typescript or ast.has_jsx or ast.has_decorator or
+        sem.scopes.len != 1 or sem.symbols.items.len != 2 or
+        ast.getNode(@fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)))).tag != .program or
+        !sameBacking(ast_mod.Node, ast.nodes.items, pair.ast.nodes.items) or
+        !sameBacking(u32, ast.extra_data.items, pair.ast.extra_data.items) or
+        !sameBacking(u8, ast.string_table.items, pair.ast.string_table.items) or
+        !sameBacking(u8, ast.source, pair.ast.source) or
+        !sameBacking(?u32, sem.symbol_ids, pair.semantic.symbol_ids) or
+        !sameBacking(sem_mod.Symbol, sem.symbols.items, pair.semantic.symbols.items) or
+        !sameBacking(@import("../semantic/scope.zig").Scope, sem.scopes, pair.semantic.scopes) or
+        !sameBacking(sem_mod.Reference, sem.references, pair.semantic.references) or
+        !sameBacking(std.StringHashMapUnmanaged(usize), sem.scope_maps, pair.semantic.scope_maps) or
+        !std.meta.eql(sem.scope_owner_map, pair.semantic.scope_owner_map) or
+        sem.owner_token != pair.semantic.owner_token or !std.mem.eql(u8, module.source, ast.source)) return;
+    const receipt = arena.allocator().create(RestoredSourceReceipt) catch return;
+    receipt.* = .{
+        .module = module,
+        .index = module.index,
+        .arena = arena,
+        .key = module.disk_cache_key,
+        .root = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        .owner = sem.owner_token,
+        .winning_source = module.source,
+        .decoded_source = ast.source,
+        .source_hash = std.hash.Wyhash.hash(0, module.source),
+        .nodes = ast.nodes.items,
+        .extras = ast.extra_data.items,
+        .strings = ast.string_table.items,
+        .ids = sem.symbol_ids,
+        .symbols = sem.symbols.items,
+        .scopes = sem.scopes,
+        .references = sem.references,
+        .maps = sem.scope_maps,
+        .owners = sem.scope_owner_map,
+    };
+    module.self_namespace_source_receipt = receipt;
+}
+
+fn matchesRestoredSource(module: *const Module, ast: *const Ast, sem: *const Semantic) bool {
+    const receipt = module.self_namespace_source_receipt orelse return false;
+    const arena = module.parse_arena orelse return false;
+    return receipt.module == module and receipt.index == module.index and receipt.arena == arena and
+        receipt.key == module.disk_cache_key and receipt.owner == sem.owner_token and
+        ast.nodes.items.len > 0 and @backingInt(receipt.root) == ast.nodes.items.len - 1 and
+        ast.getNode(receipt.root).tag == .program and
+        sameBacking(u8, receipt.winning_source, module.source) and sameBacking(u8, receipt.decoded_source, ast.source) and
+        receipt.source_hash == std.hash.Wyhash.hash(0, module.source) and
+        receipt.source_hash == std.hash.Wyhash.hash(0, ast.source) and std.mem.eql(u8, module.source, ast.source) and
+        sameBacking(ast_mod.Node, receipt.nodes, ast.nodes.items) and sameBacking(u32, receipt.extras, ast.extra_data.items) and
+        sameBacking(u8, receipt.strings, ast.string_table.items) and sameBacking(?u32, receipt.ids, sem.symbol_ids) and
+        sameBacking(sem_mod.Symbol, receipt.symbols, sem.symbols.items) and
+        sameBacking(@import("../semantic/scope.zig").Scope, receipt.scopes, sem.scopes) and
+        sameBacking(sem_mod.Reference, receipt.references, sem.references) and
+        sameBacking(std.StringHashMapUnmanaged(usize), receipt.maps, sem.scope_maps) and std.meta.eql(receipt.owners, sem.scope_owner_map);
+}
+
 const Source = struct {
     root: NodeIndex,
     scope: ScopeId,
@@ -93,9 +183,11 @@ fn source(graph: *Graph, module: *const Module) !?Source {
     if (module.wrap_kind != .none or module.transform_cache != null or module.import_bindings.len != 1 or
         module.import_records.len != 1 or module.export_bindings.len != 1 or module.dynamic_imports.items.len != 0 or
         module.reachable_stmts != null or module.symbol_to_stmt != null) return null;
+    if (module.parse_arena == null) return null;
     const ast = if (module.ast) |*value| value else return null;
     const sem = if (module.semantic) |*value| value else return null;
-    if (ast.nodes.items.len == 0 or ast.source.ptr != module.source.ptr or ast.source.len != module.source.len) return null;
+    if (ast.nodes.items.len == 0 or
+        (!sameBacking(u8, ast.source, module.source) and !matchesRestoredSource(module, ast, sem))) return null;
     if (ast.transformed_root != null or ast.transform_boundary != null or ast.is_typescript or ast.has_jsx or ast.has_decorator or
         sem.scopes.len != 1 or sem.symbols.items.len != 2 or sem.runtime_identities != null or
         sem.strict_output_context.functions.len != 0 or graph.shouldRunTransformerPrePass(module, false)) return null;
@@ -397,6 +489,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source) !void {
     // view prevents the emitter from cloning an unknown output domain again.
     try validatePayload(plan, ast, &candidate, completed_bindings);
     // Nothing below allocates or validates. Publish both sides together.
+    module.self_namespace_source_receipt = null;
     module.ast = ast.*;
     module.semantic = candidate;
     module.import_bindings = completed_bindings;

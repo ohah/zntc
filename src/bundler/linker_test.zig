@@ -6722,3 +6722,272 @@ test "self namespace lifecycle missing plan rejects unchanged output then restor
     try lowering.validate(&graph, module);
     try lowering.lower(&graph, options);
 }
+
+const SelfNamespaceReceiptAttack = enum { missing, foreign_pair, foreign_module, foreign_semantic, foreign_ast, winning_copy, decoded_copy, arena, key, root, hash, owner };
+
+fn checkSelfNamespaceDiskReceipt(source_text: []const u8, attack: ?SelfNamespaceReceiptAttack) !void {
+    errdefer std.debug.print("self namespace disk receipt failed attack={any}\n", .{attack});
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", source_text);
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    const cache_path = try @import("test_helpers.zig").absPath(&tmp, "cache");
+    defer a.free(cache_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, cache_path);
+    defer disk.deinit();
+    var resolve = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve.deinit();
+    var cold = ModuleGraph.init(a, &resolve);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 0), cold.disk_load_hits.load(.monotonic));
+    const index = findModuleIdx(&cold, "self.mjs") orelse return error.MissingSelfModule;
+    const cold_module = cold.moduleAtMut(index).?;
+    var warm = ModuleGraph.init(a, &resolve);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 1), warm.disk_load_hits.load(.monotonic));
+    const module = warm.moduleAtMut(index).?;
+    const lowering = @import("self_namespace_ast.zig");
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    const receipt = module.self_namespace_source_receipt orelse {
+        if (attack == null) {
+            // A missing actual publication must fail at the real lower/output
+            // authority boundary, not only at a receipt utility probe.
+            try lowering.lower(&warm, options);
+            try std.testing.expectEqual(@as(usize, 1), warm.self_namespace_holders.count());
+        }
+        return error.MissingActualDiskSourceReceipt;
+    };
+    try std.testing.expect(module.source.ptr != module.ast.?.source.ptr);
+    try std.testing.expectEqualStrings(module.source, module.ast.?.source);
+    const original_receipt = receipt.*;
+    const original_ast = module.ast.?;
+    const original_sem = module.semantic.?;
+    try std.testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, original_sem.owner_token);
+    const original_source = module.source;
+    const original_arena = module.parse_arena;
+    // Even a deliberately weakened guard must not turn a semantic assertion
+    // failure into teardown of the live foreign arena twice.
+    defer module.parse_arena = original_arena;
+    const original_key = module.disk_cache_key;
+    if (attack) |which| {
+        const foreign_pair = (try disk.load(std.testing.io, a, cold_module.parse_arena.?.allocator(), original_key)) orelse return error.MissingForeignDiskPair;
+        switch (which) {
+            .missing => module.self_namespace_source_receipt = null,
+            .foreign_pair => {
+                module.self_namespace_source_receipt = null;
+                lowering.captureInstalledDiskSource(module, &foreign_pair);
+                try std.testing.expect(module.self_namespace_source_receipt == null);
+            },
+            .foreign_module => @constCast(receipt).module = cold_module,
+            .foreign_semantic => module.semantic = foreign_pair.semantic,
+            .foreign_ast => module.ast = foreign_pair.ast,
+            .winning_copy => module.source = try module.parse_arena.?.allocator().dupe(u8, module.source),
+            .decoded_copy => module.ast.?.source = try module.parse_arena.?.allocator().dupe(u8, module.ast.?.source),
+            .arena => module.parse_arena = cold_module.parse_arena,
+            .key => module.disk_cache_key ^= 1,
+            .root => @constCast(receipt).root = @fromBackingInt(@as(u32, 0)),
+            .hash => @constCast(receipt).source_hash ^= 1,
+            .owner => @constCast(receipt).owner = cold_module.semantic.?.captureOwnerToken(),
+        }
+        const before_call_ast = module.ast.?;
+        const before_call_sem = module.semantic.?;
+        try lowering.lower(&warm, options);
+        try std.testing.expectEqual(@as(usize, 0), warm.self_namespace_holders.count());
+        try std.testing.expect(module.ast.?.nodes.items.ptr == before_call_ast.nodes.items.ptr);
+        try std.testing.expect(module.semantic.?.symbol_ids.ptr == before_call_sem.symbol_ids.ptr);
+        try std.testing.expectEqual(before_call_sem.owner_token, module.semantic.?.owner_token);
+        try std.testing.expect(module.import_bindings[0].local_role == .import_binding);
+        module.ast = original_ast;
+        module.semantic = original_sem;
+        module.source = original_source;
+        module.parse_arena = original_arena;
+        module.disk_cache_key = original_key;
+        @constCast(receipt).* = original_receipt;
+        module.self_namespace_source_receipt = receipt;
+    }
+    try lowering.lower(&warm, options);
+    try lowering.validate(&warm, module);
+    try std.testing.expect(module.self_namespace_source_receipt == null);
+    try std.testing.expectEqual(@as(usize, 1), warm.self_namespace_holders.count());
+    try std.testing.expect(module.semantic.?.owner_token != .unassigned);
+    var linker = Linker.init(a, &warm, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    try lowering.validate(&warm, module);
+    var metadata = try linker.buildMetadataForAst(&module.ast.?, index.toU32(), true, null, .esm, true);
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
+    std.debug.print("self namespace actual disk receipt attack={any} coldMiss=1 warmHit=1 selected=true raw=0\n", .{attack});
+}
+
+test "self namespace restored source receipt rejects foreign domains and restores" {
+    var first_error: ?anyerror = null;
+    inline for (std.meta.tags(SelfNamespaceReceiptAttack)) |attack| {
+        checkSelfNamespaceDiskReceipt("export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';", attack) catch |err| {
+            if (first_error == null) first_error = err;
+        };
+    }
+    if (first_error) |err| return err;
+}
+
+test "self namespace restored source receipt covers all ten cold and warm identities" {
+    const sources = [_][]const u8{
+        "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+        "import*as ns from'./self.mjs';export const value=7;console.log(Reflect.get(ns,'value'));",
+        "'use strict';export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+        "export const value=7;console.log(Reflect.get(view,'value'));import*as view from'./self.mjs';",
+        "export const answer=7;console.log(Reflect.get(ns,'answer'));import*as ns from'./self.mjs';",
+        "export const value='seven';console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+        "export const value=true;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+        "export const value=null;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+        "export const value=7;console.log(Reflect.get($view,'value'));import*as $view from'./self.mjs';",
+        "export const value=7;console.log(Reflect.get(ns,'value'));console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';",
+    };
+    for (sources) |source_text| try checkSelfNamespaceDiskReceipt(source_text, null);
+}
+
+test "self namespace restored source receipt OOM keeps the actual installed pair and retries" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    const cache_path = try @import("test_helpers.zig").absPath(&tmp, "cache");
+    defer a.free(cache_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, cache_path);
+    defer disk.deinit();
+    var resolve = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve.deinit();
+    var cold = ModuleGraph.init(a, &resolve);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    // This allocator backs the real ModuleArena from its initial creation.
+    var failing = std.testing.FailingAllocator.init(a, .{});
+    var warm = ModuleGraph.init(failing.allocator(), &resolve);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 1), warm.disk_load_hits.load(.monotonic));
+    const index = findModuleIdx(&warm, "self.mjs") orelse return error.MissingSelfModule;
+    const module = warm.moduleAtMut(index).?;
+    const arena = module.parse_arena.?;
+    const lowering = @import("self_namespace_ast.zig");
+    // Reload a real pair into this same real arena, and perform the production
+    // installation order. No fabricated AST, semantic graph, or arena is used.
+    const pair = (try disk.load(std.testing.io, failing.allocator(), arena.allocator(), module.disk_cache_key)) orelse return error.MissingActualDiskPair;
+    module.self_namespace_source_receipt = null;
+    module.ast = pair.ast;
+    module.semantic = pair.semantic;
+    const old_ast = module.ast.?;
+    const old_sem = module.semantic.?;
+    const old_source = module.source;
+    const old_key = module.disk_cache_key;
+    const old_provider = module.runtime_helper_cache_source;
+    const old_rows = try a.dupe(semantic_symbol.Reference, old_sem.references);
+    defer a.free(old_rows);
+    const old_ids = try a.dupe(?u32, old_sem.symbol_ids);
+    defer a.free(old_ids);
+    // Exhaust only unused tail space. The graph remains in its original arena;
+    // failed growth cannot mutate any live AST/semantic allocation.
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    var padding: usize = 0;
+    while (padding < 4096) : (padding += 1) {
+        _ = arena.allocator().alloc(u8, @sizeOf(lowering.RestoredSourceReceipt)) catch break;
+    }
+    try std.testing.expect(padding < 4096);
+    // Reset only the diagnostic flag so the subsequent real constructor OOM is
+    // independently observed, rather than counting the padding failure.
+    failing.has_induced_failure = false;
+    lowering.captureInstalledDiskSource(module, &pair);
+    const creator_failed = failing.has_induced_failure;
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+    try std.testing.expect(creator_failed);
+    try std.testing.expect(module.self_namespace_source_receipt == null);
+    try std.testing.expect(module.parse_arena.? == arena);
+    try std.testing.expect(module.ast.?.nodes.items.ptr == old_ast.nodes.items.ptr);
+    try std.testing.expect(module.semantic.?.symbol_ids.ptr == old_sem.symbol_ids.ptr);
+    try std.testing.expectEqual(old_sem.owner_token, module.semantic.?.owner_token);
+    try std.testing.expectEqual(old_key, module.disk_cache_key);
+    try std.testing.expect(module.source.ptr == old_source.ptr);
+    try std.testing.expect(std.meta.eql(old_provider, module.runtime_helper_cache_source));
+    try std.testing.expectEqualDeep(old_rows, module.semantic.?.references);
+    try std.testing.expectEqualDeep(old_ids, module.semantic.?.symbol_ids);
+    const options: lowering.Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    try lowering.lower(&warm, options);
+    try std.testing.expectEqual(@as(usize, 0), warm.self_namespace_holders.count());
+    // The exact same actual installed pair can retry after resource recovery.
+    lowering.captureInstalledDiskSource(module, &pair);
+    try std.testing.expect(module.self_namespace_source_receipt != null);
+    try std.testing.expectEqual(old_sem.owner_token, module.semantic.?.owner_token);
+    try warm.materializeFromCachedAst(module, arena.allocator());
+    try warm.resolveModuleImports(std.testing.io, index);
+    try lowering.lower(&warm, options);
+    try lowering.validate(&warm, module);
+    try std.testing.expect(module.self_namespace_source_receipt == null);
+    std.debug.print("self namespace actual receipt OOM installedPairPreserved=true samePairRetry=true\n", .{});
+}
+
+test "self namespace restored source receipt is not transferred into ModuleStore" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Object.getPrototypeOf(ns));import*as ns from'./self.mjs';");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    const cache_path = try @import("test_helpers.zig").absPath(&tmp, "cache");
+    defer a.free(cache_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, cache_path);
+    defer disk.deinit();
+    var resolve = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve.deinit();
+    var cold = ModuleGraph.init(a, &resolve);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    var warm = ModuleGraph.init(a, &resolve);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    const index = findModuleIdx(&warm, "self.mjs") orelse return error.MissingSelfModule;
+    const module = warm.moduleAtMut(index).?;
+    try std.testing.expect(module.self_namespace_source_receipt != null);
+    try @import("self_namespace_ast.zig").lower(&warm, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    try std.testing.expectEqual(@as(usize, 0), warm.self_namespace_holders.count());
+    const mtime = try ModuleGraph.getMtime(std.testing.io, entry);
+    var store = module_store_mod.PersistentModuleStore.init(a);
+    defer store.deinit();
+    store.putModule(entry, module, mtime);
+    const cached = store.getIfFresh(entry, mtime) orelse return error.MissingStoredSource;
+    try std.testing.expect(cached.module.self_namespace_source_receipt == null);
+    try std.testing.expect(module.self_namespace_source_receipt == null);
+    try std.testing.expect(module.parse_arena == null and cached.module.parse_arena != null);
+}
