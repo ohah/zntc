@@ -1454,8 +1454,10 @@ pub const SemanticEditor = struct {
         if (input.declaration_row >= self.references.items.len) return error.ReferenceNotFound;
         var count: usize = 0;
         for (self.references.items, 0..) |reference, index| {
-            if (!reference.flags.declare or reference.symbol_id != input.symbol) continue;
-            if (index != input.declaration_row or reference.declaration_node_index != input.source_specifier or
+            if (!reference.flags.declare) continue;
+            if (reference.declaration_node_index == input.output_binding) return error.InvalidSymbol;
+            if (reference.symbol_id != input.symbol and reference.declaration_node_index != input.source_specifier) continue;
+            if (reference.symbol_id != input.symbol or index != input.declaration_row or reference.declaration_node_index != input.source_specifier or
                 reference.scope_id != input.root_scope or !reference.node_index.isNone() or
                 !std.meta.eql(reference.flags, ReferenceFlags{ .declare = true })) return error.InvalidSymbol;
             count += 1;
@@ -2905,7 +2907,7 @@ test "enum outer binding exact reanchor preserves source var tuples and rejects 
     try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(read)]);
 }
 
-const NamespaceMoveMutation = enum { none, foreign_ast, wrong_row, wrong_symbol, wrong_scope, no_source, bad_output, prebound_output, duplicate_row, wrong_parent, wrong_name, wrong_const_kind, extra_flags, reserved_row, mixed_row, node_index_row, valid_sibling_symbol, valid_sibling_scope, allocation_failure };
+const NamespaceMoveMutation = enum { none, foreign_ast, wrong_row, wrong_symbol, wrong_scope, no_source, bad_output, prebound_output, duplicate_row, wrong_parent, wrong_name, wrong_const_kind, extra_flags, foreign_source_anchor, foreign_output_anchor, reserved_row, mixed_row, node_index_row, valid_sibling_symbol, valid_sibling_scope, allocation_failure };
 
 fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3006,6 +3008,19 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)].data.string_ref = .EMPTY,
         .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = @backingInt(ast_mod.VariableDeclarationKind.@"var"),
         .extra_flags => editor.symbols.items[raw_sid].decl_flags.is_exported = true,
+        .foreign_source_anchor, .foreign_output_anchor => {
+            var foreign_row = original_row;
+            var foreign_symbol: ?SymbolId = null;
+            for (analyzer.references.items) |reference| {
+                if (reference.flags.declare and reference.symbol_id != sid) {
+                    foreign_symbol = reference.symbol_id;
+                    break;
+                }
+            }
+            foreign_row.symbol_id = foreign_symbol orelse return error.MissingValidSiblingIdentity;
+            if (mutation == .foreign_output_anchor) foreign_row.declaration_node_index = output_binding;
+            try editor.references.append(a, foreign_row);
+        },
         .reserved_row => editor.references.items[input.declaration_row].flags._reserved = 1,
         .mixed_row => editor.references.items[input.declaration_row].flags.read = true,
         .node_index_row => editor.references.items[input.declaration_row].node_index = source_specifier,
@@ -3035,7 +3050,7 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         try std.testing.expectEqual(@as(?usize, raw_sid), editor.scope_maps.items[scope.toIndex()].get(parser.ast.getText(name)));
         switch (mutation) {
             .prebound_output => editor.symbol_ids.items[@backingInt(output_binding)] = null,
-            .duplicate_row => _ = editor.references.pop(),
+            .duplicate_row, .foreign_source_anchor, .foreign_output_anchor => _ = editor.references.pop(),
             .extra_flags => editor.symbols.items[raw_sid].decl_flags = original_input.expected_source_flags,
             .wrong_name => parser.ast.nodes.items[@backingInt(output_binding)] = original_binding,
             .wrong_const_kind => parser.ast.extra_data.items[parser.ast.getNode(statement).data.extra] = original_const_kind,
