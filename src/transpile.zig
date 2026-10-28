@@ -84,6 +84,9 @@ const AstFacts = struct {
     /// Declaration-level `import type` changes the source graph but must be
     /// absent from output before the standalone TypeScript path can reuse it.
     has_declaration_level_type_import: bool = false,
+    /// Inline `type` specifiers are also erased from the runtime import graph.
+    /// They require an exact output proof before the transform graph is reused.
+    has_inline_type_import_specifier: bool = false,
     /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
     has_non_named_import: bool = false,
     /// The legacy lenient source mode silently accepts TypeScript syntax. Its
@@ -176,6 +179,23 @@ fn collectAstFacts(allocator: std.mem.Allocator, ast: *const Ast) error{OutOfMem
                 facts.has_import_declaration = true;
                 const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
                 if (import_decl.is_type_only) facts.has_declaration_level_type_import = true;
+                if (import_decl.specs_start <= ast.extra_data.items.len and
+                    import_decl.specs_len <= ast.extra_data.items.len - import_decl.specs_start)
+                {
+                    var i: u32 = 0;
+                    while (i < import_decl.specs_len) : (i += 1) {
+                        const specifier_idx: ast_mod.NodeIndex = @fromBackingInt(
+                            @intCast(ast.extra_data.items[import_decl.specs_start + i]),
+                        );
+                        if (specifier_idx.isNone() or @backingInt(specifier_idx) >= ast.nodes.items.len) continue;
+                        const specifier = ast.getNode(specifier_idx);
+                        if (specifier.tag == .import_specifier and
+                            specifier.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY)
+                        {
+                            facts.has_inline_type_import_specifier = true;
+                        }
+                    }
+                }
             },
             .import_default_specifier,
             .import_namespace_specifier,
@@ -809,7 +829,7 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         !parser.is_flow and facts.has_import_declaration and
         erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
-        facts.has_declaration_level_type_import and
+        (facts.has_declaration_level_type_import or facts.has_inline_type_import_specifier) and
         ((onlyErasableTypeImports(&parser.ast) and
             erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) or
             (onlyErasableTypeImportsAndStableRuntimeImports(
@@ -817,7 +837,13 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
                 &parser.ast,
                 transformer.parser_node_count,
             ) and
-                erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root) and
+                (!facts.has_declaration_level_type_import or
+                    erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(transformer, root)) and
+                erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+                    transformer,
+                    root,
+                    runtime_import_identity_snapshot,
+                ) and
                 runtimeImportsHaveExactOutputIdentity(transformer, root, runtime_import_identity_snapshot)));
     const may_admit_erased_ambient_namespace_import_equals = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_lenient_unhandled_runtime_syntax and
@@ -837,7 +863,8 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         may_admit_erased_ambient_namespace_import_equals or may_admit_runtime_import_equals,
     );
     return can_mangle and (parser.source_mode != .ts or
-        !facts.has_declaration_level_type_import or may_admit_erased_ts_type_imports);
+        (!facts.has_declaration_level_type_import and !facts.has_inline_type_import_specifier) or
+        may_admit_erased_ts_type_imports);
 }
 
 /// Reuse a transform graph for erased imports only after proving that none of
@@ -868,12 +895,12 @@ fn onlyErasableTypeImports(ast: *const Ast) bool {
     return found_import;
 }
 
-/// A declaration-level type import may share a source file with separate plain
-/// named/default/namespace runtime imports and unbound side-effect imports.
-/// Attributes are allowed only on the declaration-level type import itself;
-/// attributes on runtime or inline-type imports, inline type specifiers inside
-/// value imports, unsupported import shapes, and phases remain on the
-/// conservative reanalysis path.
+/// A declaration-level type import may share a source file with plain
+/// named/default/namespace runtime imports, unbound side-effect imports, or
+/// inline type specifiers mixed into a value import. Attributes are allowed
+/// only on declaration-level type imports; attributed runtime imports,
+/// attributed inline-type imports, unsupported specifier shapes, and phases
+/// remain on the conservative reanalysis path.
 fn onlyErasableTypeImportsAndStableRuntimeImports(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -894,17 +921,21 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
             import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start) return false;
 
-        if (import_decl.is_type_only or importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) {
-            if (import_decl.is_type_only and import_decl.specs_len == 0) return false;
-            found_type_import = found_type_import or import_decl.is_type_only;
+        if (import_decl.is_type_only) {
+            if (import_decl.specs_len == 0) return false;
+            found_type_import = true;
             continue;
         }
+        if (importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl)) continue;
 
-        found_runtime_import = true;
         // Side-effect imports (including `import {} from`) have no local
         // semantic identity. The output proof still requires the exact
         // declaration and source literal to survive unchanged.
-        if (import_decl.specs_len == 0) continue;
+        if (import_decl.specs_len == 0) {
+            found_runtime_import = true;
+            continue;
+        }
+        var declaration_has_runtime_specifier = false;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
             const spec_idx: ast_mod.NodeIndex = @fromBackingInt(
@@ -914,17 +945,24 @@ fn onlyErasableTypeImportsAndStableRuntimeImports(
             const spec = ast.getNode(spec_idx);
             switch (spec.tag) {
                 .import_specifier => {
+                    if (spec.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY) {
+                        found_type_import = true;
+                        continue;
+                    }
                     if (spec.data.binary.flags != 0 or spec.data.binary.left.isNone() or
                         spec.data.binary.right.isNone() or
                         @backingInt(spec.data.binary.left) >= ast.nodes.items.len or
                         @backingInt(spec.data.binary.right) >= ast.nodes.items.len) return false;
+                    declaration_has_runtime_specifier = true;
                 },
                 .import_default_specifier, .import_namespace_specifier => {
                     if (!isValidSourceTextSpan(ast, spec.span)) return false;
+                    declaration_has_runtime_specifier = true;
                 },
                 else => return false,
             }
         }
+        found_runtime_import = found_runtime_import or declaration_has_runtime_specifier;
     }
     return found_type_import and found_runtime_import and importLocalNamesAreUnique(allocator, ast, source_count);
 }
@@ -969,6 +1007,7 @@ fn importLocalNamesAreUnique(allocator: std.mem.Allocator, ast: *const Ast, sour
 }
 
 const RuntimeImportSpecifierIdentity = struct {
+    import_span: @import("lexer/token.zig").Span,
     specifier_index: ast_mod.NodeIndex,
     specifier_node: ast_mod.Node,
     imported_index: ?ast_mod.NodeIndex,
@@ -996,6 +1035,7 @@ const RuntimeImportReferenceIdentity = struct {
 const RuntimeImportIdentitySnapshot = struct {
     declarations: []const RuntimeImportDeclarationIdentity,
     references: []const RuntimeImportReferenceIdentity,
+    inline_type_specifiers: []const RuntimeImportSpecifierIdentity,
 };
 
 /// Capture exact source identities before the standalone transformer takes
@@ -1018,6 +1058,10 @@ fn captureRuntimeImportIdentitySnapshot(
     defer declarations.deinit(allocator);
     var runtime_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer runtime_symbol_ids.deinit(allocator);
+    var inline_type_specifiers: std.ArrayListUnmanaged(RuntimeImportSpecifierIdentity) = .empty;
+    defer inline_type_specifiers.deinit(allocator);
+    var inline_type_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer inline_type_symbol_ids.deinit(allocator);
 
     for (ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .import_declaration) continue;
@@ -1043,6 +1087,52 @@ fn captureRuntimeImportIdentitySnapshot(
             );
             if (specifier_index.isNone() or @backingInt(specifier_index) >= ast.nodes.items.len) return null;
             const specifier_node = ast.getNode(specifier_index);
+            if (specifier_node.tag == .import_specifier and
+                specifier_node.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY)
+            {
+                const imported = specifier_node.data.binary.left;
+                const local = specifier_node.data.binary.right;
+                if (imported.isNone() or local.isNone() or
+                    @backingInt(imported) >= ast.nodes.items.len or
+                    @backingInt(local) >= ast.nodes.items.len) return null;
+                const imported_node = ast.getNode(imported);
+                const local_node = ast.getNode(local);
+                if ((imported_node.tag != .identifier_reference and imported_node.tag != .string_literal) or
+                    local_node.tag != .identifier_reference or
+                    !isValidSourceTextSpan(ast, imported_node.span) or
+                    !isValidSourceTextSpan(ast, local_node.span) or
+                    !isValidSourceTextSpan(ast, specifier_node.span) or
+                    specifier_node.span.start < node.span.start or specifier_node.span.end > node.span.end or
+                    imported_node.span.start < specifier_node.span.start or imported_node.span.end > specifier_node.span.end or
+                    local_node.span.start < specifier_node.span.start or local_node.span.end > specifier_node.span.end or
+                    @backingInt(local) >= analyzer.symbol_ids.items.len) return null;
+                const local_symbol_id = analyzer.symbol_ids.items[@backingInt(local)] orelse return null;
+                if (local_symbol_id >= analyzer.symbols.items.len) return null;
+                const symbol = analyzer.symbols.items[local_symbol_id];
+                if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+                    symbol.scope_id.toIndex() >= analyzer.scopes.items.len or
+                    symbol.name.start != local_node.span.start or symbol.name.end != local_node.span.end or
+                    symbol.declaration_span.start < node.span.start or
+                    symbol.declaration_span.end > node.span.end or
+                    symbol.declaration_span.end <= symbol.declaration_span.start or
+                    runtime_symbol_ids.contains(local_symbol_id) or
+                    inline_type_symbol_ids.contains(local_symbol_id)) return null;
+                inline_type_symbol_ids.put(allocator, local_symbol_id, {}) catch return error.OutOfMemory;
+                inline_type_specifiers.append(allocator, .{
+                    .import_span = node.span,
+                    .specifier_index = specifier_index,
+                    .specifier_node = specifier_node,
+                    .imported_index = imported,
+                    .imported_node = imported_node,
+                    .local_index = local,
+                    .local_node = local_node,
+                    .symbol_id = local_symbol_id,
+                    .symbol_scope = symbol.scope_id,
+                    .symbol_name = symbol.name,
+                    .symbol_declaration = symbol.declaration_span,
+                }) catch return error.OutOfMemory;
+                continue;
+            }
             var imported_index: ?ast_mod.NodeIndex = null;
             var imported_node: ?ast_mod.Node = null;
             const local_index = switch (specifier_node.tag) {
@@ -1081,9 +1171,11 @@ fn captureRuntimeImportIdentitySnapshot(
                 symbol.declaration_span.start < node.span.start or
                 symbol.declaration_span.end > node.span.end or
                 symbol.declaration_span.end <= symbol.declaration_span.start or
-                runtime_symbol_ids.contains(local_symbol_id)) return null;
+                runtime_symbol_ids.contains(local_symbol_id) or
+                inline_type_symbol_ids.contains(local_symbol_id)) return null;
             runtime_symbol_ids.put(allocator, local_symbol_id, {}) catch return error.OutOfMemory;
             specifiers.append(allocator, .{
+                .import_span = node.span,
                 .specifier_index = specifier_index,
                 .specifier_node = specifier_node,
                 .imported_index = imported_index,
@@ -1121,6 +1213,7 @@ fn captureRuntimeImportIdentitySnapshot(
     return .{
         .declarations = try declarations.toOwnedSlice(allocator),
         .references = try references.toOwnedSlice(allocator),
+        .inline_type_specifiers = try inline_type_specifiers.toOwnedSlice(allocator),
     };
 }
 
@@ -1142,6 +1235,138 @@ fn erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(
     root: ast_mod.NodeIndex,
 ) bool {
     return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, true);
+}
+
+/// Prove that inline `type` specifiers mixed into a surviving TypeScript value
+/// import are erased without leaving their exact binding identity or decoded
+/// local name in the output graph. The source specifier identities are captured
+/// before transformation because the import's specifier list is edited in place.
+fn erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+    maybe_snapshot: ?RuntimeImportIdentitySnapshot,
+) bool {
+    const snapshot = maybe_snapshot orelse return false;
+    if (snapshot.inline_type_specifiers.len == 0) return true;
+    const ast = transformer.ast;
+    const source_count = transformer.parser_node_count;
+    if (root.isNone() or source_count == 0 or source_count > ast.nodes.items.len or
+        source_count > transformer.symbol_ids.items.len) return false;
+
+    const output_reachable = ast_walk.collectReachableNodeIndicesFrom(
+        transformer.allocator,
+        ast,
+        root,
+    ) catch return false;
+    defer transformer.allocator.free(output_reachable);
+    var output_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_nodes.deinit(transformer.allocator);
+    for (output_reachable) |raw| {
+        output_nodes.put(transformer.allocator, raw, {}) catch return false;
+    }
+    const output_references = reference_walk.collectIdentifierReferences(
+        transformer.allocator,
+        ast,
+        root,
+    ) catch return false;
+    defer transformer.allocator.free(output_references);
+    var output_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_reference_nodes.deinit(transformer.allocator);
+    for (output_references) |reference| {
+        output_reference_nodes.put(transformer.allocator, @backingInt(reference), {}) catch return false;
+    }
+
+    var erased_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer erased_symbols.deinit(transformer.allocator);
+    var erased_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer erased_names.deinit(transformer.allocator);
+    for (snapshot.inline_type_specifiers) |identity| {
+        const specifier_raw = @backingInt(identity.specifier_index);
+        const local_raw = @backingInt(identity.local_index);
+        const imported_index = identity.imported_index orelse return false;
+        const imported_node = identity.imported_node orelse return false;
+        const imported_raw = @backingInt(imported_index);
+        if (specifier_raw >= source_count or local_raw >= source_count or imported_raw >= source_count or
+            specifier_raw >= ast.nodes.items.len or local_raw >= ast.nodes.items.len or
+            imported_raw >= ast.nodes.items.len or !isValidSourceTextSpan(ast, identity.import_span)) return false;
+        if (!sameNodeValue(identity.specifier_node, ast.getNode(identity.specifier_index)) or
+            !sameNodeValue(identity.local_node, ast.getNode(identity.local_index)) or
+            !sameNodeValue(imported_node, ast.getNode(imported_index)) or
+            !isValidSourceTextSpan(ast, identity.specifier_node.span) or
+            !isValidSourceTextSpan(ast, identity.local_node.span) or
+            !isValidSourceTextSpan(ast, imported_node.span) or
+            identity.specifier_node.tag != .import_specifier or
+            identity.specifier_node.data.binary.flags != module_parser.SPEC_FLAG_TYPE_ONLY or
+            identity.specifier_node.span.start < identity.import_span.start or
+            identity.specifier_node.span.end > identity.import_span.end or
+            identity.local_node.tag != .identifier_reference or
+            imported_node.span.start < identity.specifier_node.span.start or
+            imported_node.span.end > identity.specifier_node.span.end or
+            identity.local_node.span.start < identity.specifier_node.span.start or
+            identity.local_node.span.end > identity.specifier_node.span.end or
+            output_nodes.contains(specifier_raw) or output_nodes.contains(imported_raw) or
+            output_nodes.contains(local_raw)) return false;
+
+        var matching_imports: usize = 0;
+        for (ast.nodes.items[0..source_count]) |node| {
+            if (node.tag == .import_declaration and std.meta.eql(node.span, identity.import_span)) {
+                matching_imports += 1;
+            }
+        }
+        if (matching_imports != 1) return false;
+
+        const source_subtree = ast_walk.collectReachableNodeIndicesFrom(
+            transformer.allocator,
+            ast,
+            identity.specifier_index,
+        ) catch return false;
+        defer transformer.allocator.free(source_subtree);
+        for (source_subtree) |raw| {
+            if (raw >= source_count or output_nodes.contains(raw)) return false;
+        }
+
+        const local_name = Scanner.decodeIdentifierEscapesAlloc(
+            transformer.allocator,
+            ast.getText(identity.local_node.span),
+        ) catch return false;
+        if (local_name.len == 0 or erased_names.contains(local_name)) return false;
+        erased_names.put(transformer.allocator, local_name, {}) catch return false;
+
+        const symbol_id = transformer.symbol_ids.items[local_raw] orelse return false;
+        if (symbol_id != identity.symbol_id or symbol_id >= transformer.symbols.len or
+            erased_symbols.contains(symbol_id)) return false;
+        const symbol = transformer.symbols[symbol_id];
+        const scope_idx = symbol.scope_id.toIndex();
+        if (symbol.kind != .import_binding or symbol.scope_id != identity.symbol_scope or
+            scope_idx >= transformer.scopes.len or scope_idx >= transformer.scope_maps.len or
+            transformer.scope_maps[scope_idx].get(local_name) != @as(?usize, @intCast(symbol_id)) or
+            !std.meta.eql(symbol.name, identity.symbol_name) or
+            !std.meta.eql(symbol.declaration_span, identity.symbol_declaration)) return false;
+        erased_symbols.put(transformer.allocator, symbol_id, {}) catch return false;
+    }
+
+    for (output_reachable) |raw| {
+        const node = ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (raw < transformer.symbol_ids.items.len) {
+            if (transformer.symbol_ids.items[raw]) |symbol_id| {
+                if (erased_symbols.contains(symbol_id)) return false;
+            }
+        }
+        if (node.tag != .binding_identifier and !output_reference_nodes.contains(raw) and
+            node.tag != .jsx_identifier) continue;
+        if (!isValidAstTextSpan(ast, node.span)) return false;
+        const name = Scanner.decodeIdentifierEscapesAlloc(
+            transformer.allocator,
+            ast.getText(node.span),
+        ) catch return false;
+        if (erased_names.contains(name)) return false;
+    }
+    for (transformer.references) |reference| {
+        if (!reference.node_index.isNone() and erased_symbols.contains(@backingInt(reference.symbol_id)) and
+            output_nodes.contains(@backingInt(reference.node_index)) and
+            output_reference_nodes.contains(@backingInt(reference.node_index))) return false;
+    }
+    return true;
 }
 
 fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
@@ -6368,6 +6593,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     try std.testing.expectEqual(@as(usize, 0), inline_parser.errors.items.len);
     const inline_facts = try collectAstFacts(allocator, &inline_parser.ast);
     try std.testing.expect(!inline_facts.has_declaration_level_type_import);
+    try std.testing.expect(inline_facts.has_inline_type_import_specifier);
     try std.testing.expect(onlyErasableTypeImports(&inline_parser.ast));
 
     var inline_alias_scanner = try Scanner.init(
@@ -6389,6 +6615,11 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     _ = try mixed_runtime_parser.parse();
     try std.testing.expectEqual(@as(usize, 0), mixed_runtime_parser.errors.items.len);
     try std.testing.expect(!onlyErasableTypeImports(&mixed_runtime_parser.ast));
+    try std.testing.expect(onlyErasableTypeImportsAndStableRuntimeImports(
+        allocator,
+        &mixed_runtime_parser.ast,
+        @intCast(mixed_runtime_parser.ast.nodes.items.len),
+    ));
 
     var attributed_inline_scanner = try Scanner.init(
         allocator,
@@ -6406,7 +6637,7 @@ test "#6193 TypeScript declaration-level type imports require exact output erasu
     ));
 }
 
-test "#6193 erased type imports admit only stable side-effect runtime imports" {
+test "#6193 erased type imports admit only stable runtime imports" {
     const Case = struct {
         name: []const u8,
         source: []const u8,
@@ -6449,6 +6680,16 @@ test "#6193 erased type imports admit only stable side-effect runtime imports" {
             .expected = true,
         },
         .{
+            .name = "inline type specifier beside a named runtime specifier",
+            .source = "import type { Shape } from './types'; import { type Flag, value as runtimeValue } from './values';",
+            .expected = true,
+        },
+        .{
+            .name = "multiple inline type specifiers beside runtime value",
+            .source = "import type { Shape } from './types'; import { type Flag as Trait, value, type Base } from './values';",
+            .expected = true,
+        },
+        .{
             .name = "attributed side-effect import remains conservative",
             .source = "import type { Shape } from './types'; import './effects' with { type: 'json' };",
             .expected = false,
@@ -6481,6 +6722,11 @@ test "#6193 erased type imports admit only stable side-effect runtime imports" {
         .{
             .name = "runtime attributes remain conservative for namespace imports",
             .source = "import type { Shape } from './types'; import * as values from './values' with { type: 'json' };",
+            .expected = false,
+        },
+        .{
+            .name = "runtime attributes remain conservative for inline mixed imports",
+            .source = "import type { Shape } from './types'; import { type Flag, value } from './values' with { type: 'json' };",
             .expected = false,
         },
         .{
@@ -6531,15 +6777,15 @@ test "#6193 erased type imports admit only stable side-effect runtime imports" {
     }
 }
 
-test "#6193 erased declaration type imports preserve separate runtime import identities" {
+test "#6193 erased declaration and inline type imports preserve runtime identities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     const source = "import type { Shape } from './types' with { \"resolution-mode\": \"import\" }; " ++
-        "import { runtimeValue as amount } from './values'; " ++
+        "import { type Flag as Trait, runtimeValue as amount } from './values'; " ++
         "import defaultValue from './default'; " ++
         "import * as namespaceValue from './namespace'; " ++
-        "function read(): number { return amount + defaultValue + namespaceValue.extra; } console.log(read());";
+        "function read(value: Trait): number { return amount + defaultValue + namespaceValue.extra; } console.log(read({ flag: true }));";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
 
     var scanner = try Scanner.init(allocator, source);
@@ -6614,6 +6860,11 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
     try std.testing.expect(runtimeImportsHaveExactOutputIdentity(
         &transformer,
         output_root,
@@ -6628,35 +6879,79 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
         runtime_import_identity_snapshot,
     ));
     try std.testing.expect(!erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(&transformer, source_root));
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        source_root,
+        runtime_import_identity_snapshot,
+    ));
 
     var runtime_local: ?ast_mod.NodeIndex = null;
     var erased_type_local: ?ast_mod.NodeIndex = null;
     var erased_type_source: ?ast_mod.NodeIndex = null;
+    var inline_type_local: ?ast_mod.NodeIndex = null;
     for (parser.ast.nodes.items[0..transformer.parser_node_count]) |node| {
         if (node.tag != .import_declaration) continue;
         const import_decl = module_parser.readImportDeclExtras(&parser.ast, node.data.extra);
-        const specifier: ast_mod.NodeIndex = @fromBackingInt(
-            @intCast(parser.ast.extra_data.items[import_decl.specs_start]),
-        );
-        const specifier_node = parser.ast.getNode(specifier);
-        const local = if (specifier_node.tag == .import_specifier)
-            specifier_node.data.binary.right
-        else
-            specifier;
         if (import_decl.is_type_only) {
+            if (import_decl.specs_len == 0) continue;
+            const specifier: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(parser.ast.extra_data.items[import_decl.specs_start]),
+            );
+            const specifier_node = parser.ast.getNode(specifier);
+            const local = if (specifier_node.tag == .import_specifier)
+                specifier_node.data.binary.right
+            else
+                specifier;
             erased_type_local = local;
             erased_type_source = import_decl.source;
-        } else if (specifier_node.tag == .import_specifier) {
-            runtime_local = local;
+            continue;
+        }
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const specifier: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(parser.ast.extra_data.items[import_decl.specs_start + i]),
+            );
+            const specifier_node = parser.ast.getNode(specifier);
+            if (specifier_node.tag != .import_specifier) continue;
+            const local = specifier_node.data.binary.right;
+            if (specifier_node.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY) {
+                inline_type_local = local;
+            } else if (specifier_node.data.binary.flags == 0) {
+                runtime_local = local;
+            }
         }
     }
     const runtime_local_idx = runtime_local orelse return error.MissingRuntimeImportLocal;
     const erased_type_local_idx = erased_type_local orelse return error.MissingDeclarationTypeImportLocal;
     const erased_type_source_idx = erased_type_source orelse return error.MissingDeclarationTypeImportSource;
+    const inline_type_local_idx = inline_type_local orelse return error.MissingInlineTypeImportLocal;
     const runtime_symbol = transformer.symbol_ids.items[@backingInt(runtime_local_idx)] orelse
         return error.MissingRuntimeImportSymbol;
     const erased_type_symbol = transformer.symbol_ids.items[@backingInt(erased_type_local_idx)] orelse
         return error.MissingDeclarationTypeImportSymbol;
+    const inline_type_symbol = transformer.symbol_ids.items[@backingInt(inline_type_local_idx)] orelse
+        return error.MissingInlineTypeImportSymbol;
+    if (runtime_import_identity_snapshot.inline_type_specifiers.len != 1) return error.UnexpectedInlineTypeImportCount;
+    const inline_type_identity = runtime_import_identity_snapshot.inline_type_specifiers[0];
+    try std.testing.expectEqual(inline_type_symbol, inline_type_identity.symbol_id);
+
+    const original_inline_symbol = transformer.symbol_ids.items[@backingInt(inline_type_local_idx)];
+    transformer.symbol_ids.items[@backingInt(inline_type_local_idx)] = runtime_symbol;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[@backingInt(inline_type_local_idx)] = original_inline_symbol;
+
+    const mutable_inline_identities = @constCast(runtime_import_identity_snapshot.inline_type_specifiers);
+    mutable_inline_identities[0].symbol_id = runtime_symbol;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0] = inline_type_identity;
 
     var runtime_reference: ?usize = null;
     for (transformer.references, 0..) |reference, index| {
@@ -6666,6 +6961,26 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
         }
     }
     const runtime_reference_index = runtime_reference orelse return error.MissingRuntimeImportReference;
+    const inline_hostile_reference_raw = @backingInt(transformer.references[runtime_reference_index].node_index);
+    const inline_hostile_reference_node = transformer.ast.nodes.items[inline_hostile_reference_raw];
+    transformer.ast.nodes.items[inline_hostile_reference_raw].span =
+        transformer.ast.getNode(inline_type_local_idx).span;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[inline_hostile_reference_raw] = inline_hostile_reference_node;
+
+    const inline_hostile_reference_symbol = transformer.symbol_ids.items[inline_hostile_reference_raw];
+    transformer.symbol_ids.items[inline_hostile_reference_raw] = inline_type_symbol;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.symbol_ids.items[inline_hostile_reference_raw] = inline_hostile_reference_symbol;
+
     const original_references = transformer.references;
     const mutable_references = try allocator.dupe(@import("semantic/symbol.zig").Reference, original_references);
     transformer.references = mutable_references;
@@ -6675,6 +6990,13 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
         null,
     ));
     const original_reference = mutable_references[runtime_reference_index];
+    mutable_references[runtime_reference_index].symbol_id = @fromBackingInt(@intCast(inline_type_symbol));
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_references[runtime_reference_index] = original_reference;
     mutable_references[runtime_reference_index].symbol_id = @fromBackingInt(@intCast(erased_type_symbol));
     try std.testing.expect(!runtimeImportsHaveExactOutputIdentity(
         &transformer,
@@ -6714,6 +7036,125 @@ test "#6193 erased declaration type imports preserve separate runtime import ide
     const original_symbol = transformer.symbols[runtime_symbol];
     if (transformer.scopes.len < 2) return error.MissingAlternativeRuntimeImportScope;
     const alternative_scope = @as(u32, if (original_symbol.scope_id.toIndex() == 0) 1 else 0);
+    const inline_scope_index = inline_type_identity.symbol_scope.toIndex();
+    const inline_local_name = transformer.ast.getText(inline_type_identity.local_node.span);
+    const mutable_scope_maps = @constCast(transformer.scope_maps);
+    const inline_scope_map_value = mutable_scope_maps[inline_scope_index].get(inline_local_name) orelse
+        return error.MissingInlineTypeImportScopeMapEntry;
+    const alternative_scope_map_value = mutable_scope_maps[alternative_scope].get(inline_local_name);
+    try mutable_scope_maps[alternative_scope].put(allocator, inline_local_name, inline_type_symbol);
+
+    const original_inline_scope = mutable_inline_identities[0].symbol_scope;
+    mutable_inline_identities[0].symbol_scope = @fromBackingInt(@intCast(alternative_scope));
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].symbol_scope = original_inline_scope;
+
+    const original_inline_name_span = mutable_inline_identities[0].symbol_name;
+    mutable_inline_identities[0].symbol_name.start += 1;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].symbol_name = original_inline_name_span;
+
+    const original_inline_declaration_span = mutable_inline_identities[0].symbol_declaration;
+    mutable_inline_identities[0].symbol_declaration.start += 1;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].symbol_declaration = original_inline_declaration_span;
+
+    const original_inline_node = mutable_inline_identities[0].specifier_node;
+    mutable_inline_identities[0].specifier_node.data.binary.flags = 0;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].specifier_node = original_inline_node;
+
+    const original_inline_specifier_span = mutable_inline_identities[0].specifier_node.span;
+    mutable_inline_identities[0].specifier_node.span.start += 1;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].specifier_node.span = original_inline_specifier_span;
+
+    const original_inline_imported_node = mutable_inline_identities[0].imported_node.?;
+    mutable_inline_identities[0].imported_node.?.span.start += 1;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].imported_node = original_inline_imported_node;
+
+    const original_inline_local_index = mutable_inline_identities[0].local_index;
+    mutable_inline_identities[0].local_index = runtime_local_idx;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].local_index = original_inline_local_index;
+
+    const inline_local_node_raw = @backingInt(inline_type_identity.local_index);
+    const original_inline_local_node = transformer.ast.nodes.items[inline_local_node_raw];
+    const original_inline_local_identity = mutable_inline_identities[0].local_node;
+    const reversed_inline_local_span: @import("lexer/token.zig").Span = .{
+        .start = original_inline_local_node.span.end,
+        .end = original_inline_local_node.span.start,
+    };
+    transformer.ast.nodes.items[inline_local_node_raw].span = reversed_inline_local_span;
+    mutable_inline_identities[0].local_node.span = reversed_inline_local_span;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    transformer.ast.nodes.items[inline_local_node_raw] = original_inline_local_node;
+    mutable_inline_identities[0].local_node = original_inline_local_identity;
+
+    const original_inline_import_span = mutable_inline_identities[0].import_span;
+    mutable_inline_identities[0].import_span.start += 1;
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    mutable_inline_identities[0].import_span = original_inline_import_span;
+
+    const inline_symbol_original = transformer.symbols[inline_type_symbol];
+    @constCast(transformer.symbols)[inline_type_symbol].scope_id = @fromBackingInt(@intCast(alternative_scope));
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    @constCast(transformer.symbols)[inline_type_symbol] = inline_symbol_original;
+
+    try mutable_scope_maps[inline_scope_index].put(allocator, inline_local_name, runtime_symbol);
+    try std.testing.expect(!erasedInlineTypeImportSpecifiersHaveNoOutputSemanticFacts(
+        &transformer,
+        output_root,
+        runtime_import_identity_snapshot,
+    ));
+    try mutable_scope_maps[inline_scope_index].put(allocator, inline_local_name, inline_scope_map_value);
+    if (alternative_scope_map_value) |value| {
+        try mutable_scope_maps[alternative_scope].put(allocator, inline_local_name, value);
+    } else {
+        _ = mutable_scope_maps[alternative_scope].remove(inline_local_name);
+    }
+
     const mutable_specifier_identities = @constCast(runtime_import_identity_snapshot.declarations[0].specifiers);
     const original_snapshot_symbol_id = mutable_specifier_identities[0].symbol_id;
     mutable_specifier_identities[0].symbol_id = erased_type_symbol;
