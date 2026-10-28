@@ -2121,11 +2121,34 @@ pub const Scanner = struct {
     pub fn identifierNamesEqual(a: []const u8, b: []const u8) bool {
         if (std.mem.eql(u8, a, b)) return true;
         if (std.mem.indexOfScalar(u8, a, '\\') == null and std.mem.indexOfScalar(u8, b, '\\') == null) return false;
-        var a_buf: [256]u8 = undefined;
-        var b_buf: [256]u8 = undefined;
-        const a_name = decodeIdentifierEscapesInto(a, &a_buf) orelse return false;
-        const b_name = decodeIdentifierEscapesInto(b, &b_buf) orelse return false;
-        return std.mem.eql(u8, a_name, b_name);
+        var a_offset: usize = 0;
+        var b_offset: usize = 0;
+        while (a_offset < a.len and b_offset < b.len) {
+            const a_codepoint = nextIdentifierNameCodepoint(a, &a_offset) orelse return false;
+            const b_codepoint = nextIdentifierNameCodepoint(b, &b_offset) orelse return false;
+            if (a_codepoint != b_codepoint) return false;
+        }
+        return a_offset == a.len and b_offset == b.len;
+    }
+
+    fn nextIdentifierNameCodepoint(raw: []const u8, offset: *usize) ?u21 {
+        if (offset.* >= raw.len) return null;
+        if (raw[offset.*] == '\\') {
+            const escaped = readIdentifierUnicodeEscape(raw, offset) orelse return null;
+            if (escaped >= 0xD800 and escaped <= 0xDBFF) {
+                const low = readIdentifierUnicodeEscape(raw, offset) orelse return null;
+                if (low < 0xDC00 or low > 0xDFFF) return null;
+                return @intCast(0x10000 + ((escaped - 0xD800) << 10) + (low - 0xDC00));
+            }
+            if (escaped >= 0xDC00 and escaped <= 0xDFFF) return null;
+            return @intCast(escaped);
+        }
+
+        const sequence_len = std.unicode.utf8ByteSequenceLength(raw[offset.*]) catch return null;
+        if (sequence_len > raw.len - offset.*) return null;
+        const codepoint = std.unicode.utf8Decode(raw[offset.* .. offset.* + sequence_len]) catch return null;
+        offset.* += sequence_len;
+        return codepoint;
     }
 
     /// Compare source IdentifierName syntax with an already decoded value.
