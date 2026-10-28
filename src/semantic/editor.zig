@@ -3029,7 +3029,7 @@ fn namespaceMoveForTest(mutation: NamespaceMoveMutation) !void {
         try std.testing.expectEqualDeep(before_rows, editor.references.items);
         try std.testing.expectEqualDeep(before_ids, editor.symbol_ids.items);
         try std.testing.expectEqualDeep(before_scopes, editor.scopes.items);
-        try std.testing.expectEqualDeep(before_nodes, parser.ast.nodes.items);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(parser.ast.nodes.items));
         try std.testing.expectEqualDeep(before_extra, parser.ast.extra_data.items);
         try std.testing.expectEqual(before_scope_map_count, editor.scope_maps.items[scope.toIndex()].count());
         try std.testing.expectEqual(@as(?usize, raw_sid), editor.scope_maps.items[scope.toIndex()].get(parser.ast.getText(name)));
