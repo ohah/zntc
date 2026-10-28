@@ -1264,12 +1264,11 @@ fn captureRuntimeImportIdentitySnapshot(
     };
 }
 
-/// Lenient JavaScript mode rejects every import declaration by default. Reuse
-/// the transform graph only for an erased type-only import, or when a value-form
-/// import is structurally inside an erased ambient namespace. The TypeScript
-/// type-only proof may include attributes only on declaration-level `import type`.
-/// In either case, none of the import identities or decoded local names may
-/// survive in output.
+/// Lenient JavaScript mode reuses the transform graph only for erased imports:
+/// type-only declarations, or value-form imports structurally inside an erased
+/// ambient namespace. Import attributes are admitted only when the same proof
+/// establishes that their complete declaration is erased. No import identity
+/// or decoded local name may survive in output.
 fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -1473,8 +1472,6 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         const inline_type_only = importDeclarationHasOnlyInlineTypeSpecifiers(ast, import_decl);
         if (type_imports_only and !import_decl.is_type_only and !inline_type_only) continue;
         if (import_decl.phase != .none or
-            (import_decl.attrs_len != 0 and
-                (!type_imports_only or (!import_decl.is_type_only and !inline_type_only))) or
             import_decl.specs_start > ast.extra_data.items.len or
             import_decl.specs_len > ast.extra_data.items.len - import_decl.specs_start or
             import_decl.attrs_start > ast.extra_data.items.len or import_decl.source.isNone() or
@@ -1500,6 +1497,11 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
             inside_erased_ambient_namespace = ambient_namespace_import_proofs.get(@intCast(raw)) orelse false;
         }
         if (!import_decl.is_type_only and !inline_type_only and !inside_erased_ambient_namespace) return false;
+        const attributes_are_proven_erased = if (type_imports_only)
+            import_decl.is_type_only or inline_type_only
+        else
+            inside_erased_ambient_namespace;
+        if (import_decl.attrs_len != 0 and !attributes_are_proven_erased) return false;
 
         const source_subtree = ast_walk.collectReachableNodeIndicesFrom(
             transformer.allocator,
@@ -5545,7 +5547,7 @@ test "#6193 ambient namespace value imports require exact subtree erasure proof"
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "const global = 1; declare namespace Types { import { Shape, Color } from './shape'; " ++
+    const source = "const global = 1; declare namespace Types { import { Shape, Color } from './shape' with { type: 'json' }; " ++
         "export const value: Shape & Color; } console.log(({ Shape: 42 }).Shape);";
     const minify: TranspileOptions = .{ .minify_identifiers = true };
 
@@ -5670,6 +5672,20 @@ test "#6193 ambient namespace value imports require exact subtree erasure proof"
         transformer.ast,
         transformer.ast.nodes.items[import_index].data.extra,
     );
+    const import_extra = transformer.ast.nodes.items[import_index].data.extra;
+    const attrs_start_slot = @as(usize, import_extra) + 4;
+    const attrs_len_slot = attrs_start_slot + 1;
+    const original_attrs_start = transformer.ast.extra_data.items[attrs_start_slot];
+    const original_attrs_len = transformer.ast.extra_data.items[attrs_len_slot];
+    try std.testing.expect(original_attrs_len > 0);
+    transformer.ast.extra_data.items[attrs_start_slot] = @intCast(transformer.ast.extra_data.items.len);
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attrs_start_slot] = original_attrs_start;
+
+    transformer.ast.extra_data.items[attrs_len_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attrs_len_slot] = original_attrs_len;
+
     try std.testing.expectEqual(@as(u32, 2), import_decl.specs_len);
     const first_spec_index: ast_mod.NodeIndex = @fromBackingInt(
         @intCast(transformer.ast.extra_data.items[import_decl.specs_start]),
