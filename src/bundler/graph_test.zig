@@ -2520,3 +2520,74 @@ test "CJS export source kind refresh uses the retained local receiver after a pr
     try std.testing.expectEqual(types.ExportsKind.esm, module.exports_kind);
     try std.testing.expectEqual(id, module.semantic.?.symbol_ids[@backingInt(receiver)].?);
 }
+
+test "quoted ordinary export origin survives cached metadata and rejects foreign duplicate live authority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.mjs", "const value=7;export{value as \"한글\"};");
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.mjs" });
+    defer std.testing.allocator.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const module = graph.modules.at(0);
+    try std.testing.expectEqual(@as(usize, 1), module.export_bindings.len);
+    const original = module.export_bindings[0];
+    try std.testing.expectEqualStrings("\"한글\"", (try module.ordinaryQuotedExportLiteral(original)).?.literal_syntax);
+    var foreign_ast = module.ast.?;
+    var foreign = original;
+    foreign.public_key_origin.?.ast = &foreign_ast;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(foreign));
+    var missing = original;
+    missing.symbol = @TypeOf(missing.symbol).invalid;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(missing));
+    var wrong_edge = original;
+    wrong_edge.public_key_origin.?.literal = wrong_edge.public_key_origin.?.specifier;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(wrong_edge));
+    var missing_origin = original;
+    missing_origin.public_key_origin = null;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(missing_origin));
+    var lost_role = original;
+    lost_role.has_public_key_literal = false;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(lost_role));
+    var unsupported = original;
+    unsupported.kind = .re_export;
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(unsupported)) == null);
+    unsupported = original;
+    unsupported.exported_name = "default";
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(unsupported)) == null);
+    const old_wrap = module.wrap_kind;
+    module.wrap_kind = .cjs;
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(original)) == null);
+    module.wrap_kind = old_wrap;
+    var nonquoted = original;
+    nonquoted.has_public_key_literal = false;
+    nonquoted.public_key_literal = null;
+    nonquoted.public_key_origin = null;
+    nonquoted.public_key_binding_value = null;
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(nonquoted)) == null);
+    const sid = module.exportBindingSemanticIndex(original).?;
+    const old_writes = module.semantic.?.symbols.items[sid].write_count;
+    module.semantic.?.symbols.items[sid].write_count = 1;
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(original)) == null);
+    module.semantic.?.symbols.items[sid].write_count = old_writes;
+    const duplicate = try module.parse_arena.?.allocator().alloc(@TypeOf(original), 2);
+    duplicate[0] = original;
+    duplicate[1] = original;
+    const old_bindings = module.export_bindings;
+    module.export_bindings = duplicate;
+    try std.testing.expectError(error.InvalidQuotedExportOrigin, module.ordinaryQuotedExportLiteral(original));
+    module.export_bindings = old_bindings;
+    try std.testing.expect((try module.ordinaryQuotedExportLiteral(original)) != null);
+    // Cached AST installation regenerates graph metadata instead of serializing
+    // borrowed export records or their AST header pointers.
+    module.export_bindings = &.{};
+    try graph.materializeFromCachedAst(module, module.parse_arena.?.allocator());
+    try std.testing.expectEqual(@as(usize, 1), module.export_bindings.len);
+    try std.testing.expectEqualStrings("\"한글\"", (try module.ordinaryQuotedExportLiteral(module.export_bindings[0])).?.literal_syntax);
+    try std.testing.expectEqual(original.symbol, module.export_bindings[0].symbol);
+}

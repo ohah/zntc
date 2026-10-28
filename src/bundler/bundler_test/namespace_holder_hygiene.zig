@@ -231,3 +231,15 @@ test "namespace holder hygiene reserves statically visible eval tokens" {
     };
     for (profiles) |profile| try run(case, profile);
 }
+
+test "quoted ordinary named exports preserve local bindings and provider keys in four profiles" {
+    const cases = [_]Case{
+        .{ .name = "quoted-literal-backslash", .entry = "import{\"\\\\u0061\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"\\\\u0061\"}", .expected = "7\n" },
+        .{ .name = "quoted-literal-quotes", .entry = "import{\"\\\"key\\\"\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"\\\"key\\\"\"}", .expected = "7\n" },
+        .{ .name = "quoted-unicode", .entry = "import{\"한글\" as read}from './dep.mjs';console.log(read.n)", .dep = "const value={n:7};export{value as \"한글\"}", .expected = "7\n" },
+        .{ .name = "ordinary-provider-binding", .entry = "import{value as read}from './dep.mjs';console.log(read.n)", .dep = "export const value={n:7}", .expected = "7\n" },
+        .{ .name = "quoted-escaped-local", .entry = "import{\"한글\" as read}from './dep.mjs';console.log(read.n)", .dep = "const \\u0076alue={n:7};export{\\u0076alue as \"한글\"}", .expected = "7\n" },
+        .{ .name = "quoted-local-collision", .entry = "import{\"한글\" as read}from './dep.mjs';const value=9;console.log(read.n,value)", .dep = "const value={n:7};export{value as \"한글\"}", .expected = "7 9\n" },
+    };
+    for (cases) |case| for (profiles) |profile| try run(case, profile);
+}

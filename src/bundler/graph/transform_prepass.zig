@@ -15372,7 +15372,7 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
     module: *Module,
     arena_alloc: std.mem.Allocator,
 ) !void {
-    const ast = &(module.ast orelse return);
+    const ast = if (module.ast) |*actual| actual else return;
     const previous_import_records = module.import_records;
 
     var scan_result: import_scanner.ScanResult = undefined;

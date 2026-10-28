@@ -184,6 +184,15 @@ pub fn resolveImportLocalSymbol(binding: ImportBinding, context: ImportLocalSymb
 pub const ExportBinding = struct {
     /// 외부에 노출되는 이름 (e.g. "x", "default", "b" in `export { a as b }`)
     exported_name: []const u8,
+    /// Borrowed original string-literal syntax, recorded only by the export producer.
+    has_public_key_literal: bool = false,
+    public_key_binding_value: ?[]const u8 = null,
+    public_key_literal: ?[]const u8 = null,
+    public_key_origin: ?struct {
+        ast: *const Ast,
+        specifier: NodeIndex,
+        literal: NodeIndex,
+    } = null,
     /// 모듈 내부 이름 (e.g. "x", "a")
     local_name: []const u8,
     local_span: Span,
@@ -543,6 +552,10 @@ pub fn extractExportBindings(
 
                         try bindings.append(allocator, .{
                             .exported_name = exported_name,
+                            .has_public_key_literal = exported_node.tag == .string_literal,
+                            .public_key_binding_value = if (exported_node.tag == .string_literal and kind == .local) local_name else null,
+                            .public_key_literal = if (exported_node.tag == .string_literal) ast.getText(exported_node.span) else null,
+                            .public_key_origin = if (exported_node.tag == .string_literal) .{ .ast = ast, .specifier = spec, .literal = exported_idx } else null,
                             .local_name = final_local_name,
                             .local_span = local_node.span,
                             .local_symbol_node = if (!has_source) local_idx else null,
