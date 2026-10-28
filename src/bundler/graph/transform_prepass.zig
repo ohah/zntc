@@ -439,6 +439,178 @@ fn isSupportedSourceTextSpan(ast: *const ast_mod.Ast, span: token_mod.Span) bool
         span.start < span.end and span.end <= ast.source.len;
 }
 
+fn importHasInlineTypeAndRuntimeSpecifiers(
+    ast: *const ast_mod.Ast,
+    import: module_parser.ImportDeclExtras,
+) bool {
+    if (import.is_type_only or import.specs_len == 0 or
+        import.specs_start > ast.extra_data.items.len or
+        import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
+    var has_inline_type_specifier = false;
+    var has_runtime_specifier = false;
+    for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |raw_spec_idx| {
+        if (raw_spec_idx >= ast.nodes.items.len) return false;
+        const specifier = ast.nodes.items[raw_spec_idx];
+        switch (specifier.tag) {
+            .import_default_specifier, .import_namespace_specifier => has_runtime_specifier = true,
+            .import_specifier => switch (specifier.data.binary.flags) {
+                0 => has_runtime_specifier = true,
+                module_parser.SPEC_FLAG_TYPE_ONLY => has_inline_type_specifier = true,
+                else => return false,
+            },
+            else => return false,
+        }
+    }
+    return has_inline_type_specifier and has_runtime_specifier;
+}
+
+fn sameImportIdentityNode(expected: ast_mod.Node, actual: ast_mod.Node) bool {
+    if (expected.tag != actual.tag or !std.meta.eql(expected.span, actual.span)) return false;
+    return switch (expected.tag) {
+        .identifier_reference,
+        .string_literal,
+        .assignment_target_identifier,
+        .import_default_specifier,
+        .import_namespace_specifier,
+        => std.meta.eql(expected.data.string_ref, actual.data.string_ref),
+        .import_specifier, .import_attribute => std.meta.eql(expected.data.binary, actual.data.binary),
+        else => false,
+    };
+}
+
+fn importAttributesHaveValidSourceIdentity(
+    ast: *const ast_mod.Ast,
+    import_node: ast_mod.Node,
+    import: module_parser.ImportDeclExtras,
+) bool {
+    if (import.attrs_start > ast.extra_data.items.len or
+        import.attrs_len > ast.extra_data.items.len - import.attrs_start) return false;
+    var offset: u32 = 0;
+    while (offset < import.attrs_len) : (offset += 1) {
+        const raw_attribute = ast.extra_data.items[import.attrs_start + offset];
+        if (raw_attribute >= ast.nodes.items.len) return false;
+        const attribute = ast.nodes.items[raw_attribute];
+        if (attribute.tag != .import_attribute or attribute.data.binary.flags != 0 or
+            !isSupportedSourceTextSpan(ast, attribute.span) or
+            attribute.span.start < import_node.span.start or attribute.span.end > import_node.span.end) return false;
+        const key_idx = attribute.data.binary.left;
+        const value_idx = attribute.data.binary.right;
+        if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len or
+            value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
+        const key = ast.getNode(key_idx);
+        const value = ast.getNode(value_idx);
+        if (key.tag != .string_literal or value.tag != .string_literal or
+            !isSupportedSourceTextSpan(ast, key.span) or !isSupportedSourceTextSpan(ast, value.span) or
+            key.span.start < attribute.span.start or key.span.end > attribute.span.end or
+            value.span.start < attribute.span.start or value.span.end > attribute.span.end) return false;
+    }
+    return true;
+}
+
+/// Type erasure may remove inline type specifiers while the value import and
+/// its attributes keep the same loader meaning. Retain this case only when the
+/// transformed import still points at the exact source literal, value
+/// specifiers, attribute nodes, and attribute key/value nodes.
+fn attributedInlineTypeImportsHaveExactOutputIdentity(
+    allocator: std.mem.Allocator,
+    source_ast: *const ast_mod.Ast,
+    output_ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    source_count: u32,
+) bool {
+    if (root.isNone() or source_count == 0 or source_count > source_ast.nodes.items.len or
+        source_count > output_ast.nodes.items.len) return false;
+    const source_statements = ast_walk.topLevelStatementIndices(source_ast) orelse return false;
+    const output_reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, output_ast, root) catch return false;
+    defer allocator.free(output_reachable);
+
+    var found_candidate = false;
+    for (source_statements) |source_statement_raw| {
+        if (source_statement_raw >= source_count) return false;
+        const source_node = source_ast.nodes.items[source_statement_raw];
+        if (source_node.tag != .import_declaration or
+            source_node.data.extra > source_ast.extra_data.items.len or
+            source_ast.extra_data.items.len - source_node.data.extra < 6) continue;
+        const source_import = module_parser.readImportDeclExtras(source_ast, source_node.data.extra);
+        if (source_import.attrs_len == 0 or
+            !importHasInlineTypeAndRuntimeSpecifiers(source_ast, source_import)) continue;
+        found_candidate = true;
+        if (source_import.phase != .none or !isSupportedSourceTextSpan(source_ast, source_node.span) or
+            source_import.source.isNone() or @backingInt(source_import.source) >= source_count or
+            source_import.specs_start > source_ast.extra_data.items.len or
+            source_import.specs_len > source_ast.extra_data.items.len - source_import.specs_start or
+            !importAttributesHaveValidSourceIdentity(source_ast, source_node, source_import)) return false;
+
+        var output_import_idx: ?ast_mod.NodeIndex = null;
+        for (output_reachable) |output_raw| {
+            if (output_raw >= output_ast.nodes.items.len) return false;
+            const candidate = output_ast.nodes.items[output_raw];
+            if (candidate.tag != .import_declaration or !std.meta.eql(candidate.span, source_node.span)) continue;
+            if (output_import_idx != null) return false;
+            output_import_idx = @fromBackingInt(@intCast(output_raw));
+        }
+        const output_idx = output_import_idx orelse return false;
+        const output_node = output_ast.getNode(output_idx);
+        if (output_node.data.extra > output_ast.extra_data.items.len or
+            output_ast.extra_data.items.len - output_node.data.extra < 6) return false;
+        const output_import = module_parser.readImportDeclExtras(output_ast, output_node.data.extra);
+        if (output_import.is_type_only or output_import.phase != .none or
+            output_import.source != source_import.source or
+            output_import.attrs_len != source_import.attrs_len or
+            output_import.attrs_start > output_ast.extra_data.items.len or
+            output_import.attrs_len > output_ast.extra_data.items.len - output_import.attrs_start or
+            output_import.specs_start > output_ast.extra_data.items.len or
+            output_import.specs_len > output_ast.extra_data.items.len - output_import.specs_start or
+            !sameImportIdentityNode(source_ast.getNode(source_import.source), output_ast.getNode(output_import.source)) or
+            !importAttributesHaveValidSourceIdentity(output_ast, output_node, output_import)) return false;
+
+        var source_runtime_count: u32 = 0;
+        for (source_ast.extra_data.items[source_import.specs_start .. source_import.specs_start + source_import.specs_len]) |raw_spec_idx| {
+            if (raw_spec_idx >= source_count) return false;
+            const source_specifier = source_ast.nodes.items[raw_spec_idx];
+            if (source_specifier.tag == .import_specifier and
+                source_specifier.data.binary.flags == module_parser.SPEC_FLAG_TYPE_ONLY) continue;
+            const output_offset = source_runtime_count;
+            if (output_offset >= output_import.specs_len) return false;
+            const output_raw = output_ast.extra_data.items[output_import.specs_start + output_offset];
+            if (output_raw != raw_spec_idx or
+                !sameImportIdentityNode(source_specifier, output_ast.nodes.items[output_raw])) return false;
+            switch (source_specifier.tag) {
+                .import_default_specifier, .import_namespace_specifier => {},
+                .import_specifier => {
+                    if (source_specifier.data.binary.flags != 0) return false;
+                    const imported_idx = source_specifier.data.binary.left;
+                    const local_idx = source_specifier.data.binary.right;
+                    if (imported_idx.isNone() or @backingInt(imported_idx) >= source_count or
+                        local_idx.isNone() or @backingInt(local_idx) >= source_count or
+                        !sameImportIdentityNode(source_ast.getNode(imported_idx), output_ast.getNode(imported_idx)) or
+                        !sameImportIdentityNode(source_ast.getNode(local_idx), output_ast.getNode(local_idx))) return false;
+                },
+                else => return false,
+            }
+            source_runtime_count += 1;
+        }
+        if (source_runtime_count == 0 or source_runtime_count != output_import.specs_len) return false;
+
+        var offset: u32 = 0;
+        while (offset < source_import.attrs_len) : (offset += 1) {
+            const source_attribute_raw = source_ast.extra_data.items[source_import.attrs_start + offset];
+            const output_raw = output_ast.extra_data.items[output_import.attrs_start + offset];
+            if (source_attribute_raw >= source_count or source_attribute_raw != output_raw) return false;
+            const source_attribute = source_ast.nodes.items[source_attribute_raw];
+            const output_attribute = output_ast.nodes.items[output_raw];
+            if (!sameImportIdentityNode(source_attribute, output_attribute)) return false;
+            const key_idx = source_attribute.data.binary.left;
+            const value_idx = source_attribute.data.binary.right;
+            if (key_idx.isNone() or @backingInt(key_idx) >= source_count or
+                value_idx.isNone() or @backingInt(value_idx) >= source_count or
+                !sameImportIdentityNode(source_ast.getNode(key_idx), output_ast.getNode(key_idx)) or
+                !sameImportIdentityNode(source_ast.getNode(value_idx), output_ast.getNode(value_idx))) return false;
+        }
+    }
+    return found_candidate;
+}
+
 test "export-all retained-graph gate accepts only source-backed identifier namespace names" {
     const Parser = @import("../../parser/parser.zig").Parser;
     const Case = struct {
@@ -576,8 +748,9 @@ test "export-all retained-graph gate accepts only source-backed identifier names
 /// has no runtime edge and is admitted only when TS stripping removes it; a
 /// mixed declaration must retain a value edge under verbatim syntax or the
 /// bounded value-use proof below. Attributes on an erased type-only declaration
-/// cannot change runtime graph shape. Plain JavaScript value imports have no
-/// TypeScript elision path.
+/// cannot change runtime graph shape. A mixed attributed declaration is
+/// provisional and must pass the post-transform identity proof. Plain
+/// JavaScript value imports have no TypeScript elision path.
 fn hasStableRuntimeImports(
     ast: *const ast_mod.Ast,
     options: TransformOptions,
@@ -626,10 +799,27 @@ fn hasStableRuntimeImports(
             if (!has_inline_type_only_specifier) return false;
             continue;
         }
-        if (import.attrs_len != 0) return false;
+        if (import.attrs_len != 0 and
+            (!has_inline_type_only_specifier or
+                !importAttributesHaveValidSourceIdentity(ast, node, import))) return false;
         if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
     }
     return true;
+}
+
+fn hasAttributedInlineTypeRuntimeImport(ast: *const ast_mod.Ast, options: TransformOptions) bool {
+    if (!ast.is_typescript or !options.strip_types) return false;
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    for (statements) |raw_stmt| {
+        if (raw_stmt >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[raw_stmt];
+        if (node.tag != .import_declaration or
+            node.data.extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - node.data.extra < 6) continue;
+        const import = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (import.attrs_len != 0 and importHasInlineTypeAndRuntimeSpecifiers(ast, import)) return true;
+    }
+    return false;
 }
 
 test "stable runtime imports admit erased inline type-only declarations without a value edge" {
@@ -774,10 +964,32 @@ test "stable runtime imports admit erased inline type-only declarations without 
             .expected = true,
         },
         .{
-            .name = "attributed runtime import remains outside the stable subset",
+            .name = "attributed mixed inline type and runtime import can keep stable edge",
             .source = "import { value, type Shape } from './values' with { type: 'json' };",
             .options = .{ .strip_types = true, .verbatim_module_syntax = true },
             .allow_nonverbatim = true,
+            .expected = true,
+        },
+        .{
+            .name = "attributed runtime import without inline type remains outside the stable subset",
+            .source = "import { value } from './values' with { type: 'json' };",
+            .options = .{ .strip_types = true, .verbatim_module_syntax = true },
+            .allow_nonverbatim = true,
+            .expected = false,
+        },
+        .{
+            .name = "attributed mixed inline type and runtime import needs type stripping",
+            .source = "import { value, type Shape } from './values' with { type: 'json' };",
+            .options = .{ .strip_types = false, .verbatim_module_syntax = true },
+            .allow_nonverbatim = true,
+            .expected = false,
+        },
+        .{
+            .name = "attributed mixed inline type and runtime import needs TypeScript AST",
+            .source = "import { value, type Shape } from './values' with { type: 'json' };",
+            .options = .{ .strip_types = true, .verbatim_module_syntax = true },
+            .allow_nonverbatim = true,
+            .is_typescript = false,
             .expected = false,
         },
     };
@@ -810,6 +1022,294 @@ test "stable runtime imports admit erased inline type-only declarations without 
             hasStableRuntimeImports(&parser.ast, case.options, case.allow_nonverbatim),
         );
     }
+}
+
+test "attributed mixed inline type import needs exact output identity" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "import { type Shape, value as data } from './data.json' with { type: 'json' }; console.log(data);");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var output_ast = try parser.ast.cloneForTransformer(allocator);
+    defer output_ast.deinit();
+    var import_idx: ?ast_mod.NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .import_declaration) {
+            import_idx = @fromBackingInt(@intCast(raw));
+            break;
+        }
+    }
+    const source_import_idx = import_idx orelse return error.MissingImportDeclaration;
+    const source_import_node = parser.ast.getNode(source_import_idx);
+    const source_import = module_parser.readImportDeclExtras(&parser.ast, source_import_node.data.extra);
+    try std.testing.expectEqual(@as(u32, 2), source_import.specs_len);
+    try std.testing.expect(hasStableRuntimeImports(
+        &parser.ast,
+        .{ .strip_types = true, .verbatim_module_syntax = true },
+        true,
+    ));
+    const source_extra = source_import_node.data.extra;
+    const original_source_attrs_start = parser.ast.extra_data.items[source_extra + 4];
+    const original_source_attrs_len = parser.ast.extra_data.items[source_extra + 5];
+    const source_attribute_raw = parser.ast.extra_data.items[source_import.attrs_start];
+    const source_attribute = parser.ast.nodes.items[source_attribute_raw];
+    parser.ast.extra_data.items[source_extra + 4] = std.math.maxInt(u32);
+    try std.testing.expect(!hasStableRuntimeImports(
+        &parser.ast,
+        .{ .strip_types = true, .verbatim_module_syntax = true },
+        true,
+    ));
+    parser.ast.extra_data.items[source_extra + 4] = original_source_attrs_start;
+    parser.ast.extra_data.items[source_import.attrs_start] = std.math.maxInt(u32);
+    try std.testing.expect(!hasStableRuntimeImports(
+        &parser.ast,
+        .{ .strip_types = true, .verbatim_module_syntax = true },
+        true,
+    ));
+    parser.ast.extra_data.items[source_import.attrs_start] = source_attribute_raw;
+    parser.ast.nodes.items[source_attribute_raw].data.binary.flags = 1;
+    try std.testing.expect(!hasStableRuntimeImports(
+        &parser.ast,
+        .{ .strip_types = true, .verbatim_module_syntax = true },
+        true,
+    ));
+    parser.ast.nodes.items[source_attribute_raw] = source_attribute;
+    parser.ast.extra_data.items[source_extra + 5] = original_source_attrs_len;
+    const output_extra = output_ast.nodes.items[@backingInt(source_import_idx)].data.extra;
+    const original_specs_start = output_ast.extra_data.items[output_extra];
+    const original_specs_len = output_ast.extra_data.items[output_extra + 1];
+    const original_attrs_start = output_ast.extra_data.items[output_extra + 4];
+    const original_attrs_len = output_ast.extra_data.items[output_extra + 5];
+    const runtime_specifier_raw = parser.ast.extra_data.items[source_import.specs_start + 1];
+    const inline_specifier_raw = parser.ast.extra_data.items[source_import.specs_start];
+    const source_runtime_specifier = parser.ast.nodes.items[runtime_specifier_raw];
+    const imported_idx = source_runtime_specifier.data.binary.left;
+    const local_idx = source_runtime_specifier.data.binary.right;
+    const attribute_raw = parser.ast.extra_data.items[source_import.attrs_start];
+    const attribute = parser.ast.nodes.items[attribute_raw];
+    const key_idx = attribute.data.binary.left;
+    const value_idx = attribute.data.binary.right;
+    const source_literal_idx = source_import.source;
+    const root = parser.ast.transformed_root orelse
+        @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(parser.ast.nodes.items.len - 1)));
+
+    // Model type erasure: preserve the runtime specifier and the original
+    // attribute list, while the inline type specifier becomes unreachable.
+    output_ast.extra_data.items[output_extra] = original_specs_start + 1;
+    output_ast.extra_data.items[output_extra + 1] = 1;
+    try std.testing.expect(attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+
+    const duplicate_attribute = try output_ast.addNode(attribute);
+    output_ast.extra_data.items[original_attrs_start] = @backingInt(duplicate_attribute);
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[original_attrs_start] = attribute_raw;
+
+    const duplicate_runtime_specifier = try output_ast.addNode(source_runtime_specifier);
+    output_ast.extra_data.items[original_specs_start + 1] = @backingInt(duplicate_runtime_specifier);
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[original_specs_start + 1] = runtime_specifier_raw;
+
+    const duplicate_source_literal = try output_ast.addNode(parser.ast.getNode(source_literal_idx));
+    output_ast.extra_data.items[output_extra + 2] = @backingInt(duplicate_source_literal);
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 2] = @backingInt(source_literal_idx);
+
+    output_ast.nodes.items[attribute_raw].data.binary.left = value_idx;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[attribute_raw] = attribute;
+
+    output_ast.extra_data.items[output_extra + 1] = original_specs_len;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 1] = 1;
+
+    output_ast.extra_data.items[output_extra + 2] = inline_specifier_raw;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 2] = @intCast(@backingInt(source_literal_idx));
+
+    output_ast.extra_data.items[output_extra + 2] = std.math.maxInt(u32);
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 2] = @backingInt(source_literal_idx);
+
+    output_ast.extra_data.items[output_extra + 5] = 0;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 5] = original_attrs_len;
+
+    output_ast.extra_data.items[output_extra + 4] = std.math.maxInt(u32);
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[output_extra + 4] = original_attrs_start;
+
+    output_ast.extra_data.items[original_attrs_start] = @intCast(@backingInt(key_idx));
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.extra_data.items[original_attrs_start] = attribute_raw;
+
+    output_ast.nodes.items[attribute_raw].data.binary.flags = 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[attribute_raw] = attribute;
+
+    const original_key = output_ast.getNode(key_idx);
+    output_ast.nodes.items[@backingInt(key_idx)].span.end += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(key_idx)] = original_key;
+
+    output_ast.nodes.items[@backingInt(key_idx)].data.string_ref.start += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(key_idx)] = original_key;
+
+    const original_value = output_ast.getNode(value_idx);
+    output_ast.nodes.items[@backingInt(value_idx)].span.start += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(value_idx)] = original_value;
+
+    output_ast.nodes.items[@backingInt(value_idx)].data.string_ref.start += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(value_idx)] = original_value;
+
+    const original_runtime_specifier = output_ast.nodes.items[runtime_specifier_raw];
+    output_ast.nodes.items[runtime_specifier_raw].data.binary.flags = 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[runtime_specifier_raw] = original_runtime_specifier;
+
+    const original_imported = output_ast.getNode(imported_idx);
+    output_ast.nodes.items[@backingInt(imported_idx)].span.end += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(imported_idx)] = original_imported;
+
+    const original_local = output_ast.getNode(local_idx);
+    output_ast.nodes.items[@backingInt(local_idx)].span.end += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(local_idx)] = original_local;
+
+    const output_import_node = output_ast.nodes.items[@backingInt(source_import_idx)];
+    output_ast.nodes.items[@backingInt(source_import_idx)].span.end += 1;
+    try std.testing.expect(!attributedInlineTypeImportsHaveExactOutputIdentity(
+        allocator,
+        &parser.ast,
+        &output_ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+    ));
+    output_ast.nodes.items[@backingInt(source_import_idx)] = output_import_node;
 }
 
 /// A mapped split preserves its source binding nodes. TypeScript additionally
@@ -11776,6 +12276,16 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    if (can_keep_semantic_graph and hasAttributedInlineTypeRuntimeImport(ast_ptr, opts)) {
+        const exact_attribute_identity = attributedInlineTypeImportsHaveExactOutputIdentity(
+            arena_alloc,
+            ast_ptr,
+            transformer.ast,
+            root,
+            parser_node_count,
+        );
+        can_keep_semantic_graph = exact_attribute_identity;
+    }
     // Opaque define text is emitted as one synthetic identifier-shaped node.
     // Its inner lexical references cannot pass as exact merely because that
     // wrapper node has an external-reference marker.
