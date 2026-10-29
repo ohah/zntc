@@ -39,7 +39,7 @@ fn invalid() Error {
     return error.InvalidProviderPreservation;
 }
 
-// Only called for the closed super-get catalog. Both walks consume actual
+// Only called for the closed super-get/set catalogs. Both walks consume actual
 // scope owners; copied syntax never selects a new scope from a name.
 fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, target: u32, scopes: []const scopes_mod.Scope, owners: *const std.AutoHashMapUnmanaged(u32, u32)) Error!?Owner {
     const Work = struct { node: NodeIndex, owner: ?Owner };
@@ -76,6 +76,25 @@ fn nearestOwner(a: std.mem.Allocator, tree: *const ast.Ast, root: NodeIndex, tar
         var children = walk.children(tree, tree.nodes.items[raw]);
         while (children.next()) |child| try stack.append(a, .{ .node = child, .owner = current });
     }
+    return null;
+}
+
+const ExternalRole = enum(u1) { object, type_error };
+fn expectedExternalCounts(catalog: origin_mod.Catalog) [2]usize {
+    return switch (catalog) {
+        .super_get => .{ 2, 0 },
+        .super_set => .{ 2, 1 },
+        else => .{ 0, 0 },
+    };
+}
+// The winning sealed catalog and actual runtime edge select this source role.
+// Spelling is its invariant, never a way to recover a SymbolId or ScopeId.
+fn externalRole(catalog: origin_mod.Catalog, tree: *const ast.Ast, leaves: []const NodeIndex, node: NodeIndex) ?ExternalRole {
+    if (node.isNone() or @backingInt(node) >= tree.nodes.items.len or
+        std.mem.indexOfScalar(NodeIndex, leaves, node) == null or tree.getNode(node).tag != .identifier_reference) return null;
+    const text = tree.getText(tree.getNode(node).data.string_ref);
+    if ((catalog == .super_get or catalog == .super_set) and std.mem.eql(u8, text, "Object")) return .object;
+    if (catalog == .super_set and std.mem.eql(u8, text, "TypeError")) return .type_error;
     return null;
 }
 
@@ -120,7 +139,8 @@ fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transfor
             .export_named_declaration,
             .export_specifier,
             => {},
-            .while_statement => if (catalog != .super_get) return false,
+            .while_statement => if (catalog != .super_get and catalog != .super_set) return false,
+            .throw_statement, .new_expression => if (catalog != .super_set) return false,
             .regexp_literal => if (!std.mem.eql(u8, tree.getText(node.data.string_ref), "/./")) return false,
             else => return false,
         }
@@ -136,7 +156,10 @@ fn eligible(tree: *const ast.Ast, nodes: []const u32, options: @import("transfor
             },
             .object_property => if (options.unsupported.object_extensions and node.data.binary.right.isNone()) return false,
             .static_member_expression, .computed_member_expression => if (tree.readExtra(node.data.extra, 2) & ast.MemberFlags.optional_chain != 0) return false,
-            .call_expression => if (tree.readExtra(node.data.extra, 3) & ast.CallFlags.optional_chain != 0) return false,
+            .call_expression, .new_expression => {
+                if (!tree.hasExtra(node.data.extra, 4) or
+                    tree.readExtra(node.data.extra, 3) & (ast.CallFlags.optional_chain | ast.CallFlags.callee_optional_chain) != 0) return false;
+            },
             else => {},
         }
         if ((node.tag == .function_expression or node.tag == .function_declaration or node.tag == .function) and tree.readExtra(node.data.extra, ast.FunctionExtra.flags) != 0) return false;
@@ -237,6 +260,7 @@ fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mo
     for (nodes) |raw| try node_set.put(a, raw, {});
     const leaves = try refs_walk.collectIdentifierReferences(a, tree, root);
     var externals: std.ArrayList(External) = .empty;
+    var external_counts: [2]usize = .{ 0, 0 };
     for (leaves) |leaf| {
         const raw = @backingInt(leaf);
         if (raw >= semantic.symbol_ids.len) return null;
@@ -244,13 +268,12 @@ fn captureInput(a: std.mem.Allocator, tree: *const ast.Ast, semantic: *module.Mo
         // The constructor/variant/content seal and actual lexical null-ID
         // leaf establish this role. Spelling is only its fixed invariant;
         // no name lookup is used to find a binding or decide its ScopeId.
-        if (loaded.catalog != .super_get or tree.getNode(leaf).tag != .identifier_reference or
-            !std.mem.eql(u8, tree.getText(tree.getNode(leaf).data.string_ref), "Object")) return null;
+        const role = externalRole(loaded.catalog, tree, leaves, leaf) orelse return null;
+        external_counts[@backingInt(role)] += 1;
         const owner = (try nearestOwner(a, tree, root, raw, semantic.scopes, &semantic.scope_owner_map)) orelse return null;
         try externals.append(a, .{ .node = raw, .owner = owner });
     }
-    if ((loaded.catalog == .super_get and externals.items.len != 2) or
-        (loaded.catalog != .super_get and externals.items.len != 0)) return null;
+    if (!std.meta.eql(external_counts, expectedExternalCounts(loaded.catalog))) return null;
     var owners: std.ArrayList(Owner) = .empty;
     for (nodes) |raw| if (semantic.scope_owner_map.get(raw)) |scope| try owners.append(a, .{ .node = raw, .scope = scope });
     var exports: std.ArrayList(Export) = .empty;
@@ -457,8 +480,12 @@ fn validate(self: anytype, source: Source, view: View, root: NodeIndex) Error!vo
         }
         if (matches != 1) return invalid();
     }
-    if ((source.origin.catalog == .super_get and source.externals.len != 2) or
-        (source.origin.catalog != .super_get and source.externals.len != 0)) return invalid();
+    var external_counts: [2]usize = .{ 0, 0 };
+    for (source.externals) |external| {
+        const role = externalRole(source.origin.catalog, &source.syntax, source.leaves, @fromBackingInt(external.node)) orelse return invalid();
+        external_counts[@backingInt(role)] += 1;
+    }
+    if (!std.meta.eql(external_counts, expectedExternalCounts(source.origin.catalog))) return invalid();
     if (source.externals.len != 0) {
         var actual_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
         for (live) |raw| if (owned(self, view, raw)) |scope| try actual_owners.put(self.allocator, raw, scope);
