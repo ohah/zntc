@@ -1714,7 +1714,24 @@ function transformIdentityAuditProblems(stderr: string): string[] {
   } else {
     problems.push(...strictSchemaProblems(strict[0]));
   }
+
+  const reportPaths = [
+    auditReportSourcePath(exact[0], 'zntc: symbol-identity ', 'generated_bindings='),
+    auditReportSourcePath(owners[0], 'zntc: symbol-source-scope-owner ', 'scope_owner_mismatch='),
+    auditReportSourcePath(coverage[0], 'zntc: symbol-coverage ', 'new_user_idents='),
+    auditReportSourcePath(strict[0], 'zntc: synthetic-coverage ', 'bound='),
+  ].filter((path): path is string => path !== undefined);
+  if (new Set(reportPaths).size > 1) {
+    problems.push('transform audit reports reference multiple source files');
+  }
   return problems;
+}
+
+function auditReportSourcePath(line: string | undefined, prefix: string, payloadMarker: string) {
+  if (!line?.startsWith(prefix)) return undefined;
+  const payloadStart = line.lastIndexOf(`: ${payloadMarker}`);
+  if (payloadStart < prefix.length) return undefined;
+  return line.slice(prefix.length, payloadStart).replaceAll('\\', '/');
 }
 
 function symbolCoverageSchemaProblems(report: string): string[] {
@@ -5183,6 +5200,31 @@ describe('symbol identity coverage gate (#4819)', () => {
     const coverage = 'zntc: symbol-coverage input.mjs: new_user_idents=1 missing=0 wrong=0';
     expect(transformIdentityAuditProblems(`${coverage}\n${coverage}`)).toContain(
       'symbol coverage reports=2, expected 1',
+    );
+  });
+
+  test('transform-stage identity reports must describe the same source file', () => {
+    const reports = [
+      'zntc: symbol-identity /tmp/input.js: generated_bindings=1',
+      'zntc: symbol-source-scope-owner /tmp/input.js: scope_owner_mismatch=0',
+      'zntc: symbol-coverage /tmp/input.js: new_user_idents=1',
+      'zntc: synthetic-coverage /tmp/input.js: bound=1',
+    ];
+    for (const index of reports.keys()) {
+      const mutant = [...reports];
+      mutant[index] = mutant[index].replace('/tmp/input.js', '/tmp/other.js');
+      expect(transformIdentityAuditProblems(mutant.join('\n'))).toContain(
+        'transform audit reports reference multiple source files',
+      );
+    }
+
+    const markerInPath = reports
+      .map((line) =>
+        line.replace('/tmp/input.js', '/tmp/symbol-identity: generated_bindings=1/input.js'),
+      )
+      .join('\n');
+    expect(transformIdentityAuditProblems(markerInPath)).not.toContain(
+      'transform audit reports reference multiple source files',
     );
   });
 
