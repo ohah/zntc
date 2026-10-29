@@ -20699,6 +20699,23 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '15\n',
         },
         {
+          name: 'flat multiple var bindings in for-of head',
+          source:
+            'var sum=0; for (var [left,middle,right] of [[7,8,9],[20,30,40]]) sum+=left+middle+right; console.log(sum,left,middle,right);',
+          expected: '114 20 30 40\n',
+          nativeOracle: true,
+        },
+        {
+          name: 'flat multiple var for-of bindings stay shared by closures',
+          source: [
+            'var callbacks=[];',
+            'for (var [left,middle,right] of [[7,8,9],[20,30,40]]) callbacks.push(function(){return left+middle+right;});',
+            'console.log(callbacks[0](),callbacks[1](),left,middle,right);',
+          ].join('\n'),
+          expected: '90 90 20 30 40\n',
+          nativeOracle: true,
+        },
+        {
           name: 'var for-of head keeps the shared binding for closures',
           source: [
             'var callbacks=[];',
@@ -20731,6 +20748,23 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           source:
             "var seen=''; for (var [value] in {row:0,ship:0}) seen+=value; console.log(seen,value);",
           expected: 'rs s\n',
+        },
+        {
+          name: 'flat multiple var bindings in for-in head',
+          source:
+            "var seen=''; for (var [left,middle,right] in {row:0,ship:0}) seen+=left+middle+right; console.log(seen,left,middle,right);",
+          expected: 'rowshi s h i\n',
+          nativeOracle: true,
+        },
+        {
+          name: 'flat multiple var for-in bindings stay shared by closures',
+          source: [
+            'var callbacks=[];',
+            'for (var [left,middle,right] in {row:0,ship:0}) callbacks.push(function(){return left+middle+right;});',
+            'console.log(callbacks[0](),callbacks[1](),left,middle,right);',
+          ].join('\n'),
+          expected: 'shi shi s h i\n',
+          nativeOracle: true,
         },
         {
           name: 'var for-in head keeps the shared binding for closures',
@@ -20821,20 +20855,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '15\n',
         },
         {
-          name: 'multiple var bindings in for-of head',
-          source:
-            'var sum = 0; for (var [left, right] of [[7, 8]]) sum += left + right; console.log(sum);',
-          expected: '15\n',
-        },
-        {
           name: 'defaulted var binding in for-of head',
           source: 'for (var [value = 7] of [[undefined]]) console.log(value);',
           expected: '7\n',
-        },
-        {
-          name: 'multiple var bindings in for-in head',
-          source: 'for (var [left, right] in {row: 0}) console.log(left, right);',
-          expected: 'r o\n',
         },
         {
           name: 'var destructuring for-await head',
