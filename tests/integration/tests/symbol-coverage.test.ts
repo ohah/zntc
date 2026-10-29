@@ -11946,6 +11946,27 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: 'true 2\n',
       },
       {
+        name: 'private-method-brand-check-new-instance-with-static-block',
+        graph: 'retained',
+        source:
+          'class Counter { #read() { return 1; } static hasInstance() { return #read in new Counter(); } static { this.value = 2; } } console.log(Counter.hasInstance(), Counter.value);',
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'private-method-brand-check-object-literal-with-static-block',
+        graph: 'retained',
+        source:
+          'class Counter { #read() { return 1; } static hasEmpty() { return #read in {}; } static { this.value = 2; } } console.log(Counter.hasEmpty(), Counter.value);',
+        stdout: 'false 2\n',
+      },
+      {
+        name: 'private-method-brand-check-array-literal-with-static-block',
+        graph: 'retained',
+        source:
+          'class Counter { #read() { return 1; } static hasEmpty() { return #read in []; } static { this.value = 2; } } console.log(Counter.hasEmpty(), Counter.value);',
+        stdout: 'false 2\n',
+      },
+      {
         name: 'private-field-function-call-with-static-block',
         graph: 'reanalyzed',
         source:
