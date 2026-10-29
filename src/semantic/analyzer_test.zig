@@ -3883,3 +3883,160 @@ test "namespace generated candidate reservation follows actual active container 
         try std.testing.expectEqual(@as(usize, 1), matches);
     }
 }
+
+fn genericOwnedNameAnalysis(allocator: std.mem.Allocator, source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    try std.testing.expect(analyzer.scope_owner_map.contains(@backingInt(root)));
+}
+
+fn genericOwnedNameAllocationSweep(source: []const u8, label: []const u8) !void {
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = std.math.maxInt(usize) });
+    try genericOwnedNameAnalysis(counting.allocator(), source);
+    const total = counting.allocations;
+    try std.testing.expect(total > 0);
+    for (0..total) |allocation| {
+        var failing = OneShotFailAllocator{ .child = std.testing.allocator, .fail_at = allocation };
+        try std.testing.expectError(error.OutOfMemory, genericOwnedNameAnalysis(failing.allocator(), source));
+    }
+    std.debug.print("generic-owned-name OOM role={s} allocations={d}\n", .{ label, total });
+}
+
+test "generic owned name ASCII source borrow survives success and OOM cleanup" {
+    try genericOwnedNameAllocationSweep("let value=1;value;", "ASCII-borrow");
+}
+
+test "generic owned name escaped source key success deinit releases owned names" {
+    try genericOwnedNameAnalysis(std.testing.allocator, "let \\u0061=1;a;");
+}
+
+test "generic owned name escaped source key OOM cleanup releases owned names" {
+    try genericOwnedNameAllocationSweep("let \\u0061=1;a;", "source-escaped");
+}
+
+test "generic owned name synthetic namespace key success deinit remains singly owned" {
+    try genericOwnedNameAnalysis(std.testing.allocator, "namespace N{export const value=1}");
+}
+
+test "generic owned name synthetic namespace key OOM cleanup releases owned names" {
+    try genericOwnedNameAllocationSweep("namespace N{export const value=1}", "namespace-synthetic");
+}
+
+test "generic owned name heap editor borrows namespace keys while analyzer owner is alive" {
+    const a = std.testing.allocator;
+    var scanner = try Scanner.init(a, "namespace N{export const value=1}");
+    defer scanner.deinit();
+    var parser = Parser.init(a, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    var editor = try analyzer.beginEdit();
+    defer editor.deinit();
+    var parameters: usize = 0;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        parameters += 1;
+        const scope = symbol.scope_id.toIndex();
+        try std.testing.expectEqualStrings("_N", symbol.synthetic_name);
+        try std.testing.expectEqual(@as(?usize, sid), analyzer.scope_maps.items[scope].get(symbol.synthetic_name));
+        try std.testing.expectEqual(@as(?usize, sid), editor.scope_maps.items[scope].get(symbol.synthetic_name));
+        try std.testing.expectEqual(analyzer.scope_maps.items[scope].getKey(symbol.synthetic_name).?.ptr, editor.scope_maps.items[scope].getKey(symbol.synthetic_name).?.ptr);
+    }
+    try std.testing.expectEqual(@as(usize, 1), parameters);
+    // No result is consumed after analyzer.deinit: these heap keys are borrowed.
+}
+
+test "generic owned name parse arena result and ModuleStore transfer preserve known keys and SIDs" {
+    const module_mod = @import("../bundler/module.zig");
+    const Store = @import("../bundler/module_store.zig").PersistentModuleStore;
+    const a = std.testing.allocator;
+    var store = Store.init(a);
+    defer store.deinit();
+    const path = "/virtual/generic-owned-name.ts";
+    var module = module_mod.Module.init(.none, path);
+    defer module.deinit(a);
+    module.parse_arena = module_mod.createParseArena(a) orelse return error.OutOfMemory;
+    const arena = module.parse_arena.?.allocator();
+    module.source = try arena.dupe(u8, "let \\u0061=1;namespace N{export const value=a}");
+    var known_binding: ?u32 = null;
+    var binding_node: ?u32 = null;
+    var root_scope: ?u32 = null;
+    var parameter: ?u32 = null;
+    var parameter_scope: ?u32 = null;
+    var parameter_name: []const u8 = "";
+    {
+        var scanner = try Scanner.init(arena, module.source);
+        var parser = Parser.init(arena, &scanner);
+        parser.configureFromExtension(".ts");
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(arena, &parser.ast);
+        analyzer.is_ts = true;
+        try analyzer.analyze();
+        root_scope = analyzer.scope_owner_map.get(@backingInt(root));
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), "\\u0061")) {
+                binding_node = @intCast(raw);
+                known_binding = analyzer.symbol_ids.items[raw];
+            }
+        }
+        for (analyzer.symbols.items, 0..) |symbol, sid| {
+            if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+            try std.testing.expect(parameter == null);
+            parameter = @intCast(sid);
+            parameter_scope = @backingInt(symbol.scope_id);
+            parameter_name = symbol.synthetic_name;
+        }
+        module.ast = parser.ast;
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .scope_owner_map = analyzer.scope_owner_map,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+        };
+        // Production transfers arena-backed views and does not deinit analyzer.
+    }
+    const source_id = known_binding orelse return error.MissingActualOwnedNameBinding;
+    const source_node = binding_node orelse return error.MissingActualOwnedNameNode;
+    const global = root_scope orelse return error.MissingActualOwnedNameRoot;
+    const owner = parameter orelse return error.MissingActualNamespaceOwner;
+    const scope = parameter_scope orelse return error.MissingActualNamespaceScope;
+    var editor = try module.semantic.?.beginEdit(arena, &module.ast.?);
+    module.semantic.?.applyEdit(try editor.finish());
+    const first_growth = try arena.alloc(u8, 16 * 1024);
+    @memset(first_growth, 'x');
+    _ = try module.ast.?.addString(first_growth);
+    try std.testing.expectEqual(@as(?usize, source_id), module.semantic.?.scope_maps[global].get("a"));
+    try std.testing.expectEqual(@as(?usize, owner), module.semantic.?.scope_maps[scope].get(parameter_name));
+    try std.testing.expectEqual(@as(?u32, source_id), module.semantic.?.symbol_ids[source_node]);
+    store.putModule(path, &module, 1);
+    try std.testing.expect(module.parse_arena == null);
+    const cached = store.getIfFresh(path, 1) orelse return error.MissingOwnedNameStoreEntry;
+    var restored = cached.module;
+    cached.module.parse_arena = null;
+    cached.module.alias_table = null;
+    defer restored.deinit(a);
+    const restored_growth = try restored.parse_arena.?.allocator().alloc(u8, 32 * 1024);
+    @memset(restored_growth, 'y');
+    _ = try restored.ast.?.addString(restored_growth);
+    try std.testing.expectEqual(@as(?usize, source_id), restored.semantic.?.scope_maps[global].get("a"));
+    try std.testing.expectEqual(@as(?usize, owner), restored.semantic.?.scope_maps[scope].get(parameter_name));
+    try std.testing.expectEqual(@as(?u32, source_id), restored.semantic.?.symbol_ids[source_node]);
+    try std.testing.expectEqualStrings("_N", parameter_name);
+}
