@@ -20694,6 +20694,39 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '11 20,30\n',
         },
         {
+          name: 'simple var for-of binding head',
+          source: 'var sum=0; for (var [value] of [[7],[8]]) sum+=value; console.log(sum);',
+          expected: '15\n',
+        },
+        {
+          name: 'var for-of head keeps the shared binding for closures',
+          source: [
+            'var callbacks=[];',
+            'for (var [value] of [[7],[8]]) callbacks.push(function(){return value;});',
+            'console.log(callbacks[0](),callbacks[1]());',
+          ].join('\n'),
+          expected: '8 8\n',
+          nativeOracle: true,
+        },
+        {
+          name: 'var for-of head avoids runtime helper and temp collisions',
+          source:
+            'var _a="user",_ref="user-ref",__read="user-read",_iterator=70,_step=80; var total=0; for (var [value] of [[7],[8]]) total+=value; console.log(total,_a,_ref,__read,_iterator,_step);',
+          expected: '15 user user-ref user-read 70 80\n',
+        },
+        {
+          name: 'var for-of head closes both destructured and loop iterators',
+          source: [
+            'var events=[];',
+            'var inner={ [Symbol.iterator](){var i=0;return {next(){return {value:++i,done:false}},return(){events.push("inner:return");return {done:true}}}}};',
+            'var outer={ [Symbol.iterator](){var i=0;return {next(){return i++===0?{value:inner,done:false}:{done:true}},return(){events.push("outer:return");return {done:true}}}}};',
+            'for (var [value] of outer) { break; }',
+            'console.log(value,events.join(","));',
+          ].join('\n'),
+          expected: '1 inner:return,outer:return\n',
+          nativeOracle: true,
+        },
+        {
           name: 'computed nested object default and rest helper',
           source: [
             "var key = 'selected';",
@@ -20761,9 +20794,31 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '7\n',
         },
         {
-          name: 'for-of declaration head',
-          source: 'var sum = 0; for (var [value] of [[7], [8]]) sum += value; console.log(sum);',
+          name: 'lexical for-of declaration head',
+          source: 'var sum = 0; for (let [value] of [[7], [8]]) sum += value; console.log(sum);',
           expected: '15\n',
+        },
+        {
+          name: 'multiple var bindings in for-of head',
+          source:
+            'var sum = 0; for (var [left, right] of [[7, 8]]) sum += left + right; console.log(sum);',
+          expected: '15\n',
+        },
+        {
+          name: 'defaulted var binding in for-of head',
+          source: 'for (var [value = 7] of [[undefined]]) console.log(value);',
+          expected: '7\n',
+        },
+        {
+          name: 'var destructuring for-in head',
+          source: 'for (var [value] in {row: 0}) console.log(value);',
+          expected: 'r\n',
+        },
+        {
+          name: 'var destructuring for-await head',
+          source:
+            'async function run(){for await (var [value] of [[7]]) console.log(value);} run();',
+          expected: '7\n',
         },
       ];
 

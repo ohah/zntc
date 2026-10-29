@@ -3038,6 +3038,58 @@ fn isRetainableSimpleForOfArrayAssignmentHead(
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
+const RetainedSimpleVarForOfBinding = struct {
+    declarator_raw: u32,
+    pattern_idx: ast_mod.NodeIndex,
+};
+
+/// A `var [boundIdentifier]` for-of head keeps one function/module-scoped
+/// binding across iterations. Lowering moves its destructuring assignment to
+/// the generated loop body but retains the exact source binding SymbolId.
+/// Require the single-element, no-default/no-rest shape and the real `var`
+/// SymbolKind; lexical heads have per-iteration bindings and stay on resync.
+fn retainedSimpleVarForOfBinding(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    head_idx: ast_mod.NodeIndex,
+) ?RetainedSimpleVarForOfBinding {
+    if (head_idx.isNone() or @backingInt(head_idx) >= ast.nodes.items.len) return null;
+    const declaration = ast.getNode(head_idx);
+    if (declaration.tag != .variable_declaration) return null;
+    const extras = ast.extra_data.items;
+    const declaration_extra = declaration.data.extra;
+    if (declaration_extra > extras.len or extras.len - declaration_extra < 3 or
+        extras[declaration_extra] != @backingInt(ast_mod.VariableDeclarationKind.@"var") or
+        ast.variableDeclarationKind(declaration) != .@"var") return null;
+    const declarators_start = extras[declaration_extra + 1];
+    const declarators_len = extras[declaration_extra + 2];
+    if (declarators_len != 1 or declarators_start >= extras.len or
+        declarators_len > extras.len - declarators_start) return null;
+    const declarator_raw = extras[declarators_start];
+    if (declarator_raw >= ast.nodes.items.len) return null;
+    const declarator = ast.nodes.items[declarator_raw];
+    if (declarator.tag != .variable_declarator) return null;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return null;
+    const pattern_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+    const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+    const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+    if (!type_annotation_idx.isNone() or !initializer_idx.isNone() or pattern_idx.isNone() or
+        @backingInt(pattern_idx) >= ast.nodes.items.len) return null;
+    const pattern = ast.getNode(pattern_idx);
+    if (pattern.tag != .array_pattern or pattern.data.list.len != 1 or
+        pattern.data.list.start >= extras.len or
+        pattern.data.list.len > extras.len - pattern.data.list.start) return null;
+    const binding_raw = extras[pattern.data.list.start];
+    if (binding_raw >= ast.nodes.items.len) return null;
+    const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(binding_raw));
+    if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx)) return null;
+    const binding_symbol_raw = semantic.symbol_ids[binding_raw] orelse return null;
+    if (binding_symbol_raw >= semantic.symbols.items.len or
+        semantic.symbols.items[binding_symbol_raw].kind != .variable_var) return null;
+    return .{ .declarator_raw = declarator_raw, .pattern_idx = pattern_idx };
+}
+
 /// A direct `super` property access can keep its exact home-object identity
 /// through the class/object super-property transformer. A caller may admit
 /// optional computed-key transforms only when the full graph preflight checks
@@ -7168,6 +7220,29 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast.allocator,
                     ast,
                     @fromBackingInt(@intCast(binding_raw)),
+                ) catch return false;
+                defer ast.allocator.free(pattern_nodes);
+                for (pattern_nodes) |pattern_raw| {
+                    lowered_var_destructuring_nodes.put(ast.allocator, pattern_raw, {}) catch return false;
+                }
+            }
+        }
+
+        // A simple `var [name]` for-of head is rewritten to a generated
+        // assignment inside the output body. `var` keeps its single source
+        // binding scope across iterations, so register that exact pattern as
+        // an audited var-destructuring edit. Lexical heads and all wider
+        // patterns keep their distinct per-iteration contracts on resync.
+        if (options.unsupported.for_of) {
+            for (reachable_nodes) |raw_idx| {
+                const loop = ast.nodes.items[raw_idx];
+                if (loop.tag != .for_of_statement) continue;
+                const binding = retainedSimpleVarForOfBinding(ast, semantic, loop.data.ternary.a) orelse continue;
+                lowered_var_destructuring_declarators.put(ast.allocator, binding.declarator_raw, {}) catch return false;
+                const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                    ast.allocator,
+                    ast,
+                    binding.pattern_idx,
                 ) catch return false;
                 defer ast.allocator.free(pattern_nodes);
                 for (pattern_nodes) |pattern_raw| {
@@ -18572,6 +18647,157 @@ fn findForOfAssignmentHead(ast: *const ast_mod.Ast) ?ast_mod.NodeIndex {
         }
     }
     return null;
+}
+
+fn auditedSimpleVarForOfBindingGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+    var get = false;
+    var set = false;
+    return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, &get, &set, null, null);
+}
+
+fn findForOfVariableDeclarationHead(ast: *const ast_mod.Ast) ?ast_mod.NodeIndex {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .for_of_statement or node.data.ternary.a.isNone() or
+            @backingInt(node.data.ternary.a) >= ast.nodes.items.len) continue;
+        if (ast.getNode(node.data.ternary.a).tag == .variable_declaration) return node.data.ternary.a;
+    }
+    return null;
+}
+
+test "ES5 for-of retains only one bound var array binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var retained = try runtimeHelperReanalysisTestFixture(
+        allocator,
+        "var sum=0; for (var [value] of [[7],[8]]) sum+=value; console.log(sum);",
+    );
+    const head = findForOfVariableDeclarationHead(&retained.ast) orelse return error.MissingVarForOfHead;
+    const candidate = retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) orelse
+        return error.MissingRetainedVarForOfCandidate;
+    try std.testing.expect(auditedSimpleVarForOfBindingGraphAdmissionForTest(&retained));
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, .none) == null);
+    try std.testing.expect(retainedSimpleVarForOfBinding(
+        &retained.ast,
+        &retained.semantic,
+        @fromBackingInt(std.math.maxInt(u32)),
+    ) == null);
+
+    const hostile_sources = [_][]const u8{
+        "var sum=0; for (let [value] of [[7]]) sum+=value;",
+        "var sum=0; for (const [value] of [[7]]) sum+=value;",
+        "var left=0,right=0; for (var [left,right] of [[7,8]]) {}",
+        "var value=0; for (var [[value]] of [[[7]]]) {}",
+        "var value=0; for (var [value=1] of [[7]]) {}",
+        "var values=[]; for (var [...values] of [[7]]) {}",
+        "var value=0; for (var [,value] of [[7,8]]) {}",
+        "var value=0; for (var {value} of [{value:7}]) {}",
+        "var value=0; for (var [value] in {row:[7]}) {}",
+        "async function run(){for await (var [value] of [[7]]) {}}",
+    };
+    for (hostile_sources) |source| {
+        var hostile = try runtimeHelperReanalysisTestFixture(allocator, source);
+        try std.testing.expect(!auditedSimpleVarForOfBindingGraphAdmissionForTest(&hostile));
+    }
+
+    const head_raw_index: usize = @intCast(@backingInt(head));
+    const saved_head = retained.ast.nodes.items[head_raw_index];
+    const declaration = retained.ast.getNode(head);
+    const declaration_extra = declaration.data.extra;
+    const declarator = retained.ast.nodes.items[candidate.declarator_raw];
+    const declarator_extra = declarator.data.extra;
+    const pattern_raw_index: usize = @intCast(@backingInt(candidate.pattern_idx));
+    const pattern = retained.ast.nodes.items[pattern_raw_index];
+    const binding_raw = retained.ast.extra_data.items[pattern.data.list.start];
+    const binding_raw_index: usize = @intCast(binding_raw);
+    const symbol_raw = retained.semantic.symbol_ids[binding_raw_index] orelse return error.MissingVarForOfSymbol;
+    const symbol_index: usize = @intCast(symbol_raw);
+    const symbol_ids = @constCast(retained.semantic.symbol_ids);
+    const symbols = @constCast(retained.semantic.symbols.items);
+
+    const saved_declaration_kind = retained.ast.extra_data.items[declaration_extra];
+    retained.ast.extra_data.items[declaration_extra] = @backingInt(ast_mod.VariableDeclarationKind.let);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declaration_extra] = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declaration_extra] = saved_declaration_kind;
+
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+    retained.ast.nodes.items[head_raw_index].tag = .for_of_statement;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+
+    const declarator_count_index: usize = @intCast(declaration_extra + 2);
+    const saved_declarator_count = retained.ast.extra_data.items[declarator_count_index];
+    retained.ast.extra_data.items[declarator_count_index] = 0;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declarator_count_index] = 2;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declarator_count_index] = saved_declarator_count;
+
+    const saved_declarator = retained.ast.nodes.items[candidate.declarator_raw];
+    retained.ast.nodes.items[candidate.declarator_raw].tag = .formal_parameter;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[candidate.declarator_raw] = saved_declarator;
+    retained.ast.nodes.items[candidate.declarator_raw].data.extra = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[candidate.declarator_raw] = saved_declarator;
+
+    retained.ast.nodes.items[pattern_raw_index].tag = .object_pattern;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[pattern_raw_index] = pattern;
+    retained.ast.nodes.items[pattern_raw_index].data.list.len = 0;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[pattern_raw_index] = pattern;
+    retained.ast.nodes.items[pattern_raw_index].data.list.len = 2;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[pattern_raw_index] = pattern;
+    retained.ast.nodes.items[pattern_raw_index].data.list.start = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[pattern_raw_index] = pattern;
+
+    const saved_binding = retained.ast.nodes.items[binding_raw_index];
+    retained.ast.nodes.items[binding_raw_index].tag = .identifier_reference;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.nodes.items[binding_raw_index] = saved_binding;
+    retained.ast.extra_data.items[pattern.data.list.start] = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[pattern.data.list.start] = binding_raw;
+
+    const original_symbol_id = symbol_ids[binding_raw_index];
+    symbol_ids[binding_raw_index] = null;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    symbol_ids[binding_raw_index] = original_symbol_id;
+    symbol_ids[binding_raw_index] = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    symbol_ids[binding_raw_index] = original_symbol_id;
+
+    const original_symbol = symbols[symbol_index];
+    symbols[symbol_index].kind = .variable_const;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    symbols[symbol_index] = original_symbol;
+    symbols[symbol_index].scope_id = .none;
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    symbols[symbol_index] = original_symbol;
+    symbols[symbol_index].scope_id = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    symbols[symbol_index] = original_symbol;
+
+    const saved_declarator_start = retained.ast.extra_data.items[declaration_extra + 1];
+    retained.ast.extra_data.items[declaration_extra + 1] = std.math.maxInt(u32);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declaration_extra + 1] = saved_declarator_start;
+    const saved_type_annotation = retained.ast.extra_data.items[declarator_extra + 1];
+    retained.ast.extra_data.items[declarator_extra + 1] = @backingInt(candidate.pattern_idx);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declarator_extra + 1] = saved_type_annotation;
+    const saved_initializer = retained.ast.extra_data.items[declarator_extra + 2];
+    retained.ast.extra_data.items[declarator_extra + 2] = @backingInt(candidate.pattern_idx);
+    try std.testing.expect(retainedSimpleVarForOfBinding(&retained.ast, &retained.semantic, head) == null);
+    retained.ast.extra_data.items[declarator_extra + 2] = saved_initializer;
 }
 
 fn fullPrepassAuditedGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
