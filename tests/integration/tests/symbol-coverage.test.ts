@@ -779,8 +779,25 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
   {
     name: 'ambient-namespace-nonambient-inline-type-import-with-attributes',
     source: [
-      "namespace Types { import { type Shape } from './shape' with { 'resolution-mode': 'import' }; export const value = 62; }",
-      'console.log(62);',
+      "namespace Types { import { type Shape } from './shape' with { 'resolution-mode': 'import' }; export const value: Shape = { answer: 62 }; }",
+      'console.log(Types.value.answer);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: '62\n',
+  },
+  {
+    name: 'ambient-namespace-nonambient-inline-type-import-with-attributes-surviving-value-reference',
+    source: [
+      "namespace Types { import { type Shape } from './shape' with { 'resolution-mode': 'import' }; export const value = Shape; }",
+      'console.log(Types.value);',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-nonambient-mixed-value-and-inline-type-import-with-attributes',
+    source: [
+      "namespace Types { import { Shape, type ShapeType } from './shape' with { type: 'json' }; export const value: ShapeType = Shape.value; }",
+      'console.log(Types.value);',
     ].join('\n'),
     graph: 'reanalyzed',
   },
@@ -3303,7 +3320,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(52);
+    expect(cases).toHaveLength(54);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {
