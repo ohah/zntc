@@ -192,10 +192,11 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
             external_rows[0] = saved_external;
             try std.testing.expect(!accepted_wrong_use_scope);
             try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
-            const saved_second = external_rows[1];
-            external_rows[1] = external_rows[0];
+            const duplicate_index: usize = if (selected.?.origin.catalog == .super_set) 2 else 1;
+            const saved_second = external_rows[duplicate_index];
+            external_rows[duplicate_index] = external_rows[0];
             const accepted_duplicate_external = try certificate.complete(&t, &semantic, loaded.contents, root);
-            external_rows[1] = saved_second;
+            external_rows[duplicate_index] = saved_second;
             try std.testing.expect(!accepted_duplicate_external);
             try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
             try t.explicit_global_reference_nodes.put(a, output, {});
@@ -210,6 +211,67 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
             live_scopes[external.owner.scope].parent = saved_parent;
             try std.testing.expect(!accepted_parent);
             try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            if (selected.?.origin.catalog == .super_set) {
+                const witness = t.virtual_provider_source.?;
+                const error_index = for (witness.externals, 0..) |item, i| {
+                    if (std.mem.eql(u8, witness.syntax.getText(witness.syntax.nodes.items[item.node].data.string_ref), "TypeError")) break i;
+                } else return error.MissingSourceTypeErrorRole;
+                const error_external = witness.externals[error_index];
+                const error_output = t.virtual_provider_visits.get(error_external.node) orelse return error.MissingTypeErrorVisit;
+                try std.testing.expect(error_output < semantic.symbol_ids.len and semantic.symbol_ids[error_output] == null);
+                ids[error_output] = foreign_sid;
+                const accepted_error_sid = try certificate.complete(&t, &semantic, loaded.contents, root);
+                ids[error_output] = null;
+                try std.testing.expect(!accepted_error_sid);
+                try t.explicit_global_reference_nodes.put(a, error_output, {});
+                const accepted_error_marker = try certificate.complete(&t, &semantic, loaded.contents, root);
+                _ = t.explicit_global_reference_nodes.remove(error_output);
+                try std.testing.expect(!accepted_error_marker);
+                external_rows[error_index].owner.node = @backingInt(source_root);
+                const accepted_error_owner = try certificate.complete(&t, &semantic, loaded.contents, root);
+                external_rows[error_index] = error_external;
+                try std.testing.expect(!accepted_error_owner);
+                try std.testing.expect(error_external.owner.scope != external.owner.scope);
+                external_rows[error_index].owner.scope = external.owner.scope;
+                const accepted_error_scope = try certificate.complete(&t, &semantic, loaded.contents, root);
+                external_rows[error_index] = error_external;
+                try std.testing.expect(!accepted_error_scope);
+                var foreign_output = parser.ast;
+                const saved_output_domain = t.virtual_provider_source.?.output_domain;
+                t.virtual_provider_source.?.output_domain = &foreign_output;
+                const accepted_output_domain = try certificate.complete(&t, &semantic, loaded.contents, root);
+                t.virtual_provider_source.?.output_domain = saved_output_domain;
+                try std.testing.expect(!accepted_output_domain);
+                // Keep the legitimate source/output shape, null slot, owner and
+                // counts plausible while substituting a non-runtime property.
+                const member_raw = for (witness.nodes) |raw| {
+                    const member = witness.syntax.nodes.items[raw];
+                    if (member.tag != .static_member_expression) continue;
+                    const key = witness.syntax.readExtraNode(member.data.extra, 1);
+                    if (std.mem.eql(u8, witness.syntax.getText(witness.syntax.getNode(key).data.string_ref), "writable")) break raw;
+                } else return error.MissingActualWritableProperty;
+                const property = witness.syntax.readExtraNode(witness.syntax.nodes.items[member_raw].data.extra, 1);
+                try std.testing.expect(std.mem.indexOfScalar(NodeIndex, witness.leaves, property) == null);
+                const output_member = t.virtual_provider_visits.get(member_raw) orelse return error.MissingPropertyContainerVisit;
+                const output_property = t.ast.readExtraNode(t.ast.nodes.items[output_member].data.extra, 1);
+                external_rows[error_index].node = @backingInt(property);
+                const accepted_property = try certificate.complete(&t, &semantic, loaded.contents, root);
+                external_rows[error_index] = error_external;
+                try std.testing.expect(!accepted_property);
+                const source_nodes = t.virtual_provider_source.?.syntax.nodes.items;
+                const saved_source_property = source_nodes[@backingInt(property)];
+                const saved_output_property = t.ast.getNode(output_property);
+                const error_spelling = source_nodes[error_external.node].data.string_ref;
+                source_nodes[@backingInt(property)].data.string_ref = error_spelling;
+                t.ast.nodes.items[@backingInt(output_property)].data.string_ref = error_spelling;
+                external_rows[error_index].node = @backingInt(property);
+                const accepted_nonlexical_type_error = try certificate.complete(&t, &semantic, loaded.contents, root);
+                external_rows[error_index] = error_external;
+                source_nodes[@backingInt(property)] = saved_source_property;
+                t.ast.nodes.items[@backingInt(output_property)] = saved_output_property;
+                try std.testing.expect(!accepted_nonlexical_type_error);
+                try std.testing.expect(try certificate.complete(&t, &semantic, loaded.contents, root));
+            }
         }
         // Each independent mutation keeps every AST edge intact. A fresh exact
         // graph audit alone must not stand in for these stable source roles.
