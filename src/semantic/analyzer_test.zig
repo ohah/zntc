@@ -3778,3 +3778,49 @@ test "escaped enum initial value lookup preserves source identity and lexical ro
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "escaped enum container initial tuple exposes actual parameter aliases" {
+    const sources = [_][]const u8{
+        "enum \\u0045{A=9,B=A+1}",
+        "enum \\u0053elf{Self=9,B=Self+1}",
+    };
+    for (sources, 0..) |source, family| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_ts = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        try std.testing.expect(parser.ast.transformed_root == null);
+        var owners: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .ts_enum_declaration) continue;
+            owners += 1;
+            const scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingActualEnumScope;
+            const name_node = parser.ast.readExtraNode(node.data.extra, 0);
+            std.debug.print("escaped-container family={d} enumNode={d} ownerScope={d} nameNode={d} raw={s} span={d}:{d}\n", .{ family, raw, scope, @backingInt(name_node), parser.ast.getText(parser.ast.getNode(name_node).span), node.span.start, node.span.end });
+            var parameter_sid: ?usize = null;
+            var alias_count: usize = 0;
+            var bindings = analyzer.scope_maps.items[scope].iterator();
+            while (bindings.next()) |entry| {
+                const sid = entry.value_ptr.*;
+                const symbol = analyzer.symbols.items[sid];
+                std.debug.print("escaped-container-binding family={d} key={s} SID={d} kind={s} synthetic={any} storage={d} origin={d} nameRaw={s} nameSpan={d}:{d} declSpan={d}:{d} selected={s}\n", .{ family, entry.key_ptr.*, sid, @tagName(symbol.kind), symbol.synthetic_kind, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), parser.ast.getText(symbol.name), symbol.name.start, symbol.name.end, symbol.declaration_span.start, symbol.declaration_span.end, symbol.synthetic_name });
+                if (symbol.synthetic_kind != .enum_iife_parameter) continue;
+                alias_count += 1;
+                if (parameter_sid) |before| try std.testing.expectEqual(before, sid) else parameter_sid = sid;
+                try std.testing.expectEqual(.parameter, symbol.kind);
+                try std.testing.expectEqual(scope, @backingInt(symbol.scope_id));
+            }
+            try std.testing.expect(parameter_sid != null);
+            try std.testing.expectEqual(@as(usize, 2), alias_count);
+        }
+        try std.testing.expectEqual(@as(usize, 1), owners);
+    }
+}
