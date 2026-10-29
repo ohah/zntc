@@ -7977,6 +7977,24 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'loaded',
       },
       {
+        name: 'TypeScript default import used only by dropped console retains evaluation',
+        source:
+          "import value from './default-values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'default-values.js': 'globalThis.loaded = true; export default 42;' },
+        extension: 'ts',
+        graph: 'retained',
+        stdout: 'loaded',
+      },
+      {
+        name: 'TypeScript namespace import used only by dropped console retains evaluation',
+        source:
+          "import * as values from './namespace-values.js'; console.log(values.value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'namespace-values.js': 'globalThis.loaded = true; export const value = 42;' },
+        extension: 'ts',
+        graph: 'retained',
+        stdout: 'loaded',
+      },
+      {
         name: 'TypeScript dropped-only external import retains evaluation',
         source:
           "import { value } from './external-values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
