@@ -6146,6 +6146,101 @@ fn collectRetainedPreflightParents(
     return true;
 }
 
+/// The static-block lowerer transfers the source var environment, references,
+/// and nested scope owners into a generated function before visiting the body.
+/// Admit only the native named-class shape whose class-lowering companions do
+/// not need a separate identity certificate. The exact post-transform audit
+/// remains the authority for retaining the edited graph.
+fn canRetainSimpleNamedStaticBlockClasses(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    options: TransformOptions,
+) bool {
+    if (!options.unsupported.class_static_block or options.unsupported.class or
+        options.unsupported.object_extensions or ast.nodes.items.len == 0) return false;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return false;
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return false;
+    defer allocator.free(reachable_nodes);
+    var reachable = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
+    defer reachable.deinit();
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        reachable.set(raw);
+    }
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    if (!collectRetainedPreflightParents(allocator, ast, root, &parents)) return false;
+
+    var found_static_block = false;
+    for (reachable_nodes) |raw| {
+        const static_block = ast.nodes.items[raw];
+        if (static_block.tag != .static_block) continue;
+        found_static_block = true;
+
+        const scope_raw = semantic.scope_owner_map.get(raw) orelse return false;
+        if (scope_raw >= semantic.scopes.len or semantic.scopes[scope_raw].kind != .class_static_block or
+            !scope_owner_proof.exactClassStaticBlockScopeOwners(
+                ast,
+                semantic.scopes,
+                &semantic.scope_owner_map,
+                &reachable,
+                scope_raw,
+            )) return false;
+
+        const class_body_raw = parents.get(raw) orelse return false;
+        if (class_body_raw >= ast.nodes.items.len or ast.nodes.items[class_body_raw].tag != .class_body) return false;
+        const class_raw = parents.get(class_body_raw) orelse return false;
+        if (class_raw >= ast.nodes.items.len or ast.nodes.items[class_raw].tag != .class_declaration) return false;
+        const class_node = ast.nodes.items[class_raw];
+        const class_extra = class_node.data.extra;
+        if (class_extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.deco_len) return false;
+        const name: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.name]),
+        );
+        const super: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]),
+        );
+        const body: ast_mod.NodeIndex = @fromBackingInt(
+            @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]),
+        );
+        const deco_len = ast.extra_data.items[class_extra + ast_mod.ClassExtra.deco_len];
+        if (name.isNone() or @backingInt(name) >= ast.nodes.items.len or
+            ast.getNode(name).tag != .binding_identifier or !super.isNone() or deco_len != 0 or
+            body.isNone() or @backingInt(body) != class_body_raw) return false;
+
+        const members = ast.nodes.items[class_body_raw].data.list;
+        if (members.start > ast.extra_data.items.len or
+            members.len > ast.extra_data.items.len - members.start) return false;
+        for (ast.extra_data.items[members.start .. members.start + members.len]) |member_raw| {
+            if (member_raw >= ast.nodes.items.len) return false;
+            const member = ast.nodes.items[member_raw];
+            if (member.tag == .static_block) continue;
+            if (member.tag != .method_definition) return false;
+            const extra = member.data.extra;
+            if (extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - extra <= ast_mod.MethodExtra.flags) return false;
+            const key: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.key]),
+            );
+            const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
+            const lowered_method_flags = ast_mod.MethodFlags.is_async |
+                ast_mod.MethodFlags.is_generator |
+                ast_mod.MethodFlags.is_getter |
+                ast_mod.MethodFlags.is_setter;
+            if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
+                ast.getNode(key).tag != .identifier_reference or (flags & lowered_method_flags) != 0) return false;
+        }
+    }
+    return found_static_block;
+}
+
 fn scopeChainContainsBinding(
     semantic: *const ModuleSemanticData,
     starting_scope: u32,
@@ -7039,6 +7134,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
         ast.getNode(root_idx).tag != .program) return false;
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
+    const retained_simple_named_static_blocks = canRetainSimpleNamedStaticBlockClasses(
+        allocator,
+        ast,
+        semantic,
+        options,
+    );
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
     const optional_nullish_source = optionalNullishSource(allocator, ast, semantic, options) catch null;
@@ -7557,6 +7658,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_destructuring_assignment = false;
     var found_lowered_parameter_destructuring = false;
     var found_lowered_array_spread = false;
+    var found_lowered_static_block = false;
     var found_lowered_exponentiation = false;
     var found_lowered_nullish_coalescing = false;
     var found_lowered_logical_assignment = false;
@@ -8025,7 +8127,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.class_private_field or options.unsupported.class_private_method) return false;
             },
             .static_block => {
-                if (options.unsupported.class_static_block) return false;
+                // The source preflight admits only named, unextended class
+                // declarations whose static-block scopes have exact owners.
+                // The transformer transfers that var environment and its
+                // references into the generated function; exact output audit
+                // still decides whether the edited graph can be retained.
+                if (options.unsupported.class_static_block) {
+                    if (!retained_simple_named_static_blocks) return false;
+                    found_lowered_static_block = true;
+                }
             },
             .meta_property => {
                 // `lowerNewTarget` records its generated expression in the
@@ -8196,6 +8306,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     const safe_graph_with_other_syntax = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
         found_lowered_generator or
         found_lowered_async_function or
+        found_lowered_static_block or
         found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
@@ -9268,7 +9379,8 @@ fn canKeepPrepassSemanticGraphPrepared(
     // producer; metadata rescan supplies the new source edges without replacing
     // the module-local semantic owner.
     const has_legacy_decorator_options = options.experimental_decorators or options.emit_decorator_metadata;
-    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and native_noop_source == null and !has_entry_authority) or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators and !retained_legacy_decorators and
+        native_noop_source == null and !has_entry_authority) or
         (has_drop_console and !retained_simple_console_drops) or
         (uses_define and !retained_define_references) or
         (!options.effectiveUseDefineForClassFields() and hasClassFieldSyntax(ast) and
@@ -12081,6 +12193,220 @@ fn canKeepDirectEvalPrepassForTest(source: []const u8, options: TransformOptions
         &allow_super_set,
         null,
     );
+}
+
+const StaticBlockPrepassTestMutation = enum {
+    none,
+    remove_static_block_owner,
+    remove_static_block_body_owner,
+    wrong_static_block_scope_kind,
+    clear_class_name,
+};
+
+const StaticBlockPrepassTestResult = struct {
+    source_candidate: bool,
+    graph_gate: bool,
+};
+
+fn staticBlockPrepassDecisionForTest(
+    source: []const u8,
+    extension: []const u8,
+    options: TransformOptions,
+    mutation: StaticBlockPrepassTestMutation,
+) !StaticBlockPrepassTestResult {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(extension);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var scope_owner_map = analyzer.scope_owner_map;
+    switch (mutation) {
+        .none => {},
+        .remove_static_block_owner, .remove_static_block_body_owner, .wrong_static_block_scope_kind => {
+            var found = false;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .static_block) continue;
+                found = true;
+                switch (mutation) {
+                    .remove_static_block_owner => _ = scope_owner_map.remove(@intCast(raw)),
+                    .remove_static_block_body_owner => {
+                        const body_raw = @backingInt(node.data.unary.operand);
+                        _ = scope_owner_map.remove(body_raw);
+                    },
+                    .wrong_static_block_scope_kind => {
+                        const scope_raw = scope_owner_map.get(@intCast(raw)) orelse return error.MissingStaticBlockScope;
+                        if (scope_raw >= analyzer.scopes.items.len) return error.InvalidStaticBlockScope;
+                        analyzer.scopes.items[scope_raw].kind = .block;
+                    },
+                    else => unreachable,
+                }
+                break;
+            }
+            if (!found) return error.MissingStaticBlock;
+        },
+        .clear_class_name => {
+            var found = false;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag != .class_declaration) continue;
+                const extra = node.data.extra;
+                if (extra > parser.ast.extra_data.items.len or
+                    parser.ast.extra_data.items.len - extra <= ast_mod.ClassExtra.name) return error.InvalidClassExtra;
+                parser.ast.extra_data.items[extra + ast_mod.ClassExtra.name] = @backingInt(ast_mod.NodeIndex.none);
+                found = true;
+                break;
+            }
+            if (!found) return error.MissingClassDeclaration;
+        },
+    }
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.ast = parser.ast;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const source_candidate = canRetainSimpleNamedStaticBlockClasses(
+        allocator,
+        &module.ast.?,
+        &module.semantic.?,
+        options,
+    );
+    if (mutation != .none) return .{ .source_candidate = source_candidate, .graph_gate = false };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = &[_]Plugin{},
+        .styled_components = false,
+        .emotion = false,
+    };
+    var allow_super_get = false;
+    var allow_super_set = false;
+    return .{
+        .source_candidate = source_candidate,
+        .graph_gate = canKeepPrepassSemanticGraph(
+            &context,
+            &module,
+            options,
+            &[_]Plugin{},
+            &allow_super_get,
+            &allow_super_set,
+            null,
+        ),
+    };
+}
+
+test "#6193 retains only exact named native-class static-block lowering" {
+    const options: TransformOptions = .{
+        .strip_types = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+    };
+    const positive = "const outer = 5; class Counter { static { var shared = outer + 1; let local = shared + 1; Counter.value = local; this.copy = Counter.value; } static read() { return this.copy; } } console.log(Counter.read());";
+    const retained = try staticBlockPrepassDecisionForTest(positive, ".js", options, .none);
+    try std.testing.expect(retained.source_candidate);
+    try std.testing.expect(retained.graph_gate);
+
+    for ([_]StaticBlockPrepassTestMutation{
+        .remove_static_block_owner,
+        .remove_static_block_body_owner,
+        .wrong_static_block_scope_kind,
+        .clear_class_name,
+    }) |mutation| {
+        const poisoned = try staticBlockPrepassDecisionForTest(positive, ".js", options, mutation);
+        try std.testing.expect(!poisoned.source_candidate);
+    }
+
+    const rejected_sources = [_]struct { source: []const u8, candidate: bool }{
+        .{ .source = "const C = class { static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { static { this.value = 1; } };", .candidate = false },
+        .{ .source = "class C extends Base { static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { get value() { return 1; } static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { #value = 1; static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { #read() {} static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { static { this.value = 1; } } const D = class { static { this.value = 2; } };", .candidate = false },
+        .{ .source = "class C { static { eval('this.value = 1'); } }", .candidate = true },
+    };
+    for (rejected_sources) |case| {
+        const decision = try staticBlockPrepassDecisionForTest(case.source, ".js", options, .none);
+        try std.testing.expectEqual(case.candidate, decision.source_candidate);
+        try std.testing.expect(!decision.graph_gate);
+    }
+
+    var es5 = options;
+    es5.unsupported = TransformOptions.compat.fromESTarget(.es5);
+    const downlevel_class = try staticBlockPrepassDecisionForTest(
+        "class Counter { static { this.value = 1; } }",
+        ".js",
+        es5,
+        .none,
+    );
+    try std.testing.expect(!downlevel_class.source_candidate);
+    try std.testing.expect(!downlevel_class.graph_gate);
+
+    var class_downlevel_only = options;
+    class_downlevel_only.unsupported.class = true;
+    try std.testing.expect(!(try staticBlockPrepassDecisionForTest(
+        positive,
+        ".js",
+        class_downlevel_only,
+        .none,
+    )).source_candidate);
+
+    var static_block_supported = options;
+    static_block_supported.unsupported = TransformOptions.compat.fromESTarget(.esnext);
+    try std.testing.expect(!(try staticBlockPrepassDecisionForTest(
+        positive,
+        ".js",
+        static_block_supported,
+        .none,
+    )).source_candidate);
+
+    var class_method_downlevel = options;
+    class_method_downlevel.unsupported.object_extensions = true;
+    try std.testing.expect(!(try staticBlockPrepassDecisionForTest(
+        positive,
+        ".js",
+        class_method_downlevel,
+        .none,
+    )).source_candidate);
+
+    try std.testing.expect(!(try staticBlockPrepassDecisionForTest(
+        "@sealed class Counter { static { this.value = 1; } }",
+        ".ts",
+        options,
+        .none,
+    )).source_candidate);
 }
 
 fn canRetainDroppedLabelWithEvalForTest(source: []const u8) !bool {
