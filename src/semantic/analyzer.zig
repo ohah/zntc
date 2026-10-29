@@ -3509,7 +3509,7 @@ pub const SemanticAnalyzer = struct {
                 => true,
                 else => false,
             };
-            if (relevant and std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) return true;
+            if (relevant and Scanner.identifierValueEquals(self.ast.identifierNameText(node), candidate)) return true;
         }
         return false;
     }
@@ -3562,7 +3562,9 @@ pub const SemanticAnalyzer = struct {
         members_len: u32,
     ) AllocError!?EnumIifeParameter {
         if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
-        const name_text = self.ast.getText(self.ast.getNode(name_idx).span);
+        const raw_name = self.ast.getText(self.ast.getNode(name_idx).span);
+        const name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+        defer if (name_text.ptr != raw_name.ptr) self.allocator.free(name_text);
         var needs_rename = false;
         for (self.ast.extra_data.items[members_start .. members_start + members_len]) |raw_idx| {
             const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
