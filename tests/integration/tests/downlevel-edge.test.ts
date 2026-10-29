@@ -2121,6 +2121,105 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('true false');
     });
 
+    test('downleveled private brand checks throw on primitive right operands', async () => {
+      const files = {
+        'index.ts': `
+            class MethodBox {
+              #method() {}
+              static has(value: any) { return #method in value; }
+            }
+            class FieldBox {
+              #field = 1;
+              static has(value: any) { return #field in value; }
+            }
+            class StaticBox {
+              static #field = 1;
+              static has(value: any) { return #field in value; }
+            }
+            class StaticMethodBox {
+              static #method() {}
+              static has(value: any) { return #method in value; }
+            }
+            class AccessorBox {
+              get #value() { return 1; }
+              static has(value: any) { return #value in value; }
+            }
+            class StaticAccessorBox {
+              static get #value() { return 1; }
+              static has(value: any) { return #value in value; }
+            }
+            class MethodSub extends MethodBox {}
+            class FieldSub extends FieldBox {}
+            class StaticSub extends StaticBox {}
+            class StaticMethodSub extends StaticMethodBox {}
+            class AccessorSub extends AccessorBox {}
+            class StaticAccessorSub extends StaticAccessorBox {}
+            const check = (predicate: (value: any) => boolean, value: any) => {
+              try { return predicate(value) ? 'true' : 'false'; }
+              catch (error) { return error instanceof TypeError ? 'TypeError' : 'other'; }
+            };
+            const primitives: any[] = [null, undefined, 0, 'x', true, Symbol('x'), 1n];
+            const predicates = [MethodBox.has, FieldBox.has, StaticBox.has, StaticMethodBox.has, AccessorBox.has, StaticAccessorBox.has];
+            console.log(primitives.map((value) => [
+              ...predicates.map((predicate) => check(predicate, value)),
+            ].join('/')).join(' '));
+            console.log(predicates.map((predicate) => {
+              let evaluations = 0;
+              return check(predicate, (evaluations++, null)) + ':' + evaluations;
+            }).join(' '));
+            console.log(
+              check(MethodBox.has, new MethodBox()),
+              check(FieldBox.has, new FieldBox()),
+              check(StaticBox.has, StaticBox),
+              check(StaticMethodBox.has, StaticMethodBox),
+              check(AccessorBox.has, new AccessorBox()),
+              check(StaticAccessorBox.has, StaticAccessorBox),
+              check(MethodBox.has, {}),
+              check(FieldBox.has, {}),
+              check(StaticBox.has, {}),
+              check(StaticMethodBox.has, {}),
+              check(AccessorBox.has, {}),
+              check(StaticAccessorBox.has, {}),
+            );
+            console.log(predicates.map((predicate) => check(predicate, () => {})).join(' '));
+            console.log(
+              check(MethodBox.has, new MethodSub()),
+              check(FieldBox.has, new FieldSub()),
+              check(StaticBox.has, StaticSub),
+              check(StaticMethodBox.has, StaticMethodSub),
+              check(AccessorBox.has, new AccessorSub()),
+              check(StaticAccessorBox.has, StaticAccessorSub),
+            );
+            const NativeTypeError = TypeError;
+            let typeErrorConstructorCalls = 0;
+            (globalThis as any).TypeError = function () { typeErrorConstructorCalls++; };
+            let nativeTypeError = false;
+            try { MethodBox.has(0); }
+            catch (error) { nativeTypeError = error instanceof NativeTypeError; }
+            (globalThis as any).TypeError = NativeTypeError;
+            console.log(nativeTypeError, typeErrorConstructorCalls);
+          `,
+      };
+      const expected = `${Array.from({ length: 7 }, () => Array.from({ length: 6 }, () => 'TypeError').join('/')).join(' ')}\n${Array.from({ length: 6 }, () => 'TypeError:1').join(' ')}\ntrue true true true true true false false false false false false\nfalse false false false false false\ntrue true false false true false\ntrue 0`;
+      for (const args of [['--target=es2020'], ['--target=es2020', '--minify']]) {
+        const result = await bundleAndRun(files, 'index.ts', args, {
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+            ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          },
+        });
+        cleanup = result.cleanup;
+        try {
+          expect(result.exitCode).toBe(0);
+          expect(result.runOutput).toBe(expected);
+        } finally {
+          await result.cleanup();
+          cleanup = undefined;
+        }
+      }
+    });
+
     test('optional catch binding (ES2019)', async () => {
       const result = await bundleAndRun(
         {
