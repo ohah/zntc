@@ -26690,6 +26690,146 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('escaped private fields preserve StringValues and helper reservations through the public API', () => {
+    const cases = [
+      {
+        source: 'class C{#a=10;read(){return this.#a}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source: 'class C{#\\u0061=10;read(){return this.#a}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source: 'class C{#a=10;read(){return this.#\\u0061}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source: 'class C{#\\u0061=10;read(){return this.#\\u0061}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          'class A{#a=4;read(){return this.#a}}class B{#\\u0061=6;read(){return this.#a}}console.log(new A().read()+new B().read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          'class Outer{#a=4;read(){class Inner{#\\u0061=6;read(){return this.#a}}return this.#a+new Inner().read()}}console.log(new Outer().read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          'class C{#\\u0061=10;read(){return this.#a+("\\\\u0061"==="\\\\u0061"?0:1)}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source: 'class C{static #a=10;static read(){return this.#a}}console.log(C.read());',
+        expected: '10\n',
+      },
+      {
+        source: 'class C{static #\\u0061=10;static read(){return this.#a}}console.log(C.read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          'class C{#\\u0061=0;read(){this.#a=4;this.#a++;return this.#a+=5}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          "const _a=11,_a1=12;class C{#\\u0061=3;#b=7;read(){return [this.#a,this.#b].join(',')}bump(){this.#a++;return this.read()}}const c=new C();console.log(c.read()+'|'+c.bump()+'|'+_a+'|'+_a1);",
+        expected: '3,7|4,7|11|12\n',
+      },
+      {
+        source:
+          'class C{#\\u0061=0;constructor(v){this.#a=v}read(other){return other.#a}}console.log(new C(0).read(new C(10)));',
+        expected: '10\n',
+      },
+      {
+        source:
+          'const _a=10;class C{#\\u0061=_a;read(){return this.#a}}console.log(new C().read());',
+        expected: '10\n',
+      },
+      {
+        source:
+          'const _\\u0061=10;class C{#a=_a;read(){return this.#a}}console.log(new C().read());',
+        expected: '10\n',
+      },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-escaped-private-values-'));
+    const entry = join(dir, 'entry-escaped-private.js');
+    const oracle = join(dir, 'oracle.cjs');
+    const output = join(dir, 'output.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const { source, expected: expectedStdout } of cases) {
+        writeFileSync(entry, source);
+        writeFileSync(
+          oracle,
+          ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES5, module: ts.ModuleKind.CommonJS },
+          }).outputText,
+        );
+        const expected = spawnSync('node', [oracle], { encoding: 'utf8' });
+        expect(expected.status, expected.stderr).toBe(0);
+        expect(expected.stdout).toBe(expectedStdout);
+        for (const minifyIdentifiers of [false, true]) {
+          for (const coverage of [false, true]) {
+            const env = { ...process.env };
+            delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+            if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+            const runner = [
+              `import { build } from ${JSON.stringify(coreEntry)};`,
+              `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers, write: false })});`,
+              'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+              'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+            ].join('\n');
+            const proc = spawnSync('bun', ['-e', runner], {
+              cwd: join(import.meta.dir, '../../..'),
+              env,
+              encoding: 'utf8',
+            });
+            const stderr = proc.stderr ?? '';
+            expect(proc.status, stderr).toBe(0);
+            const lines = stderr.split(/\r?\n/);
+            if (coverage) {
+              const exact = lines.filter(
+                (line) =>
+                  (line.startsWith('zntc: symbol-identity-prepass ') ||
+                    line.startsWith('zntc: symbol-identity ')) &&
+                  line.includes(entry + ': '),
+              );
+              expect(exact.length, stderr).toBeGreaterThan(0);
+              for (const report of exact) {
+                expect(exactSchemaProblems(report), report).toEqual([]);
+                expect(report).toMatch(/clean=1(?:\s|$)/);
+              }
+            } else {
+              expect(
+                lines.some(
+                  (line) =>
+                    line.startsWith('zntc: symbol-identity-prepass-mode ') ||
+                    line.startsWith('zntc: symbol-identity-prepass ') ||
+                    line.startsWith('zntc: symbol-identity '),
+                ),
+                stderr,
+              ).toBe(false);
+            }
+            const outputs = JSON.parse(proc.stdout) as string[];
+            expect(outputs).toHaveLength(1);
+            writeFileSync(output, outputs[0]);
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(expected.stdout);
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('escaped enum StringValues preserve initial identities and runtime counters through the public API', () => {
     const sources = [
       String.raw`enum E{\u0041=9,B=A+1}console.log(E.B)`,
