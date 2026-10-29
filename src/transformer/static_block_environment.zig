@@ -13,6 +13,11 @@ pub fn lower(self: anytype, source: ast.NodeIndex, parent: ScopeId, class_name: 
     const function = try self.addExtraNode(.function_expression, node.span, &.{ @backingInt(ast.NodeIndex.none), @backingInt(params), @backingInt(body), 0, 0 });
     const function_scope = try self.addGeneratedFunctionScope(parent, function);
     try @import("transformer/semantic_edit.zig").transferStaticBlockStorage(self, source, function_scope, body);
+    // Temps created while lowering this body belong to its generated function.
+    // Hoist them here so the outer program hoister cannot emit a declaration
+    // whose SymbolId still belongs to this function scope.
+    const saved_temp_counter = self.temp_var_counter;
+    defer self.temp_var_counter = saved_temp_counter;
     const saved_scope = self.current_scope;
     const saved_new_target = self.new_target_ctx;
     const saved_extracted = self.in_extracted_fn_body;
@@ -27,11 +32,17 @@ pub fn lower(self: anytype, source: ast.NodeIndex, parent: ScopeId, class_name: 
         defer self.in_extracted_fn_body = saved_extracted;
         break :blk try self.visitNode(body);
     };
-    try @import("transformer/semantic_edit.zig").completeStaticBlockBody(self, source, body, visited, function_scope);
+    const visited_with_temps = if (!visited.isNone()) blk: {
+        const previous = self.current_scope;
+        self.current_scope = function_scope;
+        defer self.current_scope = previous;
+        break :blk try self.hoistTempVarsInOriginalFunction(visited, saved_temp_counter, node.span);
+    } else visited;
+    try @import("transformer/semantic_edit.zig").completeStaticBlockBody(self, source, body, visited_with_temps, function_scope);
     // The ordinary function owns its body implicitly. Use a fresh syntax
     // container so a source body returned unchanged cannot expose the retired
     // source static-block alias through the original owner map.
-    const output_body = try self.ast.addListNode(.block_statement, node.span, self.ast.getNode(visited).data.list);
+    const output_body = try self.ast.addListNode(.block_statement, node.span, self.ast.getNode(visited_with_temps).data.list);
     try @import("class_strict_context.zig").prependDirective(self, output_body);
     self.ast.extra_data.items[self.ast.getNode(function).data.extra + ast.FunctionExtra.body] = @backingInt(output_body);
     const call_key = try es.makePropertyName(self, "call");
