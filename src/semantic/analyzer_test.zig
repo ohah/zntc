@@ -4491,3 +4491,45 @@ test "helper published name production arena keeps its known helper view through
     try std.testing.expectEqual(name.ptr, key.ptr);
     try std.testing.expectEqual(@as(?usize, sid), analyzer.helper_scope_map.get(key));
 }
+
+test "helper published name actual producer releases ownership at every allocation failure" {
+    var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prep.deinit();
+    const fixture = try actualHelperOwnedSource(prep.allocator());
+    var total: usize = 0;
+    var prior_names_on_oom: usize = 0;
+    var fail_at: usize = 0;
+    while (fail_at <= total) : (fail_at += 1) {
+        var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+        defer ledger.deinit();
+        var failing = OneShotFailAllocator{ .child = ledger.allocator(), .fail_at = if (fail_at == 0) std.math.maxInt(usize) else fail_at - 1 };
+        var fresh = SemanticAnalyzer.init(failing.allocator(), fixture.ast);
+        var alive = true;
+        defer if (alive) fresh.deinit();
+        fresh.is_module = true;
+        fresh.helper_ref_nodes = fixture.markers;
+        if (fail_at == 0) {
+            try fresh.analyze();
+            total = failing.count;
+            try std.testing.expectEqual(@as(usize, 0), fresh.errors.items.len);
+            const sid = fresh.symbol_ids.items[@backingInt(fixture.locals[0])] orelse return error.MissingActualHelperBinding;
+            const name = fresh.symbols.items[sid].synthetic_name;
+            const key = fresh.helper_scope_map.getKey(name) orelse return error.MissingActualHelperKey;
+            try std.testing.expectEqual(name.ptr, key.ptr);
+            try std.testing.expectEqual(@as(?usize, sid), fresh.helper_scope_map.get(key));
+            try std.testing.expectEqual(@as(usize, 1), genericOwnedNamePointerCount(&fresh, key));
+        } else {
+            try std.testing.expectError(error.OutOfMemory, fresh.analyze());
+            prior_names_on_oom = @max(prior_names_on_oom, fresh.resolved_names.items.len);
+        }
+        const registry_valid = genericOwnedNameRegistryValid(&fresh, &ledger);
+        fresh.deinit();
+        alive = false;
+        try std.testing.expect(registry_valid);
+        try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+        try std.testing.expectEqual(@as(usize, 0), ledger.invalid_free + ledger.duplicate_free + ledger.invalid_resize);
+        try std.testing.expect(!ledger.overflow);
+    }
+    std.debug.print("helper-owned-oom allocationFailures={d} priorNamesOnOOM={d}\n", .{ total, prior_names_on_oom });
+    try std.testing.expect(prior_names_on_oom >= 1);
+}
