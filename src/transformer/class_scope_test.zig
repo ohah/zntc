@@ -3939,12 +3939,12 @@ test "escaped private helper candidate decoder OOM preserves reservations" {
     try std.testing.expectEqualStrings("#\\u0061", original);
     var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var names = try es_helpers.PrivateNameAllocator.init(counting.allocator(), &parser.ast);
+    defer names.deinit();
     const before = counting.alloc_index;
     const candidate = try names.makePrivateVarName(original);
+    defer counting.allocator().free(candidate);
     const count = counting.alloc_index - before;
     try std.testing.expectEqualStrings("_a2", candidate);
-    counting.allocator().free(candidate);
-    names.deinit();
     try std.testing.expect(count > 0);
     for (0..count) |offset| {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
