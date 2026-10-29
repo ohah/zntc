@@ -3824,3 +3824,35 @@ test "escaped enum container initial tuple exposes actual parameter aliases" {
         try std.testing.expectEqual(@as(usize, 1), owners);
     }
 }
+
+test "escaped enum owned value names report allocation failures without leaks" {
+    const sources = [_][]const u8{
+        "enum E{\\u0041=9,B=\\u0041+1}",
+        "enum E{A=1,B=(()=>{enum Inner{\\u0041=9,C=\\u0041+1}return Inner.C})()}",
+    };
+    for (sources, 0..) |source, family| {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = std.math.maxInt(usize) });
+        {
+            var analyzer = SemanticAnalyzer.init(counting.allocator(), &parser.ast);
+            defer analyzer.deinit();
+            analyzer.is_ts = true;
+            try analyzer.analyze();
+        }
+        const total = counting.allocations;
+        try std.testing.expect(total > 0);
+        for (0..total) |allocation| {
+            var failing = OneShotFailAllocator{ .child = std.testing.allocator, .fail_at = allocation };
+            var analyzer = SemanticAnalyzer.init(failing.allocator(), &parser.ast);
+            defer analyzer.deinit();
+            analyzer.is_ts = true;
+            try std.testing.expectError(error.OutOfMemory, analyzer.analyze());
+        }
+        std.debug.print("escaped-enum-OOM family={d} allocationFailures={d}\n", .{ family, total });
+    }
+}
