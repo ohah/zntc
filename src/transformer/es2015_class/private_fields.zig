@@ -11,9 +11,120 @@ const es2022 = @import("../es2022.zig");
 const assign_ops = @import("assign_ops.zig");
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 
 pub fn PrivateFields(comptime Transformer: type) type {
     return struct {
+        /// A private brand check reads its RHS several times for the object
+        /// guard and brand lookup. Keep the one-evaluation value in a small
+        /// generated function's parameter so direct eval in the caller cannot
+        /// observe a new local binding.
+        const PrivateInReceiver = struct {
+            capture: ?es_helpers.OnceReceiver = null,
+            function: NodeIndex,
+            scope: ScopeId,
+            symbol_id: ?SymbolId,
+            name: []const u8,
+
+            fn init(self: *Transformer, rhs: NodeIndex, span: Span) Transformer.Error!PrivateInReceiver {
+                if (self.ast.getNode(rhs).tag == .this_expression or !currentScopeHasDirectEval(self)) {
+                    return .{
+                        .capture = try es_helpers.OnceReceiver.init(self, rhs, span),
+                        .function = .none,
+                        .scope = self.current_scope,
+                        .symbol_id = null,
+                        .name = "",
+                    };
+                }
+
+                const name = try privateInParameterName(self);
+                const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+                const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
+                const extra = try self.ast.addExtras(&.{
+                    @backingInt(NodeIndex.none),
+                    @backingInt(params),
+                    @backingInt(NodeIndex.none),
+                    0,
+                    @backingInt(NodeIndex.none),
+                });
+                const function = try self.ast.addNode(.{
+                    .tag = .function_expression,
+                    .span = span,
+                    .data = .{ .extra = extra },
+                });
+                const scope = if (self.semantic_edit_enabled)
+                    try self.addGeneratedFunctionScope(self.current_scope, function)
+                else
+                    self.current_scope;
+                const symbol_id = if (self.semantic_edit_enabled) blk: {
+                    break :blk (try self.declareSyntheticInScope(binding, span, .parameter, scope)) orelse
+                        @panic("private-in isolated receiver has no exact SymbolId");
+                } else null;
+                return .{ .function = function, .scope = scope, .symbol_id = symbol_id, .name = name };
+            }
+
+            fn use(receiver: PrivateInReceiver, self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+                if (receiver.capture) |capture| return capture.use(self, span);
+                const reference = try es_helpers.makeExactSyntheticRefAt(
+                    self,
+                    try self.ast.addString(receiver.name),
+                    span,
+                );
+                if (receiver.symbol_id) |symbol_id|
+                    try self.addSyntheticRefInScope(reference, symbol_id, receiver.scope, .{ .read = true });
+                return reference;
+            }
+
+            fn wrap(
+                receiver: PrivateInReceiver,
+                self: *Transformer,
+                rhs: NodeIndex,
+                result: NodeIndex,
+                span: Span,
+            ) Transformer.Error!NodeIndex {
+                if (receiver.capture) |capture| return capture.wrap(self, result, span);
+                const return_statement = try self.ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = result, .flags = 0 } },
+                });
+                const body = try self.ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = try self.ast.addNodeList(&.{return_statement}) },
+                });
+                const function_extra = self.ast.getNode(receiver.function).data.extra;
+                self.ast.extra_data.items[function_extra + ast_mod.FunctionExtra.body] = @backingInt(body);
+                return es_helpers.makeCallExpr(self, receiver.function, &.{rhs}, span);
+            }
+        };
+
+        /// Temps in the current execution scope are visible to direct eval,
+        /// including eval nested in a closure. A parameter in a generated
+        /// function keeps the captured RHS outside that dynamic name space.
+        fn currentScopeHasDirectEval(self: *Transformer) bool {
+            const scope = self.current_scope;
+            if (scope.isNone()) return true;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            if (scope.toIndex() >= scopes.len) return true;
+            return scopes[scope.toIndex()].subtree_has_direct_eval;
+        }
+
+        /// The receiver parameter shares a function body with exact private
+        /// storage references. Reserve a distinct spelling for both source
+        /// symbols and the current class's generated private bindings.
+        fn privateInParameterName(self: *Transformer) Transformer.Error![]const u8 {
+            var suffix: u32 = 1;
+            while (true) : (suffix += 1) {
+                const base = if (suffix == 1)
+                    "_zntcPrivateInValue"
+                else
+                    try std.fmt.allocPrint(self.allocator, "_zntcPrivateInValue{d}", .{suffix});
+                const name = try es_helpers.resolveSyntheticName(self, base);
+                if (!es_helpers.collidesWithPrivateField(self, name)) return name;
+            }
+        }
+
         /// this.#x → instance: _x.get(this), static: __classStaticPrivateFieldSpecGet(receiver, ClassName, _x)
         /// optional flag가 설정된 노드는 null 반환 — optional chain lowering이 short-circuit과
         /// 함께 처리해야 함 (es2020.lowerOptionalChain 내부 rebuildChainNode에서 get 변환).
@@ -636,7 +747,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // instance field / static field 매핑 우선 조회
             for (self.current_private_fields) |pf| {
                 if (!es_helpers.privateNamesEqual(pf.original_name, orig)) continue;
-                const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(right_idx), node.span);
+                const rhs = try self.visitNode(right_idx);
+                const receiver = try PrivateInReceiver.init(self, rhs, node.span);
+                const previous_scope = self.current_scope;
+                self.current_scope = receiver.scope;
+                defer self.current_scope = previous_scope;
                 const receiver_ref = try receiver.use(self, node.span);
                 var has_brand: NodeIndex = .none;
                 if (pf.class_name) |class_name| {
@@ -648,13 +763,17 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     has_brand = try buildWeakMapCall(self, pf.var_name, pf, "has", receiver_ref, &.{}, node.span);
                 }
                 const guarded = try buildGuardedPrivateIn(self, receiver, has_brand, node.span);
-                return receiver.wrap(self, guarded, node.span);
+                return receiver.wrap(self, rhs, guarded, node.span);
             }
 
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
                 if (!es_helpers.privateNamesEqual(pm.original_name, orig)) continue;
-                const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(right_idx), node.span);
+                const rhs = try self.visitNode(right_idx);
+                const receiver = try PrivateInReceiver.init(self, rhs, node.span);
+                const previous_scope = self.current_scope;
+                self.current_scope = receiver.scope;
+                defer self.current_scope = previous_scope;
                 const receiver_ref = try receiver.use(self, node.span);
                 var has_brand: NodeIndex = .none;
                 if (pm.class_name) |class_name| {
@@ -671,7 +790,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     );
                 }
                 const guarded = try buildGuardedPrivateIn(self, receiver, has_brand, node.span);
-                return receiver.wrap(self, guarded, node.span);
+                return receiver.wrap(self, rhs, guarded, node.span);
             }
 
             return null;
@@ -680,7 +799,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// Private brand checks throw for every primitive RHS. The invalid arm
         /// uses a native `in` operation so it raises a TypeError without looking
         /// up a possibly shadowed global constructor. The RHS is captured once.
-        fn buildGuardedPrivateIn(self: *Transformer, receiver: es_helpers.OnceReceiver, has_brand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildGuardedPrivateIn(self: *Transformer, receiver: PrivateInReceiver, has_brand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const object_type = try privateInTypeofEquals(self, receiver, "\"object\"", span);
             const non_null = try makePrivateInBinary(
                 self,
@@ -715,7 +834,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             });
         }
 
-        fn privateInTypeofEquals(self: *Transformer, receiver: es_helpers.OnceReceiver, expected: []const u8, span: Span) Transformer.Error!NodeIndex {
+        fn privateInTypeofEquals(self: *Transformer, receiver: PrivateInReceiver, expected: []const u8, span: Span) Transformer.Error!NodeIndex {
             const operand = try receiver.use(self, span);
             const extra = try self.ast.addExtras(&.{ @backingInt(operand), @backingInt(token_mod.Kind.kw_typeof) });
             const typeof_expr = try self.ast.addExtraNode(.unary_expression, span, extra);
