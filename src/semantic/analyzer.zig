@@ -5049,6 +5049,7 @@ pub const SemanticAnalyzer = struct {
         // dangling 되지 않는다 (#3100).
         const is_synthetic_name = name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0;
         const name_text = try self.ast.getTextStable(self.allocator, name_span);
+        if (is_synthetic_name) try self.registerOwnedName(name_text);
         const target_scope = self.findVarScope();
 
         const sym_index = self.symbols.items.len;
