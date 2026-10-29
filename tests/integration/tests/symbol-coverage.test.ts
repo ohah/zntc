@@ -1754,12 +1754,42 @@ function transformIdentityAuditProblems(stderr: string): string[] {
     problems.push(...strictSchemaProblems(strict[0]));
   }
 
-  const reportPaths = [
-    auditReportSourcePath(exact[0], 'zntc: symbol-identity ', 'generated_bindings='),
-    auditReportSourcePath(owners[0], 'zntc: symbol-source-scope-owner ', 'scope_owner_mismatch='),
-    auditReportSourcePath(coverage[0], 'zntc: symbol-coverage ', 'new_user_idents='),
-    auditReportSourcePath(strict[0], 'zntc: synthetic-coverage ', 'bound='),
-  ].filter((path): path is string => path !== undefined);
+  const reportPaths: string[] = [];
+  let missingSourcePath = false;
+  const reportPathInputs = [
+    {
+      reports: exact,
+      prefix: 'zntc: symbol-identity ',
+      marker: 'generated_bindings=',
+    },
+    {
+      reports: owners,
+      prefix: 'zntc: symbol-source-scope-owner ',
+      marker: 'scope_owner_mismatch=',
+    },
+    {
+      reports: coverage,
+      prefix: 'zntc: symbol-coverage ',
+      marker: 'new_user_idents=',
+    },
+    {
+      reports: strict,
+      prefix: 'zntc: synthetic-coverage ',
+      marker: 'bound=',
+    },
+  ] as const;
+  for (const input of reportPathInputs) {
+    if (input.reports.length !== 1) continue;
+    const path = auditReportSourcePath(input.reports[0], input.prefix, input.marker);
+    if (path === undefined || path.length === 0) {
+      missingSourcePath = true;
+    } else {
+      reportPaths.push(path);
+    }
+  }
+  if (missingSourcePath) {
+    problems.push('transform audit report has missing or empty source path');
+  }
   if (new Set(reportPaths).size > 1) {
     problems.push('transform audit reports reference multiple source files');
   }
@@ -5290,6 +5320,20 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(transformIdentityAuditProblems(mutant.join('\n'))).toContain(
         'transform audit reports reference multiple source files',
       );
+    }
+
+    const emptySourcePaths = reports.map((line) => line.replace('/tmp/input.js', ''));
+    expect(transformIdentityAuditProblems(emptySourcePaths.join('\n'))).toContain(
+      'transform audit report has missing or empty source path',
+    );
+
+    for (const index of reports.keys()) {
+      const oneEmptySourcePath = [...reports];
+      oneEmptySourcePath[index] = oneEmptySourcePath[index].replace('/tmp/input.js', '');
+      expect(
+        transformIdentityAuditProblems(oneEmptySourcePath.join('\n')),
+        `report ${index} with no source path must fail`,
+      ).toContain('transform audit report has missing or empty source path');
     }
 
     const markerInPath = reports
