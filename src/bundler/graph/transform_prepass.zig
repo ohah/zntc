@@ -8792,8 +8792,6 @@ fn canKeepPrepassSemanticGraphPrepared(
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
-    if (options.unsupported.object_extensions and (self.flow or isFlowPath(module.path)) and
-        (hasStaticObjectGetterSuper(self.allocator, ast) catch true)) return false;
     var top_level_statements: ?std.DynamicBitSet = null;
     defer {
         if (top_level_statements) |*mask| mask.deinit();
@@ -18020,13 +18018,19 @@ test "static getter super source admission preserves narrow syntax and owner bou
         .{ .text = "var Object=globalThis.Object;var object={get value(){return super.value}};", .admitted = false },
         .{ .text = "var object={get value(){eval('value');return super.value}};", .admitted = false },
         .{ .text = "var object={get value(){return super.value},extra:1};", .admitted = false },
+        .{ .text = "var object={get [name](){return super.value}};", .admitted = true },
+        .{ .text = "var object={get value(){return super['value']}};", .admitted = false },
+        .{ .text = "var Base=class{};var object={get value(){var nested=class extends Base{method(){return super.value}};return super.value}};", .admitted = false },
     };
+    var rejected: usize = 0;
     for (controls) |control| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const f = try runtimeHelperReanalysisTestFixture(arena.allocator(), control.text);
+        if (!control.admitted) rejected += 1;
         try std.testing.expectEqual(control.admitted, computedAccessorSuperSourceAdmissionForTest(&f));
     }
+    try std.testing.expectEqual(@as(usize, 10), rejected);
 }
 
 test "static getter super source admission rejects wrong actual getter Scope kind and restores" {
@@ -18072,7 +18076,7 @@ test "static getter super preserves native Flow graph admission" {
     try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
 }
 
-test "static getter super keeps ES5 Flow fallback separate" {
+test "static getter super retains ES5 Flow graph without semantic resync" {
     const helpers = @import("../test_helpers.zig");
     var counts: [2]u32 = undefined;
     for ([_]bool{ false, true }, 0..) |minify, i| {
@@ -18095,6 +18099,43 @@ test "static getter super keeps ES5 Flow fallback separate" {
         try graph.build(std.testing.io, &.{entry});
         counts[i] = profile.count(.graph_resync_semantic);
         std.debug.print("static-getter-es5-flow min={any} initial={d} post={d}\n", .{ minify, profile.count(.graph_discover_pm_semantic), counts[i] });
+        try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
+        try std.testing.expect(graph.findModuleByPath(entry).?.transform_cache != null);
     }
-    try std.testing.expectEqual([_]u32{ 1, 1 }, counts);
+    try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
+}
+
+test "ES5 Flow retains ten static getter super graph variants" {
+    const helpers = @import("../test_helpers.zig");
+    const source =
+        "var parent0:any={value:7};var object0={get value(){return super.value}};Object.setPrototypeOf(object0,parent0);" ++
+        "var parent1:any={value:7};var object1={get value(){return super.value+1}};Object.setPrototypeOf(object1,parent1);" ++
+        "var parent2:any={value:7};var object2={get value(){return super.value*2}};Object.setPrototypeOf(object2,parent2);" ++
+        "var parent3:any={value:7};var object3={get value(){return super.value===7}};Object.setPrototypeOf(object3,parent3);" ++
+        "var parent4:any={value:7};var object4={get value(){return super.value||0}};Object.setPrototypeOf(object4,parent4);" ++
+        "var parent5:any={value:7};var object5={get value(){return super.value&&8}};Object.setPrototypeOf(object5,parent5);" ++
+        "var parent6:any={value:7};var object6={get value(){return super.value?3:4}};Object.setPrototypeOf(object6,parent6);" ++
+        "var parent7:any={value:7};var object7={get value(){return super.value,5}};Object.setPrototypeOf(object7,parent7);" ++
+        "var parent8:any={value:7};var object8={get value(){return super.value>2}};Object.setPrototypeOf(object8,parent8);" ++
+        "var parent9:any={value:7};var object9={get value(){return -super.value}};Object.setPrototypeOf(object9,parent9);" ++
+        "console.log(object0.value,object1.value,object2.value,object3.value,object4.value,object5.value,object6.value,object7.value,object8.value,object9.value);";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.js", source);
+    const entry = try helpers.absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.flow = true;
+    graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    try std.testing.expect(graph.findModuleByPath(entry).?.transform_cache != null);
 }
