@@ -26797,6 +26797,55 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('foreign namespace import aliases preserve one namespace object in bundled ESM', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-foreign-namespace-alias-'));
+    const entry = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.mjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    writeFileSync(
+      entry,
+      [
+        "import * as first from './provider.mjs';",
+        "import * as second from './provider.mjs';",
+        "console.log(first === second, Reflect.get(first, 'value'), Reflect.get(second, 'value'));",
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(dir, 'provider.mjs'), 'export const value = 7;\n');
+    try {
+      const runner = [
+        'import { build } from ' + JSON.stringify(coreEntry) + ';',
+        'const result = await build(' +
+          JSON.stringify({
+            entryPoints: [entry],
+            platform: 'node',
+            format: 'esm',
+            target: 'esnext',
+            write: false,
+          }) +
+          ');',
+        'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+        'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+      ].join('\n');
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(proc.status, proc.stderr).toBe(0);
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toMatch(/\bget\s+value\s*\(/);
+      expect(outputs[0].match(/\bget\s+value\s*\(/g)).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true 7 7\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('super-set virtual provider preserves lexical globals through the public build API', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-super-set-provider-'));
     const entry = join(dir, 'entry-super-set.js');

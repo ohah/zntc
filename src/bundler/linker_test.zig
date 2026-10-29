@@ -6238,8 +6238,117 @@ test "foreign namespace AST holder preserves the importer binding for a provider
     try std.testing.expect(importer.semantic.?.symbol_ids.ptr == completed_sem_ids);
 }
 
+test "foreign namespace AST holder aliases two exact namespace imports to one object" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+
+    const importer_index = findModuleIdx(&graph, "entry.mjs") orelse return error.MissingForeignImporter;
+    const provider_index = findModuleIdx(&graph, "provider.mjs") orelse return error.MissingForeignProvider;
+    const importer = graph.moduleAtMut(importer_index).?;
+    const provider = graph.moduleAtMut(provider_index).?;
+    try std.testing.expectEqual(@as(usize, 2), importer.import_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), importer.import_records.len);
+    const original_imports = importer.import_bindings;
+    const first_anchor = original_imports[0].local_symbol_node orelse return error.MissingFirstNamespaceAnchor;
+    const second_anchor = original_imports[1].local_symbol_node orelse return error.MissingSecondNamespaceAnchor;
+    const first_sid = importer.semantic.?.symbol_ids[@backingInt(first_anchor)] orelse return error.MissingFirstNamespaceIdentity;
+    const second_sid = importer.semantic.?.symbol_ids[@backingInt(second_anchor)] orelse return error.MissingSecondNamespaceIdentity;
+    try std.testing.expect(first_sid != second_sid);
+    const provider_anchor = provider.export_bindings[0].local_symbol_node orelse return error.MissingProviderExportAnchor;
+    const provider_sid = provider.semantic.?.symbol_ids[@backingInt(provider_anchor)] orelse return error.MissingProviderExportIdentity;
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+
+    try std.testing.expectEqual(@as(usize, 1), graph.self_namespace_holders.count());
+    try std.testing.expectEqual(.materialized_const, importer.import_bindings[0].local_role);
+    try std.testing.expectEqual(.materialized_const, importer.import_bindings[1].local_role);
+    try std.testing.expectEqual(@as(usize, 3), importer.import_bindings.len);
+    try std.testing.expectEqual(@as(usize, 3), importer.import_records.len);
+    try std.testing.expectEqual(@as(?u32, first_sid), importer.semantic.?.symbol_ids[@backingInt(importer.import_bindings[0].local_symbol_node.?)]);
+    try std.testing.expectEqual(@as(?u32, second_sid), importer.semantic.?.symbol_ids[@backingInt(importer.import_bindings[1].local_symbol_node.?)]);
+    const callsite = importer.import_bindings[2].callsite_target orelse return error.MissingNamespaceProviderCallsite;
+    try std.testing.expectEqual(.namespace_export_value, callsite.role);
+    try std.testing.expectEqual(provider.index, callsite.symbol.module);
+    try std.testing.expectEqual(@as(u32, provider_sid), @backingInt(callsite.symbol.inner));
+    try std.testing.expectEqual(provider.semantic.?.owner_token, callsite.owner);
+    try @import("runtime_callsite_targets.zig").validateTargetRole(&graph, callsite);
+    try @import("self_namespace_ast.zig").validate(&graph, importer);
+}
+
+test "foreign namespace alias proof rejects eleven poisoned graph links and restores" {
+    const Attack = enum {
+        plan_missing_alias,
+        alias_holder,
+        alias_binding,
+        alias_declarator,
+        alias_statement,
+        alias_initializer,
+        alias_binding_id,
+        alias_initializer_id,
+        alias_local_node,
+        alias_local_role,
+        alias_record_index,
+    };
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
+    try writeFile(tmp.dir, "entry.mjs", "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));");
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const importer = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(0)).?;
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    const plan = graph.self_namespace_holders.getPtr(importer.index.toU32()) orelse return error.MissingSelfNamespaceHolder;
+    if (plan.aliases.len != 1) return error.MissingCompletedNamespaceAlias;
+    const saved_aliases = plan.aliases;
+    const saved_alias = plan.aliases[0];
+    const saved_binding = importer.import_bindings[1];
+    const alias_binding_id = importer.semantic.?.symbol_ids[@backingInt(saved_alias.binding)] orelse return error.MissingAliasBindingId;
+    const alias_initializer_id = importer.semantic.?.symbol_ids[@backingInt(saved_alias.initializer)] orelse return error.MissingAliasInitializerId;
+
+    inline for (std.meta.tags(Attack)) |attack| {
+        const aliases = @constCast(plan.aliases);
+        const bindings = @constCast(importer.import_bindings);
+        const ids = @constCast(importer.semantic.?.symbol_ids);
+        switch (attack) {
+            .plan_missing_alias => plan.aliases = &.{},
+            .alias_holder => aliases[0].holder = plan.holder,
+            .alias_binding => aliases[0].binding = plan.binding,
+            .alias_declarator => aliases[0].declarator = plan.declarator,
+            .alias_statement => aliases[0].statement = plan.statement,
+            .alias_initializer => aliases[0].initializer = plan.read,
+            .alias_binding_id => ids[@backingInt(saved_alias.binding)] = plan.holder,
+            .alias_initializer_id => ids[@backingInt(saved_alias.initializer)] = saved_alias.holder,
+            .alias_local_node => bindings[1].local_symbol_node = plan.binding,
+            .alias_local_role => bindings[1].local_role = .import_binding,
+            .alias_record_index => bindings[1].import_record_index = 0,
+        }
+        try std.testing.expectError(error.InvalidSelfNamespaceHolder, @import("self_namespace_ast.zig").validate(&graph, importer));
+        plan.aliases = saved_aliases;
+        @constCast(plan.aliases)[0] = saved_alias;
+        bindings[1] = saved_binding;
+        ids[@backingInt(saved_alias.binding)] = alias_binding_id;
+        ids[@backingInt(saved_alias.initializer)] = alias_initializer_id;
+        try @import("self_namespace_ast.zig").validate(&graph, importer);
+    }
+}
+
 test "foreign namespace AST holder rejects unsupported sources without publication" {
-    const Case = struct { provider: []const u8, consumer: []const u8, extra: bool = false };
+    const Case = struct { provider: []const u8, consumer: []const u8, extra: bool = false, provider2: ?[]const u8 = null };
     const cases = [_]Case{
         .{ .provider = "export let value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
         .{ .provider = "export function value(){return 7}", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));" },
@@ -6252,12 +6361,27 @@ test "foreign namespace AST holder rejects unsupported sources without publicati
         .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'other'));" },
         .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';console.log(Reflect.ownKeys(ns));" },
         .{ .provider = "export const value=7;", .consumer = "import*as ns from './provider.mjs';import'./side.mjs';console.log(Reflect.get(ns,'value'));", .extra = true },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.get(first,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.get(first,'value'),second.value);" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';const alias=second;console.log(Reflect.get(first,'value'),Reflect.get(alias,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.get(first,'value'),Reflect.get(second,'other'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.get(first,'value'),Reflect.get(second,'value'+''));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.ownKeys(second),Reflect.get(first,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first!==second,Reflect.get(first,'value'),Reflect.get(second,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===globalThis,Reflect.get(first,'value'),Reflect.get(second,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first==second,Reflect.get(first,'value'),Reflect.get(second,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first!=second,Reflect.get(first,'value'),Reflect.get(second,'value'));" },
+        .{ .provider = "export const value=7;", .provider2 = "export const value=9;", .consumer = "import*as first from './provider.mjs';import*as second from './provider2.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';import*as third from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'),Reflect.get(third,'value'));" },
+        .{ .provider = "export const value=7;", .consumer = "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second);" },
+        .{ .provider = "export const value=7;", .consumer = "import*as \\u0066irst from './provider.mjs';import*as second from './provider.mjs';console.log(Reflect.get(first,'value'),Reflect.get(second,'value'));" },
     };
     const a = std.testing.allocator;
     for (cases, 0..) |case, index| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
         try writeFile(tmp.dir, "provider.mjs", case.provider);
+        if (case.provider2) |provider2| try writeFile(tmp.dir, "provider2.mjs", provider2);
         try writeFile(tmp.dir, "entry.mjs", case.consumer);
         if (case.extra) try writeFile(tmp.dir, "side.mjs", "console.log('side');");
         const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
@@ -6271,7 +6395,7 @@ test "foreign namespace AST holder rejects unsupported sources without publicati
         const provider = graph.moduleAtMut(@import("types.zig").ModuleIndex.fromUsize(1)).?;
         const importer_nodes = importer.ast.?.nodes.items.ptr;
         const provider_owner = provider.semantic.?.owner_token;
-        const expected_modules: usize = if (case.extra) 3 else 2;
+        const expected_modules: usize = if (case.extra or case.provider2 != null) 3 else 2;
         try std.testing.expectEqual(expected_modules, graph.moduleCount());
         try @import("self_namespace_ast.zig").lower(&graph, .{
             .format = .esm,
@@ -6291,7 +6415,7 @@ fn foreignNamespaceAllocationFailure(offset: usize) !bool {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
-    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "entry.mjs", "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));");
     const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
     defer a.free(entry);
     var failing = std.testing.FailingAllocator.init(a, .{});
@@ -6471,7 +6595,7 @@ test "foreign namespace holder lifecycle evicts both cached owners" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
-    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "entry.mjs", "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));");
     try writeFile(tmp.dir, "control.mjs", "export const control=11;");
     const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
     defer a.free(entry);
@@ -6519,7 +6643,7 @@ test "foreign namespace holder admits exact one-symbol provider from disk receip
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.mjs", "import*as ns from './provider.mjs';console.log(Reflect.get(ns,'value'));");
+    try writeFile(tmp.dir, "entry.mjs", "import*as first from './provider.mjs';import*as second from './provider.mjs';console.log(first===second,Reflect.get(first,'value'),Reflect.get(second,'value'));");
     try writeFile(tmp.dir, "provider.mjs", "export const value=7;");
     const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
     defer a.free(entry);
