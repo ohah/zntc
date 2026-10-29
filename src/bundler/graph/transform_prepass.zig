@@ -6234,8 +6234,7 @@ fn canRetainSimpleNamedStaticBlockClasses(
             if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
             const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
             const lowered_method_flags = ast_mod.MethodFlags.is_async |
-                ast_mod.MethodFlags.is_generator |
-                ast_mod.MethodFlags.is_setter;
+                ast_mod.MethodFlags.is_generator;
             const key_node = ast.getNode(key);
             const exact_key_shape = switch (key_node.tag) {
                 .identifier_reference => true,
@@ -12415,6 +12414,24 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_named_expression_static_getter.source_candidate);
     try std.testing.expect(retained_named_expression_static_getter.graph_gate);
 
+    const retained_static_setter = try staticBlockPrepassDecisionForTest(
+        "class Counter { static set current(next) { this.value = next; } static { this.current = 1; } } console.log(Counter.value);",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_setter.source_candidate);
+    try std.testing.expect(retained_static_setter.graph_gate);
+
+    const retained_named_expression_static_setter = try staticBlockPrepassDecisionForTest(
+        "const Named = 2; const Counter = class Named { set current(next) { this.value = next; } static { const instance = new Named(); instance.current = 2; Named.value = instance.value; } }; console.log(Counter.value, Named);",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_named_expression_static_setter.source_candidate);
+    try std.testing.expect(retained_named_expression_static_setter.graph_gate);
+
     const poisoned_named_class_expression = try staticBlockPrepassDecisionForTest(
         named_class_expression_source,
         ".js",
@@ -12448,7 +12465,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "const Base = class {}; const C = class Named extends Base { static { this.value = 1; } };", .candidate = false },
         .{ .source = "const methodName = 'read'; const C = class Named { [methodName]() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const suffix = ''; const C = class Named { ['read' + suffix]() {} static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const C = class Named { static set value(next) { this._value = next; } static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { *read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { async read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { value = 1; static { this.value = 1; } };", .candidate = false },
@@ -12457,7 +12473,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "class C extends Base { static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [\"read\" + suffix]() {} static { this.value = 1; } }", .candidate = false },
-        .{ .source = "class C { static set value(next) { this._value = next; } static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { #value = 1; static { this.value = 1; } }", .candidate = false },

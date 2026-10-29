@@ -11760,11 +11760,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
-        name: 'named-class-expression-with-accessor',
-        graph: 'reanalyzed',
+        name: 'named-class-expression-with-instance-setter',
+        graph: 'retained',
         source:
-          'const Counter = class Named { static set value(next) { this._value = next; } static { this.value = 2; } }; console.log(Counter._value);',
-        stdout: '2\n',
+          'const Named = 2; const Counter = class Named { set current(next) { this.value = next; } static { const instance = new Named(); instance.current = 2; Named.value = instance.value; } }; console.log(Counter.value, Named);',
+        stdout: '2 2\n',
       },
       {
         name: 'named-class-expression-with-async-method',
@@ -11816,8 +11816,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
-        name: 'accessor-method',
-        graph: 'reanalyzed',
+        name: 'static-setter-with-static-block',
+        graph: 'retained',
         source:
           'class Counter { static set value(next) { this._value = next; } static { this.value = 2; } } console.log(Counter._value);',
         stdout: '2\n',
