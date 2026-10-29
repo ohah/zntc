@@ -4040,3 +4040,7 @@ test "generic owned name parse arena result and ModuleStore transfer preserve kn
     try std.testing.expectEqual(@as(?u32, source_id), restored.semantic.?.symbol_ids[source_node]);
     try std.testing.expectEqualStrings("_N", parameter_name);
 }
+
+test "generic owned name escaped private declarations register owned names through OOM" {
+    try genericOwnedNameAllocationSweep("class C{#\\u0061=1;read(){return this.#a}}", "private-escaped");
+}
