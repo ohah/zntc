@@ -26446,6 +26446,90 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('super-set virtual provider preserves lexical globals through the public build API', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-super-set-provider-'));
+    const entry = join(dir, 'entry-super-set.js');
+    const output = join(dir, 'out.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    writeFileSync(
+      entry,
+      "var base={set value(v){this.seen=v}};var object={set['value'](v){super.value=v}};Object.setPrototypeOf(object,base);object.value=7;console.log(object.seen);",
+    );
+    try {
+      const expected = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(expected.status, expected.stderr).toBe(0);
+      expect(expected.stdout).toBe('7\n');
+      for (const minifyIdentifiers of [false, true]) {
+        for (const coverage of [false, true]) {
+          const runner = [
+            `import { build } from ${JSON.stringify(coreEntry)};`,
+            `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers, write: false })});`,
+            'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+            'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+          ].join('\n');
+          const env = { ...process.env };
+          delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+          if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+          const proc = spawnSync('bun', ['-e', runner], {
+            cwd: join(import.meta.dir, '../../..'),
+            env,
+            encoding: 'utf8',
+          });
+          const stderr = proc.stderr ?? '';
+          expect(proc.status, stderr).toBe(0);
+          const lines = stderr.split(/\r?\n/);
+          if (coverage) {
+            const entryMode = lines.find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                line.includes('entry-super-set.js'),
+            );
+            expect(entryMode, stderr).toContain('semantic_graph=retained');
+            const entryExact = lines.find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') &&
+                line.includes('entry-super-set.js'),
+            );
+            expect(entryExact, stderr).toBeDefined();
+            expect(exactSchemaProblems(entryExact!), entryExact).toEqual([]);
+            expect(entryExact).toMatch(/clean=1(?:\s|$)/);
+            const providerMode = lines.find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                line.includes('runtime/super-set'),
+            );
+            if (minifyIdentifiers) {
+              expect(providerMode, stderr).toContain('semantic_graph=retained');
+              const providerExact = lines.find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass ') &&
+                  line.includes('runtime/super-set'),
+              );
+              expect(providerExact, stderr).toBeDefined();
+              expect(exactSchemaProblems(providerExact!), providerExact).toEqual([]);
+              expect(providerExact).toMatch(/clean=1(?:\s|$)/);
+            } else {
+              expect(providerMode, stderr).toBeUndefined();
+            }
+          } else {
+            expect(
+              lines.some((line) => line.startsWith('zntc: symbol-identity-prepass-mode ')),
+              stderr,
+            ).toBe(false);
+          }
+          const outputs = JSON.parse(proc.stdout) as string[];
+          expect(outputs).toHaveLength(1);
+          writeFileSync(output, outputs[0]);
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(expected.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('ES5 static object getter super retains its exact entry through the public build API', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-getter-super-'));
     const entry = join(dir, 'entry-static.js');
