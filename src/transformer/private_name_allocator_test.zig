@@ -22,7 +22,8 @@ test "private helper names share IdentifierName StringValue reservations" {
 
     const field_name = try private_names.makePrivateVarName("#\\u0061");
     defer allocator.free(field_name);
-    try std.testing.expectEqualStrings("_\\u00612", field_name);
+    try std.testing.expect(Scanner.identifierValueEquals(field_name, "_a2"));
+    try std.testing.expectEqualStrings("_a2", field_name);
 
     const escaped_source_collision = try private_names.makePrivateVarName("#b");
     defer allocator.free(escaped_source_collision);
