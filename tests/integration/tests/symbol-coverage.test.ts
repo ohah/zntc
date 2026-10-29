@@ -3419,6 +3419,34 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ambient import shorthand destructuring writes cannot retain the ESNext graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-ambient-import-shorthand-write-'));
+    const input = join(dir, 'entry.unknown');
+    writeFileSync(
+      input,
+      [
+        "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
+        '({ Shape } = { Shape: 44 }); console.log(Shape);',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const result = runCoverage(input, TARGETS[4], dir, true);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(transpileGraphModeProblems(result.stderr, true, 'reanalyzed'), result.stderr).toEqual(
+        [],
+      );
+      const actual = runNode([join(dir, 'out.js')]);
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('44\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('standalone attributed declaration-level type imports retain the graph only after exact erasure', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-attributed-declaration-type-import-'));
     const input = join(dir, 'entry.ts');

@@ -324,6 +324,10 @@ pub const Transformer = struct {
     /// by AST nodes or SymbolIds.
     has_opaque_define_replacement: bool = false,
     unresolved_reference_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
+    /// Exact unresolved source nodes the semantic analyzer resolved as writes.
+    /// Erased-import graph exceptions must reject them, including shorthand
+    /// destructuring leaves that keep the `identifier_reference` AST tag.
+    unresolved_reference_write_nodes: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 
     /// #2869 transformer 가 emit 한 runtime helper identifier_reference 노드 인덱스.
     /// resync 의 SemanticAnalyzer 가 이 marker 를 보고 user scope 와 격리된 별도
