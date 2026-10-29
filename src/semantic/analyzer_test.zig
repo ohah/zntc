@@ -3723,6 +3723,7 @@ test "escaped enum initial value lookup preserves source identity and lexical ro
         .{ .source = "enum E{A=1,B=/*read*/E.A}", .role = .enum_iife_parameter, .name = "E", .key = "E" },
         .{ .source = "enum E{B=/*read*/A+1,A=9}", .role = null, .name = "A", .unresolved = true },
         .{ .source = "enum E{A=9,B=/*read*/A}", .role = .enum_iife_member, .name = "A" },
+        .{ .source = "enum E{A=9,\"\\\\u0041\"=3,B=/*read*/A,C}", .role = .enum_iife_member, .name = "A" },
         .{ .source = "enum E{\"\\u0041\"=9,B=/*read*/A+1}", .role = .enum_iife_member, .name = "A", .key = "\"\\u0041\"" },
     };
     var failures: usize = 0;
