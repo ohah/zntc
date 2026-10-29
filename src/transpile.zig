@@ -827,7 +827,7 @@ fn canMangleWithTransformSemanticAfterEditAndRuntimeImportEqualsProof(
         erasedAmbientGlobalNamespaceHasNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_js_imports = parser.source_mode == .js_lenient and
         !parser.is_flow and facts.has_import_declaration and
-        erasedImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
+        erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(transformer, root);
     const may_admit_erased_ts_type_imports = parser.source_mode == .ts and
         (facts.has_declaration_level_type_import or facts.has_inline_type_import_specifier) and
         ((onlyErasableTypeImports(&parser.ast) and
@@ -1273,14 +1273,74 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
 ) bool {
-    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, false);
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, false, false);
+}
+
+fn erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(
+    transformer: *const Transformer,
+    root: ast_mod.NodeIndex,
+) bool {
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, false, true);
 }
 
 fn erasedTypeImportDeclarationsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
 ) bool {
-    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, true);
+    return erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(transformer, root, true, false);
+}
+
+fn importAttributesHaveExactSourceStructure(
+    ast: *const ast_mod.Ast,
+    source_count: u32,
+    import_node: ast_mod.Node,
+    import_decl: module_parser.ImportDeclExtras,
+) bool {
+    if (import_decl.attrs_start > ast.extra_data.items.len or
+        import_decl.attrs_len > ast.extra_data.items.len - import_decl.attrs_start or
+        import_decl.source.isNone() or @backingInt(import_decl.source) >= source_count or
+        source_count > ast.nodes.items.len or !isValidSourceTextSpan(ast, import_node.span)) return false;
+    const source_node = ast.getNode(import_decl.source);
+    if (source_node.tag != .string_literal or !isValidSourceTextSpan(ast, source_node.span) or
+        source_node.span.start < import_node.span.start or source_node.span.end > import_node.span.end) return false;
+
+    var source_attribute_count: u32 = 0;
+    for (ast.nodes.items[0..source_count]) |candidate| {
+        if (candidate.tag != .import_attribute) continue;
+        if (candidate.span.start >= source_node.span.end and candidate.span.end <= import_node.span.end) {
+            source_attribute_count += 1;
+        }
+    }
+    if (source_attribute_count != import_decl.attrs_len) return false;
+
+    var previous_attribute_start: ?u32 = null;
+    var attribute_offset: u32 = 0;
+    while (attribute_offset < import_decl.attrs_len) : (attribute_offset += 1) {
+        const raw = ast.extra_data.items[import_decl.attrs_start + attribute_offset];
+        const attribute_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw));
+        if (attribute_index.isNone() or raw >= source_count) return false;
+        const attribute = ast.getNode(attribute_index);
+        if (attribute.tag != .import_attribute or attribute.data.binary.flags != 0 or
+            !isValidSourceTextSpan(ast, attribute.span) or
+            attribute.span.start < source_node.span.end or attribute.span.end > import_node.span.end or
+            (previous_attribute_start != null and attribute.span.start <= previous_attribute_start.?)) return false;
+        previous_attribute_start = attribute.span.start;
+        for (ast.extra_data.items[import_decl.attrs_start .. import_decl.attrs_start + attribute_offset]) |previous_raw| {
+            if (previous_raw == raw) return false;
+        }
+
+        const key_index = attribute.data.binary.left;
+        const value_index = attribute.data.binary.right;
+        if (key_index.isNone() or value_index.isNone() or
+            @backingInt(key_index) >= source_count or @backingInt(value_index) >= source_count) return false;
+        const key_node = ast.getNode(key_index);
+        const value_node = ast.getNode(value_index);
+        if (key_node.tag != .string_literal or value_node.tag != .string_literal or
+            !isValidSourceTextSpan(ast, key_node.span) or !isValidSourceTextSpan(ast, value_node.span) or
+            key_node.span.start < attribute.span.start or key_node.span.end > attribute.span.end or
+            value_node.span.start < attribute.span.start or value_node.span.end > attribute.span.end) return false;
+    }
+    return true;
 }
 
 /// Prove that inline `type` specifiers mixed into a surviving TypeScript value
@@ -1419,6 +1479,7 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
     type_imports_only: bool,
+    allow_attributed_declaration_type_imports: bool,
 ) bool {
     const ast = transformer.ast;
     const source_count = transformer.parser_node_count;
@@ -1481,6 +1542,7 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         if (source_node.tag != .string_literal or !isValidSourceTextSpan(ast, source_node.span) or
             source_node.span.start < node.span.start or
             source_node.span.end > node.span.end or source_node.span.end <= source_node.span.start) return false;
+        if (!importAttributesHaveExactSourceStructure(ast, source_count, node, import_decl)) return false;
 
         if (import_decl.specs_len == 0) return false;
         if (output_nodes.contains(@intCast(raw))) return false;
@@ -1500,7 +1562,8 @@ fn erasedImportDeclarationsHaveNoOutputSemanticFactsForTypeImports(
         const attributes_are_proven_erased = if (type_imports_only)
             import_decl.is_type_only or inline_type_only
         else
-            inside_erased_ambient_namespace;
+            (allow_attributed_declaration_type_imports and import_decl.is_type_only) or
+                inside_erased_ambient_namespace;
         if (import_decl.attrs_len != 0 and !attributes_are_proven_erased) return false;
 
         const source_subtree = ast_walk.collectReachableNodeIndicesFrom(
@@ -5541,6 +5604,175 @@ test "#6193 inline type-only import specifiers require exact output erasure proo
         &transformer,
         @fromBackingInt(@intCast(import_index)),
     ));
+}
+
+test "#6193 attributed ambient type imports require exact subtree erasure proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "declare namespace Types { import type { Shape } from './shape' " ++
+        "with { 'resolution-mode': 'import' }; export const value: Shape; } console.log(64);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    const output_root = try transformer.visitNode(source_root);
+
+    var import_raw: ?usize = null;
+    for (transformer.ast.nodes.items[0..transformer.parser_node_count], 0..) |node, raw| {
+        if (node.tag == .import_declaration) {
+            import_raw = raw;
+            break;
+        }
+    }
+    const import_index = import_raw orelse return error.MissingAttributedAmbientTypeImport;
+    const import_node = transformer.ast.nodes.items[import_index];
+    const import_extra = import_node.data.extra;
+    const import_decl = module_parser.readImportDeclExtras(transformer.ast, import_extra);
+    const specifier_idx: ast_mod.NodeIndex = @fromBackingInt(
+        @intCast(transformer.ast.extra_data.items[import_decl.specs_start]),
+    );
+    const local_idx = transformer.ast.getNode(specifier_idx).data.binary.right;
+    const local_raw = @backingInt(local_idx);
+    try std.testing.expect(import_decl.is_type_only);
+    try std.testing.expect(import_decl.attrs_len > 0);
+    try std.testing.expect(erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(
+        &transformer,
+        @fromBackingInt(@intCast(import_index)),
+    ));
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, .none));
+
+    const original_import = transformer.ast.nodes.items[import_index];
+    transformer.ast.nodes.items[import_index].data.extra = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[import_index] = original_import;
+    transformer.ast.nodes.items[import_index].span.end = @intCast(transformer.ast.source.len + 1);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[import_index] = original_import;
+
+    const attrs_start_slot = @as(usize, import_extra) + 4;
+    const attrs_len_slot = attrs_start_slot + 1;
+    const original_attrs_start = transformer.ast.extra_data.items[attrs_start_slot];
+    const original_attrs_len = transformer.ast.extra_data.items[attrs_len_slot];
+    transformer.ast.extra_data.items[attrs_len_slot] = 0;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attrs_len_slot] = original_attrs_len;
+    transformer.ast.extra_data.items[attrs_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attrs_start_slot] = original_attrs_start;
+    transformer.ast.extra_data.items[attrs_len_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attrs_len_slot] = original_attrs_len;
+    const attribute_raw_slot = @as(usize, original_attrs_start);
+    const original_attribute_raw = transformer.ast.extra_data.items[attribute_raw_slot];
+    transformer.ast.extra_data.items[attribute_raw_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[attribute_raw_slot] = original_attribute_raw;
+    const attribute_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(original_attribute_raw));
+    const original_attribute = transformer.ast.nodes.items[@backingInt(attribute_idx)];
+    transformer.ast.nodes.items[@backingInt(attribute_idx)].data.binary.flags = 1;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(attribute_idx)] = original_attribute;
+    transformer.ast.nodes.items[@backingInt(attribute_idx)].span.end = @intCast(transformer.ast.source.len + 1);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(attribute_idx)] = original_attribute;
+    const attribute_key_idx = original_attribute.data.binary.left;
+    const original_attribute_key = transformer.ast.nodes.items[@backingInt(attribute_key_idx)];
+    transformer.ast.nodes.items[@backingInt(attribute_key_idx)].tag = .identifier_reference;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(attribute_key_idx)] = original_attribute_key;
+
+    const phase_slot = @as(usize, import_extra) + 3;
+    const original_phase = transformer.ast.extra_data.items[phase_slot];
+    transformer.ast.extra_data.items[phase_slot] = @backingInt(module_parser.ImportPhase.defer_);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[phase_slot] = original_phase;
+
+    const source_slot = @as(usize, import_extra) + 2;
+    const original_source = transformer.ast.extra_data.items[source_slot];
+    transformer.ast.extra_data.items[source_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[source_slot] = original_source;
+    const source_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(original_source));
+    const original_source_node = transformer.ast.nodes.items[@backingInt(source_idx)];
+    transformer.ast.nodes.items[@backingInt(source_idx)].span.end = @intCast(transformer.ast.source.len + 1);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(source_idx)] = original_source_node;
+
+    const specs_start_slot = @as(usize, import_extra);
+    const original_specs_start = transformer.ast.extra_data.items[specs_start_slot];
+    transformer.ast.extra_data.items[specs_start_slot] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[specs_start_slot] = original_specs_start;
+    const original_specifier_raw = transformer.ast.extra_data.items[original_specs_start];
+    transformer.ast.extra_data.items[original_specs_start] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.extra_data.items[original_specs_start] = original_specifier_raw;
+
+    const original_specifier = transformer.ast.nodes.items[@backingInt(specifier_idx)];
+    transformer.ast.nodes.items[@backingInt(specifier_idx)].span.end = @intCast(transformer.ast.source.len + 1);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(specifier_idx)] = original_specifier;
+    const original_local = transformer.ast.nodes.items[local_raw];
+    transformer.ast.nodes.items[local_raw].span.end = @intCast(transformer.ast.source.len + 1);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[local_raw] = original_local;
+    transformer.ast.nodes.items[@backingInt(specifier_idx)].data.binary.flags = module_parser.SPEC_FLAG_TYPE_ONLY | 2;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[@backingInt(specifier_idx)] = original_specifier;
+
+    const original_local_symbol = transformer.symbol_ids.items[local_raw];
+    transformer.symbol_ids.items[local_raw] = std.math.maxInt(u32);
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.symbol_ids.items[local_raw] = original_local_symbol;
+
+    const output_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, output_root);
+    defer allocator.free(output_reachable);
+    var output_number: ?usize = null;
+    for (output_reachable) |raw| {
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
+        if (node.tag == .numeric_literal and std.mem.eql(u8, transformer.ast.getText(node.span), "64")) {
+            output_number = raw;
+            break;
+        }
+    }
+    const output_number_index = output_number orelse return error.MissingAttributedAmbientOutputNumber;
+    const original_output_number = transformer.ast.nodes.items[output_number_index];
+    transformer.ast.nodes.items[output_number_index].tag = .binding_identifier;
+    transformer.ast.nodes.items[output_number_index].span = transformer.ast.getNode(local_idx).span;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[output_number_index] = original_output_number;
+    transformer.ast.nodes.items[output_number_index].tag = .identifier_reference;
+    transformer.ast.nodes.items[output_number_index].span = transformer.ast.getNode(local_idx).span;
+    try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[output_number_index] = original_output_number;
 }
 
 test "#6193 ambient namespace value imports require exact subtree erasure proof" {
