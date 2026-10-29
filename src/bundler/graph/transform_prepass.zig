@@ -766,7 +766,12 @@ fn hasStableRuntimeImports(
         const import = module_parser.readImportDeclExtras(ast, extra);
         if (import.is_type_only) continue;
         if (import.phase != .none) return false;
-        if (import.specs_len == 0) continue;
+        if (import.specs_len == 0) {
+            // Side-effect-only imports have no binding proof for preserving
+            // attributes through this gate. Keep them on semantic reanalysis.
+            if (import.attrs_len != 0) return false;
+            continue;
+        }
         if (import.specs_start > ast.extra_data.items.len or
             import.specs_len > ast.extra_data.items.len - import.specs_start) return false;
 
@@ -805,6 +810,35 @@ fn hasStableRuntimeImports(
         if (!options.verbatim_module_syntax and !allow_nonverbatim_javascript_imports) return false;
     }
     return true;
+}
+
+/// The static-import regex exception does not cover neighboring constructs
+/// whose graph preflight records separate AST work. Inspect reachable nodes so
+/// parser-only cover-grammar leftovers cannot disable a safe module.
+fn hasOtherGraphTransformSyntaxForRegexImports(ast: *const ast_mod.Ast) bool {
+    if (ast.nodes.items.len == 0) return true;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len or
+        ast.getNode(root_idx).tag != .program) return true;
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return true;
+    defer ast.allocator.free(reachable_nodes);
+    for (reachable_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return true;
+        switch (ast.nodes.items[raw_idx].tag) {
+            // These set found_transform independently of the audited regex
+            // syntax and keep imports on the conservative path.
+            .class_declaration,
+            .class_expression,
+            .for_of_statement,
+            .export_all_declaration,
+            => return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn hasAttributedInlineTypeRuntimeImport(ast: *const ast_mod.Ast, options: TransformOptions) bool {
@@ -962,6 +996,13 @@ test "stable runtime imports admit erased inline type-only declarations without 
             .options = .{ .verbatim_module_syntax = true },
             .allow_nonverbatim = false,
             .expected = true,
+        },
+        .{
+            .name = "attributed side-effect import remains outside the stable subset",
+            .source = "import './effects' with { mode: 'hostile' };",
+            .options = .{ .verbatim_module_syntax = true },
+            .allow_nonverbatim = false,
+            .expected = false,
         },
         .{
             .name = "attributed mixed inline type and runtime import can keep stable edge",
@@ -6783,9 +6824,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
     options: TransformOptions,
     allow_es5_async_method_super_get: *bool,
     allow_es5_async_method_super_set: *bool,
+    regex_only_out: ?*bool,
 ) bool {
     allow_es5_async_method_super_get.* = false;
     allow_es5_async_method_super_set.* = false;
+    if (regex_only_out) |out| out.* = false;
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
     if (ast.nodes.items.len == 0) return false;
@@ -7777,6 +7820,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
             // Export declaration wrappers have a separate exact shape check
             // below. Other module graph edits and downlevel families remain
             // on the existing resync path.
+            // Plain static imports leave their source bindings and graph edges
+            // in place. Their phase, attributes, and TS elision cases are
+            // still checked by hasStableRuntimeImports before admission.
+            .import_declaration,
+            .import_specifier,
+            .import_default_specifier,
+            .import_namespace_specifier,
             .program,
             .boolean_literal,
             .null_literal,
@@ -7895,7 +7945,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    const safe_graph = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
+    const safe_graph_without_regexp = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
         found_lowered_generator or
         found_lowered_async_function or
         found_native_tagged_template or found_lowered_tagged_template or
@@ -7906,11 +7956,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_simple_static_class_field or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
-        found_safe_template_literal or found_lowered_optional_chaining or found_graph_neutral_regexp or found_object_shorthand or found_lowered_object_method or
+        found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
         found_lowered_optional_catch_binding or found_lowered_new_target;
+    if (regex_only_out) |out| out.* = found_graph_neutral_regexp and !safe_graph_without_regexp;
+    const safe_graph = safe_graph_without_regexp or found_graph_neutral_regexp;
     if (safe_graph) {
         const has_super_use = for (reachable_nodes) |raw_idx| {
             if (raw_idx >= ast.nodes.items.len) return false;
@@ -8902,6 +8954,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     ) or legacy_static_field_block_candidate;
     var retainable_async_method_super_get = false;
     var retainable_async_method_super_set = false;
+    var regex_only_graph_subset = false;
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(
             self.allocator,
@@ -8910,6 +8963,7 @@ fn canKeepPrepassSemanticGraphPrepared(
             options,
             &retainable_async_method_super_get,
             &retainable_async_method_super_set,
+            &regex_only_graph_subset,
         );
     const native_noop_source = if (prepared_native_source) |prepared|
         if (@import("../../transformer/native_noop_graph.zig").preparedMatches(prepared, module)) prepared else null
@@ -8935,6 +8989,13 @@ fn canKeepPrepassSemanticGraphPrepared(
     );
     if (retained_simple_console_drops_out) |out| out.* = retained_simple_console_drops;
     const has_dropped_labeled_statement = hasDroppedLabeledStatement(ast, options.drop_labels);
+    var has_direct_eval = false;
+    for (semantic.scopes) |scope| {
+        if (scope.subtree_has_direct_eval) {
+            has_direct_eval = true;
+            break;
+        }
+    }
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators and !retained_legacy_decorators)) return false;
     // Syntax minification is admitted provisionally. After it runs, the caller
@@ -8999,10 +9060,22 @@ fn canKeepPrepassSemanticGraphPrepared(
             options,
             retained_simple_console_drops,
         );
+    const possible_plain_javascript_imports_for_regex_transform = regex_only_graph_subset and
+        module.module_type == .js and !ast.is_typescript and
+        !self.flow and !isFlowPath(module.path) and
+        !options.minify_syntax and !has_dropped_labeled_statement and !has_mapped_import_split and
+        !uses_define and !has_drop_console and !has_direct_eval and
+        !ast.has_jsx and !ast.has_decorator and
+        !options.react_refresh and !options.styled_components and !options.emotion and
+        !self.styled_components and !self.emotion and !self.worklet_transform and
+        !hasAstTransformHooks(self.plugins) and !hasAstTransformHooks(plugins) and
+        !hasAstTransformHooks(options.plugins) and
+        !hasOtherGraphTransformSyntaxForRegexImports(ast);
     const allow_nonverbatim_imports_before_transform_scan = allow_mapped_runtime_imports or
         possible_plain_javascript_imports_for_identifier_minification or
         possible_used_typescript_imports_for_identifier_minification or
-        allow_plain_javascript_imports_for_console_drop;
+        allow_plain_javascript_imports_for_console_drop or
+        possible_plain_javascript_imports_for_regex_transform;
     if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_before_transform_scan)) return false;
 
     const safe_styled_components = options.styled_components;
@@ -9020,13 +9093,6 @@ fn canKeepPrepassSemanticGraphPrepared(
     var found_non_type_transform = found_transform;
     const native_classes_preserve_type_import_elision =
         canRetainTypeOnlyImportsWithNativeClasses(ast, options);
-    var has_direct_eval = false;
-    for (semantic.scopes) |scope| {
-        if (scope.subtree_has_direct_eval) {
-            has_direct_eval = true;
-            break;
-        }
-    }
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -9201,7 +9267,8 @@ fn canKeepPrepassSemanticGraphPrepared(
     const allow_nonverbatim_imports_after_transform_scan = allow_mapped_runtime_imports or
         unchanged_plain_javascript_imports_for_identifier_minification or
         used_typescript_imports_for_identifier_minification or
-        allow_plain_javascript_imports_for_console_drop;
+        allow_plain_javascript_imports_for_console_drop or
+        possible_plain_javascript_imports_for_regex_transform;
     if (!options.verbatim_module_syntax and
         allow_nonverbatim_imports_before_transform_scan != allow_nonverbatim_imports_after_transform_scan and
         !hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_after_transform_scan)) return false;
@@ -17885,15 +17952,18 @@ fn computedAccessorSuperSourceAdmissionForTest(f: *const RuntimeHelperReanalysis
     var set = false;
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
-    }, &get, &set) and get and set;
+    }, &get, &set, null) and get and set;
 }
 
-fn auditedRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+fn auditedRegexGraphAdmissionForTest(
+    f: *const RuntimeHelperReanalysisTestFixture,
+    regex_only_out: ?*bool,
+) bool {
     var get = false;
     var set = false;
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
-    }, &get, &set);
+    }, &get, &set, regex_only_out);
 }
 
 fn fullPrepassRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
@@ -18021,14 +18091,32 @@ test "regex literals are graph-neutral in the audited ES5 subset" {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         var f = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
-        const admitted = auditedRegexGraphAdmissionForTest(&f);
+        var regex_only = false;
+        const admitted = auditedRegexGraphAdmissionForTest(&f, &regex_only);
         if (!admitted) std.debug.print("regex graph admission failed index={d} source={s}\n", .{ index, source });
         try std.testing.expect(admitted);
+        try std.testing.expect(regex_only);
         try std.testing.expect(fullPrepassRegexGraphAdmissionForTest(&f));
         expectRegexTransformPreservesExactSemanticIds(arena.allocator(), &f) catch |err| {
             std.debug.print("regex exact graph changed index={d} source={s} err={s}\n", .{ index, source, @errorName(err) });
             return err;
         };
+    }
+}
+
+test "regex-only audit output excludes other audited ES5 syntax" {
+    const cases = [_]struct { source: []const u8, expected_regex_only: bool }{
+        .{ .source = "var r=/./s;", .expected_regex_only = true },
+        .{ .source = "var r=/./s;var identity=(value)=>value;", .expected_regex_only = false },
+        .{ .source = "var r=/./s;class Marker{}", .expected_regex_only = false },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var f = try runtimeHelperReanalysisTestFixture(arena.allocator(), case.source);
+        var regex_only = false;
+        _ = auditedRegexGraphAdmissionForTest(&f, &regex_only);
+        try std.testing.expectEqual(case.expected_regex_only, regex_only);
     }
 }
 
