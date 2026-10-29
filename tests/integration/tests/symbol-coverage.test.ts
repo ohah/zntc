@@ -11791,17 +11791,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'named-class-expression-with-dynamic-computed-key',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
-          'const methodName = "read"; const Counter = class Named { [methodName]() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
-        stdout: '2\n',
+          'const methodName = "read"; const Named = 2; const Counter = class Named { [methodName]() { return Named.value; } static { Named.value = 1; } }; console.log(new Counter().read(), Named);',
+        stdout: '1 2\n',
       },
       {
         name: 'named-class-expression-with-expression-computed-key',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
-          'const suffix = ""; const Counter = class Named { ["read" + suffix]() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
-        stdout: '2\n',
+          'const suffix = ""; const Counter = class Named { ["read" + suffix]() { return Named.value; } static { Named.value = 1; } }; console.log(new Counter().read());',
+        stdout: '1\n',
+      },
+      {
+        name: 'named-class-expression-computed-key-order',
+        graph: 'retained',
+        source:
+          "const order = []; function methodName() { order.push('key'); return 'read'; } const Named = 2; const Counter = class Named { [methodName()]() { return Named.value; } static { order.push('block'); Named.value = 3; } }; console.log(order.join(','), new Counter().read(), Named);",
+        stdout: 'key,block 3 2\n',
       },
       {
         name: 'named-class-expression-with-instance-setter',
@@ -11861,10 +11868,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'dynamic-computed-method-key',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
-          'const methodName = "read"; class Counter { [methodName]() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
-        stdout: '2\n',
+          'const methodName = "read"; class Counter { [methodName]() { return 1; } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
+        stdout: '1 2\n',
       },
       {
         name: 'static-setter-with-static-block',
