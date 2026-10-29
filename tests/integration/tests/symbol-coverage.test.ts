@@ -20905,12 +20905,47 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         assertOutput(fixture.expected);
       }
 
-      const loopHead = run(
+      const assertRetainedLoopHead = (name: string, source: string, expected: string) => {
+        const proc = run(source);
+        expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${name}: ${proc.stderr}`).toContain(
+          'semantic_graph=retained',
+        );
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, `${name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        assertOutput(expected);
+      };
+
+      assertRetainedLoopHead(
+        'single array target',
         'var total = 0; var value = 0; for ([value] of [[7], [8]]) total += value; console.log(total);',
+        '15\n',
       );
-      expect(loopHead.status, loopHead.stderr).toBe(0);
-      expect(mode(loopHead.stderr ?? ''), loopHead.stderr).toContain('semantic_graph=reanalyzed');
-      assertOutput('15\n');
+      assertRetainedLoopHead(
+        'runtime helper name collision',
+        "var __read='user'; var value=0; for ([value] of [[7],[8]]) {} console.log(value,__read);",
+        '8 user\n',
+      );
+      assertRetainedLoopHead(
+        'iterator close after early break',
+        [
+          'var closed=0; var row={ [Symbol.iterator](){var i=0;return {next(){return i++===0?{value:7,done:false}:{done:false}},return(){closed++;return {done:true}}}}};',
+          'var value=0; for ([value] of [row]) break; console.log(value,closed);',
+        ].join('\n'),
+        '7 1\n',
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
