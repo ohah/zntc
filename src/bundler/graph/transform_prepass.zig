@@ -6818,9 +6818,11 @@ fn allSuperUsesBelongToRetainedOwners(
     retained_sync_super_methods: *const std.AutoHashMapUnmanaged(u32, void),
     allow_static_block_super_get: bool,
     retained_method_super_use_out: *bool,
+    retained_static_block_super_set_use_out: *bool,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     retained_method_super_use_out.* = false;
+    retained_static_block_super_set_use_out.* = false;
     var has_super = false;
     for (reachable_nodes) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
@@ -6850,8 +6852,9 @@ fn allSuperUsesBelongToRetainedOwners(
                     break;
                 },
                 .static_block => {
-                    if (!allow_static_block_super_get or
-                        !isRetainableStaticBlockSuperGet(ast, parents, raw_idx)) return false;
+                    if (!allow_static_block_super_get) return false;
+                    const static_block_use = isRetainableStaticBlockSuperUse(ast, parents, raw_idx) orelse return false;
+                    if (static_block_use == .postfix_update) retained_static_block_super_set_use_out.* = true;
                     found_method = true;
                     break;
                 },
@@ -6869,22 +6872,29 @@ fn allSuperUsesBelongToRetainedOwners(
     return has_super;
 }
 
+const StaticBlockSuperUse = enum {
+    get,
+    postfix_update,
+};
+
 /// A downleveled static block may use `super.name` as a value through the
-/// tracked `__superGet` helper. Direct method calls have separate `.call`
-/// lowering and do not qualify as helper reads. Writes, computed keys, nested
-/// function owners, and nested member operations stay outside this helper
-/// allowlist until their receiver and identity behavior have separate proofs.
-fn isRetainableStaticBlockSuperGet(
+/// tracked `__superGet` helper. A direct postfix update also uses tracked
+/// `__superSet`; its generated temp is owned by the lowered static-block
+/// function. Direct method calls have separate `.call` lowering and do not
+/// qualify here. Plain writes, prefix updates, computed keys, nested function
+/// owners, and nested member operations remain outside this proof.
+fn isRetainableStaticBlockSuperUse(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
     super_raw: u32,
-) bool {
-    if (super_raw >= ast.nodes.items.len or ast.nodes.items[super_raw].tag != .super_expression) return false;
-    const member_raw = parents.get(super_raw) orelse return false;
-    if (member_raw >= ast.nodes.items.len) return false;
+) ?StaticBlockSuperUse {
+    if (super_raw >= ast.nodes.items.len or ast.nodes.items[super_raw].tag != .super_expression) return null;
+    const member_raw = parents.get(super_raw) orelse return null;
+    if (member_raw >= ast.nodes.items.len) return null;
     const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(member_raw));
     if (ast.nodes.items[member_raw].tag != .static_member_expression or
-        !isRetainableDirectSuperPropertyAccess(ast, member_idx, false)) return false;
+        !isRetainableDirectSuperPropertyAccess(ast, member_idx, false)) return null;
+    var use: StaticBlockSuperUse = .get;
 
     // Parentheses are transparent for reads, but inspect the eventual use so a
     // parenthesized member call or assignment target cannot slip through.
@@ -6892,46 +6902,56 @@ fn isRetainableStaticBlockSuperGet(
     var use_hops: usize = 0;
     while (use_hops < ast.nodes.items.len) : (use_hops += 1) {
         const parent_raw = parents.get(expression_raw) orelse break;
-        if (parent_raw >= ast.nodes.items.len) return false;
+        if (parent_raw >= ast.nodes.items.len) return null;
         const parent = ast.nodes.items[parent_raw];
         if (ast_mod.Node.Tag.isTransparentWrapper(parent.tag)) {
             expression_raw = parent_raw;
             continue;
         }
         switch (parent.tag) {
-            .chain_expression => return false,
+            .chain_expression => return null,
             .call_expression, .new_expression => {
                 const extra = parent.data.extra;
                 if (extra > ast.extra_data.items.len or
-                    ast.extra_data.items.len - extra < 4) return false;
+                    ast.extra_data.items.len - extra < 4) return null;
                 const callee_raw = ast.extra_data.items[extra];
-                if (callee_raw >= ast.nodes.items.len) return false;
-                if (callee_raw == expression_raw) return false;
+                if (callee_raw >= ast.nodes.items.len) return null;
+                if (callee_raw == expression_raw) return null;
             },
             .assignment_expression => {
                 const target = parent.data.binary.left;
                 if (target.isNone() or @backingInt(target) >= ast.nodes.items.len or
-                    @backingInt(target) == expression_raw) return false;
+                    @backingInt(target) == expression_raw) return null;
             },
-            .update_expression,
+            .update_expression => {
+                const extra = parent.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 2 or
+                    expression_raw != member_raw or ast.extra_data.items[extra] != expression_raw) return null;
+                const operator_and_flags = ast.extra_data.items[extra + 1];
+                const operator = operator_and_flags & 0xff;
+                if ((operator_and_flags & ast_mod.UnaryFlags.postfix) == 0 or
+                    (operator != @backingInt(token_mod.Kind.plus2) and
+                        operator != @backingInt(token_mod.Kind.minus2))) return null;
+                use = .postfix_update;
+            },
             .unary_expression,
             .tagged_template_expression,
             .static_member_expression,
             .computed_member_expression,
-            => return false,
+            => return null,
             else => {},
         }
         break;
     }
-    if (use_hops >= ast.nodes.items.len) return false;
+    if (use_hops >= ast.nodes.items.len) return null;
 
     var current = super_raw;
     var owner_hops: usize = 0;
     while (owner_hops < ast.nodes.items.len) : (owner_hops += 1) {
-        current = parents.get(current) orelse return false;
-        if (current >= ast.nodes.items.len) return false;
+        current = parents.get(current) orelse return null;
+        if (current >= ast.nodes.items.len) return null;
         switch (ast.nodes.items[current].tag) {
-            .static_block => return true,
+            .static_block => return use,
             .arrow_function_expression,
             .function_declaration,
             .function_expression,
@@ -6939,11 +6959,11 @@ fn isRetainableStaticBlockSuperGet(
             .method_definition,
             .class_declaration,
             .class_expression,
-            => return false,
+            => return null,
             else => {},
         }
     }
-    return false;
+    return null;
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
@@ -8650,6 +8670,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 source_parent_map_ready = true;
             }
             var retained_method_super_use = false;
+            var retained_static_block_super_set_use = false;
             const retained_super_uses = allSuperUsesBelongToRetainedOwners(
                 ast,
                 reachable_nodes,
@@ -8657,10 +8678,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &retained_sync_super_methods,
                 retained_simple_named_static_blocks,
                 &retained_method_super_use,
+                &retained_static_block_super_set_use,
                 &source_parent_map,
             );
             allow_tracked_super_get.* = retained_super_uses;
-            allow_tracked_super_set.* = retained_super_uses and retained_method_super_use;
+            allow_tracked_super_set.* = retained_super_uses and
+                (retained_method_super_use or retained_static_block_super_set_use);
         }
     }
     return safe_graph;
@@ -8769,9 +8792,9 @@ fn runtimeHelpersSafeForRetainedGraph(
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
     // `__superGet` is safe when every reachable read has an admitted home
-    // graph, including direct value reads in a retained static block.
-    // `__superSet` remains limited to admitted method owners; static blocks
-    // have no write proof in this slice.
+    // graph, including direct value reads and postfix updates in a retained
+    // static block. `__superSet` is safe for admitted method owners and those
+    // exact static-block updates; ordinary static-block writes remain excluded.
     if (allow_tracked_super_get) other_helpers.super_get = false;
     if (allow_tracked_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
@@ -13092,16 +13115,50 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_read_as_call_argument.allow_super_get);
     try std.testing.expect(!retained_static_super_read_as_call_argument.allow_super_set);
 
+    const retained_static_super_postfix_update = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super.value++; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_postfix_update.source_candidate);
+    try std.testing.expect(retained_static_super_postfix_update.graph_gate);
+    try std.testing.expect(retained_static_super_postfix_update.allow_super_get);
+    try std.testing.expect(retained_static_super_postfix_update.allow_super_set);
+
+    const retained_static_super_postfix_without_setter = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value++; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_postfix_without_setter.source_candidate);
+    try std.testing.expect(retained_static_super_postfix_without_setter.graph_gate);
+    try std.testing.expect(retained_static_super_postfix_without_setter.allow_super_get);
+    try std.testing.expect(retained_static_super_postfix_without_setter.allow_super_set);
+
+    const retained_multiple_static_block_super_postfix_updates = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.first = super.value++; } static { this.second = super.value--; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_multiple_static_block_super_postfix_updates.source_candidate);
+    try std.testing.expect(retained_multiple_static_block_super_postfix_updates.graph_gate);
+    try std.testing.expect(retained_multiple_static_block_super_postfix_updates.allow_super_get);
+    try std.testing.expect(retained_multiple_static_block_super_postfix_updates.allow_super_set);
+
     const rejected_static_block_super_uses = [_][]const u8{
         "class Base extends Object { static set value(next) {} } class Counter extends Base { static { super.value = 4; } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value += 1; } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value++; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = ++super.value; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value']++; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key]++; } }",
+        "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { this.result = super.value.child++; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = (super.value)++; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { const read = () => super.value++; this.result = read(); } }",
         "class Base extends Object { static value() { return 3; } } class Counter extends Base { static { this.result = super.value(); } }",
         "class Base extends Object { static value() { return 3; } } class Counter extends Base { static { this.result = (super.value)(); } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value']; } }",
-        "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key]; } }",
-        "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { this.result = super.value.child; } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { const read = () => super.value; this.result = read(); } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value.bind(this); } }",
     };
     for (rejected_static_block_super_uses) |source| {
