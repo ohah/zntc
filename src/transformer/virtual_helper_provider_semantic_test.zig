@@ -161,7 +161,7 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
         const completed = try certificate.complete(&t, &semantic, loaded.contents, root);
         try std.testing.expect(completed);
         if (selected.?.externals.len != 0) {
-            try std.testing.expectEqual(@as(usize, 2), selected.?.externals.len);
+            try std.testing.expectEqual(@as(usize, if (selected.?.origin.catalog == .super_set) 3 else 2), selected.?.externals.len);
             const external = selected.?.externals[0];
             const output = t.virtual_provider_visits.get(external.node) orelse return error.MissingExternalVisit;
             try std.testing.expect(semantic.symbol_ids[output] == null);
@@ -1016,4 +1016,18 @@ test "virtual super-set provider preserves its actual initial graph without post
         try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
     }
     try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
+}
+
+test "virtual super-set provider preserves actual external roles before binder and completion" {
+    for ([_]bool{ false, true }) |minify| {
+        for ([_]bool{ false, true }) |full_driver| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            try observe(arena.allocator(), helpers.ID_PREFIX ++ "super-set", minify, full_driver);
+        }
+    }
+}
+
+test "virtual super-set provider disk-copy retains its actual winning constructor and scopes" {
+    try expectDiskCopyAuthority("super-set");
 }

@@ -546,6 +546,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "to-property-key", .catalog = .to_property_key },
         .{ .short = "keep-names", .catalog = .keep_names },
         .{ .short = "super-get", .catalog = .super_get },
+        .{ .short = "super-set", .catalog = .super_set },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -556,6 +557,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .to_property_key => "to-property-key",
         .keep_names => "keep-names",
         .super_get => "super-get",
+        .super_set => "super-set",
     }).?;
 }
 
