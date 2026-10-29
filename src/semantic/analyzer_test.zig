@@ -4345,3 +4345,149 @@ test "generic owned name registry ledger checks actual release on success and OO
         if (family == 4) try std.testing.expect(prior_names_on_oom >= 8);
     }
 }
+
+const HelperOwnedSourceFixture = struct {
+    ast: *@import("../parser/ast.zig").Ast,
+    root: NodeIndex,
+    locals: []const NodeIndex,
+    markers: []const u32,
+};
+
+fn actualHelperOwnedSource(alloc: std.mem.Allocator) !HelperOwnedSourceFixture {
+    const source = "const ordinary=1;export function pick({a,...rest}){return rest.b}";
+    const scanner = try alloc.create(Scanner);
+    scanner.* = try Scanner.init(alloc, source);
+    const parser = try alloc.create(Parser);
+    parser.* = Parser.init(alloc, scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    const initial = try alloc.create(SemanticAnalyzer);
+    initial.* = SemanticAnalyzer.init(alloc, &parser.ast);
+    initial.is_module = true;
+    try initial.analyze();
+    try std.testing.expectEqual(@as(usize, 0), initial.errors.items.len);
+    const TransformerType = @import("../transformer/transformer.zig").Transformer;
+    const Options = @import("../transformer/transformer.zig").TransformOptions;
+    const transformer = try alloc.create(TransformerType);
+    transformer.* = try TransformerType.init(alloc, &parser.ast, .{ .unsupported = Options.compat.fromESTarget(.es5), .emit_runtime_helper_imports = true });
+    try transformer.initSymbolIds(initial.symbol_ids.items);
+    transformer.symbols = initial.symbols.items;
+    transformer.references = initial.references.items;
+    transformer.scopes = initial.scopes.items;
+    transformer.scope_maps = initial.scope_maps.items;
+    transformer.scope_owner_map = initial.scope_owner_map;
+    transformer.node_scope_provenance = initial.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    try std.testing.expect(transformer.runtime_helpers.rest);
+    const markers = try transformer.ownedHelperRefNodes(alloc);
+    const program = transformer.ast.getNode(root);
+    try std.testing.expectEqual(.program, program.tag);
+    var locals: std.ArrayList(NodeIndex) = .empty;
+    for (transformer.ast.extra_data.items[program.data.list.start .. program.data.list.start + program.data.list.len]) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .import_declaration) continue;
+        const start = transformer.ast.readExtra(node.data.extra, 0);
+        const len = transformer.ast.readExtra(node.data.extra, 1);
+        for (transformer.ast.extra_data.items[start .. start + len]) |spec_raw| {
+            const spec = transformer.ast.nodes.items[spec_raw];
+            try std.testing.expectEqual(.import_specifier, spec.tag);
+            const local = spec.data.binary.right;
+            try std.testing.expect(std.mem.indexOfScalar(u32, markers, @backingInt(local)) != null);
+            try std.testing.expect((transformer.ast.getNode(local).span.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT) != 0);
+            try locals.append(alloc, local);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), locals.items.len);
+    return .{ .ast = transformer.ast, .root = root, .locals = locals.items, .markers = markers };
+}
+
+test "helper published name actual object-rest producer has a teardown owner" {
+    var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prep.deinit();
+    const fixture = try actualHelperOwnedSource(prep.allocator());
+    var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+    defer ledger.deinit();
+    var fresh = SemanticAnalyzer.init(ledger.allocator(), fixture.ast);
+    var alive = true;
+    defer if (alive) fresh.deinit();
+    fresh.is_module = true;
+    fresh.helper_ref_nodes = fixture.markers;
+    try fresh.analyze();
+    try std.testing.expectEqual(@as(usize, 0), fresh.errors.items.len);
+    const root_scope = fresh.scope_owner_map.get(@backingInt(fixture.root)) orelse return error.MissingActualOutputRoot;
+    const local = fixture.locals[0];
+    const sid = fresh.symbol_ids.items[@backingInt(local)] orelse return error.MissingActualHelperBinding;
+    const symbol = fresh.symbols.items[sid];
+    try std.testing.expectEqual(.import_binding, symbol.kind);
+    try std.testing.expectEqual(root_scope, @backingInt(symbol.scope_id));
+    const key = fresh.helper_scope_map.getKey(symbol.synthetic_name) orelse return error.MissingActualHelperKey;
+    try std.testing.expectEqual(@as(?usize, sid), fresh.helper_scope_map.get(key));
+    try std.testing.expectEqual(key.ptr, symbol.synthetic_name.ptr);
+    try std.testing.expect(ledger.hasName(key));
+    var registered: usize = 0;
+    for (fresh.resolved_names.items) |owned| {
+        if (owned.ptr == key.ptr and owned.len == key.len) registered += 1;
+    }
+    std.debug.print("helper-owned-proof marker={d} local={d} SID={d} rootScope={d} registry={d} exactAllocation={}\n", .{ fixture.markers.len, @backingInt(local), sid, root_scope, registered, ledger.hasName(key) });
+    fresh.deinit();
+    alive = false;
+    const still_live = ledger.hasName(key);
+    std.debug.print("helper-owned-proof afterDeinit helperLive={} totalLive={d} invalid={d} duplicate={d}\n", .{ still_live, ledger.liveCount(), ledger.invalid_free, ledger.duplicate_free });
+    try std.testing.expectEqual(false, still_live);
+    try std.testing.expectEqual(@as(usize, 1), registered);
+    try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+}
+
+test "helper published name source borrowed control keeps its actual source pointer" {
+    const source = "import {value} from 'provider';value;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    const program = parser.ast.getNode(root);
+    const import_node = parser.ast.nodes.items[parser.ast.extra_data.items[program.data.list.start]];
+    const specs = parser.ast.readExtra(import_node.data.extra, 0);
+    const spec = parser.ast.nodes.items[parser.ast.extra_data.items[specs]];
+    const local = spec.data.binary.right;
+    const span = parser.ast.getNode(local).span;
+    var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+    defer ledger.deinit();
+    var analyzer = SemanticAnalyzer.init(ledger.allocator(), &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const sid = analyzer.symbol_ids.items[@backingInt(local)] orelse return error.MissingActualSourceImport;
+    const scope = analyzer.symbols.items[sid].scope_id;
+    const text = parser.ast.getText(span);
+    const key = analyzer.scope_maps.items[scope.toIndex()].getKey(text) orelse return error.MissingActualSourceKey;
+    try std.testing.expectEqual(source[span.start..span.end].ptr, key.ptr);
+    try std.testing.expect(!ledger.hasName(key));
+    try std.testing.expectEqual(@as(usize, 0), analyzer.resolved_names.items.len);
+    analyzer.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+}
+
+test "helper published name production arena keeps its known helper view through string growth" {
+    var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prep.deinit();
+    const fixture = try actualHelperOwnedSource(prep.allocator());
+    var owner = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer owner.deinit();
+    var analyzer = SemanticAnalyzer.init(owner.allocator(), fixture.ast);
+    analyzer.is_module = true;
+    analyzer.helper_ref_nodes = fixture.markers;
+    try analyzer.analyze();
+    const local = fixture.locals[0];
+    const sid = analyzer.symbol_ids.items[@backingInt(local)] orelse return error.MissingArenaHelper;
+    const name = analyzer.symbols.items[sid].synthetic_name;
+    const copy = try prep.allocator().dupe(u8, name);
+    const growth = try prep.allocator().alloc(u8, 65536);
+    @memset(growth, 'x');
+    _ = try fixture.ast.addString(growth);
+    try std.testing.expectEqualStrings(copy, analyzer.symbols.items[sid].synthetic_name);
+    const key = analyzer.helper_scope_map.getKey(name) orelse return error.MissingArenaHelperKey;
+    try std.testing.expectEqual(name.ptr, key.ptr);
+    try std.testing.expectEqual(@as(?usize, sid), analyzer.helper_scope_map.get(key));
+}
