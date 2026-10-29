@@ -11851,6 +11851,73 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 optional catch binding retains exact graph with plain static imports', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-import-optional-catch-retained-'));
+    const entry = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'dep.mjs'),
+      [
+        'export const imported = "imported";',
+        'export function unusedSentinel() { return "unused"; }',
+      ].join('\n'),
+    );
+    writeFileSync(
+      entry,
+      [
+        "import { imported } from './dep.mjs';",
+        'function run() { try { throw 1; } catch {} return imported; }',
+        'console.log(run());',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('imported\n');
+      expect(readFileSync(output, 'utf8')).not.toContain('unusedSentinel');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 arrow-only bundler lowering retains exact output scopes and lexical captures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-retained-'));
     const output = join(dir, 'out.cjs');
