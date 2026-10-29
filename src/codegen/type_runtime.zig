@@ -1257,3 +1257,27 @@ test "#4819 generated IIFE parameter identity requires a parameter declaration" 
     probe.options.semantic_symbols = &corrupted_and_valid_symbols;
     try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(10)), .namespace_iife_parameter));
 }
+
+test "escaped enum parameter selector treats same SID aliases as one owner" {
+    const ScopeMap = std.StringHashMapUnmanaged(usize);
+    const OwnerMap = std.AutoHashMapUnmanaged(u32, u32);
+    const span = @import("../lexer/token.zig").Span{ .start = 0, .end = 0 };
+    const symbols = [_]Symbol{
+        .{ .name = span, .scope_id = @fromBackingInt(0), .kind = .parameter, .declaration_span = span, .synthetic_kind = .enum_iife_parameter },
+        .{ .name = span, .scope_id = @fromBackingInt(0), .kind = .parameter, .declaration_span = span, .synthetic_kind = .enum_iife_parameter },
+    };
+    var maps: [1]ScopeMap = .{.empty};
+    defer maps[0].deinit(std.testing.allocator);
+    try maps[0].put(std.testing.allocator, "E", 0);
+    try maps[0].put(std.testing.allocator, "\\u0045", 0);
+    var owners: OwnerMap = .empty;
+    defer owners.deinit(std.testing.allocator);
+    try owners.put(std.testing.allocator, 1, 0);
+    const View = struct { options: struct { generated_iife_scope_owner_map: ?*const OwnerMap, semantic_scope_maps: []const ScopeMap, semantic_symbols: []const Symbol } };
+    var view: View = .{ .options = .{ .generated_iife_scope_owner_map = &owners, .semantic_scope_maps = &maps, .semantic_symbols = &symbols } };
+    try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .enum_iife_parameter));
+    try maps[0].put(std.testing.allocator, "foreign", 1);
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .enum_iife_parameter));
+    try std.testing.expect(maps[0].remove("foreign"));
+    try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .enum_iife_parameter));
+}
