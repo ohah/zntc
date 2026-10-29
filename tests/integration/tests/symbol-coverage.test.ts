@@ -11705,6 +11705,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
+        name: 'static-getter-with-static-block',
+        graph: 'retained',
+        source:
+          'class Counter { static get current() { return this.value; } static { this.value = 1; } } console.log(Counter.current);',
+        stdout: '1\n',
+      },
+      {
+        name: 'named-expression-static-getter-self-binding',
+        graph: 'retained',
+        source:
+          'const Named = 2; const Counter = class Named { static get current() { return Named.value; } static { Named.value = 1; } }; console.log(Counter.current, Named);',
+        stdout: '1 2\n',
+      },
+      {
         name: 'anonymous-class-expression',
         graph: 'reanalyzed',
         source: 'const Counter = class { static { this.value = 1; } }; console.log(Counter.value);',
@@ -11749,7 +11763,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'named-class-expression-with-accessor',
         graph: 'reanalyzed',
         source:
-          'const Counter = class Named { get value() { return 1; } static { this.other = 2; } }; console.log(Counter.other);',
+          'const Counter = class Named { static set value(next) { this._value = next; } static { this.value = 2; } }; console.log(Counter._value);',
         stdout: '2\n',
       },
       {
@@ -11757,6 +11771,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         graph: 'reanalyzed',
         source:
           'const Counter = class Named { async read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-generator-method',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { *read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
         stdout: '2\n',
       },
       {
@@ -11798,7 +11819,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'accessor-method',
         graph: 'reanalyzed',
         source:
-          'class Counter { get value() { return 1; } static { this.other = 2; } } console.log(Counter.other);',
+          'class Counter { static set value(next) { this._value = next; } static { this.value = 2; } } console.log(Counter._value);',
         stdout: '2\n',
       },
       {
