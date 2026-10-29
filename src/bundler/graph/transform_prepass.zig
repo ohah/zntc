@@ -6206,15 +6206,12 @@ fn canRetainSimpleNamedStaticBlockClasses(
         const name: ast_mod.NodeIndex = @fromBackingInt(
             @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.name]),
         );
-        const super: ast_mod.NodeIndex = @fromBackingInt(
-            @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]),
-        );
         const body: ast_mod.NodeIndex = @fromBackingInt(
             @intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]),
         );
         const deco_len = ast.extra_data.items[class_extra + ast_mod.ClassExtra.deco_len];
         if (name.isNone() or @backingInt(name) >= ast.nodes.items.len or
-            ast.getNode(name).tag != .binding_identifier or !super.isNone() or deco_len != 0 or
+            ast.getNode(name).tag != .binding_identifier or deco_len != 0 or
             body.isNone() or @backingInt(body) != class_body_raw) return false;
 
         const members = ast.nodes.items[class_body_raw].data.list;
@@ -12218,6 +12215,7 @@ const StaticBlockPrepassTestMutation = enum {
     clear_class_expression_name,
     missing_method_key,
     out_of_range_method_key,
+    out_of_range_class_super,
 };
 
 const StaticBlockPrepassTestResult = struct {
@@ -12297,6 +12295,19 @@ fn staticBlockPrepassDecisionForTest(
                 break;
             }
             if (!found) return error.MissingClassExpression;
+        },
+        .out_of_range_class_super => {
+            var found = false;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag != .class_declaration and node.tag != .class_expression) continue;
+                const extra = node.data.extra;
+                if (extra > parser.ast.extra_data.items.len or
+                    parser.ast.extra_data.items.len - extra <= ast_mod.ClassExtra.super) return error.InvalidClassExtra;
+                parser.ast.extra_data.items[extra + ast_mod.ClassExtra.super] = @intCast(parser.ast.nodes.items.len + 1);
+                found = true;
+                break;
+            }
+            if (!found) return error.MissingClassNode;
         },
         .missing_method_key, .out_of_range_method_key => {
             var found = false;
@@ -12436,6 +12447,41 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_named_expression_static_setter.source_candidate);
     try std.testing.expect(retained_named_expression_static_setter.graph_gate);
 
+    const retained_inherited_class = try staticBlockPrepassDecisionForTest(
+        "class Base { static get value() { return this.seed; } } class Counter extends Base { static { this.seed = 2; } static read() { return super.value; } } console.log(Counter.read(), Object.getPrototypeOf(Counter) === Base);",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_inherited_class.source_candidate);
+    try std.testing.expect(retained_inherited_class.graph_gate);
+
+    const retained_named_inherited_class_expression = try staticBlockPrepassDecisionForTest(
+        "const Base = class {}; const Named = 2; const Counter = class Named extends Base { static { Named.value = 1; } static read() { return Named.value; } }; console.log(Counter.read(), Named, Object.getPrototypeOf(Counter) === Base);",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_named_inherited_class_expression.source_candidate);
+    try std.testing.expect(retained_named_inherited_class_expression.graph_gate);
+
+    const poisoned_inherited_class = try staticBlockPrepassDecisionForTest(
+        "class Counter extends Base { static { this.value = 1; } }",
+        ".js",
+        options,
+        .out_of_range_class_super,
+    );
+    try std.testing.expect(!poisoned_inherited_class.source_candidate);
+    try std.testing.expect(!poisoned_inherited_class.graph_gate);
+
+    const candidate_inherited_static_super = try staticBlockPrepassDecisionForTest(
+        "class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(candidate_inherited_static_super.source_candidate);
+
     const retained_generator_method = try staticBlockPrepassDecisionForTest(
         "class Counter { *read() { yield 1; } static { this.value = 2; } } console.log([...new Counter().read()].join(','), Counter.value);",
         ".js",
@@ -12530,6 +12576,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .clear_class_name,
         .missing_method_key,
         .out_of_range_method_key,
+        .out_of_range_class_super,
     }) |mutation| {
         const poisoned = try staticBlockPrepassDecisionForTest(positive, ".js", options, mutation);
         try std.testing.expect(!poisoned.source_candidate);
@@ -12537,7 +12584,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
 
     const rejected_sources = [_]struct { source: []const u8, candidate: bool }{
         .{ .source = "const C = class { static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const Base = class {}; const C = class Named extends Base { static { this.value = 1; } };", .candidate = false },
         .{ .source = "const methodName = 'read'; const C = class Named { [methodName]() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const suffix = ''; const C = class Named { ['read' + suffix]() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { async *read() {} static { this.value = 1; } };", .candidate = false },
@@ -12545,7 +12591,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "const C = class Named { value = 1; static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { #value = 1; static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { #read() {} static { this.value = 1; } };", .candidate = false },
-        .{ .source = "class C extends Base { static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [\"read\" + suffix]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
