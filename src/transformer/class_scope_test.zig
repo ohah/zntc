@@ -3797,3 +3797,87 @@ test "generated name environment preserves native strict reflection and sloppy o
     }
     std.debug.print("GENERATED NAME ENV RUNTIME sources=10 modes=2 native=20\n", .{});
 }
+
+// Actual Parser/analyzer/creator pipeline. Post-transform rows are after the
+// transformer's output binder; PRIVATE_BIRTH is a separate temporary probe.
+fn privateSourceRedTuple(source: []const u8) !usize {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const scanner = try a.create(Scanner);
+    scanner.* = try Scanner.init(a, source);
+    const parser = try a.create(Parser);
+    parser.* = Parser.init(a, scanner);
+    _ = try parser.parse();
+    const analyzer = try a.create(SemanticAnalyzer);
+    analyzer.* = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        const actual_scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult;
+        std.debug.print("PRIVATE_INITIAL_METHOD node={d} scope={d} span={d}:{d}\n", .{ raw, actual_scope, node.span.start, node.span.end });
+    }
+    const transformer = try a.create(Transformer);
+    transformer.* = try Transformer.init(a, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, transformer.ast, root);
+    var remaining: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag == .private_identifier) remaining += 1;
+    }
+    var ids = transformer.private_helper_symbol_ids.keyIterator();
+    while (ids.next()) |id| {
+        try std.testing.expect(id.* < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id.*];
+        std.debug.print("PRIVATE_OUTPUT sid={d} storageScope={d} originScope={d} declaration={d}:{d}\n", .{ id.*, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), symbol.declaration_span.start, symbol.declaration_span.end });
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != id.*) continue;
+            std.debug.print("PRIVATE_REF sid={d} useScope={d} node={d} read={} write={} declare={}\n", .{ id.*, @backingInt(reference.scope_id), @backingInt(reference.node_index), reference.flags.read, reference.flags.write, reference.flags.declare });
+        }
+    }
+    std.debug.print("PRIVATE_REMAINING count={d} source={s}\n", .{ remaining, source });
+    return remaining;
+}
+
+test "escaped private source RED actual mapping and runtime controls" {
+    const sources = [_][]const u8{
+        "class C{#a=10;read(){return this.#a}}console.log(new C().read());",
+        "class C{#\\u0061=10;read(){return this.#a}}console.log(new C().read());",
+        "class C{#a=10;read(){return this.#\\u0061}}console.log(new C().read());",
+        "class C{#\\u0061=10;read(){return this.#\\u0061}}console.log(new C().read());",
+        "class A{#a=4;read(){return this.#a}}class B{#\\u0061=6;read(){return this.#a}}console.log(new A().read()+new B().read());",
+        "class Outer{#a=4;read(){class Inner{#\\u0061=6;read(){return this.#a}}return this.#a+new Inner().read()}}console.log(new Outer().read());",
+        "class C{#\\u0061=10;read(){return this.#a+(\"\\\\u0061\"===\"\\\\u0061\"?0:1)}}console.log(new C().read());",
+        "class C{static #a=10;static read(){return this.#a}}console.log(C.read());",
+        "class C{static #\\u0061=10;static read(){return this.#a}}console.log(C.read());",
+        "class C{#\\u0061=0;read(){this.#a=4;this.#a++;return this.#a+=5}}console.log(new C().read());",
+    };
+    var bad_ast: usize = 0;
+    for (sources, 0..) |source, i| {
+        if (try privateSourceRedTuple(source) != 0) bad_ast += 1;
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("10\n", native.stdout);
+        std.debug.print("PRIVATE_NATIVE case={d} stdout={s}\n", .{ i, native.stdout });
+    }
+    std.debug.print("PRIVATE_RED_SUMMARY cases={d} badAST={d}\n", .{ sources.len, bad_ast });
+    try std.testing.expectEqual(@as(usize, 0), bad_ast);
+}
