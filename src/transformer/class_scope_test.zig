@@ -3896,3 +3896,25 @@ test "escaped private source RED actual mapping and runtime controls" {
     std.debug.print("PRIVATE_RED_SUMMARY cases={d} badAST={d}\n", .{ sources.len, bad_ast });
     try std.testing.expectEqual(@as(usize, 0), bad_ast);
 }
+
+test "escaped private helper reservation source capture RED" {
+    const sources = [_][]const u8{
+        "const _a=10;class C{#\\u0061=_a;read(){return this.#a}}console.log(new C().read());",
+        "const _\\u0061=10;class C{#a=_a;read(){return this.#a}}console.log(new C().read());",
+    };
+    var mismatches: usize = 0;
+    for (sources, 0..) |source, i| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings("10\n", native.stdout);
+        const result = try @import("../transpile.zig").transpile(a, source, "private-reservation.js", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        const matches = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, native.stdout, actual.stdout);
+        if (!matches) mismatches += 1;
+        std.debug.print("PRIVATE_RESERVATION case={d} source={s} code={s}\nstdout={s} stderr={s} match={}\n", .{ i, source, result.code, actual.stdout, actual.stderr, matches });
+    }
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
