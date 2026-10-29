@@ -3867,16 +3867,24 @@ test "escaped private source RED actual mapping and runtime controls" {
         "class C{static #a=10;static read(){return this.#a}}console.log(C.read());",
         "class C{static #\\u0061=10;static read(){return this.#a}}console.log(C.read());",
         "class C{#\\u0061=0;read(){this.#a=4;this.#a++;return this.#a+=5}}console.log(new C().read());",
+        "const _a=11,_a1=12;class C{#\\u0061=3;#b=7;read(){return [this.#a,this.#b].join(',')}bump(){this.#a++;return this.read()}}const c=new C();console.log(c.read()+'|'+c.bump()+'|'+_a+'|'+_a1);",
+        "class C{#\\u0061=0;constructor(v){this.#a=v}read(other){return other.#a}}console.log(new C(0).read(new C(10)));",
     };
     var bad_ast: usize = 0;
     for (sources, 0..) |source, i| {
-        if (try privateSourceRedTuple(source) != 0) bad_ast += 1;
+        const has_private_residue = (try privateSourceRedTuple(source)) != 0;
+        if (has_private_residue) bad_ast += 1;
         const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
         defer std.testing.allocator.free(native.stdout);
         defer std.testing.allocator.free(native.stderr);
         try std.testing.expect(native.term == .exited and native.term.exited == 0);
-        try std.testing.expectEqualStrings("10\n", native.stdout);
+        const expected_stdout = if (i == 10) "3,7|4,7|11|12\n" else "10\n";
+        try std.testing.expectEqualStrings(expected_stdout, native.stdout);
         std.debug.print("PRIVATE_NATIVE case={d} stdout={s}\n", .{ i, native.stdout });
+        // Retain the aggregate semantic failure before trying to emit an AST
+        // already known to contain unlowered private syntax. This also keeps
+        // a lookup-regression mutant from being counted as a codegen panic.
+        if (has_private_residue) continue;
         var output_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer output_arena.deinit();
         const result = try @import("../transpile.zig").transpile(output_arena.allocator(), source, "private-values.js", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
