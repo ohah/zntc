@@ -7968,22 +7968,32 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'loaded',
       },
       {
-        name: 'TypeScript import remains on conservative fallback',
+        name: 'TypeScript import used only by dropped console retains its graph',
         source:
-          "import { value } from './values.js'; console.log(value); process.stdout.write('ok');",
-        files: { 'values.js': 'export const value = 42;' },
+          "import { value } from './values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'values.js': 'globalThis.loaded = true; export const value = 42;' },
         extension: 'ts',
-        graph: 'reanalyzed',
-        stdout: 'ok',
+        graph: 'retained',
+        stdout: 'loaded',
       },
       {
-        name: 'TypeScript dropped-only external import still evaluates on fallback',
+        name: 'TypeScript dropped-only external import retains evaluation',
         source:
           "import { value } from './external-values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
         files: { 'external-values.js': 'globalThis.loaded = true; exports.value = 42;' },
         args: ['--external:./external-values.js'],
         extension: 'ts',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        stdout: 'loaded',
+      },
+      {
+        name: 'TypeScript import used before its declaration in dropped console retains evaluation',
+        source:
+          "console.log(value); import { value } from './external-values.js'; process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'external-values.js': 'globalThis.loaded = true; exports.value = 42;' },
+        args: ['--external:./external-values.js'],
+        extension: 'ts',
+        graph: 'retained',
         stdout: 'loaded',
       },
       {
@@ -8006,13 +8016,25 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: '42',
       },
       {
-        name: 'TypeScript import with one dropped-only binding stays on fallback',
+        name: 'TypeScript mixed live and dropped-only import bindings retain the graph',
         source:
           "import { live, dropped } from './values.js'; console.log(dropped); process.stdout.write(String(live));",
         files: { 'values.js': 'export const live = 42; export const dropped = 1;' },
         extension: 'ts',
-        graph: 'reanalyzed',
+        graph: 'retained',
         stdout: '42',
+      },
+      {
+        name: 'TypeScript console-only runtime import with type-only companion keeps fallback',
+        source:
+          "import { value } from './values.js'; import type { Shape } from './shape.js'; console.log(value); process.stdout.write('ok');",
+        files: {
+          'values.js': 'export const value = 42;',
+          'shape.js': 'globalThis.shapeLoaded = true; export interface Shape { value: number; }',
+        },
+        extension: 'ts',
+        graph: 'reanalyzed',
+        stdout: 'ok',
       },
       {
         name: 'unresolved global only in removed subtree',

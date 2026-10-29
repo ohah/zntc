@@ -1519,12 +1519,10 @@ fn everyTypeScriptImportBindingHasValueUse(
     return true;
 }
 
-/// A console-drop pass can keep TypeScript imports only when every runtime
-/// binding still has a value read in the transformed module. Otherwise the
-/// removed call can turn a formerly-live named import into an apparently
-/// type-only import during the metadata rescan, which may erase an external
-/// import and its evaluation edge. Walk exact AST parents so nested arguments
-/// and scopes inside a dropped call do not count as surviving uses.
+/// A console-drop pass can keep TypeScript imports when every binding had a
+/// source value use. The metadata rescan carries that source-time classification
+/// by exact local anchor, so removing the last read from the AST does not make
+/// a runtime import look type-only or erase its evaluation edge.
 fn canRetainUsedTypeScriptImportsForConsoleDrop(
     self: anytype,
     module: *const Module,
@@ -1553,29 +1551,19 @@ fn canRetainUsedTypeScriptImportsForConsoleDrop(
         ast.has_jsx or ast.has_decorator or module.uses_top_level_await or module.self_uses_top_level_await or
         has_dropped_labeled_statement or has_mapped_import_split or
         define_mod.astUsesDefine(ast, options.define) or module.import_bindings.len == 0 or
-        !everyTypeScriptImportBindingHasValueUse(self, module, ast, true, false)) return false;
+        module.semantic == null) return false;
 
     const semantic = &(module.semantic orelse return false);
-    if (ast.nodes.items.len == 0) return false;
-    const root = ast.transformed_root orelse @as(
-        ast_mod.NodeIndex,
-        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
-    );
-    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
-        ast.getNode(root).tag != .program) return false;
-    const root_raw = @backingInt(root);
-    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    defer parents.deinit(self.allocator);
-    if (!collectRetainedPreflightParents(self.allocator, ast, root, &parents)) return false;
 
-    var surviving_value_uses: std.AutoHashMapUnmanaged(u32, bool) = .empty;
-    defer surviving_value_uses.deinit(self.allocator);
+    var source_value_uses: std.AutoHashMapUnmanaged(u32, bool) = .empty;
+    defer source_value_uses.deinit(self.allocator);
     for (module.import_bindings) |binding| {
         if (binding.is_helper or binding.local_role != .import_binding or binding.callsite_target != null or
-            binding.source_type_only == true or binding.import_record_index >= module.import_records.len) return false;
+            (binding.source_type_only orelse return false) or
+            binding.import_record_index >= module.import_records.len) return false;
         const record = module.import_records[binding.import_record_index];
         if (record.kind != .static_import or record.callsite_lowered or record.ts_elided or
-            record.is_lazy_resolved) return false;
+            record.is_lazy_resolved or (record.ts_all_bindings_type_only orelse return false)) return false;
         const local = binding_scanner_mod.resolveImportLocalSymbol(binding, .{
             .module_index = module.index,
             .ast = ast,
@@ -1583,37 +1571,23 @@ fn canRetainUsedTypeScriptImportsForConsoleDrop(
             .symbols = semantic.symbols.items,
         });
         const sid = local.semanticIndex() orelse return false;
-        if (sid >= semantic.symbols.items.len or surviving_value_uses.contains(sid)) return false;
-        surviving_value_uses.put(self.allocator, sid, false) catch return false;
+        if (sid >= semantic.symbols.items.len or source_value_uses.contains(sid)) return false;
+        source_value_uses.put(self.allocator, sid, false) catch return false;
         if (semantic.symbols.items[sid].kind != .import_binding) return false;
     }
 
     for (semantic.references) |reference| {
         if (!reference.isValueUse()) continue;
-        const survives = surviving_value_uses.getPtr(@backingInt(reference.symbol_id)) orelse continue;
+        const source_use = source_value_uses.getPtr(@backingInt(reference.symbol_id)) orelse continue;
         if (reference.node_index.isNone()) return false;
         const raw = @backingInt(reference.node_index);
         if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len or
             ast.nodes.items[raw].tag != .identifier_reference or
             (semantic.symbol_ids[raw] orelse return false) != @backingInt(reference.symbol_id)) return false;
-
-        var current = raw;
-        var found_drop_ancestor = false;
-        var hops: usize = 0;
-        while (current != root_raw) : (hops += 1) {
-            if (hops >= ast.nodes.items.len) return false;
-            const parent = parents.get(current) orelse return false;
-            if (parent >= ast.nodes.items.len) return false;
-            if (drop_mod.isConsoleCallInAst(ast, ast.nodes.items[parent])) {
-                found_drop_ancestor = true;
-                break;
-            }
-            current = parent;
-        }
-        if (!found_drop_ancestor) survives.* = true;
+        source_use.* = true;
     }
-    var value_uses = surviving_value_uses.valueIterator();
-    while (value_uses.next()) |has_surviving_value_use| if (!has_surviving_value_use.*) return false;
+    var value_uses = source_value_uses.valueIterator();
+    while (value_uses.next()) |has_source_value_use| if (!has_source_value_use.*) return false;
     return true;
 }
 
@@ -11487,11 +11461,11 @@ fn hasTopLevelAwaitForTest(source: []const u8, corruption: RetainedTlaTestCorrup
     );
 }
 
-test "TypeScript console-drop import gate rejects missing and mismatched surviving references" {
+test "TypeScript console-drop import gate keeps source-used imports and rejects incomplete edges" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));";
+    const source = "import { value } from './values.js'; const decoy = 1; console.log(value); process.stdout.write('ok');";
 
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
@@ -11511,6 +11485,7 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
     module.module_type = .ts;
     module.ast = parser.ast;
     module.import_records = try import_scanner.extractImports(allocator, &parser.ast);
+    module.import_records[0].ts_all_bindings_type_only = false;
     module.import_bindings = try binding_scanner_mod.extractImportBindings(
         allocator,
         &parser.ast,
@@ -11590,15 +11565,13 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
         .symbol_ids = semantic.symbol_ids,
         .symbols = semantic.symbols.items,
     }).semanticIndex() orelse return error.MissingTestImportSymbol;
-    const surviving_start = std.mem.indexOf(u8, source, "process.stdout.write") orelse unreachable;
     const original_references = semantic.references;
-    const surviving_reference_index = for (original_references, 0..) |reference, index| {
+    const source_reference_index = for (original_references, 0..) |reference, index| {
         if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or reference.node_index.isNone()) continue;
-        const node = parser.ast.getNode(reference.node_index);
-        if (node.span.start >= surviving_start) break index;
-    } else return error.MissingSurvivingImportReference;
-    const surviving_node = @backingInt(original_references[surviving_reference_index].node_index);
-    const original_node_symbol = semantic.symbol_ids[surviving_node] orelse return error.MissingSurvivingNodeSymbol;
+        break index;
+    } else return error.MissingSourceImportReference;
+    const source_reference_node = @backingInt(original_references[source_reference_index].node_index);
+    const original_node_symbol = semantic.symbol_ids[source_reference_node] orelse return error.MissingSourceNodeSymbol;
 
     const retains = canRetainUsedTypeScriptImportsForConsoleDrop(
         &test_context,
@@ -11614,10 +11587,55 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
     );
     try std.testing.expect(retains);
 
-    const without_surviving_reference = try allocator.alloc(SemanticReference, original_references.len - 1);
-    @memcpy(without_surviving_reference[0..surviving_reference_index], original_references[0..surviving_reference_index]);
-    @memcpy(without_surviving_reference[surviving_reference_index..], original_references[surviving_reference_index + 1 ..]);
-    if (module.semantic) |*current| current.references = without_surviving_reference;
+    module.import_bindings[0].source_type_only = null;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    module.import_bindings[0].source_type_only = false;
+
+    module.import_records[0].ts_all_bindings_type_only = true;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    module.import_records[0].ts_all_bindings_type_only = false;
+
+    module.import_records[0].ts_all_bindings_type_only = null;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    module.import_records[0].ts_all_bindings_type_only = false;
+
+    const without_source_reference = try allocator.alloc(SemanticReference, original_references.len - 1);
+    @memcpy(without_source_reference[0..source_reference_index], original_references[0..source_reference_index]);
+    @memcpy(without_source_reference[source_reference_index..], original_references[source_reference_index + 1 ..]);
+    if (module.semantic) |*current| current.references = without_source_reference;
     try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
         &test_context,
         &module,
@@ -11633,7 +11651,7 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
     if (module.semantic) |*current| current.references = original_references;
 
     const missing_node_references = try allocator.dupe(SemanticReference, original_references);
-    missing_node_references[surviving_reference_index].node_index = .none;
+    missing_node_references[source_reference_index].node_index = .none;
     if (module.semantic) |*current| current.references = missing_node_references;
     try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
         &test_context,
@@ -11649,7 +11667,7 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
     ));
     if (module.semantic) |*current| current.references = original_references;
 
-    analyzer.symbol_ids.items[surviving_node] = null;
+    analyzer.symbol_ids.items[source_reference_node] = null;
     try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
         &test_context,
         &module,
@@ -11662,7 +11680,25 @@ test "TypeScript console-drop import gate rejects missing and mismatched survivi
         false,
         false,
     ));
-    analyzer.symbol_ids.items[surviving_node] = original_node_symbol;
+    analyzer.symbol_ids.items[source_reference_node] = original_node_symbol;
+
+    const wrong_node_symbol = for (semantic.symbols.items, 0..) |symbol, index| {
+        if (index != sid and symbol.kind != .import_binding) break @as(u32, @intCast(index));
+    } else return error.MissingDecoySymbolId;
+    analyzer.symbol_ids.items[source_reference_node] = wrong_node_symbol;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    analyzer.symbol_ids.items[source_reference_node] = original_node_symbol;
 }
 
 test "retained graph TLA scan excludes function awaits and keeps module awaits" {
