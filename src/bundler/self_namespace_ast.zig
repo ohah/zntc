@@ -280,7 +280,7 @@ const SourceAlias = struct {
 
 const ForeignInput = struct {
     consumer: Source,
-    alias: ?SourceAlias = null,
+    aliases: []const SourceAlias = &.{},
     provider: *Module,
     provider_semantic: Semantic,
     target: @import("symbol.zig").SymbolID,
@@ -456,13 +456,13 @@ fn source(graph: *Graph, module: *const Module) !?Source {
     return .{ .root = root, .scope = root_scope, .specifier = specifier, .declaration = declaration, .holder = holder, .row = row orelse return null, .exported = export_sid };
 }
 
-/// A foreign consumer is admitted with one or two namespace imports, exact
-/// Reflect.get reads of one provider export, and direct strict equality between
-/// both imports as an identity check. Other binding behavior is rejected.
+/// A foreign consumer is admitted with namespace imports from one provider,
+/// exact Reflect.get reads of one provider export, and direct strict equality
+/// checks between imported namespace bindings. Other binding behavior is rejected.
 fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignInput {
     if (consumer.index.toU32() != 0 or provider.index.toU32() != 1 or graph.moduleCount() != 2 or
         consumer.wrap_kind != .none or consumer.transform_cache != null or
-        (consumer.import_bindings.len != 1 and consumer.import_bindings.len != 2) or
+        consumer.import_bindings.len == 0 or
         consumer.import_records.len != consumer.import_bindings.len or consumer.export_bindings.len != 0 or consumer.dynamic_imports.items.len != 0 or
         consumer.reachable_stmts != null or consumer.symbol_to_stmt != null or consumer.parse_arena == null) return null;
     const ast = if (consumer.ast) |*value| value else return null;
@@ -479,10 +479,17 @@ fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignI
     if (root_scope.isNone() or root_scope.toIndex() != 0 or sem.scopes[0].kind != .module or !sem.scopes[0].parent.isNone()) return null;
     const namespace_count = consumer.import_bindings.len;
     if (sem.scope_maps.len != 1 or sem.scope_maps[0].count() != sem.symbols.items.len) return null;
-    var holders: [2]u32 = .{ 0, 0 };
-    var specifiers: [2]NodeIndex = .{ .none, .none };
-    var declarations: [2]NodeIndex = .{ .none, .none };
-    var declaration_rows: [2]?usize = .{ null, null };
+    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer scratch.deinit();
+    const scratch_allocator = scratch.allocator();
+    const holders = try scratch_allocator.alloc(u32, namespace_count);
+    @memset(holders, 0);
+    const specifiers = try scratch_allocator.alloc(NodeIndex, namespace_count);
+    @memset(specifiers, .none);
+    const declarations = try scratch_allocator.alloc(NodeIndex, namespace_count);
+    @memset(declarations, .none);
+    const declaration_rows = try scratch_allocator.alloc(?usize, namespace_count);
+    @memset(declaration_rows, null);
     for (0..namespace_count) |index| {
         const binding = consumer.import_bindings[index];
         if (binding.kind != .namespace or binding.is_helper or binding.callsite_target != null or
@@ -510,11 +517,9 @@ fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignI
     if ((!sameBacking(u8, provider_ast.source, provider.source) and !matchesRestoredSource(provider, provider_ast, provider_sem)) or
         graph.shouldRunTransformerPrePass(provider, false)) return null;
 
-    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
-    defer scratch.deinit();
-    const scratch_allocator = scratch.allocator();
     const source_contexts = try @import("../semantic/statement_coordinates.zig").collect(scratch_allocator, ast, root);
-    var import_stmt: [2]u32 = .{ 0, 0 };
+    const import_stmt = try scratch_allocator.alloc(u32, namespace_count);
+    @memset(import_stmt, 0);
     for (0..namespace_count) |index| {
         const declaration = declarations[index];
         if (@backingInt(declaration) >= source_contexts.len) return null;
@@ -577,7 +582,8 @@ fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignI
         try arguments.put(scratch_allocator, read.receiver, {});
     }
     const provider_witness = @import("namespace_export_witness.zig").resolveName(provider, requested_export orelse return null) orelse return null;
-    var holder_reads: [2]usize = .{ 0, 0 };
+    const holder_reads = try scratch_allocator.alloc(usize, namespace_count);
+    @memset(holder_reads, 0);
     for (sem.references, 0..) |reference, index| {
         const reference_index = for (0..namespace_count) |candidate| {
             if (@backingInt(reference.symbol_id) == holders[candidate]) break candidate;
@@ -619,15 +625,18 @@ fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignI
         }
     }
     if (import_count != namespace_count) return null;
-    const alias: ?SourceAlias = if (namespace_count == 2) .{
-        .specifier = specifiers[1],
-        .declaration = declarations[1],
-        .holder = holders[1],
-        .row = declaration_rows[1] orelse return null,
-    } else null;
+    const aliases = try consumer.parse_arena.?.allocator().alloc(SourceAlias, namespace_count - 1);
+    for (1..namespace_count) |index| {
+        aliases[index - 1] = .{
+            .specifier = specifiers[index],
+            .declaration = declarations[index],
+            .holder = holders[index],
+            .row = declaration_rows[index] orelse return null,
+        };
+    }
     const foreign = ForeignInput{
         .consumer = .{ .root = root, .scope = root_scope, .specifier = specifiers[0], .declaration = declarations[0], .holder = holders[0], .row = declaration_rows[0] orelse return null, .exported = @backingInt(provider_witness.symbol.inner) },
-        .alias = alias,
+        .aliases = aliases,
         .provider = provider,
         .provider_semantic = provider_sem.*,
         .target = provider_witness.symbol,
@@ -761,37 +770,42 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         .output_statement = statement,
     });
     try ast.preserve_lexical_declaration_indices.append(a, @backingInt(statement));
-    var alias_output: ?CompletedAlias = null;
-    if (foreign) |value| if (value.alias) |alias| {
-        const alias_name = old_sem.symbols.items[alias.holder].name;
-        const alias_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = alias_name, .data = .{ .string_ref = alias_name } });
-        const alias_initializer = try ast.addNode(.{ .tag = .identifier_reference, .span = holder_name, .data = .{ .string_ref = holder_name } });
-        const alias_declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(alias_binding), @backingInt(NodeIndex.none), @backingInt(alias_initializer) }) } });
-        const alias_declarations = try ast.addNodeList(&.{alias_declarator});
-        const alias_statement = try ast.addNode(.{ .tag = .variable_declaration, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(ast_mod.VariableDeclarationKind.@"const"), alias_declarations.start, alias_declarations.len }) } });
-        try editor.addReference(alias_initializer, @fromBackingInt(input.holder), input.scope, .{ .read = true }, sem_mod.Reference.NO_STMT, sem_mod.Reference.NO_STMT);
-        try editor.moveKnownNamespaceImportToConst(.{
-            .ast = ast,
-            .root = input.root,
-            .root_scope = input.scope,
-            .symbol = @fromBackingInt(alias.holder),
-            .source_specifier = alias.specifier,
-            .source_declaration = alias.declaration,
-            .declaration_row = alias.row,
-            .expected_source_flags = old_sem.symbols.items[alias.holder].decl_flags,
-            .output_binding = alias_binding,
-            .output_declarator = alias_declarator,
-            .output_statement = alias_statement,
-        });
-        try ast.preserve_lexical_declaration_indices.append(a, @backingInt(alias_statement));
-        alias_output = .{
-            .holder = alias.holder,
-            .binding = alias_binding,
-            .declarator = alias_declarator,
-            .statement = alias_statement,
-            .initializer = alias_initializer,
-        };
-    };
+    const alias_outputs: []CompletedAlias = if (foreign) |value|
+        try a.alloc(CompletedAlias, value.aliases.len)
+    else
+        try a.alloc(CompletedAlias, 0);
+    if (foreign) |value| {
+        for (value.aliases, 0..) |alias, alias_index| {
+            const alias_name = old_sem.symbols.items[alias.holder].name;
+            const alias_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = alias_name, .data = .{ .string_ref = alias_name } });
+            const alias_initializer = try ast.addNode(.{ .tag = .identifier_reference, .span = holder_name, .data = .{ .string_ref = holder_name } });
+            const alias_declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(alias_binding), @backingInt(NodeIndex.none), @backingInt(alias_initializer) }) } });
+            const alias_declarations = try ast.addNodeList(&.{alias_declarator});
+            const alias_statement = try ast.addNode(.{ .tag = .variable_declaration, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(ast_mod.VariableDeclarationKind.@"const"), alias_declarations.start, alias_declarations.len }) } });
+            try editor.addReference(alias_initializer, @fromBackingInt(input.holder), input.scope, .{ .read = true }, sem_mod.Reference.NO_STMT, sem_mod.Reference.NO_STMT);
+            try editor.moveKnownNamespaceImportToConst(.{
+                .ast = ast,
+                .root = input.root,
+                .root_scope = input.scope,
+                .symbol = @fromBackingInt(alias.holder),
+                .source_specifier = alias.specifier,
+                .source_declaration = alias.declaration,
+                .declaration_row = alias.row,
+                .expected_source_flags = old_sem.symbols.items[alias.holder].decl_flags,
+                .output_binding = alias_binding,
+                .output_declarator = alias_declarator,
+                .output_statement = alias_statement,
+            });
+            try ast.preserve_lexical_declaration_indices.append(a, @backingInt(alias_statement));
+            alias_outputs[alias_index] = .{
+                .holder = alias.holder,
+                .binding = alias_binding,
+                .declarator = alias_declarator,
+                .statement = alias_statement,
+                .initializer = alias_initializer,
+            };
+        }
+    }
     var statements: std.ArrayList(NodeIndex) = .empty;
     var inserted = false;
     const old_list = old_ast.getNode(input.root).data.list;
@@ -800,16 +814,19 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         if (!inserted and old_ast.getNode(node).tag != .directive) {
             for (generated_declarations) |generated| try statements.append(a, generated);
             try statements.append(a, statement);
-            if (alias_output) |alias| try statements.append(a, alias.statement);
+            for (alias_outputs) |alias| try statements.append(a, alias.statement);
             inserted = true;
         }
-        const is_alias_source = if (foreign) |value| if (value.alias) |alias| node == alias.declaration else false else false;
+        var is_alias_source = false;
+        if (foreign) |value| for (value.aliases) |alias| {
+            if (node == alias.declaration) is_alias_source = true;
+        };
         if (node != input.declaration and !is_alias_source) try statements.append(a, node);
     }
     if (!inserted) {
         for (generated_declarations) |generated| try statements.append(a, generated);
         try statements.append(a, statement);
-        if (alias_output) |alias| try statements.append(a, alias.statement);
+        for (alias_outputs) |alias| try statements.append(a, alias.statement);
     }
     // StmtInfo's source-compatible builder requires this to be the last node.
     const root = try ast.addNode(.{ .tag = .program, .span = old_ast.getNode(input.root).span, .data = .{ .list = try ast.addNodeList(statements.items) } });
@@ -836,17 +853,17 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     completed_bindings[0].local_role = .materialized_const;
     completed_bindings[0].local_symbol_node = binding;
     completed_bindings[0].local_declaration_node = statement;
-    if (alias_output) |alias| {
-        completed_bindings[1].local_role = .materialized_const;
-        completed_bindings[1].local_symbol_node = alias.binding;
-        completed_bindings[1].local_declaration_node = alias.statement;
+    for (alias_outputs, 1..) |alias, index| {
+        completed_bindings[index].local_role = .materialized_const;
+        completed_bindings[index].local_symbol_node = alias.binding;
+        completed_bindings[index].local_declaration_node = alias.statement;
     }
     const binding_context = contexts[@backingInt(binding)] orelse return error.InvalidSelfNamespaceCoordinates;
     const read_context = contexts[@backingInt(read)] orelse return error.InvalidSelfNamespaceCoordinates;
     if (binding_context.stmt_idx >= infos.stmts.len or input.holder >= infos.symbol_to_stmt.len or
         infos.symbol_to_stmt[input.holder] != binding_context.stmt_idx or infos.stmts[binding_context.stmt_idx].node_idx != @backingInt(statement) or
         read_context.stmt_idx != binding_context.stmt_idx or read_context.scope_stmt_idx != 0) return error.InvalidSelfNamespaceStatements;
-    if (alias_output) |alias| {
+    for (alias_outputs) |alias| {
         const alias_context = contexts[@backingInt(alias.initializer)] orelse return error.InvalidSelfNamespaceCoordinates;
         const alias_binding_context = contexts[@backingInt(alias.binding)] orelse return error.InvalidSelfNamespaceCoordinates;
         if (alias.holder >= infos.symbol_to_stmt.len or alias_binding_context.stmt_idx >= infos.stmts.len or
@@ -865,7 +882,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     const strings_snapshot = try a.dupe(u8, ast.string_table.items);
     const lexical_snapshot = try a.dupe(u32, ast.preserve_lexical_declaration_indices.items);
     var completed_aliases: []const CompletedAlias = &.{};
-    if (alias_output) |alias| completed_aliases = try a.dupe(CompletedAlias, &.{alias});
+    if (alias_outputs.len != 0) completed_aliases = try a.dupe(CompletedAlias, alias_outputs);
     var projected_module = module.*;
     projected_module.ast = ast.*;
     projected_module.semantic = candidate;
@@ -880,7 +897,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     var recorded_foreign_target: ?@import("binding_scanner.zig").CallsiteTarget = null;
     var provider_snapshot: ?ProviderSnapshot = null;
     if (foreign != null) {
-        const namespace_count: usize = if (foreign.?.alias == null) 1 else 2;
+        const namespace_count = foreign.?.aliases.len + 1;
         if (completed_bindings.len != namespace_count + 1 or candidate_module.import_records.len != namespace_count + 1 or
             completed_bindings[namespace_count].callsite_target == null) return error.InvalidNamespaceProviderCallsite;
         const target = completed_bindings[namespace_count].callsite_target.?;
@@ -1031,7 +1048,7 @@ pub fn validate(graph: *const Graph, module: *const Module) !void {
 
 fn validatePayload(plan: Completed, ast: *const Ast, sem: *const Semantic, bindings: []const @import("binding_scanner.zig").ImportBinding) !void {
     const expected_export_kind: sem_mod.SymbolKind = if (plan.foreign_target == null) .variable_const else .import_binding;
-    if (plan.aliases.len > 1 or (plan.foreign_target == null and plan.aliases.len != 0) or
+    if ((plan.foreign_target == null and plan.aliases.len != 0) or
         sem.owner_token != plan.owner or ast.transformed_root != plan.root or
         ast.nodes.items.ptr != plan.nodes.ptr or ast.nodes.items.len != plan.nodes.len or
         sem.symbol_ids.ptr != plan.ids.ptr or sem.symbol_ids.len != plan.ids.len or

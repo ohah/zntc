@@ -26797,7 +26797,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('foreign namespace import aliases preserve one namespace object in bundled ESM', () => {
+  test('multiple foreign namespace import aliases preserve one namespace object in bundled ESM', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-foreign-namespace-alias-'));
     const entry = join(dir, 'entry.mjs');
     const output = join(dir, 'out.mjs');
@@ -26807,7 +26807,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       [
         "import * as first from './provider.mjs';",
         "import * as second from './provider.mjs';",
-        "console.log(first === second, Reflect.get(first, 'value'), Reflect.get(second, 'value'));",
+        "import * as third from './provider.mjs';",
+        "import * as fourth from './provider.mjs';",
+        "import * as fifth from './provider.mjs';",
+        "console.log(first === second, first === third, first === fourth, first === fifth, Reflect.get(first, 'value'), Reflect.get(second, 'value'), Reflect.get(third, 'value'), Reflect.get(fourth, 'value'), Reflect.get(fifth, 'value'));",
         '',
       ].join('\n'),
     );
@@ -26840,7 +26843,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       writeFileSync(output, outputs[0]);
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('true 7 7\n');
+      expect(actual.stdout).toBe('true true true true 7 7 7 7 7\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
