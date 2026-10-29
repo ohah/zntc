@@ -336,6 +336,7 @@ test "exact scope audit permits only the verified CommonJS callback boundary" {
         .{
             .name = span,
             .scope_id = wrapper_scope,
+            .origin_scope = wrapper_scope,
             .kind = .parameter,
             .decl_flags = .{ .is_parameter = true },
             .declaration_span = span,
@@ -345,6 +346,7 @@ test "exact scope audit permits only the verified CommonJS callback boundary" {
         .{
             .name = span,
             .scope_id = wrapper_scope,
+            .origin_scope = wrapper_scope,
             .kind = .parameter,
             .decl_flags = .{ .is_parameter = true },
             .declaration_span = span,
@@ -1408,6 +1410,72 @@ test "exact identity audit rejects stale symbol read and write counts independen
     try std.testing.expectEqual(@as(usize, 0), stale_write_count.reference_count_mismatch);
     try std.testing.expectEqual(@as(usize, 1), stale_write_count.write_count_mismatch);
     try std.testing.expect(!stale_write_count.isClean());
+}
+
+test "exact identity audit rejects an invalid symbol origin ScopeId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(
+        allocator,
+        "const alpha = 1; let beta = 2; var gamma = 3; const delta = 4; let epsilon = 5; " ++
+            "var zeta = 6; function read(arg) { const local = arg; return local; } class Holder {}",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+    try std.testing.expect(analyzer.symbols.items.len >= 10);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const baseline = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(baseline.isClean());
+
+    const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    for (corrupted_symbols, 0..) |*symbol, index| {
+        const original_origin = symbol.origin_scope;
+        symbol.origin_scope = if (index % 2 == 0)
+            .none
+        else
+            @fromBackingInt(@intCast(analyzer.scopes.items.len));
+        const corrupted = try coverage.checkExactWithDeclarationAnchors(
+            allocator,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            analyzer.symbol_ids.items,
+            corrupted_symbols,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+        );
+        try std.testing.expectEqual(@as(usize, 1), corrupted.invalid_scope);
+        try std.testing.expect(!corrupted.isClean());
+        symbol.origin_scope = original_origin;
+    }
 }
 
 test "exact source scope audit separates parameter expressions from body var bindings" {

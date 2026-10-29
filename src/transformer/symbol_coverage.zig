@@ -3609,11 +3609,17 @@ fn checkExactImpl(
         }
     }
     for (symbols, 0..) |symbol, sid| {
-        if (!exactValidScope(scopes, symbol.scope_id)) {
-            const id: u32 = @intCast(sid);
-            const valid_detached_output = symbol.scope_id.isNone() and exactDetachedOutputSymbolShape(&symbol) and
-                exactDetachedOutputSymbolHasNoLexicalEdges(id, symbol_ids, references, scope_maps);
-            if (!valid_detached_output) report.invalid_scope += 1;
+        const id: u32 = @intCast(sid);
+        const valid_detached_output = symbol.scope_id.isNone() and exactDetachedOutputSymbolShape(&symbol) and
+            exactDetachedOutputSymbolHasNoLexicalEdges(id, symbol_ids, references, scope_maps);
+        // `origin_scope` is semantic provenance used by var redeclaration
+        // checks. It may be a detached source scope after lowering, but it
+        // must still name a real scope in this graph. Only the explicitly
+        // detached graph-output identities have no lexical origin.
+        if ((!exactValidScope(scopes, symbol.scope_id) or !exactValidScope(scopes, symbol.origin_scope)) and
+            !valid_detached_output)
+        {
+            report.invalid_scope += 1;
         }
     }
 
@@ -6627,6 +6633,7 @@ test "exact helper coverage rejects an ancestor scope on a nested helper referen
     const symbols = [_]Symbol{.{
         .name = name,
         .scope_id = global_scope,
+        .origin_scope = global_scope,
         .kind = .import_binding,
         .declaration_span = name,
         .reference_count = 1,
@@ -6864,8 +6871,8 @@ test "exact identity audit resolves relocated symbols by their emitted scope-map
     try output_names.put(allocator, "_err3$6", 1);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){output_names};
     const symbols = [_]Symbol{
-        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$4" },
-        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$6" },
+        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .origin_scope = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$4" },
+        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .origin_scope = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$6" },
     };
     const symbol_ids = [_]?u32{ 0, 1, null };
     const references = [_]Reference{
