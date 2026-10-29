@@ -341,3 +341,17 @@ test "escaped enum runtime keeps container aliases and auto-counter values exact
     };
     try std.testing.expectEqual(@as(usize, 0), failures);
 }
+
+test "escaped enum name reservation preserves existing raw namespace candidates" {
+    const source = "const _\\u004e=10;namespace \\u004e{export const value=_\\u004e}console.log(N.value)";
+    for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const result = try @import("../transpile.zig").transpile(a, source, "input.ts", .{ .unsupported = Options.compat.fromESTarget(.es5), .minify_identifiers = minify });
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        std.debug.print("escaped-enum-reservation namespace minify={} code={s} stdout={s} stderr={s}\n", .{ minify, result.code, actual.stdout, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("10\n", actual.stdout);
+    }
+}
