@@ -2727,6 +2727,29 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('hi:C');
     });
 
+    test('parenthesized type-wrapped super method call preserves receiver', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': `
+            class B {
+              greet(): string { return "hi:" + this.tag; }
+              tag: string = "B";
+            }
+            class C extends B {
+              tag: string = "C";
+              run() { return ((super.greet as any))(); }
+            }
+            console.log(new C().run());
+          `,
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('hi:C');
+    });
+
     test('derived constructor super 전 this 접근 검사', async () => {
       const result = await bundleAndRun(
         {

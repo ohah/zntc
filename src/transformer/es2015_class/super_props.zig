@@ -231,7 +231,8 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const callee: NodeIndex = @fromBackingInt(@intCast(extras[e]));
+            const raw_callee: NodeIndex = @fromBackingInt(@intCast(extras[e]));
+            const callee = es_helpers.unwrapTransparentWrappers(self, raw_callee);
             if (callee.isNone()) return false;
             const callee_node = self.ast.getNode(callee);
             if (callee_node.tag != .static_member_expression) return false;
@@ -247,7 +248,8 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// Object.prototype / Function.prototype 으로 fallback.
         pub fn lowerSuperMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
-            const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const raw_callee_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const callee_idx = es_helpers.unwrapTransparentWrappers(self, raw_callee_idx);
             const args_start = self.readU32(e, 1);
             const args_len = self.readU32(e, 2);
             const span = node.span;
