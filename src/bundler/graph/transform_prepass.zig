@@ -16846,7 +16846,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         try obsolete_reference_nodes.append(scratch_alloc, node_index);
     }
 
-    var unreachable_local_const_declarations: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    var unreachable_declarations: std.ArrayList(ast_mod.NodeIndex) = .empty;
     var unreachable_declaration_set = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
     for (semantic.references) |reference| {
         if (reference.flags.declare) {
@@ -16857,7 +16857,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
             if (reachable.isSet(raw)) continue;
             if (unreachable_declaration_set.isSet(raw)) return false;
             unreachable_declaration_set.set(raw);
-            try unreachable_local_const_declarations.append(scratch_alloc, declaration);
+            try unreachable_declarations.append(scratch_alloc, declaration);
             continue;
         }
 
@@ -16883,7 +16883,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     // A declaration can be pruned only after every read/write with that exact
     // SymbolId has disappeared from the live AST or was one of the tracked
     // materialized reads. Other surviving uses keep the conservative fallback.
-    for (unreachable_local_const_declarations.items) |declaration| {
+    for (unreachable_declarations.items) |declaration| {
         const symbol_id = semantic.symbol_ids[@backingInt(declaration)] orelse return false;
         if (symbol_id >= semantic.symbols.items.len) return false;
         for (semantic.references) |reference| {
@@ -16900,15 +16900,26 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     editor.removeReferences(obsolete_reference_nodes.items) catch return false;
     const RemovedLocalLexicalSymbol = struct { symbol_id: u32, scope_id: u32 };
     var removed_local_lexical_symbols: std.ArrayList(RemovedLocalLexicalSymbol) = .empty;
-    for (unreachable_local_const_declarations.items) |declaration| {
-        const removed_symbol = editor.removeUnreachableLocalLexicalDeclaration(declaration, &reachable) catch return false;
-        const symbol_raw = @backingInt(removed_symbol);
-        const symbol_scope = editor.symbols.items[symbol_raw].scope_id;
-        editor.symbols.items[symbol_raw].const_kind = .none;
-        try removed_local_lexical_symbols.append(scratch_alloc, .{
-            .symbol_id = symbol_raw,
-            .scope_id = @backingInt(symbol_scope),
-        });
+    var removed_symbol_ids: std.ArrayList(u32) = .empty;
+    for (unreachable_declarations.items) |declaration| {
+        const symbol_raw = semantic.symbol_ids[@backingInt(declaration)] orelse return false;
+        if (symbol_raw >= editor.symbols.items.len) return false;
+        const removed_symbol = switch (editor.symbols.items[symbol_raw].kind) {
+            .variable_var => editor.removeUnreachableLocalVarDeclaration(declaration, &reachable) catch return false,
+            .variable_const, .variable_let => editor.removeUnreachableLocalLexicalDeclaration(declaration, &reachable) catch return false,
+            else => return false,
+        };
+        const removed_raw = @backingInt(removed_symbol);
+        editor.symbols.items[removed_raw].const_kind = .none;
+        try removed_symbol_ids.append(scratch_alloc, removed_raw);
+        if (editor.symbols.items[removed_raw].kind == .variable_const or
+            editor.symbols.items[removed_raw].kind == .variable_let)
+        {
+            try removed_local_lexical_symbols.append(scratch_alloc, .{
+                .symbol_id = removed_raw,
+                .scope_id = @backingInt(editor.symbols.items[removed_raw].scope_id),
+            });
+        }
     }
     var elided_scope_ids = try std.DynamicBitSet.initEmpty(scratch_alloc, editor.scopes.items.len);
     for (detached_scope_owners.items) |snapshot| {
@@ -16946,7 +16957,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     try editor.references.appendSlice(arena_alloc, updated_references);
 
     semantic.applyEdit(try editor.finish());
-    for (removed_local_lexical_symbols.items) |removed| _ = semantic.numeric_const_texts.remove(removed.symbol_id);
+    for (removed_symbol_ids.items) |symbol_id| _ = semantic.numeric_const_texts.remove(symbol_id);
     if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
     if (refresh_module_metadata) {
         try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);

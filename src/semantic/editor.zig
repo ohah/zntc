@@ -1531,6 +1531,98 @@ pub const SemanticEditor = struct {
         return self.removeUnreachableLocalLexicalDeclarationImpl(binding_node, reachable, false);
     }
 
+    /// Remove a dead function-scoped `var` declaration after its exact static
+    /// references have been removed. The binding is hoisted, so only a plain
+    /// function-scope symbol with one declaration and no dynamic name lookup
+    /// can be discarded. Keep its SymbolId row stable as an unbound slot.
+    pub fn removeUnreachableLocalVarDeclaration(
+        self: *SemanticEditor,
+        binding_node: NodeIndex,
+        reachable: *const std.DynamicBitSet,
+    ) Error!SymbolId {
+        if (binding_node.isNone()) return error.InvalidNode;
+        const raw = @backingInt(binding_node);
+        if (raw >= self.ast.nodes.items.len or raw >= self.symbol_ids.items.len or
+            raw >= reachable.capacity() or reachable.isSet(raw) or
+            self.ast.nodes.items[raw].tag != .binding_identifier) return error.InvalidNode;
+        const symbol_raw = self.symbol_ids.items[raw] orelse return error.InvalidSymbol;
+        if (symbol_raw >= self.symbols.items.len) return error.InvalidSymbol;
+        const symbol_id: SymbolId = @fromBackingInt(symbol_raw);
+        const symbol = self.symbols.items[symbol_raw];
+        if (symbol.kind != .variable_var or symbol.isExported() or symbol.isSynthetic() or
+            symbol.synthetic_name.len != 0 or symbol.synthetic_owner_id != null or
+            symbol.output_name_hint.len != 0 or symbol.reference_count != 0 or
+            symbol.write_count != 0 or symbol.scope_id.isNone() or
+            symbol.scope_id.toIndex() >= self.scopes.items.len or
+            symbol.origin_scope.isNone() or symbol.origin_scope.toIndex() >= self.scopes.items.len or
+            symbol.name.start & Ast.STRING_TABLE_BIT != 0 or !self.validTextSpan(symbol.name) or
+            !symbol.annex_b_alias.variable.isNone() or symbol.annex_b_alias.state != .native or
+            symbol.annex_b_alias.source_assignment_count != 0) return error.InvalidSymbol;
+
+        const scope_id = symbol.scope_id;
+        const scope_raw = scope_id.toIndex();
+        const scope = self.scopes.items[scope_raw];
+        if (scope.kind != .function or scope.subtree_has_direct_eval or scope.subtree_has_with)
+            return error.InvalidScope;
+        var origin_scope = symbol.origin_scope;
+        var hops: usize = 0;
+        while (origin_scope != scope_id and hops < self.scopes.items.len) : (hops += 1) {
+            if (origin_scope.isNone() or origin_scope.toIndex() >= self.scopes.items.len)
+                return error.InvalidScope;
+            origin_scope = self.scopes.items[origin_scope.toIndex()].parent;
+        }
+        if (origin_scope != scope_id) return error.InvalidScope;
+
+        var declaration_index: ?usize = null;
+        for (self.references.items, 0..) |reference, index| {
+            if (reference.symbol_id != symbol_id) continue;
+            if (!reference.flags.declare or reference.flags.read or reference.flags.write or
+                reference.flags.type_context or reference.flags.value_as_type or
+                reference.scope_id != scope_id or reference.node_index != .none or
+                reference.declaration_node_index != binding_node or declaration_index != null)
+                return error.InvalidSymbol;
+            declaration_index = index;
+        }
+        const declaration = declaration_index orelse return error.ReferenceNotFound;
+
+        const name = symbol.nameText(self.ast.source);
+        const scope_map = &self.scope_maps.items[scope_raw];
+        if (name.len == 0 or scope_map.get(name) != symbol_raw or
+            self.scopes.items[scope_raw].symbol_count == 0 or self.scope_owner_map.contains(raw))
+            return error.InvalidScope;
+        var mapped_symbols: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        defer mapped_symbols.deinit(self.allocator);
+        var map_entries = scope_map.iterator();
+        while (map_entries.next()) |entry| {
+            const mapped_raw = entry.value_ptr.*;
+            if (mapped_raw >= self.symbols.items.len or self.symbols.items[mapped_raw].scope_id != scope_id)
+                return error.InvalidScope;
+            try mapped_symbols.put(self.allocator, mapped_raw, {});
+        }
+        if (mapped_symbols.count() != self.scopes.items[scope_raw].symbol_count)
+            return error.InvalidScope;
+
+        // Remove both source and decoded keys only when they point to this ID.
+        const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        defer if (decoded_name.ptr != name.ptr) self.allocator.free(decoded_name);
+        _ = self.takeDecodedAlias(scope_id, name, decoded_name, symbol_raw);
+        _ = scope_map.remove(name);
+        self.scopes.items[scope_raw].symbol_count -= 1;
+        _ = self.references.orderedRemove(declaration);
+        if (self.reference_index_built) {
+            for (self.references.items[declaration..], declaration..) |reference, index| {
+                if (reference.node_index.isNone()) continue;
+                if (self.reference_index.getPtr(@backingInt(reference.node_index))) |stored_index|
+                    stored_index.* = index;
+            }
+        }
+        self.symbol_ids.items[raw] = null;
+        _ = self.node_scope_provenance.remove(binding_node);
+        self.symbols.items[symbol_raw].origin_scope = scope_id;
+        self.symbols.items[symbol_raw].const_kind = .none;
+        return symbol_id;
+    }
+
     fn removeUnreachableLocalLexicalDeclarationImpl(
         self: *SemanticEditor,
         binding_node: NodeIndex,
