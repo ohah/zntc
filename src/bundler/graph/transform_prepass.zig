@@ -7221,6 +7221,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_computed_object_accessor_key = false;
     var found_object_shorthand = false;
     var found_lowered_object_method = false;
+    var found_graph_neutral_regexp = false;
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         // Type erasure already edits the semantic graph through the same
@@ -7433,6 +7434,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 // preserving their source references. Tagged templates have
                 // their own gate because downleveling creates helper/cache state.
                 found_safe_template_literal = true;
+            },
+            .regexp_literal => {
+                // Regexp lowering edits only literal text and flags. Named
+                // capture lowering may request a helper, which remains
+                // rejected by the retained-helper audit after transformation.
+                found_graph_neutral_regexp = true;
             },
             .super_expression => {
                 // Object-method lowering records the generated home-object
@@ -7717,9 +7724,6 @@ fn canRetainGraphForAuditedSyntaxSubset(
             // BigInt literals are copied verbatim and add no semantic graph edges.
             .bigint_literal,
             .string_literal,
-            // Regex lowering rewrites only the literal payload. Helper-producing
-            // named-capture cases still fall back after transform below.
-            .regexp_literal,
             .this_expression,
             .identifier_reference,
             // Plain identifier writes use this reference tag and are already
@@ -7834,7 +7838,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_simple_static_class_field or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
-        found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
+        found_safe_template_literal or found_lowered_optional_chaining or found_graph_neutral_regexp or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
@@ -13648,14 +13652,22 @@ fn runtimeHelperReanalysisTestFixture(
     allocator: std.mem.Allocator,
     source: []const u8,
 ) !RuntimeHelperReanalysisTestFixture {
+    return runtimeHelperReanalysisTestFixtureForSource(allocator, source, true);
+}
+
+fn runtimeHelperReanalysisTestFixtureForSource(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    is_module: bool,
+) !RuntimeHelperReanalysisTestFixture {
     var scanner = try Scanner.init(allocator, source);
-    scanner.is_module = true;
+    scanner.is_module = is_module;
     var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
-    parser.is_module = true;
+    parser.is_module = is_module;
     _ = try parser.parse();
 
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-    analyzer.is_module = true;
+    analyzer.is_module = is_module;
     analyzer.enable_stmt_info = true;
     try analyzer.analyze();
 
@@ -17806,6 +17818,172 @@ fn computedAccessorSuperSourceAdmissionForTest(f: *const RuntimeHelperReanalysis
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
     }, &get, &set) and get and set;
+}
+
+fn auditedRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+    var get = false;
+    var set = false;
+    return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, &get, &set);
+}
+
+fn fullPrepassRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+    const Plugin = @import("../plugin.zig").Plugin;
+    const plugins: []const Plugin = &.{};
+    const module_path = if (f.semantic.scopes.len != 0 and !f.semantic.scopes[0].is_strict)
+        "regex-retention.cjs"
+    else
+        "regex-retention.js";
+    var module = Module.init(@fromBackingInt(0), module_path);
+    module.ast = f.ast;
+    module.semantic = f.semantic;
+    const context = .{
+        .allocator = std.testing.allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = plugins,
+        .styled_components = false,
+        .emotion = false,
+    };
+    var get = false;
+    var set = false;
+    return canKeepPrepassSemanticGraph(&context, &module, .{
+        .strip_types = true,
+        .emit_runtime_helper_imports = true,
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, plugins, &get, &set, null);
+}
+
+fn expectRegexTransformPreservesExactSemanticIds(
+    allocator: std.mem.Allocator,
+    f: *RuntimeHelperReanalysisTestFixture,
+) !void {
+    const before_symbols = try allocator.dupe(SemanticSymbol, f.semantic.symbols.items);
+    defer allocator.free(before_symbols);
+    const before_scopes = try allocator.dupe(SemanticScope, f.semantic.scopes);
+    defer allocator.free(before_scopes);
+    const before_references = try allocator.dupe(SemanticReference, f.semantic.references);
+    defer allocator.free(before_references);
+    const before_symbol_ids = try allocator.dupe(?u32, f.semantic.symbol_ids);
+    defer allocator.free(before_symbol_ids);
+
+    var transformer = try Transformer.init(allocator, &f.ast, .{
+        .strip_types = true,
+        .emit_runtime_helper_imports = true,
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(f.semantic.symbol_ids);
+    transformer.symbols = f.semantic.symbols.items;
+    transformer.references = f.semantic.references;
+    transformer.scopes = f.semantic.scopes;
+    transformer.scope_maps = f.semantic.scope_maps;
+    transformer.scope_owner_map = f.semantic.scope_owner_map;
+    transformer.node_scope_provenance = f.semantic.node_scope_provenance;
+    transformer.class_self_symbol_map = f.semantic.class_self_symbol_map;
+    transformer.helper_scope_map = f.semantic.helper_scope_map;
+    transformer.unresolved_references = &f.semantic.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    try std.testing.expect(!root.isNone());
+    const edit = try transformer.finishSemanticEdit();
+    const symbols_after = if (edit) |result| result.symbols.items else transformer.symbols;
+    const scopes_after = if (edit) |result| result.scopes else transformer.scopes;
+    const references_after = if (edit) |result| result.references else transformer.references;
+    const symbol_ids_after = if (edit) |result| result.symbol_ids else transformer.symbol_ids.items;
+    const scope_maps_after = if (edit) |result| result.scope_maps else transformer.scope_maps;
+    const scope_owners_after = if (edit) |result| result.scope_owner_map else transformer.scope_owner_map;
+
+    try std.testing.expectEqualDeep(before_symbols, symbols_after);
+    try std.testing.expectEqualDeep(before_scopes, scopes_after);
+    try std.testing.expectEqual(before_references.len, references_after.len);
+    for (before_references, references_after) |before, after| {
+        try std.testing.expectEqual(before.node_index, after.node_index);
+        try std.testing.expectEqual(before.declaration_node_index, after.declaration_node_index);
+        try std.testing.expectEqual(before.scope_id, after.scope_id);
+        try std.testing.expectEqual(before.symbol_id, after.symbol_id);
+        try std.testing.expectEqualDeep(before.flags, after.flags);
+    }
+    try std.testing.expect(symbol_ids_after.len >= before_symbol_ids.len);
+    try std.testing.expectEqualSlices(?u32, before_symbol_ids, symbol_ids_after[0..before_symbol_ids.len]);
+    for (symbol_ids_after[before_symbol_ids.len..]) |symbol_id| try std.testing.expect(symbol_id == null);
+    try std.testing.expectEqual(f.semantic.scope_maps.len, scope_maps_after.len);
+    for (f.semantic.scope_maps, scope_maps_after) |before_map, after_map| {
+        try std.testing.expectEqual(before_map.count(), after_map.count());
+        var iterator = before_map.iterator();
+        while (iterator.next()) |entry| {
+            const value = after_map.get(entry.key_ptr.*) orelse return error.MissingRetainedRegexScopeBinding;
+            try std.testing.expectEqual(entry.value_ptr.*, value);
+        }
+    }
+    try std.testing.expectEqual(f.semantic.scope_owner_map.count(), scope_owners_after.count());
+    var before_owner_iterator = f.semantic.scope_owner_map.iterator();
+    while (before_owner_iterator.next()) |entry| {
+        var before_count: usize = 0;
+        var after_count: usize = 0;
+        var before_iter = f.semantic.scope_owner_map.iterator();
+        while (before_iter.next()) |candidate| {
+            if (candidate.value_ptr.* == entry.value_ptr.*) before_count += 1;
+        }
+        var after_iter = scope_owners_after.iterator();
+        while (after_iter.next()) |candidate| {
+            if (candidate.value_ptr.* == entry.value_ptr.*) after_count += 1;
+        }
+        try std.testing.expectEqual(before_count, after_count);
+    }
+    try std.testing.expect(!transformer.runtime_helpers.hasAny());
+}
+
+test "regex literals are graph-neutral in the audited ES5 subset" {
+    const sources = [_][]const u8{
+        "var r=/./s;",
+        "var r=/a.b/s;",
+        "var r=/a\\.b/s;",
+        "var r=/[.]/s;",
+        "var r=/foo/y;",
+        "var r=/\\u{41}/u;",
+        "var r=/\\u{1F600}/u;",
+        "var r=/[\\u{41}-\\u{5A}]/u;",
+        "var r=/a.b/sy;",
+        "function matches(input){var r=/x.y/s;return r.test(input)}",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var f = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
+        const admitted = auditedRegexGraphAdmissionForTest(&f);
+        if (!admitted) std.debug.print("regex graph admission failed index={d} source={s}\n", .{ index, source });
+        try std.testing.expect(admitted);
+        try std.testing.expect(fullPrepassRegexGraphAdmissionForTest(&f));
+        expectRegexTransformPreservesExactSemanticIds(arena.allocator(), &f) catch |err| {
+            std.debug.print("regex exact graph changed index={d} source={s} err={s}\n", .{ index, source, @errorName(err) });
+            return err;
+        };
+    }
+}
+
+test "regex literal graph neutrality does not admit hostile surrounding syntax" {
+    const Control = struct { source: []const u8, is_module: bool };
+    const controls = [_]Control{
+        .{ .source = "eval(\"var hidden=1\");var r=/./s;", .is_module = false },
+        .{ .source = "function f(){eval(\"var hidden=1\");return /./s.test(\"x\")}", .is_module = false },
+        .{ .source = "await Promise.resolve(/./s);", .is_module = true },
+        .{ .source = "with ({x:1}) { console.log(/./s.test(\"x\")); }", .is_module = false },
+        .{ .source = "class C{#value=1} var r=/./s;", .is_module = true },
+        .{ .source = "class C{#method(){}} var r=/./s;", .is_module = true },
+        .{ .source = "async function* values(){yield /./s;await 1}", .is_module = true },
+        .{ .source = "var value=fn?.(/./s);", .is_module = true },
+        .{ .source = "let value=1;console.log(/./s.test(\"x\"),value);", .is_module = true },
+        .{ .source = "function run(value=1){return /./s.test(value)}", .is_module = true },
+    };
+    for (controls, 0..) |control, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const f = try runtimeHelperReanalysisTestFixtureForSource(arena.allocator(), control.source, control.is_module);
+        const admitted = fullPrepassRegexGraphAdmissionForTest(&f);
+        if (admitted) std.debug.print("hostile regex source unexpectedly admitted index={d} source={s}\n", .{ index, control.source });
+        try std.testing.expect(!admitted);
+    }
 }
 
 test "computed accessor super authority source admission keeps nested and Object boundaries" {
