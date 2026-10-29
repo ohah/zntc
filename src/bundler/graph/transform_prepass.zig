@@ -6196,7 +6196,9 @@ fn canRetainSimpleNamedStaticBlockClasses(
         const class_body_raw = parents.get(raw) orelse return false;
         if (class_body_raw >= ast.nodes.items.len or ast.nodes.items[class_body_raw].tag != .class_body) return false;
         const class_raw = parents.get(class_body_raw) orelse return false;
-        if (class_raw >= ast.nodes.items.len or ast.nodes.items[class_raw].tag != .class_declaration) return false;
+        if (class_raw >= ast.nodes.items.len or
+            (ast.nodes.items[class_raw].tag != .class_declaration and
+                ast.nodes.items[class_raw].tag != .class_expression)) return false;
         const class_node = ast.nodes.items[class_raw];
         const class_extra = class_node.data.extra;
         if (class_extra > ast.extra_data.items.len or
@@ -12211,6 +12213,7 @@ const StaticBlockPrepassTestMutation = enum {
     remove_static_block_body_owner,
     wrong_static_block_scope_kind,
     clear_class_name,
+    clear_class_expression_name,
     missing_method_key,
     out_of_range_method_key,
 };
@@ -12279,6 +12282,19 @@ fn staticBlockPrepassDecisionForTest(
                 break;
             }
             if (!found) return error.MissingClassDeclaration;
+        },
+        .clear_class_expression_name => {
+            var found = false;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag != .class_expression) continue;
+                const extra = node.data.extra;
+                if (extra > parser.ast.extra_data.items.len or
+                    parser.ast.extra_data.items.len - extra <= ast_mod.ClassExtra.name) return error.InvalidClassExtra;
+                parser.ast.extra_data.items[extra + ast_mod.ClassExtra.name] = @backingInt(ast_mod.NodeIndex.none);
+                found = true;
+                break;
+            }
+            if (!found) return error.MissingClassExpression;
         },
         .missing_method_key, .out_of_range_method_key => {
             var found = false;
@@ -12372,6 +12388,32 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_constant_key.source_candidate);
     try std.testing.expect(retained_constant_key.graph_gate);
 
+    const named_class_expression_source = "const Named = 2; const Counter = class Named { static { Named.value = 1; } static read() { return Named.value; } }; console.log(Counter.read(), Named);";
+    const retained_named_class_expression = try staticBlockPrepassDecisionForTest(
+        named_class_expression_source,
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_named_class_expression.source_candidate);
+    try std.testing.expect(retained_named_class_expression.graph_gate);
+
+    const poisoned_named_class_expression = try staticBlockPrepassDecisionForTest(
+        named_class_expression_source,
+        ".js",
+        options,
+        .clear_class_expression_name,
+    );
+    try std.testing.expect(!poisoned_named_class_expression.source_candidate);
+
+    const class_without_static_block = try staticBlockPrepassDecisionForTest(
+        "class C { read() {} }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!class_without_static_block.source_candidate);
+
     for ([_]StaticBlockPrepassTestMutation{
         .remove_static_block_owner,
         .remove_static_block_body_owner,
@@ -12386,7 +12428,14 @@ test "#6193 retains only exact named native-class static-block lowering" {
 
     const rejected_sources = [_]struct { source: []const u8, candidate: bool }{
         .{ .source = "const C = class { static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const C = class Named { static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const Base = class {}; const C = class Named extends Base { static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const methodName = 'read'; const C = class Named { [methodName]() {} static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const suffix = ''; const C = class Named { ['read' + suffix]() {} static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { get value() { return 1; } static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { async read() {} static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { value = 1; static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { #value = 1; static { this.value = 1; } };", .candidate = false },
+        .{ .source = "const C = class Named { #read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "class C extends Base { static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [\"read\" + suffix]() {} static { this.value = 1; } }", .candidate = false },
@@ -12395,7 +12444,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { #value = 1; static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { #read() {} static { this.value = 1; } }", .candidate = false },
-        .{ .source = "class C { static { this.value = 1; } } const D = class { static { this.value = 2; } };", .candidate = false },
+        .{ .source = "const C = class Named { static { this.value = 1; } }; const D = class { static { this.value = 2; } };", .candidate = false },
         .{ .source = "class C { static { eval('this.value = 1'); } }", .candidate = true },
     };
     for (rejected_sources) |case| {

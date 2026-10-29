@@ -11711,11 +11711,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1\n',
       },
       {
-        name: 'named-class-expression',
-        graph: 'reanalyzed',
+        name: 'named-class-expression-self-binding',
+        graph: 'retained',
         source:
-          'const Counter = class Named { static { this.value = 1; } }; console.log(Counter.value);',
-        stdout: '1\n',
+          'const Named = 2; const Counter = class Named { static { Named.value = 1; } static read() { return Named.value; } }; console.log(Counter.read(), Named);',
+        stdout: '1 2\n',
       },
       {
         name: 'class-with-superclass',
@@ -11723,6 +11723,62 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         source:
           'class Counter extends class Base {} { static { this.value = 1; } } console.log(Counter.value);',
         stdout: '1\n',
+      },
+      {
+        name: 'named-class-expression-with-superclass',
+        graph: 'reanalyzed',
+        source:
+          'const Base = class {}; const Counter = class Named extends Base { static { this.value = 1; } }; console.log(Counter.value);',
+        stdout: '1\n',
+      },
+      {
+        name: 'named-class-expression-with-dynamic-computed-key',
+        graph: 'reanalyzed',
+        source:
+          'const methodName = "read"; const Counter = class Named { [methodName]() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-expression-computed-key',
+        graph: 'reanalyzed',
+        source:
+          'const suffix = ""; const Counter = class Named { ["read" + suffix]() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-accessor',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { get value() { return 1; } static { this.other = 2; } }; console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-async-method',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { async read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-public-instance-field',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { value = 1; static { this.other = 2; } }; console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-private-instance-field',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { #value = 1; static { this.other = 2; } }; console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'named-class-expression-with-private-method',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { #read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
       },
       {
         name: 'constant-computed-method-key',
@@ -11777,7 +11833,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'one-unsafe-class-vetoes-module-retention',
         graph: 'reanalyzed',
         source:
-          'class Safe { static { this.value = 1; } } const Unsafe = class { static { this.value = 2; } }; console.log(Safe.value + Unsafe.value);',
+          'const Safe = class Named { static { this.value = 1; } }; const Unsafe = class { static { this.value = 2; } }; console.log(Safe.value + Unsafe.value);',
         stdout: '3\n',
       },
     ];
