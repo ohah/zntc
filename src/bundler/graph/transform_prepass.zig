@@ -812,10 +812,10 @@ fn hasStableRuntimeImports(
     return true;
 }
 
-/// The static-import regex exception does not cover neighboring constructs
-/// whose graph preflight records separate AST work. Inspect reachable nodes so
-/// parser-only cover-grammar leftovers cannot disable a safe module.
-fn hasOtherGraphTransformSyntaxForRegexImports(ast: *const ast_mod.Ast) bool {
+/// The static-import exception covers only audited leaf/body subsets, not
+/// neighboring constructs with separate module-graph work. Inspect reachable
+/// nodes so parser-only cover-grammar leftovers cannot disable a safe module.
+fn hasOtherGraphTransformSyntaxForPlainImports(ast: *const ast_mod.Ast) bool {
     if (ast.nodes.items.len == 0) return true;
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
@@ -6825,10 +6825,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
     allow_es5_async_method_super_get: *bool,
     allow_es5_async_method_super_set: *bool,
     regex_only_out: ?*bool,
+    optional_catch_only_out: ?*bool,
 ) bool {
     allow_es5_async_method_super_get.* = false;
     allow_es5_async_method_super_set.* = false;
     if (regex_only_out) |out| out.* = false;
+    if (optional_catch_only_out) |out| out.* = false;
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
     if (ast.nodes.items.len == 0) return false;
@@ -7945,7 +7947,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    const safe_graph_without_regexp = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
+    const safe_graph_with_other_syntax = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
         found_lowered_generator or
         found_lowered_async_function or
         found_native_tagged_template or found_lowered_tagged_template or
@@ -7960,9 +7962,16 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
-        found_lowered_optional_catch_binding or found_lowered_new_target;
-    if (regex_only_out) |out| out.* = found_graph_neutral_regexp and !safe_graph_without_regexp;
-    const safe_graph = safe_graph_without_regexp or found_graph_neutral_regexp;
+        found_lowered_new_target;
+    if (regex_only_out) |out| {
+        out.* = found_graph_neutral_regexp and
+            !safe_graph_with_other_syntax and !found_lowered_optional_catch_binding;
+    }
+    if (optional_catch_only_out) |out| {
+        out.* = found_lowered_optional_catch_binding and
+            !safe_graph_with_other_syntax and !found_graph_neutral_regexp;
+    }
+    const safe_graph = safe_graph_with_other_syntax or found_lowered_optional_catch_binding or found_graph_neutral_regexp;
     if (safe_graph) {
         const has_super_use = for (reachable_nodes) |raw_idx| {
             if (raw_idx >= ast.nodes.items.len) return false;
@@ -8955,6 +8964,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     var retainable_async_method_super_get = false;
     var retainable_async_method_super_set = false;
     var regex_only_graph_subset = false;
+    var optional_catch_only_graph_subset = false;
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(
             self.allocator,
@@ -8964,6 +8974,7 @@ fn canKeepPrepassSemanticGraphPrepared(
             &retainable_async_method_super_get,
             &retainable_async_method_super_set,
             &regex_only_graph_subset,
+            &optional_catch_only_graph_subset,
         );
     const native_noop_source = if (prepared_native_source) |prepared|
         if (@import("../../transformer/native_noop_graph.zig").preparedMatches(prepared, module)) prepared else null
@@ -9060,7 +9071,11 @@ fn canKeepPrepassSemanticGraphPrepared(
             options,
             retained_simple_console_drops,
         );
-    const possible_plain_javascript_imports_for_regex_transform = regex_only_graph_subset and
+    // Non-verbatim plain JS imports normally stay on the analyzer path when a
+    // transform runs. These two audited subsets preserve import edges exactly:
+    // graph-neutral regex literals and optional catch binding insertion.
+    const possible_plain_javascript_imports_for_audited_subset =
+        (regex_only_graph_subset or optional_catch_only_graph_subset) and
         module.module_type == .js and !ast.is_typescript and
         !self.flow and !isFlowPath(module.path) and
         !options.minify_syntax and !has_dropped_labeled_statement and !has_mapped_import_split and
@@ -9070,12 +9085,12 @@ fn canKeepPrepassSemanticGraphPrepared(
         !self.styled_components and !self.emotion and !self.worklet_transform and
         !hasAstTransformHooks(self.plugins) and !hasAstTransformHooks(plugins) and
         !hasAstTransformHooks(options.plugins) and
-        !hasOtherGraphTransformSyntaxForRegexImports(ast);
+        !hasOtherGraphTransformSyntaxForPlainImports(ast);
     const allow_nonverbatim_imports_before_transform_scan = allow_mapped_runtime_imports or
         possible_plain_javascript_imports_for_identifier_minification or
         possible_used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop or
-        possible_plain_javascript_imports_for_regex_transform;
+        possible_plain_javascript_imports_for_audited_subset;
     if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_before_transform_scan)) return false;
 
     const safe_styled_components = options.styled_components;
@@ -9268,7 +9283,7 @@ fn canKeepPrepassSemanticGraphPrepared(
         unchanged_plain_javascript_imports_for_identifier_minification or
         used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop or
-        possible_plain_javascript_imports_for_regex_transform;
+        possible_plain_javascript_imports_for_audited_subset;
     if (!options.verbatim_module_syntax and
         allow_nonverbatim_imports_before_transform_scan != allow_nonverbatim_imports_after_transform_scan and
         !hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_after_transform_scan)) return false;
@@ -17952,7 +17967,7 @@ fn computedAccessorSuperSourceAdmissionForTest(f: *const RuntimeHelperReanalysis
     var set = false;
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
-    }, &get, &set, null) and get and set;
+    }, &get, &set, null, null) and get and set;
 }
 
 fn auditedRegexGraphAdmissionForTest(
@@ -17963,10 +17978,21 @@ fn auditedRegexGraphAdmissionForTest(
     var set = false;
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
-    }, &get, &set, regex_only_out);
+    }, &get, &set, regex_only_out, null);
 }
 
-fn fullPrepassRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+fn auditedOptionalCatchGraphAdmissionForTest(
+    f: *const RuntimeHelperReanalysisTestFixture,
+    optional_catch_only_out: ?*bool,
+) bool {
+    var get = false;
+    var set = false;
+    return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, &get, &set, null, optional_catch_only_out);
+}
+
+fn fullPrepassAuditedGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
     const Plugin = @import("../plugin.zig").Plugin;
     const plugins: []const Plugin = &.{};
     const module_path = if (f.semantic.scopes.len != 0 and !f.semantic.scopes[0].is_strict)
@@ -17974,6 +18000,7 @@ fn fullPrepassRegexGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFi
     else
         "regex-retention.js";
     var module = Module.init(@fromBackingInt(0), module_path);
+    module.module_type = .js;
     module.ast = f.ast;
     module.semantic = f.semantic;
     const context = .{
@@ -18096,7 +18123,7 @@ test "regex literals are graph-neutral in the audited ES5 subset" {
         if (!admitted) std.debug.print("regex graph admission failed index={d} source={s}\n", .{ index, source });
         try std.testing.expect(admitted);
         try std.testing.expect(regex_only);
-        try std.testing.expect(fullPrepassRegexGraphAdmissionForTest(&f));
+        try std.testing.expect(fullPrepassAuditedGraphAdmissionForTest(&f));
         expectRegexTransformPreservesExactSemanticIds(arena.allocator(), &f) catch |err| {
             std.debug.print("regex exact graph changed index={d} source={s} err={s}\n", .{ index, source, @errorName(err) });
             return err;
@@ -18118,6 +18145,72 @@ test "regex-only audit output excludes other audited ES5 syntax" {
         _ = auditedRegexGraphAdmissionForTest(&f, &regex_only);
         try std.testing.expectEqual(case.expected_regex_only, regex_only);
     }
+}
+
+test "plain imports are admitted with the isolated optional catch graph subset" {
+    const sources = [_][]const u8{
+        "import { value } from './dep.js'; try { throw 1; } catch {} console.log(value);",
+        "import { value } from './dep.js'; function read(){try{throw 1}catch{}} console.log(value);",
+        "import { value } from './dep.js'; function read(){try{}catch{console.log(value)}} read();",
+        "import { value } from './dep.js'; try { throw 1; } catch {} try { throw 2; } catch {} console.log(value);",
+        "import { value } from './dep.js'; if (value) { try { throw 1; } catch {} } console.log(value);",
+        "import { value } from './dep.js'; for (var i = 0; i < 1; i++) { try { throw i; } catch {} } console.log(value);",
+        "import { value } from './dep.js'; switch (value) { case 'x': try { throw 1; } catch {} } console.log(value);",
+        "import { value } from './dep.js'; try { throw 1; } catch { console.log(value); } finally { console.log('done'); }",
+        "import { value } from './dep.js'; function outer(){function inner(){try{throw 1}catch{}} inner();} outer(); console.log(value);",
+        "import { value } from './dep.js'; function read(){try{throw 1}catch{value.toString();}return value} console.log(read());",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const fixture = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
+        var optional_catch_only = false;
+        const subset_admitted = auditedOptionalCatchGraphAdmissionForTest(&fixture, &optional_catch_only);
+        if (!subset_admitted or !optional_catch_only)
+            std.debug.print("optional catch import subset rejected index={d} source={s}\n", .{ index, source });
+        try std.testing.expect(subset_admitted);
+        try std.testing.expect(optional_catch_only);
+        try std.testing.expect(fullPrepassAuditedGraphAdmissionForTest(&fixture));
+    }
+}
+
+test "plain imports reject optional catch mixed with other transform subsets" {
+    const sources = [_][]const u8{
+        "import { value } from './dep.js'; try {} catch {} var arrow = (item) => item;",
+        "import { value } from './dep.js'; try {} catch {} class Marker {}",
+        "import { value } from './dep.js'; try {} catch {} for (var item of []) console.log(item);",
+        "import { value } from './dep.js'; try {} catch {} var regex = /./s;",
+        "import { value } from './dep.js'; try {} catch {} var regex = /(?<word>x)/;",
+        "import { value } from './dep.js'; try {} catch {} var copy = { ...value };",
+        "import { value } from './dep.js'; try {} catch {} var child = value?.child;",
+        "import { value } from './dep.js'; try {} catch {} var child = value ?? 0;",
+        "import { value } from './dep.js'; try {} catch {} var object = { method() { return value; } };",
+        "import { value } from './dep.js'; try {} catch {} export * from './other.js';",
+    };
+    for (sources, 0..) |source, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const fixture = try runtimeHelperReanalysisTestFixture(arena.allocator(), source);
+        var optional_catch_only = true;
+        _ = auditedOptionalCatchGraphAdmissionForTest(&fixture, &optional_catch_only);
+        if (optional_catch_only)
+            std.debug.print("hostile optional catch import subset admitted index={d} source={s}\n", .{ index, source });
+        try std.testing.expect(!optional_catch_only);
+        try std.testing.expect(!fullPrepassAuditedGraphAdmissionForTest(&fixture));
+    }
+}
+
+test "plain imports with direct eval remain on full semantic analysis" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fixture = try runtimeHelperReanalysisTestFixture(
+        arena.allocator(),
+        "import { value } from './dep.js'; try {} catch {} eval('');",
+    );
+    var optional_catch_only = false;
+    try std.testing.expect(auditedOptionalCatchGraphAdmissionForTest(&fixture, &optional_catch_only));
+    try std.testing.expect(optional_catch_only);
+    try std.testing.expect(!fullPrepassAuditedGraphAdmissionForTest(&fixture));
 }
 
 test "regex literal graph neutrality does not admit hostile surrounding syntax" {
@@ -18145,7 +18238,7 @@ test "regex literal graph neutrality does not admit hostile surrounding syntax" 
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const f = try runtimeHelperReanalysisTestFixtureForSource(arena.allocator(), control.source, control.is_module);
-        const admitted = fullPrepassRegexGraphAdmissionForTest(&f);
+        const admitted = fullPrepassAuditedGraphAdmissionForTest(&f);
         if (admitted) std.debug.print("hostile regex source unexpectedly admitted index={d} source={s}\n", .{ index, control.source });
         try std.testing.expect(!admitted);
     }
