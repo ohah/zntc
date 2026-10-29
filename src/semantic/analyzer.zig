@@ -5946,7 +5946,9 @@ pub const SemanticAnalyzer = struct {
                     if (name_idx.isNone()) return;
                     const name_node = self.ast.getNode(name_idx);
                     const raw_name = try self.ast.getTextStable(self.allocator, name_node.span);
+                    defer if ((name_node.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0) self.allocator.free(raw_name);
                     const name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+                    defer if (name_text.ptr != raw_name.ptr) self.allocator.free(name_text);
                     const var_scope = self.findVarScope();
                     if (self.annex_b_barriers.contains(name_text)) return;
                     if (self.findSymbolInScope(var_scope, name_text)) |existing| if (existing.kind.isBlockScoped()) return;
