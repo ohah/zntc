@@ -6233,8 +6233,12 @@ fn canRetainSimpleNamedStaticBlockClasses(
             );
             if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
             const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
-            const lowered_method_flags = ast_mod.MethodFlags.is_async |
-                (if (options.unsupported.generator) ast_mod.MethodFlags.is_generator else 0);
+            const is_async = flags & ast_mod.MethodFlags.is_async != 0;
+            const is_generator = flags & ast_mod.MethodFlags.is_generator != 0;
+            const method_needs_downlevel =
+                (is_async and options.unsupported.async_await) or
+                (is_generator and options.unsupported.generator) or
+                (is_async and is_generator and options.unsupported.async_generator);
             const key_node = ast.getNode(key);
             const exact_key_shape = switch (key_node.tag) {
                 .identifier_reference => true,
@@ -6245,7 +6249,7 @@ fn canRetainSimpleNamedStaticBlockClasses(
                 },
                 else => false,
             };
-            if (!exact_key_shape or (flags & lowered_method_flags) != 0) return false;
+            if (!exact_key_shape or method_needs_downlevel) return false;
         }
     }
     return found_static_block;
@@ -12460,6 +12464,48 @@ test "#6193 retains only exact named native-class static-block lowering" {
     );
     try std.testing.expect(!downlevel_generator_method.source_candidate);
     try std.testing.expect(!downlevel_generator_method.graph_gate);
+
+    var native_async_options = options;
+    native_async_options.unsupported = TransformOptions.compat.fromESTarget(.es2018);
+    const retained_native_async_method = try staticBlockPrepassDecisionForTest(
+        "class Counter { async read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        native_async_options,
+        .none,
+    );
+    try std.testing.expect(retained_native_async_method.source_candidate);
+    try std.testing.expect(retained_native_async_method.graph_gate);
+
+    const retained_native_async_generator = try staticBlockPrepassDecisionForTest(
+        "const Named = 2; const Counter = class Named { async *read() { yield Named.value; } static { Named.value = 1; } };",
+        ".js",
+        native_async_options,
+        .none,
+    );
+    try std.testing.expect(retained_native_async_generator.source_candidate);
+    try std.testing.expect(retained_native_async_generator.graph_gate);
+
+    var async_downlevel = native_async_options;
+    async_downlevel.unsupported.async_await = true;
+    const downlevel_async_method = try staticBlockPrepassDecisionForTest(
+        "class Counter { async read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        async_downlevel,
+        .none,
+    );
+    try std.testing.expect(!downlevel_async_method.source_candidate);
+    try std.testing.expect(!downlevel_async_method.graph_gate);
+
+    var async_generator_downlevel = native_async_options;
+    async_generator_downlevel.unsupported.async_generator = true;
+    const downlevel_async_generator = try staticBlockPrepassDecisionForTest(
+        "class Counter { async *read() { yield 1; } static { this.value = 2; } }",
+        ".js",
+        async_generator_downlevel,
+        .none,
+    );
+    try std.testing.expect(!downlevel_async_generator.source_candidate);
+    try std.testing.expect(!downlevel_async_generator.graph_gate);
 
     const poisoned_named_class_expression = try staticBlockPrepassDecisionForTest(
         named_class_expression_source,

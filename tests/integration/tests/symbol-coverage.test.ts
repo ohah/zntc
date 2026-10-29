@@ -11712,6 +11712,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1 2\n',
       },
       {
+        name: 'native-async-method-with-static-block',
+        target: '--target=es2018',
+        graph: 'retained',
+        source:
+          'const Named = 2; const Counter = class Named { async read() { return Named.value; } static { Named.value = 1; } }; new Counter().read().then((value) => console.log(value, Named));',
+        stdout: '1 2\n',
+      },
+      {
+        name: 'native-async-generator-with-static-block',
+        target: '--target=es2018',
+        graph: 'retained',
+        source:
+          'const Named = 2; const Counter = class Named { async *read() { yield Named.value; } static { Named.value = 1; } }; new Counter().read().next().then(({ value }) => console.log(value, Named));',
+        stdout: '1 2\n',
+      },
+      {
         name: 'static-getter-with-static-block',
         graph: 'retained',
         source:
@@ -11882,7 +11898,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           [
             '--bundle',
             entry,
-            '--target=es2015',
+            'target' in fixture ? fixture.target : '--target=es2015',
             '--platform=node',
             '--format=cjs',
             '--minify-identifiers',
