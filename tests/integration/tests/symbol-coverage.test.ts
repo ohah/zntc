@@ -109,21 +109,21 @@ const EXACT_MATRIX_REPORT_PREFIX_BY_KIND = {
   post: 'zntc: symbol-identity-post-minify ',
 } as const;
 const EXACT_MATRIX_OBSERVATION_FINGERPRINT =
-  '5ced8f8aa311d7576c2741dc1b554cfbc3592efdc0c43dd71dbac632176f10a6';
+  '91e3dc97f367bf342d291ddef06ebc4f9de04495ff829b24353671f68aabebe4';
 const EXACT_MATRIX_OBSERVATION_TOTALS = {
-  'exact.generated_bindings': 14823,
-  'exact.generated_references': 45879,
+  'exact.generated_bindings': 14832,
+  'exact.generated_references': 45951,
   'exact.generated_scope_owners_checked': 13071,
   'exact.external': 13203,
-  'exact.declaration_anchors_checked': 46281,
+  'exact.declaration_anchors_checked': 46290,
   'exact.namespace_iife_params': 270,
   'exact.enum_iife_params': 36,
   'coverage.new_user_idents': 7710,
-  'strict.bound': 58665,
+  'strict.bound': 58746,
   'strict.external': 1869,
-  'strict.marked_synthetic': 51177,
-  'post.bindings': 47700,
-  'post.references': 103524,
+  'strict.marked_synthetic': 51258,
+  'post.bindings': 47709,
+  'post.references': 103596,
   'post.external': 13203,
   'post.helpers': 7803,
   'post.preserved_transform_refs': 204,
@@ -11944,6 +11944,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         source:
           'class Counter { #read() { return 1; } static has(value) { return #read in value; } static { this.value = 2; } } console.log(Counter.has(new Counter()), Counter.value);',
         stdout: 'true 2\n',
+      },
+      {
+        name: 'private-method-brand-check-does-not-expose-capture-to-direct-eval',
+        graph: 'reanalyzed',
+        source:
+          "class Counter { #read() { return 1; } static has(name) { const result = #read in new Counter(); try { eval('_' + name); return result + ':visible'; } catch (error) { return result + ':' + error.name; } } static { this.value = 2; } } console.log(Counter.has('a'), Counter.value);",
+        stdout: 'true:ReferenceError 2\n',
       },
       {
         name: 'private-method-brand-check-new-instance-with-static-block',
