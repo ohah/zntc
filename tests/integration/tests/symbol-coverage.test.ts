@@ -11819,15 +11819,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '5 5\n',
       },
       {
-        name: 'static-block-super-postfix-update-fallback-keeps-temp-in-owner-scope',
-        graph: 'reanalyzed',
+        name: 'static-block-super-postfix-update-retains-temp-in-owner-scope',
+        graph: 'retained',
         source:
           'class Base { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super.value++; } } console.log(Counter.result, Counter.saved);',
         stdout: '3 4\n',
       },
       {
-        name: 'multiple-static-block-super-postfix-temps-keep-distinct-owners',
-        graph: 'reanalyzed',
+        name: 'multiple-static-block-super-postfix-temps-retain-distinct-owners',
+        graph: 'retained',
         source:
           'class Base { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.first = super.value++; } static { this.second = super.value--; } } console.log(Counter.first, Counter.second, Counter.saved);',
         stdout: '3 4 3\n',
@@ -12362,6 +12362,151 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ).toBe(true);
       }
       expect(mutations).toHaveLength(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained static-block super postfix updates expose ten compileable output mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-update-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = '3 4 3\n';
+    const source = [
+      'class Base extends Object { static get value() { return Object.prototype.hasOwnProperty.call(this, "saved") ? this.saved : this === Base ? 9 : 3; } static set value(next) { this.saved = next; } }',
+      'class Counter extends Base { static { this.result = super.value++; } static { this.second = super.value--; } }',
+      'console.log(Counter.result, Counter.second, Counter.saved);',
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const getCall = emitted.match(/__superGet\((\w+), "value", (\w+)\)/)?.[0];
+      expect(getCall).toBeDefined();
+      const [, base, receiver] = emitted.match(/__superGet\((\w+), "value", (\w+)\)/) ?? [];
+      expect(base).toBeDefined();
+      expect(receiver).toBeDefined();
+      const setCalls = [...emitted.matchAll(/__superSet\((\w+), "value", (.+?), (\w+)\)/g)].map(
+        (match) => ({ call: match[0], home: match[1], value: match[2], receiver: match[3] }),
+      );
+      expect(setCalls).toHaveLength(2);
+      const firstSet = setCalls[0]!;
+      const secondSet = setCalls[1]!;
+      const mutations = [
+        { name: 'wrong-get-receiver', from: getCall!, to: `__superGet(${base}, "value", ${base})` },
+        {
+          name: 'wrong-get-home-object',
+          from: getCall!,
+          to: getCall!.replace(`${base},`, 'Object,'),
+        },
+        {
+          name: 'wrong-get-property-key',
+          from: getCall!,
+          to: getCall!.replace('"value"', '"missing"'),
+        },
+        {
+          name: 'wrong-set-receiver',
+          from: firstSet.call,
+          to: `__superSet(${firstSet.home}, "value", ${firstSet.value}, ${firstSet.home})`,
+        },
+        {
+          name: 'skip-setter-descriptor',
+          from: 'if (desc.set) {',
+          to: 'if (false && desc.set) {',
+        },
+        {
+          name: 'wrong-set-property-key',
+          from: firstSet.call,
+          to: firstSet.call.replace('"value"', '"missing"'),
+        },
+        {
+          name: 'setter-called-with-home-object',
+          from: 'desc.set.call(receiver, value);',
+          to: 'desc.set.call(parent, value);',
+        },
+        {
+          name: 'setter-receives-changed-update-value',
+          from: 'desc.set.call(receiver, value);',
+          to: 'desc.set.call(receiver, value + 1);',
+        },
+        {
+          name: 'postfix-expression-returns-updated-value',
+          from: `${firstSet.call},i);`,
+          to: `${firstSet.call},i + 1);`,
+        },
+      ];
+      // The second update operator is a separate order/value control.
+      mutations.push({
+        name: 'second-postfix-update-changes-direction',
+        from: secondSet.call,
+        to: secondSet.call.replace('i - 1', 'i + 1'),
+      });
+      for (const mutation of mutations) {
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(10);
+
+      const getterOnlyEntry = join(dir, 'getter-only.js');
+      const getterOnlyOutput = join(dir, 'getter-only.cjs');
+      const getterOnlySource =
+        'class Base extends Object { static get value() { return 3; } } ' +
+        'class Counter extends Base { static { this.result = super.value++; } }';
+      writeFileSync(getterOnlyEntry, getterOnlySource);
+      const nativeGetterOnly = spawnSync('node', [getterOnlyEntry], { encoding: 'utf8' });
+      expect(nativeGetterOnly.status).not.toBe(0);
+      expect(nativeGetterOnly.stderr).toContain('TypeError');
+      const getterOnlyBuild = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          getterOnlyEntry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          getterOnlyOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(getterOnlyBuild.status, getterOnlyBuild.stderr).toBe(0);
+      expect(getterOnlyBuild.stderr).toContain('semantic_graph=retained');
+      expect(getterOnlyBuild.stderr).toMatch(/clean=1(?:\s|$)/);
+      const downlevelGetterOnly = spawnSync('node', [getterOnlyOutput], { encoding: 'utf8' });
+      expect(downlevelGetterOnly.status).toBe(nativeGetterOnly.status);
+      expect(downlevelGetterOnly.stderr).toContain('TypeError');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
