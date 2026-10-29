@@ -2996,6 +2996,7 @@ pub const SemanticAnalyzer = struct {
             else => return,
         }
         const name = try self.ast.getTextStable(self.allocator, binding.span);
+        if ((binding.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0) try self.registerOwnedName(name);
         var group_idx: usize = 0;
         while (group_idx < self.namespace_member_groups.items.len and self.namespace_member_groups.items[group_idx].owner_symbol != owner_sid) : (group_idx += 1) {}
         if (group_idx == self.namespace_member_groups.items.len) {
