@@ -9167,11 +9167,14 @@ fn canKeepPrepassSemanticGraphPrepared(
                 found_other_transform = true;
                 found_non_type_transform = true;
             },
-            // These constructs can alter the import/export graph or create
-            // dynamic-name environments independently of Flow match lowering.
-            .ts_namespace_export_declaration,
-            .with_statement,
-            => return false,
+            // `export as namespace` is a type-only declaration. The erasure
+            // tag above records the AST edit, and the post-transform graph
+            // metadata rescan recomputes module/export classification from
+            // emitted syntax. It has no runtime export edge to reanalyze.
+            .ts_namespace_export_declaration => {},
+            // `with` creates a dynamic-name environment independently of
+            // Flow match lowering, so it stays on the analyzer path.
+            .with_statement => return false,
             .yield_expression => {
                 // The reachable-node subset validates the generated state and
                 // temp identities for synchronous downlevel generators. Async
