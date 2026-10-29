@@ -585,7 +585,9 @@ test "namespace generated references retain their declaration owner through two 
             // Merged declarations share the source namespace binding, but each
             // generated IIFE parameter belongs to its own declaration's scope.
             const scope = fresh.scope_owner_map.get(refs.owner) orelse return error.MissingFreshNamespaceScope;
-            const sid = fresh.scope_maps.items[scope].get(refs.parameter_name) orelse return error.MissingFreshNamespaceParameter;
+            const maybe_sid = fresh.scope_maps.items[scope].get(refs.parameter_name);
+            try std.testing.expect(maybe_sid != null);
+            const sid = maybe_sid.?;
             const symbol = fresh.symbols.items[sid];
             try std.testing.expect(symbol.synthetic_kind == .namespace_iife_parameter);
             try std.testing.expect(symbol.kind == .parameter);
@@ -704,13 +706,18 @@ test "namespace escaped name parameter does not capture a known outer binding" {
         analyzer.is_ts = true;
         try analyzer.analyze();
         var parameter: ?u32 = null;
+        var parameter_count: usize = 0;
         var outer: ?u32 = null;
         for (analyzer.symbols.items, 0..) |symbol, raw| {
-            if (symbol.synthetic_kind == .namespace_iife_parameter) parameter = @intCast(raw);
+            if (symbol.synthetic_kind == .namespace_iife_parameter) {
+                parameter = @intCast(raw);
+                parameter_count += 1;
+            }
         }
         for (parser.ast.nodes.items, 0..) |node, raw| {
             if (node.tag == .binding_identifier and Scanner.identifierValueEquals(parser.ast.identifierNameText(node), "_N")) outer = analyzer.symbol_ids.items[raw];
         }
+        try std.testing.expectEqual(@as(usize, 1), parameter_count);
         const p = parameter orelse return error.MissingNamespaceParameter;
         const o = outer orelse return error.MissingOuterBinding;
         const symbol = analyzer.symbols.items[p];
