@@ -1,6 +1,7 @@
 //! Private field/accessor lowering for ES2015 class transforms.
 
 const std = @import("std");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -591,6 +592,14 @@ pub fn PrivateFields(comptime Transformer: type) type {
             return es_helpers.makeCallExpr(self, callee, args_buf[0..args_len], span);
         }
 
+        // Both inputs come from parser-authorized private identifiers in the
+        // current class frame. Compare their StringValues without changing the
+        // producer-owned spelling, binding identity, or allocation lifetime.
+        fn privateIdentifierNamesEqual(a: []const u8, b: []const u8) bool {
+            if (a.len < 2 or b.len < 2 or a[0] != '#' or b[0] != '#') return false;
+            return Scanner.identifierNamesEqual(a[1..], b[1..]);
+        }
+
         /// private field property에서 전체 매핑 정보를 찾음 (static 여부 포함).
         fn findPrivateFieldMapping(self: *const Transformer, prop_idx: NodeIndex) ?Transformer.PrivateFieldMapping {
             if (prop_idx.isNone()) return null;
@@ -598,7 +607,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (prop_node.tag != .private_identifier) return null;
             const orig = self.ast.getText(prop_node.span);
             for (self.current_private_fields) |pf| {
-                if (std.mem.eql(u8, pf.original_name, orig)) return pf;
+                if (privateIdentifierNamesEqual(pf.original_name, orig)) return pf;
             }
             return null;
         }

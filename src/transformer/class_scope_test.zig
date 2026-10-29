@@ -3877,6 +3877,13 @@ test "escaped private source RED actual mapping and runtime controls" {
         try std.testing.expect(native.term == .exited and native.term.exited == 0);
         try std.testing.expectEqualStrings("10\n", native.stdout);
         std.debug.print("PRIVATE_NATIVE case={d} stdout={s}\n", .{ i, native.stdout });
+        var output_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer output_arena.deinit();
+        const result = try @import("../transpile.zig").transpile(output_arena.allocator(), source, "private-values.js", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+        const actual = try std.process.run(output_arena.allocator(), std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        std.debug.print("PRIVATE_CODEGEN case={d} code={s}\nSTDERR={s}\n", .{ i, result.code, actual.stderr });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, actual.stdout);
     }
     std.debug.print("PRIVATE_RED_SUMMARY cases={d} badAST={d}\n", .{ sources.len, bad_ast });
     try std.testing.expectEqual(@as(usize, 0), bad_ast);
