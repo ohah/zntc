@@ -378,6 +378,32 @@ describe('const_value cross-module 인라인 correctness', () => {
     expect(r.bundleOutput).not.toContain('dead');
   });
 
+  test('numeric post-pass가 외부 사용 없는 함수 var를 그래프에서 제거하고 런타임 값을 보존한다', async () => {
+    const r = await bundleAndRun(
+      {
+        'seed.ts': `export const base = 7;`,
+        'index.ts': `
+          import { base } from "./seed";
+          function read(input) {
+            if (base - 7) {
+              var local = base;
+              console.log("dead", local);
+            }
+            return base + input;
+          }
+          console.log(read(1));
+        `,
+      },
+      'index.ts',
+      ['--platform=node'],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe('8');
+    expect(r.bundleOutput).not.toContain('dead');
+    expect(r.bundleOutput).not.toContain('local');
+  });
+
   test('numeric const는 object shorthand를 구문 깨지는 literal로 materialize하지 않는다', async () => {
     const r = await bundleAndRun(
       {
