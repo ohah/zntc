@@ -89,7 +89,7 @@ pub fn Members(comptime Transformer: type) type {
             static_private_fields: std.ArrayList(PrivateFieldInfo),
             private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
             /// accessor_property 합성으로 만드는 `#_<name>_acc` 원본 이름.
-            /// `PrivateFieldInfo.original_name`은 `findPrivateFieldMapping`의 `std.mem.eql` 키라 안정적 slice가 필요.
+            /// `PrivateFieldInfo.original_name`은 private IdentifierName 비교용이라 안정적 slice가 필요.
             /// string_table slice는 후속 `addString` 호출의 realloc으로 dangling이 되므로 heap-owned 복사본을 유지한다.
             synthesized_private_names: std.ArrayList([]u8) = .empty,
             /// computed accessor key memoization 을 위한 `var _acc_key_N = <expr>;` statement 들.

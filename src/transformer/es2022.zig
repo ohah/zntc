@@ -1084,7 +1084,7 @@ pub fn ES2022(comptime Transformer: type) type {
         /// current_private_methods에서 "#name"으로 매핑 검색.
         fn findPrivateMethodMapping(self: *const Transformer, orig_name: []const u8) ?Transformer.PrivateMethodMapping {
             for (self.current_private_methods) |m| {
-                if (std.mem.eql(u8, m.original_name, orig_name)) return m;
+                if (es_helpers.privateNamesEqual(m.original_name, orig_name)) return m;
             }
             return null;
         }
@@ -1092,7 +1092,7 @@ pub fn ES2022(comptime Transformer: type) type {
         /// 같은 name 에 method/getter/setter 가 공존할 경우 kind 필터링 매핑 검색 (#1523).
         pub fn findPrivateMethodMappingOfKind(self: *const Transformer, orig_name: []const u8, kind: es_helpers.PrivateMethodKind) ?Transformer.PrivateMethodMapping {
             for (self.current_private_methods) |m| {
-                if (m.kind == kind and std.mem.eql(u8, m.original_name, orig_name)) return m;
+                if (m.kind == kind and es_helpers.privateNamesEqual(m.original_name, orig_name)) return m;
             }
             return null;
         }

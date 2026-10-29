@@ -446,6 +446,62 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
   });
 
   describe('class private + static + decorator 조합', () => {
+    test('private IdentifierName escape spelling preserves lookup and collision safety', async () => {
+      const result = await transpileAndRun(
+        `
+          globalThis._a = 42;
+          class EscapedField { #\\u0061 = _a; read() { return this.#a; } }
+          const escapedSourceValue = (function () {
+            const _\\u0061 = 13;
+            class EscapedSourceBinding { #a = _\\u0061; read() { return this.#a; } }
+            return new EscapedSourceBinding().read();
+          })();
+          class PlainField { #b = 2; read() { return this.#\\u0062; } }
+          class BracedField { #\\u{63} = 3; read() { return this.#c; } }
+          class PrivateIn { #c = 3; has(value) { return #\\u0063 in value; } read() { return this.#c; } }
+          class PrivateMethodIn { #\\u006c() {} has(value) { return #l in value; } }
+          class UnicodeField { #é = 11; read() { return this.#\\u{e9}; } }
+          class EscapedMethod { #\\u0064() { return 4; } read() { return this.#d(); } }
+          class PlainMethod { #e() { return 5; } read() { return this.#\\u0065(); } }
+          class StaticField { static #\\u0066 = 6; static read() { return StaticField.#f; } }
+          class StaticMethod { static #\\u0067() { return 7; } static read() { return this.#g(); } }
+          class PrivateAccessor {
+            #h = 0;
+            get #\\u0069() { return this.#h; }
+            set #i(value) { this.#h = value; }
+            read() { this.#i = 8; return this.#\\u0069; }
+          }
+          class StaticCapture {
+            static #\\u006a = 9;
+            static #reader() { return this.#j; }
+            static read() { return this.#reader(); }
+          }
+          console.log(JSON.stringify([
+            new EscapedField().read(),
+            escapedSourceValue,
+            new PlainField().read(),
+            new BracedField().read(),
+            new PrivateIn().has(new PrivateIn()),
+            new PrivateIn().has({}),
+            new PrivateMethodIn().has(new PrivateMethodIn()),
+            new PrivateMethodIn().has({}),
+            new UnicodeField().read(),
+            new EscapedMethod().read(),
+            new PlainMethod().read(),
+            StaticField.read(),
+            StaticMethod.read(),
+            new PrivateAccessor().read(),
+            StaticCapture.read(),
+          ]));
+        `,
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe('');
+      expect(result.runOutput).toBe('[42,13,2,3,true,false,true,false,11,4,5,6,7,8,9]');
+    });
+
     test('private field + static + getter', async () => {
       const result = await bundleAndRun(
         {
