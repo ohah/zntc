@@ -3299,13 +3299,13 @@ pub const SemanticAnalyzer = struct {
         const saved_scope = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved_scope);
         const enum_parameter = try self.declareEnumIifeParameter(name_idx, node, members_start, members_len);
-        if (enum_parameter != null)
-            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (enum_parameter) |parameter| {
             const popped = self.enum_iife_param_names.pop() orelse unreachable;
             std.debug.assert(std.mem.eql(u8, popped, parameter.name));
             self.allocator.free(popped);
         };
+        if (enum_parameter != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
 
         try self.enum_member_contexts.append(self.allocator, .{
             .scope_id = self.current_scope,
@@ -3509,7 +3509,8 @@ pub const SemanticAnalyzer = struct {
                 => true,
                 else => false,
             };
-            if (relevant and Scanner.identifierValueEquals(self.ast.identifierNameText(node), candidate)) return true;
+            if (relevant and (std.mem.eql(u8, self.ast.identifierNameText(node), candidate) or
+                Scanner.identifierValueEquals(self.ast.identifierNameText(node), candidate))) return true;
         }
         return false;
     }
