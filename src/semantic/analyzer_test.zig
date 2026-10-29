@@ -3813,6 +3813,7 @@ test "escaped enum container initial tuple exposes actual parameter aliases" {
                 const symbol = analyzer.symbols.items[sid];
                 std.debug.print("escaped-container-binding family={d} key={s} SID={d} kind={s} synthetic={any} storage={d} origin={d} nameRaw={s} nameSpan={d}:{d} declSpan={d}:{d} selected={s}\n", .{ family, entry.key_ptr.*, sid, @tagName(symbol.kind), symbol.synthetic_kind, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), parser.ast.getText(symbol.name), symbol.name.start, symbol.name.end, symbol.declaration_span.start, symbol.declaration_span.end, symbol.synthetic_name });
                 if (symbol.synthetic_kind != .enum_iife_parameter) continue;
+                try std.testing.expectEqualStrings(if (family == 0) "E" else "_Self", symbol.synthetic_name);
                 alias_count += 1;
                 if (parameter_sid) |before| try std.testing.expectEqual(before, sid) else parameter_sid = sid;
                 try std.testing.expectEqual(.parameter, symbol.kind);

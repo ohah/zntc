@@ -323,6 +323,7 @@ test "escaped enum runtime keeps container aliases and auto-counter values exact
         "const \\u005fSelf=4;enum Self{Self=9,B=Self+1}console.log(Self.B)",
         "enum E{\"\\u0041\"=9,Z=50,B=A,C}console.log(E.C)",
         "enum E{\"\\\\u0041\"=9,A=4,B=A+6}console.log(E.B)",
+        "enum E{A=4,\"\\\\u0041\"=9,B=A+6}console.log(E.B)",
     };
     var failures: usize = 0;
     for (sources, 0..) |source, family| for ([_]bool{ false, true }) |minify| {
