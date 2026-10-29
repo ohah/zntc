@@ -537,7 +537,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape' with { 'resolution-mode': 'import' }; export const value: Shape; }",
       'console.log(Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeError: 'ReferenceError',
   },
   {
     name: 'ambient-namespace-type-import-property-names-only',
@@ -561,7 +562,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-type-import-surviving-bare-reference',
@@ -569,7 +571,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       'console.log(Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeError: 'ReferenceError',
   },
   {
     name: 'ambient-namespace-type-import-surviving-assignment-target',
@@ -585,7 +588,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape } from './shape'; export const value: Shape; }",
       'function get() { return () => Shape; } console.log(typeof get());',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'function\n',
   },
   {
     name: 'ambient-namespace-type-import-shadowed-by-parameter',
@@ -609,7 +613,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import type { Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-inline-type-import-specifier',
@@ -670,7 +675,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import Shape from './shape'; export const value: Shape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-namespace-import',
@@ -685,7 +691,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import * as Shapes from './shapes'; export const value: Shapes.Shape; }",
       'console.log(typeof Shapes);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-mixed-type-and-value-imports',
@@ -703,7 +710,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import { Shape } from './shape'; export const value: Shape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-value-import-escaped-name-surviving-reference',
@@ -711,7 +719,8 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import { Shape as \\u0053hape } from './shape'; export const value: \\u0053hape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-value-import-surviving-binding',
@@ -757,6 +766,16 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
     name: 'ambient-namespace-escaped-global-value-import',
     source:
       "declare namespace gl\\u006fbal { import { Shape } from './shape'; export const value: Shape; } console.log(63);",
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-nested-global-value-import',
+    source: [
+      'declare namespace Types {',
+      "declare namespace global { import { Shape } from './shape'; export const value: Shape; }",
+      '}',
+      'console.log(typeof Shape);',
+    ].join('\n'),
     graph: 'reanalyzed',
   },
   {
@@ -3337,7 +3356,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(54);
+    expect(cases).toHaveLength(55);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {
@@ -3361,7 +3380,14 @@ describe('symbol identity coverage gate (#4819)', () => {
         ).toEqual([]);
         if (probe.graph === 'retained') {
           const actual = runNode([join(dir, 'out.js')]);
-          expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(0);
+          const runtimeError = 'runtimeError' in probe ? probe.runtimeError : undefined;
+          expect(actual.status, `${probe.name}: ${actual.stderr}`).toBe(runtimeError ? 1 : 0);
+          if (runtimeError) {
+            expect(actual.stderr, `${probe.name}: runtime error kind changed`).toContain(
+              runtimeError,
+            );
+            continue;
+          }
           expect(actual.stdout, `${probe.name}: runtime output changed`).toBe(
             ('runtimeOutput' in probe ? probe.runtimeOutput : undefined) ??
               (probe.name.includes('escaped-name') ? '43\n' : '42\n'),
