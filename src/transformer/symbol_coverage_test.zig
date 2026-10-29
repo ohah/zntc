@@ -9019,3 +9019,64 @@ test "Flow canonical rest source ownership is the actual ordinary implementation
         try std.testing.expectEqual(@as(usize, 0), restored.reference_scope_mismatch);
     }
 }
+
+test "enum member origin birth audit rejects missing and out-of-bounds scope and restores" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, "namespace N { export enum E { A=1, B=A+1 } } function sibling() { return 1; }");
+    var parser = Parser.init(a, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var selected: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != .enum_iife_member) continue;
+        try std.testing.expect(selected == null);
+        selected = raw;
+    }
+    const sid = selected orelse return error.MissingActualEnumMemberProxy;
+    const owner = analyzer.symbols.items[sid].synthetic_owner_id orelse return error.MissingActualEnumParameter;
+    const expected = analyzer.symbols.items[@backingInt(owner)].scope_id;
+    const saved = analyzer.symbols.items[sid].origin_scope;
+    try std.testing.expectEqual(expected, saved);
+    var sibling_scope: ?ScopeId = null;
+    for (analyzer.scopes.items, 0..) |scope, raw| {
+        if (scope.kind == .function and raw != expected.toIndex()) sibling_scope = @fromBackingInt(@as(u32, @intCast(raw)));
+    }
+    const sibling = sibling_scope orelse return error.MissingActualSiblingFunction;
+    // Both scopes are in bounds; the birth contract is stronger than a range
+    // check and must keep the actual parameter owner's scope.
+    analyzer.symbols.items[sid].origin_scope = sibling;
+    try std.testing.expect(analyzer.symbols.items[sid].origin_scope != expected);
+    analyzer.symbols.items[sid].origin_scope = saved;
+    try std.testing.expectEqual(expected, analyzer.symbols.items[sid].origin_scope);
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    for ([_]?ScopeId{ null, .none, @fromBackingInt(@as(u32, @intCast(analyzer.scopes.items.len))), null }) |corrupt| {
+        analyzer.symbols.items[sid].origin_scope = corrupt orelse saved;
+        const report = try coverage.checkExactWithDeclarationAnchors(
+            a,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            analyzer.symbol_ids.items,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+        );
+        try std.testing.expectEqual(@as(usize, if (corrupt == null) 0 else 1), report.invalid_scope);
+        if (corrupt != null) try std.testing.expect(!report.isClean());
+    }
+    try std.testing.expectEqual(saved, analyzer.symbols.items[sid].origin_scope);
+}

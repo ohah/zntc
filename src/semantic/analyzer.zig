@@ -1253,6 +1253,7 @@ pub const SemanticAnalyzer = struct {
             self.symbols.append(self.allocator, .{
                 .name = binding.name_span,
                 .scope_id = context_scope,
+                .origin_scope = context_scope,
                 .kind = .parameter,
                 .decl_flags = SymbolKind.parameter.declFlags(),
                 .declaration_span = binding.name_span,

@@ -3641,3 +3641,69 @@ test "namespace declaration coordinates preserve enclosing program and local lis
         try std.testing.expect(source_declarations >= 2);
     }
 }
+
+test "enum member origin birth uses the actual owner context across source families" {
+    const sources = [_][]const u8{
+        "enum E { A=1, B=A+1 }",
+        "enum E { A=1, B=A+A }",
+        "const enum E { A=1, B=A+1 } console.log(E.B);",
+        "namespace N { export enum E { A=1, B=A+1 } }",
+        "namespace N { export enum E { A=1, B=A+1 } } namespace N.Nested { export const value=N.E.B; }",
+        "export enum E { A=1, B=A+1 }",
+        "enum E { A='a', B=A }",
+        "enum E { E=1, B=E+1 }",
+        "const A=9; enum E { A=1, B=A+1 }",
+        "enum E { A=1, B=A+1, C=B+A }",
+        "enum E { A=1, B=(()=>A)() }",
+        "enum E { A=1, B=(function(){return A;})() }",
+        "enum Outer { A=1, B=(()=>{enum Inner { C=2, D=C+1 } return A;})() }",
+        "enum Outer { A=1, B=(()=>{enum Inner { C=A+1 } return Inner.C;})() }",
+    };
+    var bad: usize = 0;
+    var observations: [32]struct { actual: ScopeId, expected: ScopeId } = undefined;
+    var count: usize = 0;
+    for (sources, 0..) |source, family| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_ts = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var proxies: usize = 0;
+        for (analyzer.symbols.items, 0..) |symbol, sid| {
+            if (symbol.synthetic_kind != .enum_iife_member) continue;
+            proxies += 1;
+            const owner = symbol.synthetic_owner_id orelse return error.MissingEnumMemberOwner;
+            const parameter = analyzer.symbols.items[@backingInt(owner)];
+            try std.testing.expectEqual(.enum_iife_parameter, parameter.synthetic_kind.?);
+            try std.testing.expectEqual(.parameter, symbol.kind);
+            try std.testing.expectEqual(parameter.scope_id, parameter.origin_scope);
+            try std.testing.expectEqual(parameter.scope_id, symbol.scope_id);
+            try std.testing.expect(!symbol.scope_id.isNone());
+            try std.testing.expect(symbol.scope_id.toIndex() < analyzer.scopes.items.len);
+            var reads: usize = 0;
+            for (analyzer.references.items) |reference| {
+                if (@backingInt(reference.symbol_id) != sid or reference.flags.declare) continue;
+                try std.testing.expect(!reference.node_index.isNone());
+                try std.testing.expectEqual(@as(?u32, @intCast(sid)), analyzer.symbol_ids.items[@backingInt(reference.node_index)]);
+                try std.testing.expect(reference.flags.read);
+                reads += 1;
+            }
+            try std.testing.expect(reads != 0);
+            std.debug.print("enum-origin family={d} sid={d} ownerSID={d} scope={d} parent={d} origin={d} reads={d}\n", .{ family, sid, @backingInt(owner), @backingInt(symbol.scope_id), @backingInt(analyzer.scopes.items[symbol.scope_id.toIndex()].parent), @backingInt(symbol.origin_scope), reads });
+            if (symbol.origin_scope != parameter.scope_id) bad += 1;
+            try std.testing.expect(count < observations.len);
+            observations[count] = .{ .actual = symbol.origin_scope, .expected = parameter.scope_id };
+            count += 1;
+        }
+        try std.testing.expect(proxies != 0);
+    }
+    for (observations[0..count]) |row| try std.testing.expectEqual(row.expected, row.actual);
+    try std.testing.expectEqual(@as(usize, 0), bad);
+}
