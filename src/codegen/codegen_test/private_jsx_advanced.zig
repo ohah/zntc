@@ -325,7 +325,8 @@ test "private static method: brand check lowers to class identity (es2021)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "o===Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#m in") == null);
 }
 
@@ -1193,9 +1194,8 @@ test "ES5: standalone private method captures this for nested arrows" {
 // Spec: https://tc39.es/ecma262/#sec-relational-operators
 // Babel: @babel/plugin-transform-private-property-in-object
 // 동작: class가 다운레벨되어 private mapping이 있을 때만 변환.
-// - instance field  : #x in obj → _x.has(obj)    (WeakMap.has)
-// - private method  : #m in obj → _m.has(obj)    (WeakSet.has)
-// - static field    : #s in obj → obj === ClassName (brand check, class 이름 필요)
+// 객체 RHS에서는 기존 WeakMap/WeakSet.has 또는 class identity 검사를 수행하고,
+// primitive RHS에서는 native in으로 TypeError를 보존한다.
 
 test "#x in obj: instance private field → WeakMap.has" {
     var r = try e2eTarget(std.testing.allocator,
@@ -1205,7 +1205,8 @@ test "#x in obj: instance private field → WeakMap.has" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
     // private 구문이 class body 밖으로 새어 나가지 않아야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
 }
@@ -1218,7 +1219,8 @@ test "#x in obj: private method → WeakSet.has" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_m.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_m.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#m in") == null);
 }
 
@@ -1230,8 +1232,9 @@ test "#x in obj: static private field → class identity brand check" {
         \\}
     , .es2021);
     defer r.deinit();
-    // static private field는 런타임에 별도 저장소가 없으므로 class 자체 비교로 brand check.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "o===Foo") != null);
+    // static private field는 object guard 뒤에 class identity 비교로 brand check.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "===Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#s in") == null);
 }
 
@@ -1243,8 +1246,9 @@ test "#x in obj: 부정 !(#x in obj)" {
         \\}
     , .es2021);
     defer r.deinit();
-    // 원본의 괄호는 보존되어 `!(_x.has(o))`. 시맨틱 동일.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    // 부정은 guarded brand-check 표현 전체에 적용된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
 }
 
@@ -1257,8 +1261,8 @@ test "#x in obj: 체이닝 (#x in o && #y in o)" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_y.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_y.has(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "#y in") == null);
 }
@@ -1271,7 +1275,8 @@ test "#x in obj: if 문 안에서" {
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(_x.has(o))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
 }
 
 test "#x in obj: instance method 내부 (this 컨텍스트 아닌 일반 인자)" {
@@ -1282,7 +1287,8 @@ test "#x in obj: instance method 내부 (this 컨텍스트 아닌 일반 인자)
         \\}
     , .es2021);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
 }
 
 test "#x in obj: es2022 타겟에서는 보존 (native 지원)" {

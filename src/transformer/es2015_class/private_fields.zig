@@ -636,51 +636,106 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // instance field / static field 매핑 우선 조회
             for (self.current_private_fields) |pf| {
                 if (!es_helpers.privateNamesEqual(pf.original_name, orig)) continue;
+                const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(right_idx), node.span);
+                const receiver_ref = try receiver.use(self, node.span);
+                var has_brand: NodeIndex = .none;
                 if (pf.class_name) |class_name| {
                     // static: obj === ClassName (class identity 비교)
-                    const new_obj = try self.visitNode(right_idx);
                     const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, pf.class_name_node);
-                    return self.ast.addNode(.{
-                        .tag = .binary_expression,
-                        .span = node.span,
-                        .data = .{ .binary = .{
-                            .left = new_obj,
-                            .right = class_ref,
-                            .flags = @backingInt(token_mod.Kind.eq3),
-                        } },
-                    });
+                    has_brand = try makePrivateInBinary(self, receiver_ref, class_ref, token_mod.Kind.eq3, node.span);
+                } else {
+                    // instance: _x.has(obj). receiver_ref points at the one captured RHS.
+                    has_brand = try buildWeakMapCall(self, pf.var_name, pf, "has", receiver_ref, &.{}, node.span);
                 }
-                // instance: _x.has(obj)
-                return buildWeakMapCall(self, pf.var_name, pf, "has", right_idx, &.{}, node.span);
+                const guarded = try buildGuardedPrivateIn(self, receiver, has_brand, node.span);
+                return receiver.wrap(self, guarded, node.span);
             }
 
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
                 if (!es_helpers.privateNamesEqual(pm.original_name, orig)) continue;
+                const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(right_idx), node.span);
+                const receiver_ref = try receiver.use(self, node.span);
+                var has_brand: NodeIndex = .none;
                 if (pm.class_name) |class_name| {
-                    const new_obj = try self.visitNode(right_idx);
                     const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, pm.class_name_node);
-                    return self.ast.addNode(.{
-                        .tag = .binary_expression,
-                        .span = node.span,
-                        .data = .{ .binary = .{
-                            .left = new_obj,
-                            .right = class_ref,
-                            .flags = @backingInt(token_mod.Kind.eq3),
-                        } },
-                    });
+                    has_brand = try makePrivateInBinary(self, receiver_ref, class_ref, token_mod.Kind.eq3, node.span);
+                } else {
+                    has_brand = try buildWeakCollectionCall(
+                        self,
+                        try es_helpers.makePrivateMethodWeakSetRef(self, pm),
+                        "has",
+                        receiver_ref,
+                        &.{},
+                        node.span,
+                    );
                 }
-                return buildWeakCollectionCall(
-                    self,
-                    try es_helpers.makePrivateMethodWeakSetRef(self, pm),
-                    "has",
-                    right_idx,
-                    &.{},
-                    node.span,
-                );
+                const guarded = try buildGuardedPrivateIn(self, receiver, has_brand, node.span);
+                return receiver.wrap(self, guarded, node.span);
             }
 
             return null;
+        }
+
+        /// Private brand checks throw for every primitive RHS. The invalid arm
+        /// uses a native `in` operation so it raises a TypeError without looking
+        /// up a possibly shadowed global constructor. The RHS is captured once.
+        fn buildGuardedPrivateIn(self: *Transformer, receiver: es_helpers.OnceReceiver, has_brand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const object_type = try privateInTypeofEquals(self, receiver, "\"object\"", span);
+            const non_null = try makePrivateInBinary(
+                self,
+                try receiver.use(self, span),
+                try es_helpers.makeNullLiteral(self),
+                token_mod.Kind.neq,
+                span,
+            );
+            const object_and_non_null = try makePrivateInLogical(self, object_type, non_null, token_mod.Kind.amp2, span);
+            const function_type = try privateInTypeofEquals(self, receiver, "\"function\"", span);
+            const object_or_function = try makePrivateInLogical(self, object_and_non_null, function_type, token_mod.Kind.pipe2, span);
+
+            // HTMLDDA objects (for example document.all) report typeof "undefined"
+            // but are still objects for the private brand-check IsObject test.
+            const html_dda_type = try privateInTypeofEquals(self, receiver, "\"undefined\"", span);
+            const not_undefined = try makePrivateInBinary(
+                self,
+                try receiver.use(self, span),
+                try es_helpers.makeVoidZero(self, span),
+                token_mod.Kind.neq,
+                span,
+            );
+            const html_dda = try makePrivateInLogical(self, html_dda_type, not_undefined, token_mod.Kind.amp2, span);
+            const is_object = try makePrivateInLogical(self, object_or_function, html_dda, token_mod.Kind.pipe2, span);
+
+            const invalid_key = try es_helpers.buildStringNode(self, "\"\"", span);
+            const throws_type_error = try makePrivateInBinary(self, invalid_key, try receiver.use(self, span), token_mod.Kind.kw_in, span);
+            return self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = span,
+                .data = .{ .ternary = .{ .a = is_object, .b = has_brand, .c = throws_type_error } },
+            });
+        }
+
+        fn privateInTypeofEquals(self: *Transformer, receiver: es_helpers.OnceReceiver, expected: []const u8, span: Span) Transformer.Error!NodeIndex {
+            const operand = try receiver.use(self, span);
+            const extra = try self.ast.addExtras(&.{ @backingInt(operand), @backingInt(token_mod.Kind.kw_typeof) });
+            const typeof_expr = try self.ast.addExtraNode(.unary_expression, span, extra);
+            return makePrivateInBinary(self, typeof_expr, try es_helpers.buildStringNode(self, expected, span), token_mod.Kind.eq3, span);
+        }
+
+        fn makePrivateInBinary(self: *Transformer, left: NodeIndex, right: NodeIndex, op: token_mod.Kind, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = left, .right = right, .flags = @backingInt(op) } },
+            });
+        }
+
+        fn makePrivateInLogical(self: *Transformer, left: NodeIndex, right: NodeIndex, op: token_mod.Kind, span: Span) Transformer.Error!NodeIndex {
+            return self.ast.addNode(.{
+                .tag = .logical_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = left, .right = right, .flags = @backingInt(op) } },
+            });
         }
 
         /// static private field set: __classStaticPrivateFieldSpecSet(receiver, ClassName, _descriptor, value)
