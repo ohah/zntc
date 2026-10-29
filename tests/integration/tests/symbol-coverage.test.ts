@@ -883,12 +883,32 @@ const LENIENT_UNKNOWN_GATE_PROBES = [
       "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
       'console.log(typeof Shape);',
     ].join('\n'),
-    graph: 'reanalyzed',
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
   },
   {
     name: 'ambient-namespace-import-equals-surviving-escaped-name-reference',
     source: [
       "declare namespace Types { import \\u0053hape = require('./shape'); export const value: \\u0053hape; }",
+      'console.log(typeof Shape);',
+    ].join('\n'),
+    graph: 'retained',
+    runtimeOutput: 'undefined\n',
+  },
+  {
+    name: 'ambient-namespace-import-equals-surviving-assignment-target',
+    source: [
+      "declare namespace Types { import Shape = require('./shape'); export const value: Shape; }",
+      'Shape = 72;',
+    ].join('\n'),
+    graph: 'reanalyzed',
+  },
+  {
+    name: 'ambient-namespace-nested-global-import-equals',
+    source: [
+      'declare namespace Types {',
+      "declare namespace global { import Shape = require('./shape'); export const value: Shape; }",
+      '}',
       'console.log(typeof Shape);',
     ].join('\n'),
     graph: 'reanalyzed',
@@ -3356,7 +3376,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     const cases = LENIENT_UNKNOWN_GATE_PROBES.filter(
       (probe) => probe.name.startsWith('ambient-namespace-') && probe.name.includes('import'),
     );
-    expect(cases).toHaveLength(55);
+    expect(cases).toHaveLength(57);
     const dir = mkdtempSync(join(tmpdir(), 'zntc-erased-type-import-gate-'));
     try {
       for (const probe of cases) {

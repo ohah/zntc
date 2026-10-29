@@ -374,7 +374,7 @@ fn needsLenientAmbientImportExternalNodeProof(options: TranspileOptions, parser:
     var has_ambient_namespace = false;
     var has_import = false;
     for (parser.ast.nodes.items) |node| {
-        if (node.tag == .import_declaration) has_import = true;
+        if (node.tag == .import_declaration or node.tag == .ts_import_equals_declaration) has_import = true;
         if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) has_ambient_namespace = true;
         if (has_ambient_namespace and has_import) return true;
     }
@@ -2112,8 +2112,8 @@ fn collectErasedAmbientNamedNamespaceImportProofs(
 /// namespace, even though standalone import-equals normally emits a `const`.
 /// Keep the lenient transform graph only when every such declaration is inside
 /// a named, non-global ambient namespace whose complete subtree has no output
-/// nodes, SymbolIds, or analyzer-owned declarations, and no imported name is
-/// used by surviving output.
+/// nodes, SymbolIds, or analyzer-owned declarations. A same-named surviving
+/// reference is permitted only as an exact unresolved source read.
 fn erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(
     transformer: *const Transformer,
     root: ast_mod.NodeIndex,
@@ -2131,8 +2131,20 @@ fn erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(
     defer transformer.allocator.free(output_reachable);
     var output_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer output_nodes.deinit(transformer.allocator);
+    var output_export_local_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer output_export_local_reference_nodes.deinit(transformer.allocator);
     for (output_reachable) |raw| {
+        const output_node = ast.getNode(@fromBackingInt(@intCast(raw)));
         output_nodes.put(transformer.allocator, raw, {}) catch return false;
+        if (output_node.tag == .export_specifier and (output_node.data.binary.flags & 1) == 0) {
+            const local_reference = output_node.data.binary.left;
+            if (local_reference.isNone() or @backingInt(local_reference) >= ast.nodes.items.len) return false;
+            output_export_local_reference_nodes.put(
+                transformer.allocator,
+                @backingInt(local_reference),
+                {},
+            ) catch return false;
+        }
     }
 
     const output_references = reference_walk.collectIdentifierReferences(
@@ -2153,6 +2165,8 @@ fn erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(
 
     var import_names: std.StringHashMapUnmanaged(void) = .empty;
     defer import_names.deinit(transformer.allocator);
+    var unresolved_ambient_import_read_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved_ambient_import_read_names.deinit(transformer.allocator);
     var covered_import_equals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer covered_import_equals.deinit(transformer.allocator);
     var found_import_equals = false;
@@ -2247,6 +2261,17 @@ fn erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(
         for (namespace_import_equals.items) |source_raw| {
             if (covered_import_equals.contains(source_raw)) continue;
             covered_import_equals.put(transformer.allocator, source_raw, {}) catch return false;
+            const import_node = ast.getNode(@fromBackingInt(source_raw));
+            const local_idx = import_node.data.binary.left;
+            if (local_idx.isNone() or @backingInt(local_idx) >= source_count) return false;
+            const local_node = ast.getNode(local_idx);
+            if (local_node.tag != .identifier_reference or !isValidSourceTextSpan(ast, local_node.span)) return false;
+            const local_name = Scanner.decodeIdentifierEscapesAlloc(
+                transformer.allocator,
+                ast.getText(local_node.span),
+            ) catch return false;
+            if (!import_names.contains(local_name)) return false;
+            unresolved_ambient_import_read_names.put(transformer.allocator, local_name, {}) catch return false;
         }
     }
 
@@ -2271,7 +2296,13 @@ fn erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(
             transformer.allocator,
             ast.getText(output_node.span),
         ) catch return false;
-        if (import_names.contains(output_name)) return false;
+        if (!import_names.contains(output_name)) continue;
+        if (is_output_binding) return false;
+        if (unresolved_ambient_import_read_names.contains(output_name) and
+            !output_export_local_reference_nodes.contains(@intCast(raw)) and
+            output_node.tag == .identifier_reference and
+            isExactUnresolvedSourceRead(transformer, &output_reference_nodes, @intCast(raw), output_name)) continue;
+        return false;
     }
     return true;
 }
@@ -6115,6 +6146,126 @@ test "#6193 erased ambient import reads need exact unresolved source identity" {
     try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
     _ = transformer.reference_origin_map.remove(shape_raw);
     try std.testing.expect(erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
+}
+
+test "#6193 erased ambient import-equals reads need exact unresolved source identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "declare namespace Types { import Shape = require('./shape'); " ++
+        "export const value: Shape; } console.log(typeof Shape);";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+    try std.testing.expect(needsLenientAmbientImportExternalNodeProof(minify, &parser));
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = needsLenientAmbientImportExternalNodeProof(minify, &parser);
+    try analyzer.analyze();
+    try std.testing.expect(analyzer.unresolved_references.contains("Shape"));
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
+    const output_references = try reference_walk.collectIdentifierReferences(allocator, transformer.ast, output_root);
+    defer allocator.free(output_references);
+    var shape_reference: ?ast_mod.NodeIndex = null;
+    for (output_references) |reference| {
+        if (transformer.ast.getNode(reference).tag == .identifier_reference and
+            Scanner.identifierNamesEqual(transformer.ast.getText(transformer.ast.getNode(reference).span), "Shape"))
+        {
+            shape_reference = reference;
+            break;
+        }
+    }
+    const shape_reference_index = shape_reference orelse return error.MissingImportEqualsShapeRead;
+    const shape_raw = @backingInt(shape_reference_index);
+    try std.testing.expect(shape_raw < transformer.parser_node_count);
+    try std.testing.expect(transformer.unresolved_reference_nodes.?.contains(shape_raw));
+
+    _ = analyzer.unresolved_reference_nodes.remove(shape_raw);
+    try std.testing.expect(!erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try analyzer.unresolved_reference_nodes.put(allocator, shape_raw, {});
+
+    try std.testing.expect(analyzer.unresolved_references.remove("Shape"));
+    try std.testing.expect(!erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
+    const restored_shape_name = try allocator.dupe(u8, "Shape");
+    try analyzer.unresolved_references.put(allocator, restored_shape_name, {});
+
+    const original_reference_node = transformer.ast.nodes.items[shape_raw];
+    transformer.ast.nodes.items[shape_raw].tag = .assignment_target_identifier;
+    try std.testing.expect(!erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
+    transformer.ast.nodes.items[shape_raw] = original_reference_node;
+}
+
+test "#6193 erased ambient import-equals export locals stay on reanalysis" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import type { Marker } from './marker'; " ++
+        "declare namespace Types { import Shape = require('./shape'); export const value: Shape; } " ++
+        "export { Shape };";
+    const minify: TranspileOptions = .{ .minify_identifiers = true };
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".unknown");
+    parser.is_module = true;
+    scanner.is_module = true;
+    const source_root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try std.testing.expect(parser.source_mode == .js_lenient);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.collect_unresolved_reference_nodes = needsLenientAmbientImportExternalNodeProof(minify, &parser);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.namespace_member_owners = &analyzer.namespace_member_owners;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    const output_root = try transformer.visitNode(source_root);
+
+    try std.testing.expect(!erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
+    try std.testing.expect(!canMangleWithTransformSemanticAfterEdit(minify, &parser, &transformer, output_root));
 }
 
 test "#6193 erased ambient import export locals stay on reanalysis" {
