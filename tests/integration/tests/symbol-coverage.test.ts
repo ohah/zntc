@@ -20727,6 +20727,28 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           nativeOracle: true,
         },
         {
+          name: 'simple var for-in binding head',
+          source:
+            "var seen=''; for (var [value] in {row:0,ship:0}) seen+=value; console.log(seen,value);",
+          expected: 'rs s\n',
+        },
+        {
+          name: 'var for-in head keeps the shared binding for closures',
+          source: [
+            'var callbacks=[];',
+            'for (var [value] in {row:0,ship:0}) callbacks.push(function(){return value;});',
+            'console.log(callbacks[0](),callbacks[1]());',
+          ].join('\n'),
+          expected: 's s\n',
+          nativeOracle: true,
+        },
+        {
+          name: 'var for-in head avoids destructuring helper collisions',
+          source:
+            "var _a='user',_ref='user-ref',__read='user-read'; var seen=''; for (var [value] in {row:0,ship:0}) seen+=value; console.log(seen,value,_a,_ref,__read);",
+          expected: 'rs s user user-ref user-read\n',
+        },
+        {
           name: 'computed nested object default and rest helper',
           source: [
             "var key = 'selected';",
@@ -20810,9 +20832,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '7\n',
         },
         {
-          name: 'var destructuring for-in head',
-          source: 'for (var [value] in {row: 0}) console.log(value);',
-          expected: 'r\n',
+          name: 'multiple var bindings in for-in head',
+          source: 'for (var [left, right] in {row: 0}) console.log(left, right);',
+          expected: 'r o\n',
         },
         {
           name: 'var destructuring for-await head',
