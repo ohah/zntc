@@ -21028,11 +21028,52 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         assertOutput(expected);
       };
 
+      const assertReanalyzedLoopHead = (name: string, source: string, expected: string) => {
+        const proc = run(source);
+        expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
+        expect(mode(proc.stderr ?? ''), `${name}: ${proc.stderr}`).toContain(
+          'semantic_graph=reanalyzed',
+        );
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, `${name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        assertOutput(expected);
+        const native = spawnSync('node', ['-e', source], { encoding: 'utf8' });
+        expect(native.status, `${name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout).toBe(expected);
+      };
+
       assertRetainedLoopHead(
         'single array target',
         'var total = 0; var value = 0; for ([value] of [[7], [8]]) total += value; console.log(total);',
         '15\n',
       );
+      const flatMultipleTargets = [
+        'var left=0,middle=0,right=0,callbacks=[];',
+        'for ([left,middle,right] of [[7,8,9],[20,30,40]]) callbacks.push(function(){return left+middle+right;});',
+        'console.log(callbacks[0](),callbacks[1](),left,middle,right);',
+      ].join('\n');
+      assertRetainedLoopHead(
+        'flat multiple array targets retain shared bindings',
+        flatMultipleTargets,
+        '90 90 20 30 40\n',
+      );
+      const nativeMultipleTargets = spawnSync('node', ['-e', flatMultipleTargets], {
+        encoding: 'utf8',
+      });
+      expect(nativeMultipleTargets.status, nativeMultipleTargets.stderr).toBe(0);
+      expect(nativeMultipleTargets.stdout).toBe('90 90 20 30 40\n');
       assertRetainedLoopHead(
         'runtime helper name collision',
         "var __read='user'; var value=0; for ([value] of [[7],[8]]) {} console.log(value,__read);",
@@ -21045,6 +21086,46 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'var value=0; for ([value] of [row]) break; console.log(value,closed);',
         ].join('\n'),
         '7 1\n',
+      );
+      assertReanalyzedLoopHead(
+        'nested assignment target',
+        'var left=0,right=0; for ([[left],right] of [[[7],8],[[9],10]]) {} console.log(left,right);',
+        '9 10\n',
+      );
+      assertReanalyzedLoopHead(
+        'defaulted assignment target',
+        'var left=0,right=0; for ([left=7,right] of [[undefined,8]]) {} console.log(left,right);',
+        '7 8\n',
+      );
+      assertReanalyzedLoopHead(
+        'rest assignment target',
+        "var first=0,tail=[]; for ([first,...tail] of [[1,2,3]]) {} console.log(first,tail.join(','));",
+        '1 2,3\n',
+      );
+      assertReanalyzedLoopHead(
+        'hole assignment target',
+        'var value=0; for ([,value] of [[5,6]]) {} console.log(value);',
+        '6\n',
+      );
+      assertReanalyzedLoopHead(
+        'member assignment target',
+        'var object={value:0}; for ([object.value] of [[7],[8]]) {} console.log(object.value);',
+        '8\n',
+      );
+      assertReanalyzedLoopHead(
+        'computed member target evaluation order',
+        [
+          'var events=[],object={first:0,second:0},next=0;',
+          "function key(){events.push('key');return next++===0?'first':'second';}",
+          'for ([object[key()]] of [[7],[8]]) events.push("body");',
+          'console.log(object.first,object.second,events.join(","));',
+        ].join('\n'),
+        '7 8 key,body,key,body\n',
+      );
+      assertReanalyzedLoopHead(
+        'for-in array assignment target',
+        'var left="",right=""; for ([left,right] in {row:0}) {} console.log(left,right);',
+        'r o\n',
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

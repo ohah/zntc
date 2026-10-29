@@ -3015,27 +3015,29 @@ fn isRetainableAssignmentTarget(
     return true;
 }
 
-/// A single direct identifier in an array assignment head is moved into the
+/// Flat direct identifiers in an array assignment head are moved into the
 /// generated for-of body before the body is visited. `moveLoopHead` relocates
-/// that exact source reference to the generated body scope, and the ordinary
-/// destructuring assignment visitor records the emitted read/write edges.
-/// Keep this first retained loop-head shape narrow: additional elements,
-/// defaults, nested patterns, holes, rest, and member targets have separate
-/// iteration/evaluation behavior and stay on semantic reanalysis.
-fn isRetainableSimpleForOfArrayAssignmentHead(
+/// each exact source reference to the generated body scope, and the ordinary
+/// destructuring assignment visitor records the emitted read/write edges in
+/// order. Defaults, nested patterns, holes, rest, and member targets stay on
+/// semantic reanalysis because they have additional evaluation behavior.
+fn isRetainableFlatForOfArrayAssignmentHead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     head_idx: ast_mod.NodeIndex,
 ) bool {
     if (head_idx.isNone() or @backingInt(head_idx) >= ast.nodes.items.len) return false;
     const head = ast.getNode(head_idx);
-    if (head.tag != .array_assignment_target or head.data.list.len != 1) return false;
+    if (head.tag != .array_assignment_target or head.data.list.len == 0) return false;
     const start = head.data.list.start;
-    if (start >= ast.extra_data.items.len) return false;
-    const raw_target = ast.extra_data.items[start];
-    if (raw_target >= ast.nodes.items.len) return false;
-    const target_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_target));
-    return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
+    const extras = ast.extra_data.items;
+    if (start >= extras.len or head.data.list.len > extras.len - start) return false;
+    for (extras[start .. start + head.data.list.len]) |raw_target| {
+        if (raw_target >= ast.nodes.items.len) return false;
+        const target_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_target));
+        if (!isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx)) return false;
+    }
+    return true;
 }
 
 const RetainedFlatArrayVarForEachBinding = struct {
@@ -7271,18 +7273,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
             }
         }
 
-        // ES5 for-of rewrites an assignment-pattern head to an assignment in
-        // its generated body. Admit only `[boundIdentifier]`: the transformer
-        // moves its source reference to that exact body scope before visiting
-        // the assignment, while the assignment visitor preserves its SymbolId.
-        // Keep every other loop-head pattern on the full analyzer path until
-        // its per-iteration and evaluation-order contract has its own proof.
+        // ES5 for-of rewrites a flat assignment-pattern head to an assignment
+        // in its generated body. Every direct target must already have an
+        // exact source identity; the transformer moves each reference to that
+        // body scope and the assignment visitor records its write. Other loop
+        // head patterns keep their distinct iteration/evaluation contracts.
         if (options.unsupported.for_of) {
             for (reachable_nodes) |raw_idx| {
                 const loop = ast.nodes.items[raw_idx];
                 if (loop.tag != .for_of_statement) continue;
                 const head_idx = loop.data.ternary.a;
-                if (!isRetainableSimpleForOfArrayAssignmentHead(ast, semantic, head_idx)) continue;
+                if (!isRetainableFlatForOfArrayAssignmentHead(ast, semantic, head_idx)) continue;
                 const target_nodes = ast_walk.collectReachableNodeIndicesFrom(
                     ast.allocator,
                     ast,
@@ -18519,7 +18520,7 @@ fn auditedOptionalCatchGraphAdmissionForTest(
     }, &get, &set, null, optional_catch_only_out);
 }
 
-fn auditedSimpleForOfAssignmentGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+fn auditedFlatForOfAssignmentGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
     var get = false;
     var set = false;
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
@@ -18527,40 +18528,40 @@ fn auditedSimpleForOfAssignmentGraphAdmissionForTest(f: *const RuntimeHelperRean
     }, &get, &set, null, null);
 }
 
-test "ES5 for-of retains only a single bound array assignment target" {
+test "ES5 for-of retains flat bound array assignment targets" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var retained = try runtimeHelperReanalysisTestFixture(
         allocator,
-        "var value = 0; for ([value] of [[7], [8]]) {} console.log(value);",
+        "var left=0,middle=0,right=0; for ([left,middle,right] of [[7,8,9],[20,30,40]]) {} console.log(left,middle,right);",
     );
-    try std.testing.expect(isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         findForOfAssignmentHead(&retained.ast) orelse return error.MissingForOfAssignmentHead,
     ));
-    try std.testing.expect(auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         .none,
     ));
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         @fromBackingInt(std.math.maxInt(u32)),
     ));
 
     const hostile_sources = [_][]const u8{
-        "var left=0,right=0; for ([left,right] of [[7,8]]) {}",
         "var value=0; for ([[value]] of [[[7]]]) {}",
         "var value=0; for ([value=1] of [[7]]) {}",
         "var values=[]; for ([...values] of [[7]]) {}",
         "var value=0; for ([,value] of [[7,8]]) {}",
         "var value=0; for ({value} of [{value:7}]) {}",
         "var object={value:0}; for ([object.value] of [[7]]) {}",
+        "var object={value:0}; function key(){return 'value';} for ([object[key()]] of [[7]]) {}",
         "var value=0; for ([{value}] of [[{value:7}]]) {}",
         "var value=0; for ([value] in {row:[7]}) {}",
         "async function run(){var value=0; for await ([value] of [[7]]) {}}",
@@ -18568,7 +18569,14 @@ test "ES5 for-of retains only a single bound array assignment target" {
     };
     for (hostile_sources) |source| {
         var hostile = try runtimeHelperReanalysisTestFixture(allocator, source);
-        try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&hostile));
+        if (findForOfAssignmentHead(&hostile.ast)) |hostile_head| {
+            try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
+                &hostile.ast,
+                &hostile.semantic,
+                hostile_head,
+            ));
+        }
+        try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&hostile));
     }
 
     const head = findForOfAssignmentHead(&retained.ast) orelse return error.MissingForOfAssignmentHead;
@@ -18579,31 +18587,39 @@ test "ES5 for-of retains only a single bound array assignment target" {
     const symbol_index: usize = @intCast(symbol_raw);
     const symbol_ids = @constCast(retained.semantic.symbol_ids);
     const symbols = @constCast(retained.semantic.symbols.items);
+    const second_target_raw = retained.ast.extra_data.items[pattern.data.list.start + 1];
+    const second_target_raw_index: usize = @intCast(second_target_raw);
+    const second_symbol_raw = retained.semantic.symbol_ids[second_target_raw_index] orelse return error.MissingSecondAssignmentTargetSymbol;
+    const second_symbol_index: usize = @intCast(second_symbol_raw);
+    const third_target_raw = retained.ast.extra_data.items[pattern.data.list.start + 2];
+    const third_target_raw_index: usize = @intCast(third_target_raw);
+    const third_symbol_raw = retained.semantic.symbol_ids[third_target_raw_index] orelse return error.MissingThirdAssignmentTargetSymbol;
+    const third_symbol_index: usize = @intCast(third_symbol_raw);
     const head_raw_index: usize = @intCast(@backingInt(head));
     const saved_head = retained.ast.nodes.items[head_raw_index];
     retained.ast.nodes.items[head_raw_index].tag = .object_assignment_target;
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
     ));
     retained.ast.nodes.items[head_raw_index] = saved_head;
     retained.ast.nodes.items[head_raw_index].data.list.len = 0;
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
     ));
     retained.ast.nodes.items[head_raw_index] = saved_head;
-    retained.ast.nodes.items[head_raw_index].data.list.len = 2;
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    retained.ast.nodes.items[head_raw_index].data.list.len = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
     ));
     retained.ast.nodes.items[head_raw_index] = saved_head;
     retained.ast.nodes.items[head_raw_index].data.list.start = std.math.maxInt(u32);
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
@@ -18612,34 +18628,114 @@ test "ES5 for-of retains only a single bound array assignment target" {
 
     const saved_target = retained.ast.nodes.items[target_raw_index];
     retained.ast.nodes.items[target_raw_index].tag = .identifier_reference;
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
     ));
     retained.ast.nodes.items[target_raw_index] = saved_target;
     retained.ast.extra_data.items[pattern.data.list.start] = std.math.maxInt(u32);
-    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
         &retained.ast,
         &retained.semantic,
         head,
     ));
     retained.ast.extra_data.items[pattern.data.list.start] = target_raw;
 
+    const saved_second_target = retained.ast.nodes.items[second_target_raw_index];
+    retained.ast.nodes.items[second_target_raw_index].tag = .identifier_reference;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[second_target_raw_index] = saved_second_target;
+    retained.ast.extra_data.items[pattern.data.list.start + 1] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.extra_data.items[pattern.data.list.start + 1] = second_target_raw;
+
+    const saved_third_target = retained.ast.nodes.items[third_target_raw_index];
+    retained.ast.nodes.items[third_target_raw_index].tag = .identifier_reference;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[third_target_raw_index] = saved_third_target;
+    retained.ast.extra_data.items[pattern.data.list.start + 2] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.extra_data.items[pattern.data.list.start + 2] = third_target_raw;
+
     const original_symbol_id = symbol_ids[target_raw_index];
     symbol_ids[target_raw_index] = null;
-    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
     symbol_ids[target_raw_index] = original_symbol_id;
     symbol_ids[target_raw_index] = std.math.maxInt(u32);
-    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
     symbol_ids[target_raw_index] = original_symbol_id;
+
+    const original_second_symbol_id = symbol_ids[second_target_raw_index];
+    symbol_ids[second_target_raw_index] = null;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[second_target_raw_index] = original_second_symbol_id;
+    symbol_ids[second_target_raw_index] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[second_target_raw_index] = original_second_symbol_id;
+    const original_third_symbol_id = symbol_ids[third_target_raw_index];
+    symbol_ids[third_target_raw_index] = null;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[third_target_raw_index] = original_third_symbol_id;
+    symbol_ids[third_target_raw_index] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[third_target_raw_index] = original_third_symbol_id;
+    symbol_ids[third_target_raw_index] = @intCast(symbols.len);
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[third_target_raw_index] = original_third_symbol_id;
 
     const original_symbol = symbols[symbol_index];
     symbols[symbol_index].scope_id = .none;
-    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
     symbols[symbol_index] = original_symbol;
     symbols[symbol_index].scope_id = @fromBackingInt(std.math.maxInt(u32));
-    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[symbol_index] = original_symbol;
+
+    const original_second_symbol = symbols[second_symbol_index];
+    symbols[second_symbol_index].scope_id = .none;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[second_symbol_index] = original_second_symbol;
+    symbols[second_symbol_index].scope_id = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[second_symbol_index] = original_second_symbol;
+
+    const original_third_symbol = symbols[third_symbol_index];
+    symbols[third_symbol_index].scope_id = .none;
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[third_symbol_index] = original_third_symbol;
+    symbols[third_symbol_index].scope_id = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!isRetainableFlatForOfArrayAssignmentHead(&retained.ast, &retained.semantic, head));
+    try std.testing.expect(!auditedFlatForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[third_symbol_index] = original_third_symbol;
 }
 
 fn findForOfAssignmentHead(ast: *const ast_mod.Ast) ?ast_mod.NodeIndex {
