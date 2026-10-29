@@ -11755,18 +11755,39 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1 2\n',
       },
       {
-        name: 'class-with-superclass',
-        graph: 'reanalyzed',
+        name: 'named-class-expression-side-effecting-heritage',
+        graph: 'retained',
         source:
-          'class Counter extends class Base {} { static { this.value = 1; } } console.log(Counter.value);',
-        stdout: '1\n',
+          "const order = []; function makeBase() { order.push('base'); return class {}; } const Counter = class Named extends makeBase() { static { order.push('block'); Named.value = 1; } }; console.log(order.join(','), Counter.value);",
+        stdout: 'base,block 1\n',
+      },
+      {
+        name: 'named-class-expression-as-constructor',
+        graph: 'retained',
+        source:
+          "const order = []; const instance = new (class Named { static { order.push('block'); this.value = 2; } constructor() { order.push(this.constructor.value); } })(); console.log(order.join(','));",
+        stdout: 'block,2\n',
+      },
+      {
+        name: 'class-with-superclass',
+        graph: 'retained',
+        source:
+          'class Base { static get value() { return this.seed; } } class Counter extends Base { static { this.seed = 2; } static read() { return super.value; } } console.log(Counter.read(), Object.getPrototypeOf(Counter) === Base);',
+        stdout: '2 true\n',
       },
       {
         name: 'named-class-expression-with-superclass',
+        graph: 'retained',
+        source:
+          'const Base = class {}; const Named = 2; const Counter = class Named extends Base { static { Named.value = 1; } }; console.log(Counter.value, Named, Object.getPrototypeOf(Counter) === Base);',
+        stdout: '1 2 true\n',
+      },
+      {
+        name: 'super-property-inside-static-block',
         graph: 'reanalyzed',
         source:
-          'const Base = class {}; const Counter = class Named extends Base { static { this.value = 1; } }; console.log(Counter.value);',
-        stdout: '1\n',
+          'class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value; } } console.log(Counter.result);',
+        stdout: '3\n',
       },
       {
         name: 'named-class-expression-with-dynamic-computed-key',
