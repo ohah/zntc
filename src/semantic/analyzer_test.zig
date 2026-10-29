@@ -3985,6 +3985,15 @@ test "generic owned name parse arena result and ModuleStore transfer preserve kn
         var analyzer = SemanticAnalyzer.init(arena, &parser.ast);
         analyzer.is_ts = true;
         try analyzer.analyze();
+        // Production owns these allocations through the arena, without analyzer.deinit.
+        const source_start = @intFromPtr(module.source.ptr);
+        const source_end = source_start + module.source.len;
+        for (analyzer.resolved_names.items) |owned| {
+            try std.testing.expectEqual(@as(usize, 1), genericOwnedNamePointerCount(&analyzer, owned));
+            const owned_start = @intFromPtr(owned.ptr);
+            const owned_end = owned_start + owned.len;
+            try std.testing.expect(owned_end <= source_start or owned_start >= source_end);
+        }
         root_scope = analyzer.scope_owner_map.get(@backingInt(root));
         for (parser.ast.nodes.items, 0..) |node, raw| {
             if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.getText(node.span), "\\u0061")) {
@@ -3999,6 +4008,11 @@ test "generic owned name parse arena result and ModuleStore transfer preserve kn
             parameter_scope = @backingInt(symbol.scope_id);
             parameter_name = symbol.synthetic_name;
         }
+        const actual_root = root_scope orelse return error.MissingActualOwnedNameRoot;
+        const canonical_key = analyzer.scope_maps.items[actual_root].getKey("a") orelse return error.MissingActualCanonicalKey;
+        try std.testing.expectEqual(@as(usize, 1), genericOwnedNamePointerCount(&analyzer, canonical_key));
+        try std.testing.expect(parameter != null);
+        try std.testing.expectEqual(@as(usize, 1), genericOwnedNamePointerCount(&analyzer, parameter_name));
         module.ast = parser.ast;
         module.semantic = .{
             .symbols = analyzer.symbols,
