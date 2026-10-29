@@ -11854,9 +11854,137 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'named-class-expression-with-private-method',
+        graph: 'retained',
+        source:
+          'const Outside = 3; const Counter = class Named { #read() { return Named.value; } static { Named.value = 2; } }; const counter = new Counter(); console.log(counter instanceof Counter, Counter.value, Outside);',
+        stdout: 'true 2 3\n',
+      },
+      {
+        name: 'class-declaration-with-multiple-unused-private-methods',
+        graph: 'retained',
+        source:
+          'class Counter { #read() { return 1; } #write(value) { return value; } static { this.value = 2; } } const counter = new Counter(); console.log(counter instanceof Counter, Counter.value);',
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'private-method-with-explicit-constructor',
+        graph: 'retained',
+        source:
+          'class Counter { #read() { return 1; } constructor(value) { this.value = value; } static { this.ready = true; } } const counter = new Counter(3); console.log(counter.value, Counter.ready);',
+        stdout: '3 true\n',
+      },
+      {
+        name: 'private-method-with-derived-constructor',
+        graph: 'retained',
+        source:
+          'class Base { constructor(value) { this.value = value; } } class Counter extends Base { #read() { return 1; } static { this.ready = true; } } const counter = new Counter(3); console.log(counter.value, Counter.ready);',
+        stdout: '3 true\n',
+      },
+      {
+        name: 'unused-private-method-with-syntax-minification',
+        graph: 'reanalyzed',
+        minify: ['--minify-syntax'],
+        source:
+          'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(new Counter() instanceof Counter, Counter.value);',
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'unused-private-method-with-syntax-and-identifier-minification',
+        graph: 'reanalyzed',
+        minify: ['--minify-syntax', '--minify-identifiers'],
+        source:
+          'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(new Counter() instanceof Counter, Counter.value);',
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'private-method-call-with-static-block',
         graph: 'reanalyzed',
         source:
-          'const Counter = class Named { #read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+          'class Counter { #read() { return 1; } read() { return this.#read(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
+        stdout: '1 2\n',
+      },
+      {
+        name: 'private-method-brand-check-with-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #read() { return 1; } static has(value) { return #read in value; } static { this.value = 2; } } console.log(Counter.has(new Counter()), Counter.value);',
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'private-field-access-with-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #value = 1; #read() { return this.#value; } static { this.value = 2; } } console.log(new Counter(), Counter.value);',
+        stdout: 't {} 2\n',
+      },
+      {
+        name: 'static-private-method-with-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { static #read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-accessor-with-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { get #read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-method-with-field-and-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #value = 1; #read() { return 1; } static { this.value = 2; } } console.log(new Counter(), Counter.value);',
+        stdout: 't {} 2\n',
+      },
+      {
+        name: 'anonymous-class-with-private-method-and-static-block',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class { #read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-method-without-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #read() { return 1; } } console.log(new Counter() instanceof Counter);',
+        stdout: 'true\n',
+      },
+      {
+        name: 'private-method-on-unrelated-class-vetoes-retention',
+        graph: 'reanalyzed',
+        source:
+          'class Safe { static { this.value = 1; } } class Other { #read() { return 2; } } console.log(Safe.value, new Other() instanceof Other);',
+        stdout: '1 true\n',
+      },
+      {
+        name: 'private-generator-with-static-block',
+        graph: 'retained',
+        source:
+          'class Counter { *#read() { yield 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-async-method-with-static-block',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { async #read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-method-with-direct-eval',
+        graph: 'reanalyzed',
+        source:
+          "class Counter { #read() { return eval('1'); } static { this.value = 2; } } console.log(new Counter() instanceof Counter, Counter.value);",
+        stdout: 'true 2\n',
+      },
+      {
+        name: 'private-method-super-body-with-static-block',
+        graph: 'retained',
+        source:
+          'class Base { read() { return 1; } } class Counter extends Base { #read() { return super.read(); } static { this.value = 2; } } console.log(Counter.value);',
         stdout: '2\n',
       },
       {
@@ -11905,8 +12033,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'private-method',
         graph: 'reanalyzed',
         source:
-          'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
-        stdout: '2\n',
+          'class Counter { #read() { return 1; } read() { return this.#read(); } static { this.value = 2; } } console.log(new Counter().read(), Counter.value);',
+        stdout: '1 2\n',
       },
       {
         name: 'one-unsafe-class-vetoes-module-retention',
@@ -11929,7 +12057,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'target' in fixture ? fixture.target : '--target=es2015',
             '--platform=node',
             '--format=cjs',
-            '--minify-identifiers',
+            ...('minify' in fixture ? fixture.minify : ['--minify-identifiers']),
             '-o',
             output,
           ],

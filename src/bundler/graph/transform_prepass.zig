@@ -6148,9 +6148,10 @@ fn collectRetainedPreflightParents(
 
 /// The static-block lowerer transfers the source var environment, references,
 /// and nested scope owners into a generated function before visiting the body.
-/// Admit only the native named-class shape whose class-lowering companions do
-/// not need a separate identity certificate. The exact post-transform audit
-/// remains the authority for retaining the edited graph.
+/// Admit only the native named-class shape whose class-lowering companions
+/// have bounded identity evidence. Downleveled instance private-method
+/// declarations additionally need producer-owned WeakSet/function identities;
+/// the exact post-transform audit remains the authority for retention.
 fn canRetainSimpleNamedStaticBlockClasses(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -6237,8 +6238,15 @@ fn canRetainSimpleNamedStaticBlockClasses(
                 (is_generator and options.unsupported.generator) or
                 (is_async and is_generator and options.unsupported.async_generator);
             const key_node = ast.getNode(key);
+            const is_private_instance_method = key_node.tag == .private_identifier and
+                (flags & ast_mod.MethodFlags.is_static) == 0 and
+                (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) == 0;
             const valid_key_shape = switch (key_node.tag) {
                 .identifier_reference => true,
+                // Lowered instance private methods produce tracked WeakSet and
+                // function SymbolIds. Private calls/brand checks, static
+                // private methods, and accessors remain outside this slice.
+                .private_identifier => options.unsupported.class_private_method and is_private_instance_method,
                 .computed_property_key => blk: {
                     const operand = key_node.data.unary.operand;
                     break :blk !operand.isNone() and @backingInt(operand) < ast.nodes.items.len;
@@ -6249,6 +6257,42 @@ fn canRetainSimpleNamedStaticBlockClasses(
         }
     }
     return found_static_block;
+}
+
+/// Identify only the private identifier used as an instance private-method
+/// declaration key on a class whose static block passed the exact preflight.
+/// The sibling scans still reject private accesses, fields, accessors, and
+/// private methods on unrelated classes.
+fn isStaticBlockPrivateMethodDeclarationKey(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    key_raw: u32,
+) bool {
+    const method_raw = parents.get(key_raw) orelse return false;
+    if (method_raw >= ast.nodes.items.len) return false;
+    const method = ast.nodes.items[method_raw];
+    if (method.tag != .method_definition) return false;
+    const method_extra = method.data.extra;
+    if (method_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key) return false;
+    const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]));
+    if (key.isNone() or @backingInt(key) != key_raw) return false;
+
+    const body_raw = parents.get(method_raw) orelse return false;
+    if (body_raw >= ast.nodes.items.len or ast.nodes.items[body_raw].tag != .class_body) return false;
+    const class_raw = parents.get(body_raw) orelse return false;
+    if (class_raw >= ast.nodes.items.len) return false;
+    const class = ast.nodes.items[class_raw];
+    if (class.tag != .class_declaration and class.tag != .class_expression) return false;
+
+    const members = ast.nodes.items[body_raw].data.list;
+    if (members.start > ast.extra_data.items.len or
+        members.len > ast.extra_data.items.len - members.start) return false;
+    for (ast.extra_data.items[members.start .. members.start + members.len]) |member_raw| {
+        if (member_raw >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[member_raw].tag == .static_block) return true;
+    }
+    return false;
 }
 
 fn scopeChainContainsBinding(
@@ -8129,12 +8173,25 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_simple_static_class_field = true;
                 }
             },
-            .private_field_expression, .private_identifier => {
-                // The access node alone does not distinguish a private field
-                // from a private method value. Keep it only when both native
-                // forms are supported; declaration nodes receive the more
-                // precise feature check above.
+            .private_field_expression => {
+                // Private reads/writes include method calls and brand checks.
+                // They stay on semantic reanalysis until their helper graph
+                // has a separate identity certificate.
                 if (options.unsupported.class_private_field or options.unsupported.class_private_method) return false;
+            },
+            .private_identifier => {
+                // A lowered instance private-method declaration key has no
+                // private access edge. Admit that key only on the exact class
+                // shape checked above; every other private identifier is an
+                // access/brand operand and remains on reanalysis.
+                if (options.unsupported.class_private_field or options.unsupported.class_private_method) {
+                    if (!options.unsupported.class_private_method or !retained_simple_named_static_blocks) return false;
+                    if (!source_parent_map_ready) {
+                        if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                        source_parent_map_ready = true;
+                    }
+                    if (!isStaticBlockPrivateMethodDeclarationKey(ast, &source_parent_map, raw_idx)) return false;
+                }
             },
             .static_block => {
                 // The source preflight admits only named, unextended class
@@ -8164,7 +8221,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[key_at]));
                 if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
                 if (ast.nodes.items[@backingInt(key)].tag == .private_identifier and
-                    options.unsupported.class_private_method) return false;
+                    options.unsupported.class_private_method)
+                {
+                    if (!retained_simple_named_static_blocks) return false;
+                    if (!source_parent_map_ready) {
+                        if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                        source_parent_map_ready = true;
+                    }
+                    if (!isStaticBlockPrivateMethodDeclarationKey(ast, &source_parent_map, @intCast(@backingInt(key)))) return false;
+                }
                 const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
                 const flags = ast.extra_data.items[flags_at];
@@ -8450,6 +8515,12 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.read = false;
     other_helpers.rest = false;
     other_helpers.class_call_check = false;
+    // The static-block preflight admits only lowered instance private-method
+    // declarations with no private access edge. Their WeakSet/function
+    // bindings and __classPrivateMethodInit references carry producer-owned
+    // SymbolIds, which the exact output audit validates. Private reads still
+    // set class_private_method_get and therefore remain rejected.
+    other_helpers.class_private_method_init = false;
     other_helpers.spread_array = false;
     other_helpers.tagged_template_literal = false;
     other_helpers.keep_names = false;
@@ -8478,6 +8549,41 @@ test "retained legacy decorators admit their tracked metadata helper" {
     const using_helpers: RuntimeHelpers = .{ .using_ctx = true };
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, true, false, false));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
+}
+
+test "retained private method declarations admit only their init helper" {
+    const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
+    const init_only: RuntimeHelpers = .{ .class_private_method_init = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
+        init_only,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
+        .{ .class_private_method_get = true },
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
+        .{ .class_private_method_init = true, .class_private_method_get = true },
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
 }
 
 /// Stage 3 decorators are always lowered by the transformer, even when the
@@ -12391,6 +12497,83 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained.source_candidate);
     try std.testing.expect(retained.graph_gate);
 
+    const retained_unused_private_method = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_unused_private_method.source_candidate);
+    try std.testing.expect(retained_unused_private_method.graph_gate);
+
+    const private_method_call = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } read() { return this.#read(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_call.source_candidate);
+    try std.testing.expect(!private_method_call.graph_gate);
+
+    const private_method_brand_check = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static has(value) { return #read in value; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!private_method_brand_check.graph_gate);
+
+    const static_private_method = try staticBlockPrepassDecisionForTest(
+        "class Counter { static #read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!static_private_method.source_candidate);
+
+    const private_accessor = try staticBlockPrepassDecisionForTest(
+        "class Counter { get #read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!private_accessor.source_candidate);
+
+    const async_private_method = try staticBlockPrepassDecisionForTest(
+        "class Counter { async #read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!async_private_method.source_candidate);
+
+    var native_private_method_options = options;
+    native_private_method_options.unsupported.class_private_method = false;
+    const native_private_method_with_downlevel_static_block = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static { this.value = 2; } }",
+        ".js",
+        native_private_method_options,
+        .none,
+    );
+    try std.testing.expect(!native_private_method_with_downlevel_static_block.source_candidate);
+
+    const private_method_without_static_block = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!private_method_without_static_block.graph_gate);
+
+    const private_method_outside_static_block_class = try staticBlockPrepassDecisionForTest(
+        "class Safe { static { this.value = 1; } } class Other { #read() { return 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_outside_static_block_class.source_candidate);
+    try std.testing.expect(!private_method_outside_static_block_class.graph_gate);
+
     const retained_constant_key = try staticBlockPrepassDecisionForTest(
         "class Counter { [\"read\"]() { return 1; } static { this.value = 2; } } console.log(Counter.read());",
         ".js",
@@ -12614,11 +12797,9 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "const C = class Named { async read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { value = 1; static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { #value = 1; static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const C = class Named { #read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { #value = 1; static { this.value = 1; } }", .candidate = false },
-        .{ .source = "class C { #read() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "const C = class Named { static { this.value = 1; } }; const D = class { static { this.value = 2; } };", .candidate = false },
         .{ .source = "class C { static { eval('this.value = 1'); } }", .candidate = true },
     };
