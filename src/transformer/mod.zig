@@ -99,6 +99,7 @@ test {
     _ = @import("transformer/legacy_decorator_helpers.zig");
     _ = @import("runtime_key_name_temp_identity_semantic_test.zig");
     _ = @import("private_field_temp_identity_semantic_test.zig");
+    _ = @import("private_name_allocator_test.zig");
     _ = @import("arrow_body_temp_semantic_test.zig");
     _ = @import("lexical_capture_semantic_test.zig");
     _ = @import("class_computed_key_semantic_test.zig");

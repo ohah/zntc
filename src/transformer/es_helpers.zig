@@ -322,10 +322,10 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
         if (node.tag == .private_identifier) {
             const name = self.ast.getText(node.span);
             for (field_mappings) |field| {
-                if (field.class_name != null and std.mem.eql(u8, field.original_name, name)) return class_self_id;
+                if (field.class_name != null and privateNamesEqual(field.original_name, name)) return class_self_id;
             }
             for (method_mappings) |method| {
-                if (method.class_name != null and std.mem.eql(u8, method.original_name, name)) return class_self_id;
+                if (method.class_name != null and privateNamesEqual(method.original_name, name)) return class_self_id;
             }
         }
         if (@import("static_class_capture.zig").isDirectEvalCall(self, node)) return class_self_id;
@@ -3500,6 +3500,13 @@ fn makeObjectLiteral(self: anytype, props: []const NodeIndex, span: Span) !NodeI
 // Private Method 공용 헬퍼
 // ============================================================
 
+/// Compare two private identifier spellings by their IdentifierName StringValue.
+/// The `#` marker is part of the AST text but not part of the identifier value.
+pub fn privateNamesEqual(a: []const u8, b: []const u8) bool {
+    if (a.len < 2 or b.len < 2 or a[0] != '#' or b[0] != '#') return false;
+    return Scanner.identifierNamesEqual(a[1..], b[1..]);
+}
+
 pub const PrivateMethodNames = struct {
     ws_name: []const u8,
     fn_name: []const u8,
@@ -3513,6 +3520,7 @@ pub const PrivateMethodNames = struct {
 /// function used inside the constructor.
 pub const PrivateNameAllocator = struct {
     allocator: std.mem.Allocator,
+    /// Identifier StringValues, so escaped and unescaped spellings reserve the same name.
     reserved: std.StringHashMapUnmanaged(void) = .empty,
     method_weaksets: std.StringHashMapUnmanaged([]const u8) = .empty,
 
@@ -3555,19 +3563,49 @@ pub const PrivateNameAllocator = struct {
     }
 
     fn reserveExisting(self: *PrivateNameAllocator, name: []const u8) !void {
-        if (self.reserved.contains(name)) return;
-        const owned = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(owned);
-        try self.reserved.put(self.allocator, owned, {});
+        const canonical = try self.ownedIdentifierStringValue(name);
+        if (self.reserved.contains(canonical)) {
+            self.allocator.free(canonical);
+            return;
+        }
+        errdefer self.allocator.free(canonical);
+        try self.reserved.put(self.allocator, canonical, {});
     }
 
     fn reserveGenerated(self: *PrivateNameAllocator, name: []const u8) !void {
         try self.reserveExisting(name);
     }
 
+    fn ownedIdentifierStringValue(self: *PrivateNameAllocator, name: []const u8) ![]const u8 {
+        if (std.mem.indexOfScalar(u8, name, '\\') == null) return try self.allocator.dupe(u8, name);
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        if (decoded.ptr == name.ptr) return try self.allocator.dupe(u8, name);
+        return decoded;
+    }
+
+    fn isIdentifierStringValueReserved(self: *PrivateNameAllocator, name: []const u8) !bool {
+        if (std.mem.indexOfScalar(u8, name, '\\') == null) return self.reserved.contains(name);
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, name);
+        defer if (decoded.ptr != name.ptr) self.allocator.free(decoded);
+        return self.reserved.contains(decoded);
+    }
+
+    fn existingMethodWeakSet(self: *const PrivateNameAllocator, orig_name: []const u8) ?[]const u8 {
+        if (self.method_weaksets.get(orig_name)) |existing| return existing;
+        var entries = self.method_weaksets.iterator();
+        while (entries.next()) |entry| {
+            if (privateNamesEqual(entry.key_ptr.*, orig_name)) return entry.value_ptr.*;
+        }
+        return null;
+    }
+
     pub fn makeUniqueName(self: *PrivateNameAllocator, base: []const u8) ![]u8 {
         var candidate = try self.allocator.dupe(u8, base);
-        if (!self.reserved.contains(candidate)) {
+        const base_reserved = self.isIdentifierStringValueReserved(candidate) catch |err| {
+            self.allocator.free(candidate);
+            return err;
+        };
+        if (!base_reserved) {
             self.reserveGenerated(candidate) catch |err| {
                 self.allocator.free(candidate);
                 return err;
@@ -3579,7 +3617,11 @@ pub const PrivateNameAllocator = struct {
         var suffix: usize = 2;
         while (true) : (suffix += 1) {
             candidate = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, suffix });
-            if (!self.reserved.contains(candidate)) {
+            const candidate_reserved = self.isIdentifierStringValueReserved(candidate) catch |err| {
+                self.allocator.free(candidate);
+                return err;
+            };
+            if (!candidate_reserved) {
                 self.reserveGenerated(candidate) catch |err| {
                     self.allocator.free(candidate);
                     return err;
@@ -3600,7 +3642,11 @@ pub const PrivateNameAllocator = struct {
             else
                 try std.fmt.allocPrint(self.allocator, "_{s}{d}", .{ bare, suffix + 1 });
 
-            if (!self.reserved.contains(candidate)) {
+            const candidate_reserved = self.isIdentifierStringValueReserved(candidate) catch |err| {
+                self.allocator.free(candidate);
+                return err;
+            };
+            if (!candidate_reserved) {
                 self.reserveGenerated(candidate) catch |err| {
                     self.allocator.free(candidate);
                     return err;
@@ -3615,7 +3661,7 @@ pub const PrivateNameAllocator = struct {
     /// Getter/setter pairs share the same WeakSet text but receive separately
     /// owned slices because ClassifiedMembers deinit frees each mapping entry.
     pub fn makePrivateMethodNames(self: *PrivateNameAllocator, orig_name: []const u8, kind: PrivateMethodKind) !PrivateMethodNames {
-        const weakset_name = if (self.method_weaksets.get(orig_name)) |existing|
+        const weakset_name = if (self.existingMethodWeakSet(orig_name)) |existing|
             try self.allocator.dupe(u8, existing)
         else blk: {
             const generated = try self.makePrivateVarName(orig_name);

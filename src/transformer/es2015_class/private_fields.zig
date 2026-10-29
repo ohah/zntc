@@ -598,7 +598,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (prop_node.tag != .private_identifier) return null;
             const orig = self.ast.getText(prop_node.span);
             for (self.current_private_fields) |pf| {
-                if (std.mem.eql(u8, pf.original_name, orig)) return pf;
+                if (es_helpers.privateNamesEqual(pf.original_name, orig)) return pf;
             }
             return null;
         }
@@ -635,7 +635,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             // instance field / static field 매핑 우선 조회
             for (self.current_private_fields) |pf| {
-                if (!std.mem.eql(u8, pf.original_name, orig)) continue;
+                if (!es_helpers.privateNamesEqual(pf.original_name, orig)) continue;
                 if (pf.class_name) |class_name| {
                     // static: obj === ClassName (class identity 비교)
                     const new_obj = try self.visitNode(right_idx);
@@ -656,7 +656,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
-                if (!std.mem.eql(u8, pm.original_name, orig)) continue;
+                if (!es_helpers.privateNamesEqual(pm.original_name, orig)) continue;
                 if (pm.class_name) |class_name| {
                     const new_obj = try self.visitNode(right_idx);
                     const class_ref = try es_helpers.makePrivateClassValueRef(self, class_name, pm.class_name_node);
