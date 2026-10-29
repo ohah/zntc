@@ -9161,3 +9161,504 @@ test "enum member origin birth audit rejects missing and out-of-bounds scope and
     }
     try std.testing.expectEqual(saved, analyzer.symbols.items[sid].origin_scope);
 }
+
+test "exact audit resolves an outer enum member through a nested enum without a shadow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "enum Outer { A = 1, B = (() => { enum Inner { C = A + 1 } return Inner.C; })() }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var outer_scope: ?u32 = null;
+    var inner_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name_idx = parser.ast.readExtraNode(node.data.extra, 0);
+        const name = parser.ast.getText(parser.ast.getNode(name_idx).span);
+        const scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingEnumScopeOwner;
+        if (std.mem.eql(u8, name, "Outer")) outer_scope = scope;
+        if (std.mem.eql(u8, name, "Inner")) inner_scope = scope;
+    }
+    try std.testing.expect(outer_scope != null);
+    try std.testing.expect(inner_scope != null);
+    try std.testing.expect(outer_scope.? != inner_scope.?);
+
+    var nested_reference: ?u32 = null;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (!std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+        const symbol_id = @backingInt(reference.symbol_id);
+        if (symbol_id >= analyzer.symbols.items.len or
+            analyzer.symbols.items[symbol_id].synthetic_kind != .enum_iife_member) continue;
+        try std.testing.expect(nested_reference == null);
+        nested_reference = symbol_id;
+    }
+    const member_id = nested_reference orelse return error.MissingOuterEnumMemberReference;
+    try std.testing.expectEqual(outer_scope.?, @backingInt(analyzer.symbols.items[member_id].scope_id));
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact audit respects nested enum shadow order locals and object bases" {
+    const Expected = enum { outer_member, inner_member, middle_member, local, no_member };
+    const cases = [_]struct { source: []const u8, expected: Expected, matching_reads: usize, unresolved_reads: usize }{
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { C=A+1 } return Inner.C; })() }",
+            .expected = .outer_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { A=2, C=A+1 } return Inner.C; })() }",
+            .expected = .inner_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { \"A\"=2, C=A+1 } return Inner.C; })() }",
+            .expected = .inner_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { \"\\u0041\"=2, C=A+1 } return Inner.C; })() }",
+            .expected = .inner_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { C=A+1, \"A\"=2 } return Inner.C; })() }",
+            .expected = .outer_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { C=A+1, A=2 } return Inner.C; })() }",
+            .expected = .outer_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { B=(()=>{ enum Inner { C=A+1 } return Inner.C; })(), A=1 }",
+            .expected = .no_member,
+            .matching_reads = 0,
+            .unresolved_reads = 1,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { C=(()=>{ const A=9; return A+1; })() } return Inner.C; })() }",
+            .expected = .local,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { C=Outer.A+1 } return Inner.C; })() }",
+            .expected = .no_member,
+            .matching_reads = 0,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Middle { D=(()=>{ enum Inner { C=A+1 } return Inner.C; })() } return Middle.D; })() }",
+            .expected = .outer_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Middle { A=2, D=(()=>{ enum Inner { C=A+1 } return Inner.C; })() } return Middle.D; })() }",
+            .expected = .middle_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+        .{
+            .source = "enum Outer { A=1, B=(()=>{ enum Inner { A=A+1 } return Inner.A; })() }",
+            .expected = .outer_member,
+            .matching_reads = 1,
+            .unresolved_reads = 0,
+        },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, case.source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        const root = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_ts = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        const report = try coverage.checkExactWithDeclarationAnchors(
+            allocator,
+            &parser.ast,
+            root,
+            @intCast(parser.ast.nodes.items.len),
+            analyzer.symbol_ids.items,
+            analyzer.symbols.items,
+            analyzer.scopes.items,
+            analyzer.scope_maps.items,
+            &analyzer.scope_owner_map,
+            analyzer.references.items,
+            analyzer.helper_ref_nodes,
+            &analyzer.helper_scope_map,
+            &analyzer.unresolved_reference_nodes,
+            &.{},
+            &origins,
+        );
+        try std.testing.expect(report.isClean());
+
+        var matching_reads: usize = 0;
+        for (analyzer.references.items) |reference| {
+            if (reference.flags.declare or reference.node_index.isNone()) continue;
+            const node = parser.ast.getNode(reference.node_index);
+            if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+            matching_reads += 1;
+            const symbol_id = @backingInt(reference.symbol_id);
+            if (symbol_id >= analyzer.symbols.items.len) {
+                try std.testing.expectEqual(Expected.no_member, case.expected);
+                continue;
+            }
+            try std.testing.expect(symbol_id < analyzer.symbols.items.len);
+            const symbol = analyzer.symbols.items[symbol_id];
+            switch (case.expected) {
+                .outer_member, .inner_member, .middle_member => {
+                    try std.testing.expectEqual(.enum_iife_member, symbol.synthetic_kind.?);
+                    const owner_id = symbol.synthetic_owner_id orelse return error.MissingEnumMemberOwner;
+                    const owner_name = analyzer.symbols.items[@backingInt(owner_id)].synthetic_name;
+                    const expected_name: []const u8 = switch (case.expected) {
+                        .outer_member => "Outer",
+                        .inner_member => "Inner",
+                        .middle_member => "Middle",
+                        else => unreachable,
+                    };
+                    try std.testing.expectEqualStrings(expected_name, owner_name);
+                },
+                .local => try std.testing.expect(symbol.synthetic_kind != .enum_iife_member),
+                .no_member => try std.testing.expect(symbol.synthetic_kind != .enum_iife_member),
+            }
+        }
+        try std.testing.expectEqual(case.matching_reads, matching_reads);
+        var unresolved_reads: usize = 0;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+            if (analyzer.symbol_ids.items[raw] == null and analyzer.unresolved_reference_nodes.contains(@intCast(raw))) unresolved_reads += 1;
+        }
+        try std.testing.expectEqual(case.unresolved_reads, unresolved_reads);
+    }
+}
+
+test "exact audit rejects an outer enum member ID across an inner same-name shadow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "enum Outer { A=1, Seed=A, B=(()=>{ enum Inner { \"\\u0041\"=2, C=A+1 } return Inner.C; })() }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var outer_scope: ?u32 = null;
+    var inner_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = parser.ast.getText(parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 0)).span);
+        const scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingEnumScopeOwner;
+        if (std.mem.eql(u8, name, "Outer")) outer_scope = scope;
+        if (std.mem.eql(u8, name, "Inner")) inner_scope = scope;
+    }
+    const outer_scope_id: ScopeId = @fromBackingInt(outer_scope orelse return error.MissingOuterEnumScope);
+    const inner_scope_id: ScopeId = @fromBackingInt(inner_scope orelse return error.MissingInnerEnumScope);
+    try std.testing.expect(outer_scope_id != inner_scope_id);
+
+    var outer_member: ?usize = null;
+    var inner_member: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .enum_iife_member or !std.mem.eql(u8, symbol.synthetic_name, "A")) continue;
+        if (symbol.scope_id == outer_scope_id) outer_member = sid;
+        if (symbol.scope_id == inner_scope_id) inner_member = sid;
+    }
+    const outer_member_id = outer_member orelse return error.MissingOuterEnumMember;
+    const inner_member_id = inner_member orelse return error.MissingInnerEnumMember;
+
+    var target_reference_index: ?usize = null;
+    for (analyzer.references.items, 0..) |reference, index| {
+        if (reference.flags.declare or reference.node_index.isNone() or @backingInt(reference.symbol_id) != inner_member_id) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag == .identifier_reference and std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) {
+            target_reference_index = index;
+            break;
+        }
+    }
+    const reference_index = target_reference_index orelse return error.MissingShadowedInnerMemberReference;
+    const reference_node = @backingInt(analyzer.references.items[reference_index].node_index);
+
+    // Keep counts consistent so the only hostile change is the exact owner ID
+    // attached to the read inside Inner.C.
+    const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    corrupted_symbols[inner_member_id].reference_count -= 1;
+    corrupted_symbols[outer_member_id].reference_count += 1;
+    const corrupted_symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    corrupted_symbol_ids[reference_node] = @intCast(outer_member_id);
+    const corrupted_references = try allocator.dupe(Reference, analyzer.references.items);
+    corrupted_references[reference_index].symbol_id = @fromBackingInt(@intCast(outer_member_id));
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const corrupted = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        corrupted_symbol_ids,
+        corrupted_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        corrupted_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(corrupted.scope_resolution_mismatch > 0);
+    try std.testing.expect(!corrupted.isClean());
+}
+
+test "exact audit rejects a forward outer enum member ID through a nested enum" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "enum Outer { B=(()=>{ enum Inner { C=A+1 } return Inner.C; })(), A=1, Seed=A }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var outer_scope: ?u32 = null;
+    var inner_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = parser.ast.getText(parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 0)).span);
+        if (std.mem.eql(u8, name, "Outer")) {
+            outer_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        } else if (std.mem.eql(u8, name, "Inner")) {
+            inner_scope = analyzer.scope_owner_map.get(@intCast(raw));
+        }
+    }
+    const outer_scope_id: ScopeId = @fromBackingInt(outer_scope orelse return error.MissingOuterEnumScope);
+    const inner_scope_id: ScopeId = @fromBackingInt(inner_scope orelse return error.MissingInnerEnumScope);
+    var later_member: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind == .enum_iife_member and
+            symbol.scope_id == outer_scope_id and std.mem.eql(u8, symbol.synthetic_name, "A"))
+        {
+            later_member = sid;
+            break;
+        }
+    }
+    const later_member_id = later_member orelse return error.MissingLaterOuterEnumMember;
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const baseline = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(baseline.isClean());
+
+    var unresolved_node: ?u32 = null;
+    var unresolved_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+        if (analyzer.symbol_ids.items[raw] != null or !analyzer.unresolved_reference_nodes.contains(@intCast(raw))) continue;
+        unresolved_count += 1;
+        unresolved_node = @intCast(raw);
+    }
+    try std.testing.expectEqual(@as(usize, 1), unresolved_count);
+    const unresolved_node_raw = unresolved_node orelse return error.MissingForwardOuterEnumReference;
+
+    const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    corrupted_symbols[later_member_id].reference_count += 1;
+    const corrupted_symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    corrupted_symbol_ids[unresolved_node_raw] = @intCast(later_member_id);
+    const corrupted_references = try allocator.alloc(Reference, analyzer.references.items.len + 1);
+    @memcpy(corrupted_references[0..analyzer.references.items.len], analyzer.references.items);
+    corrupted_references[analyzer.references.items.len] = .{
+        .node_index = @fromBackingInt(unresolved_node_raw),
+        .scope_id = inner_scope_id,
+        .symbol_id = @fromBackingInt(@intCast(later_member_id)),
+        .flags = .{ .read = true },
+    };
+    const corrupted = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        corrupted_symbol_ids,
+        corrupted_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        corrupted_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(corrupted.scope_resolution_mismatch > 0);
+    try std.testing.expect(!corrupted.isClean());
+}
+
+test "exact audit rejects an outer enum member ID across an initializer-local shadow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "enum Outer { A=1, Seed=A, B=(()=>{ enum Inner { C=(()=>{ const A=9; return A+1; })() } return Inner.C; })() }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var outer_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .ts_enum_declaration) continue;
+        const name = parser.ast.getText(parser.ast.getNode(parser.ast.readExtraNode(node.data.extra, 0)).span);
+        if (std.mem.eql(u8, name, "Outer")) {
+            outer_scope = analyzer.scope_owner_map.get(@intCast(raw));
+            break;
+        }
+    }
+    const outer_scope_id: ScopeId = @fromBackingInt(outer_scope orelse return error.MissingOuterEnumScope);
+    var outer_member: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind == .enum_iife_member and
+            symbol.scope_id == outer_scope_id and std.mem.eql(u8, symbol.synthetic_name, "A"))
+        {
+            outer_member = sid;
+            break;
+        }
+    }
+    const outer_member_id = outer_member orelse return error.MissingOuterEnumMember;
+
+    var local_reference_index: ?usize = null;
+    var local_symbol_id: ?usize = null;
+    for (analyzer.references.items, 0..) |reference, index| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.identifierNameText(node), "A")) continue;
+        const sid = @backingInt(reference.symbol_id);
+        if (sid >= analyzer.symbols.items.len or analyzer.symbols.items[sid].synthetic_kind == .enum_iife_member) continue;
+        local_reference_index = index;
+        local_symbol_id = sid;
+        break;
+    }
+    const reference_index = local_reference_index orelse return error.MissingInitializerLocalRead;
+    const local_id = local_symbol_id orelse return error.MissingInitializerLocalSymbol;
+    const reference_node = @backingInt(analyzer.references.items[reference_index].node_index);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const baseline = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(baseline.isClean());
+
+    const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    try std.testing.expect(corrupted_symbols[local_id].reference_count > 0);
+    corrupted_symbols[local_id].reference_count -= 1;
+    corrupted_symbols[outer_member_id].reference_count += 1;
+    const corrupted_symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    corrupted_symbol_ids[reference_node] = @intCast(outer_member_id);
+    const corrupted_references = try allocator.dupe(Reference, analyzer.references.items);
+    corrupted_references[reference_index].symbol_id = @fromBackingInt(@intCast(outer_member_id));
+    const corrupted = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        corrupted_symbol_ids,
+        corrupted_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        corrupted_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(corrupted.scope_resolution_mismatch > 0);
+    try std.testing.expect(!corrupted.isClean());
+}
