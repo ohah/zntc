@@ -2260,7 +2260,9 @@ const ExactCtx = struct {
     fn isEnumMemberReference(ctx: *ExactCtx, node_raw: u32, name: []const u8, symbol_id: u32, use_scope: ScopeId) bool {
         if (symbol_id >= ctx.symbols.len) return false;
         const symbol = ctx.symbols[symbol_id];
-        if (symbol.synthetic_kind != .enum_iife_member or !std.mem.eql(u8, symbol.synthetic_name, name)) return false;
+        if (symbol.synthetic_kind != .enum_iife_member or !Scanner.identifierValueEquals(name, symbol.synthetic_name)) return false;
+        // The known proxy supplies StringValue; spelling never selects an SID.
+        const value_name = symbol.synthetic_name;
         const owner_id = symbol.synthetic_owner_id orelse return false;
         const parameter_raw = @backingInt(owner_id);
         if (parameter_raw >= ctx.symbols.len or ctx.symbols[parameter_raw].synthetic_kind != .enum_iife_parameter or
@@ -2288,7 +2290,7 @@ const ExactCtx = struct {
                     // bare reference. Only keep tracing when this enum has no
                     // visible member with that name; later members do not
                     // shadow a reference from an earlier initializer.
-                    if (enumHasPrecedingMemberNamed(ctx, parent, member, name)) return false;
+                    if (enumHasPrecedingMemberNamed(ctx, parent, member, value_name)) return false;
                     current_member = null;
                 }
             }
@@ -2316,7 +2318,7 @@ const ExactCtx = struct {
             if (@backingInt(key_idx) >= ctx.ast.nodes.items.len) continue;
             const key = ctx.ast.getNode(key_idx);
             if (key.span.start != symbol.name.start or key.span.end != symbol.name.end) continue;
-            if (enumMemberKeyMatches(ctx, key_idx, name)) target_position = @intCast(position);
+            if (enumMemberKeyMatches(ctx, key_idx, value_name) orelse false) target_position = @intCast(position);
         }
         const use_position = current_position orelse return false;
         const declaration_position = target_position orelse return false;
@@ -2330,7 +2332,7 @@ const ExactCtx = struct {
         while (scope_hops <= ctx.scopes.len) : (scope_hops += 1) {
             if (!exactValidScope(ctx.scopes, scope)) return false;
             if (scope.toIndex() < ctx.scope_maps.len) {
-                if (ctx.scope_maps[scope.toIndex()].get(name)) |mapped| {
+                if (ctx.scope_maps[scope.toIndex()].get(value_name)) |mapped| {
                     const is_owner_enum_parameter = scope == symbol.scope_id and mapped < ctx.symbols.len and
                         ctx.symbols[mapped].synthetic_kind == .enum_iife_parameter;
                     if (!is_owner_enum_parameter) return false;
@@ -2342,11 +2344,20 @@ const ExactCtx = struct {
         return false;
     }
 
-    fn enumMemberKeyMatches(ctx: *ExactCtx, key_idx: NodeIndex, name: []const u8) bool {
-        if (key_idx.isNone() or @backingInt(key_idx) >= ctx.ast.nodes.items.len) return false;
+    fn enumMemberKeyMatches(ctx: *ExactCtx, key_idx: NodeIndex, name: []const u8) ?bool {
+        if (key_idx.isNone() or @backingInt(key_idx) >= ctx.ast.nodes.items.len) return null;
         const key = ctx.ast.getNode(key_idx);
         return switch (key.tag) {
-            .identifier_reference, .binding_identifier => std.mem.eql(u8, ctx.ast.identifierNameText(key), name),
+            .identifier_reference, .binding_identifier => blk: {
+                const raw = ctx.ast.identifierNameText(key);
+                const decoded = Scanner.decodeIdentifierEscapesAlloc(ctx.allocator, raw) catch {
+                    ctx.oom = true;
+                    break :blk null;
+                };
+                defer if (decoded.ptr != raw.ptr) ctx.allocator.free(decoded);
+                if (!Scanner.identifierValueEquals(raw, decoded)) break :blk null;
+                break :blk std.mem.eql(u8, decoded, name);
+            },
             .string_literal => blk: {
                 const stripped = Ast.stripStringQuotes(ctx.ast.getText(key.span));
                 if (std.mem.indexOfScalar(u8, stripped, '\\') == null)
@@ -2358,7 +2369,7 @@ const ExactCtx = struct {
                 defer ctx.allocator.free(decoded);
                 break :blk std.mem.eql(u8, decoded, name);
             },
-            else => false,
+            else => null,
         };
     }
 
@@ -2385,7 +2396,7 @@ const ExactCtx = struct {
             const member = ctx.ast.nodes.items[raw_member];
             const key_idx = member.data.binary.left;
             if (key_idx.isNone() or @backingInt(key_idx) >= ctx.ast.nodes.items.len) return true;
-            if (enumMemberKeyMatches(ctx, key_idx, name)) return true;
+            if (enumMemberKeyMatches(ctx, key_idx, name) orelse true) return true;
             if (ctx.oom) return true;
         }
         return false;
@@ -9686,4 +9697,215 @@ test "exact identity audit admits only canonical namespace body aliases" {
     const scopes = try a.dupe(Scope, sem.scopes.items);
     scopes[scope].kind = .block;
     try std.testing.expect(canonicalNamespaceBodyOwner(&parser.ast, &parents, &sem.scope_owner_map, scopes, body) == null);
+}
+
+const NestedEnumAuditFixture = struct {
+    transformer: *@import("transformer.zig").Transformer,
+    edited: @import("../semantic/editor.zig").SemanticEditor.Result,
+    root: NodeIndex,
+    source_outer_scope: u32,
+    source_inner_scope: ?u32,
+    source_outer_parameter: u32,
+    source_local_symbol: ?u32,
+    source_second_initializer: NodeIndex,
+    source_second_object_base: ?NodeIndex,
+    parents: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    reachable: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    empty_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    empty_refs: std.AutoHashMapUnmanaged(u32, IndexedReference) = .empty,
+    report: ExactReport = .{},
+    ctx: ExactCtx = undefined,
+};
+
+fn nestedEnumAuditFixture(a: std.mem.Allocator, source: []const u8) !*NestedEnumAuditFixture {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const Analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const T = @import("transformer.zig");
+    const scanner = try a.create(Scanner);
+    scanner.* = try Scanner.init(a, source);
+    const parser = try a.create(Parser);
+    parser.* = Parser.init(a, scanner);
+    parser.configureFromExtension(".ts");
+    const input_root = try parser.parse();
+    const analyzer = try a.create(Analyzer);
+    analyzer.* = Analyzer.init(a, &parser.ast);
+    analyzer.is_ts = true;
+    analyzer.enable_exact_declaration_anchors = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    var outer_node: ?u32 = null;
+    const source_nodes = try ast_walk.collectReachableNodeIndicesFrom(a, &parser.ast, input_root);
+    for (source_nodes) |raw| {
+        if (parser.ast.nodes.items[raw].tag == .ts_enum_declaration) {
+            outer_node = raw;
+            break;
+        }
+    }
+    const outer_raw = outer_node orelse return error.MissingSourceEnum;
+    const outer_scope = analyzer.scope_owner_map.get(outer_raw) orelse return error.MissingOuterEnumScope;
+    var inner_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .ts_enum_declaration and raw != outer_raw) inner_scope = analyzer.scope_owner_map.get(@intCast(raw));
+    }
+    var source_outer_parameter: ?u32 = null;
+    var source_local_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind == .enum_iife_parameter and @backingInt(symbol.scope_id) == outer_scope) source_outer_parameter = @intCast(sid);
+        if (symbol.synthetic_kind == null and symbol.kind == .variable_let) source_local_symbol = @intCast(sid);
+    }
+    const outer = parser.ast.nodes.items[outer_raw];
+    const second_member = parser.ast.extra_data.items[parser.ast.readExtra(outer.data.extra, 1) + 1];
+    const second_initializer = parser.ast.nodes.items[second_member].data.binary.right;
+    const source_second_object_base: ?NodeIndex = if (parser.ast.getNode(second_initializer).tag == .static_member_expression)
+        parser.ast.readExtraNode(parser.ast.getNode(second_initializer).data.extra, 0)
+    else
+        null;
+    const transformer = try a.create(T.Transformer);
+    transformer.* = try T.Transformer.init(a, &parser.ast, .{ .unsupported = T.TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.semantic_edit_enabled = true;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    const root = try transformer.transform();
+    const f = try a.create(NestedEnumAuditFixture);
+    f.* = .{ .transformer = transformer, .edited = (try transformer.finishSemanticEdit()).?, .root = root, .source_outer_scope = outer_scope, .source_inner_scope = inner_scope, .source_outer_parameter = source_outer_parameter orelse return error.MissingSourceEnumParameter, .source_local_symbol = source_local_symbol, .source_second_initializer = second_initializer, .source_second_object_base = source_second_object_base };
+    const nodes = try ast_walk.collectReachableNodeIndicesFrom(a, transformer.ast, root);
+    for (nodes) |raw| {
+        try f.reachable.put(a, raw, {});
+        var children = ast_walk.children(transformer.ast, transformer.ast.nodes.items[raw]);
+        while (children.next()) |child| try f.parents.put(a, @backingInt(child), raw);
+    }
+    f.ctx = .{
+        .allocator = a,
+        .ast = transformer.ast,
+        .root = root,
+        .parser_node_count = transformer.parser_node_count,
+        .parent_by_node = &f.parents,
+        .scope_owner_map = &f.edited.scope_owner_map,
+        .symbol_ids = f.edited.symbol_ids,
+        .declaration_nodes = &f.empty_nodes,
+        .symbols = f.edited.symbols.items,
+        .scopes = f.edited.scopes,
+        .scope_maps = f.edited.scope_maps,
+        .references_by_node = &f.empty_refs,
+        .helper_reference_nodes = &f.empty_nodes,
+        .helper_scope_map = &f.edited.helper_scope_map,
+        .dynamic_eval_units = &f.empty_nodes,
+        .with_body_roots = &f.empty_nodes,
+        .declaration_counts = &.{},
+        .unresolved_nodes = &analyzer.unresolved_reference_nodes,
+        .explicit_global_nodes = &transformer.explicit_global_reference_nodes,
+        .origins = &transformer.reference_origin_map,
+        .reachable_nodes = &f.reachable,
+        .report = &f.report,
+    };
+    return f;
+}
+
+fn nestedEnumProxy(f: *const NestedEnumAuditFixture, scope: u32) !u32 {
+    var selected: ?u32 = null;
+    for (f.edited.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .enum_iife_member or @backingInt(symbol.scope_id) != scope) continue;
+        if (selected != null) return error.AmbiguousActualMemberProxy;
+        selected = @intCast(sid);
+    }
+    return selected orelse error.MissingActualMemberProxy;
+}
+
+fn nestedEnumRead(f: *const NestedEnumAuditFixture, sid: u32) !Reference {
+    for (f.edited.references) |reference| {
+        if (!reference.flags.declare and @backingInt(reference.symbol_id) == sid and f.reachable.contains(@backingInt(reference.node_index))) return reference;
+    }
+    return error.MissingActualMemberRead;
+}
+
+fn nestedEnumMemberPosition(f: *const NestedEnumAuditFixture, owner: u32, member: u32) !u32 {
+    const node = f.transformer.ast.nodes.items[owner];
+    const start = f.transformer.ast.readExtra(node.data.extra, 1);
+    const len = f.transformer.ast.readExtra(node.data.extra, 2);
+    for (f.transformer.ast.extra_data.items[start .. start + len], 0..) |raw, position| {
+        if (raw == member) return @intCast(position);
+    }
+    return error.MemberNotInActualEnum;
+}
+
+fn nestedEnumOutputForSource(f: *const NestedEnumAuditFixture, source: NodeIndex) !u32 {
+    var selected: ?u32 = null;
+    var nodes = f.reachable.keyIterator();
+    while (nodes.next()) |raw| {
+        if (raw.* != @backingInt(source) and f.transformer.reference_origin_map.get(raw.*) != @as(?u32, @backingInt(source))) continue;
+        if (f.transformer.ast.nodes.items[raw.*].tag != .identifier_reference) continue;
+        if (selected != null) return error.AmbiguousKnownSourceRead;
+        selected = raw.*;
+    }
+    return selected orelse error.MissingKnownSourceRead;
+}
+
+fn nestedEnumRecognizes(f: *NestedEnumAuditFixture, reference: Reference, sid: u32) bool {
+    const raw = @backingInt(reference.node_index);
+    const name = f.transformer.ast.identifierNameText(f.transformer.ast.getNode(reference.node_index));
+    return ExactCtx.isEnumMemberReference(&f.ctx, raw, name, sid, reference.scope_id);
+}
+
+fn main39cbFullEnumAudit(f: *NestedEnumAuditFixture) !ExactReport {
+    return checkExactWithDeclarationAnchors(f.ctx.allocator, f.transformer.ast, f.root, f.transformer.parser_node_count, f.edited.symbol_ids, f.edited.symbols.items, f.edited.scopes, f.edited.scope_maps, &f.edited.scope_owner_map, f.edited.references, f.transformer.helper_ref_nodes.items, &f.edited.helper_scope_map, f.ctx.unresolved_nodes, &f.transformer.explicit_global_reference_nodes, &f.transformer.reference_origin_map);
+}
+
+fn main39cbObserveEnumAudit(label: []const u8, f: *NestedEnumAuditFixture, reference: Reference, sid: u32) !void {
+    const private = nestedEnumRecognizes(f, reference, sid);
+    const report = main39cbFullEnumAudit(f) catch |err| {
+        std.debug.print("main39cb-enum-proof label={s} private={any} auditError={s}\n", .{ label, private, @errorName(err) });
+        return;
+    };
+    std.debug.print("main39cb-enum-proof label={s} node={d} sid={d} owner={any} storage={d} use={d} private={any} clean={any} invalidScope={d} scopeMap={d} ownerMismatch={d} ownerParent={d} duplicateOwner={d} enumParam={d} resolution={d} identity={d} invalidReference={d} ambiguousParent={d} invalidLayout={d}\n", .{ label, @backingInt(reference.node_index), sid, f.edited.symbols.items[sid].synthetic_owner_id, @backingInt(f.edited.symbols.items[sid].scope_id), @backingInt(reference.scope_id), private, report.isClean(), report.invalid_scope, report.scope_map_mismatch, report.scope_owner_mismatch, report.scope_owner_parent_mismatch, report.duplicate_scope_owner, report.enum_iife_param_mismatch, report.scope_resolution_mismatch, report.identity_mismatch, report.invalid_reference_node, report.ambiguous_ast_parent, report.invalid_ast_layout });
+}
+
+test "escaped enum audit uses known StringValues through actual source transforms" {
+    const sources = [_][]const u8{
+        "enum E{A=1,B=A+1} console.log(E.B)",
+        "enum E{\\u0041=1,B=A+1} console.log(E.B)",
+        "enum E{A=1,B=\\u0041+1} console.log(E.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{C=A+1}return Inner.C})()} console.log(Outer.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{\\u0041=9,C=A+1}return Inner.C})()} console.log(Outer.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{C=A+1,A=9}return Inner.C})()} console.log(Outer.B)",
+        "enum E{\\u{41}=1,B=\\u0041+1} console.log(E.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{'\\u0041'=9,C=A+1}return Inner.C})()} console.log(Outer.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{'\\u0041'=9,C=A+1}return Inner.C})()} console.log(Outer.B)",
+        "enum Outer{A=1,B=(()=>{const \\u0041=9;enum Inner{C=A+1}return Inner.C})()} console.log(Outer.B)",
+        "enum Outer{A=1,B=(()=>{enum Inner{Q=9,C=A+1}return Inner.C})()} console.log(Outer.B)",
+    };
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const fixture = try nestedEnumAuditFixture(arena.allocator(), source);
+        const report = try main39cbFullEnumAudit(fixture);
+        try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
+        try std.testing.expect(report.isClean());
+    }
+}
+
+test "escaped enum audit rejects unknown keys and forged proxy ownership" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const f = try nestedEnumAuditFixture(arena.allocator(), "enum Outer{A=1,B=(()=>{enum Inner{Q=9,C=A+1}return Inner.C})()}");
+    const sid = try nestedEnumProxy(f, f.source_outer_scope);
+    const reference = try nestedEnumRead(f, sid);
+    try std.testing.expect(nestedEnumRecognizes(f, reference, sid));
+    const saved = f.edited.symbols.items[sid];
+    f.edited.symbols.items[sid].synthetic_owner_id = null;
+    try std.testing.expect(!nestedEnumRecognizes(f, reference, sid));
+    f.edited.symbols.items[sid] = saved;
+    try std.testing.expect(nestedEnumRecognizes(f, reference, sid));
+    try std.testing.expect((try main39cbFullEnumAudit(f)).isClean());
+    try std.testing.expect(ExactCtx.enumMemberKeyMatches(&f.ctx, .none, "A") == null);
+    const root_node = f.transformer.ast.getNode(f.root);
+    const key = try f.transformer.ast.addNode(.{ .tag = .numeric_literal, .span = root_node.span, .data = .{ .none = 0 } });
+    try std.testing.expect(ExactCtx.enumMemberKeyMatches(&f.ctx, key, "A") == null);
 }
