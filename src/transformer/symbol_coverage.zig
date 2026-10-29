@@ -2268,7 +2268,8 @@ const ExactCtx = struct {
         if (isEnumObjectBase(ctx, node_raw)) return false;
         if (!exactVisibleFrom(ctx.scopes, ctx.symbols, @fromBackingInt(@intCast(symbol_id)), use_scope)) return false;
 
-        var enum_raw: ?u32 = null;
+        var owner_raw: ?u32 = null;
+        var member_raw: ?u32 = null;
         var current_member: ?u32 = null;
         var current = node_raw;
         var hops: usize = 0;
@@ -2277,16 +2278,26 @@ const ExactCtx = struct {
             const ancestor = ctx.ast.nodes.items[parent];
             if (ancestor.tag == .ts_enum_member and current_member == null) current_member = parent;
             if (ancestor.tag == .ts_enum_declaration) {
-                enum_raw = parent;
-                break;
+                if (current_member) |member| {
+                    if (ctx.scope_owner_map.get(parent) == @as(?u32, @intCast(@backingInt(symbol.scope_id)))) {
+                        owner_raw = parent;
+                        member_raw = member;
+                        break;
+                    }
+                    // An earlier same-name member in a nested enum owns the
+                    // bare reference. Only keep tracing when this enum has no
+                    // visible member with that name; later members do not
+                    // shadow a reference from an earlier initializer.
+                    if (enumHasPrecedingMemberNamed(ctx, parent, member, name)) return false;
+                    current_member = null;
+                }
             }
             current = parent;
         }
-        const owner_raw = enum_raw orelse return false;
-        const member_raw = current_member orelse return false;
-        if (ctx.scope_owner_map.get(owner_raw) != @as(?u32, @intCast(@backingInt(symbol.scope_id)))) return false;
+        const enum_owner_raw = owner_raw orelse return false;
+        const owner_member_raw = member_raw orelse return false;
 
-        const declaration = ctx.ast.nodes.items[owner_raw];
+        const declaration = ctx.ast.nodes.items[enum_owner_raw];
         const extra = declaration.data.extra;
         if (extra + 2 >= ctx.ast.extra_data.items.len) return false;
         const members_start = ctx.ast.extra_data.items[extra + 1];
@@ -2297,27 +2308,15 @@ const ExactCtx = struct {
         var target_position: ?u32 = null;
         for (ctx.ast.extra_data.items[members_start .. members_start + members_len], 0..) |raw_member, position| {
             const listed_member: NodeIndex = @fromBackingInt(@intCast(raw_member));
-            if (raw_member == member_raw) current_position = @intCast(position);
+            if (raw_member == owner_member_raw) current_position = @intCast(position);
             if (listed_member.isNone() or @backingInt(listed_member) >= ctx.ast.nodes.items.len) continue;
             const member_node = ctx.ast.getNode(listed_member);
             if (member_node.tag != .ts_enum_member or member_node.data.binary.left.isNone()) continue;
-            const key = ctx.ast.getNode(member_node.data.binary.left);
+            const key_idx = member_node.data.binary.left;
+            if (@backingInt(key_idx) >= ctx.ast.nodes.items.len) continue;
+            const key = ctx.ast.getNode(key_idx);
             if (key.span.start != symbol.name.start or key.span.end != symbol.name.end) continue;
-            const matches_name = switch (key.tag) {
-                .identifier_reference, .binding_identifier => std.mem.eql(u8, ctx.ast.identifierNameText(key), name),
-                .string_literal => blk: {
-                    const stripped = Ast.stripStringQuotes(ctx.ast.getText(key.span));
-                    if (std.mem.indexOfScalar(u8, stripped, '\\') == null) break :blk std.mem.eql(u8, stripped, name);
-                    const decoded = (ctx.ast.staticKeyName(ctx.allocator, member_node.data.binary.left) catch {
-                        ctx.oom = true;
-                        return false;
-                    }) orelse break :blk false;
-                    defer ctx.allocator.free(decoded);
-                    break :blk std.mem.eql(u8, decoded, name);
-                },
-                else => false,
-            };
-            if (matches_name) target_position = @intCast(position);
+            if (enumMemberKeyMatches(ctx, key_idx, name)) target_position = @intCast(position);
         }
         const use_position = current_position orelse return false;
         const declaration_position = target_position orelse return false;
@@ -2339,6 +2338,55 @@ const ExactCtx = struct {
             }
             if (scope == symbol.scope_id) return true;
             scope = ctx.scopes[scope.toIndex()].parent;
+        }
+        return false;
+    }
+
+    fn enumMemberKeyMatches(ctx: *ExactCtx, key_idx: NodeIndex, name: []const u8) bool {
+        if (key_idx.isNone() or @backingInt(key_idx) >= ctx.ast.nodes.items.len) return false;
+        const key = ctx.ast.getNode(key_idx);
+        return switch (key.tag) {
+            .identifier_reference, .binding_identifier => std.mem.eql(u8, ctx.ast.identifierNameText(key), name),
+            .string_literal => blk: {
+                const stripped = Ast.stripStringQuotes(ctx.ast.getText(key.span));
+                if (std.mem.indexOfScalar(u8, stripped, '\\') == null)
+                    break :blk std.mem.eql(u8, stripped, name);
+                const decoded = (ctx.ast.staticKeyName(ctx.allocator, key_idx) catch {
+                    ctx.oom = true;
+                    break :blk false;
+                }) orelse break :blk false;
+                defer ctx.allocator.free(decoded);
+                break :blk std.mem.eql(u8, decoded, name);
+            },
+            else => false,
+        };
+    }
+
+    fn enumHasPrecedingMemberNamed(ctx: *ExactCtx, enum_raw: u32, current_member_raw: u32, name: []const u8) bool {
+        if (enum_raw >= ctx.ast.nodes.items.len or current_member_raw >= ctx.ast.nodes.items.len or
+            ctx.ast.nodes.items[enum_raw].tag != .ts_enum_declaration or
+            ctx.ast.nodes.items[current_member_raw].tag != .ts_enum_member) return true;
+        const extra = ctx.ast.nodes.items[enum_raw].data.extra;
+        if (extra > ctx.ast.extra_data.items.len or ctx.ast.extra_data.items.len - extra < 3) return true;
+        const members_start = ctx.ast.extra_data.items[extra + 1];
+        const members_len = ctx.ast.extra_data.items[extra + 2];
+        if (members_start > ctx.ast.extra_data.items.len or members_len > ctx.ast.extra_data.items.len - members_start) return true;
+        const members = ctx.ast.extra_data.items[members_start .. members_start + members_len];
+        var current_position: ?usize = null;
+        for (members, 0..) |raw_member, position| {
+            if (raw_member == current_member_raw) {
+                if (current_position != null) return true;
+                current_position = position;
+            }
+        }
+        const limit = current_position orelse return true;
+        for (members[0..limit]) |raw_member| {
+            if (raw_member >= ctx.ast.nodes.items.len or ctx.ast.nodes.items[raw_member].tag != .ts_enum_member) return true;
+            const member = ctx.ast.nodes.items[raw_member];
+            const key_idx = member.data.binary.left;
+            if (key_idx.isNone() or @backingInt(key_idx) >= ctx.ast.nodes.items.len) return true;
+            if (enumMemberKeyMatches(ctx, key_idx, name)) return true;
+            if (ctx.oom) return true;
         }
         return false;
     }
