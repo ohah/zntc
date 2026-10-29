@@ -151,12 +151,12 @@ pub const SemanticAnalyzer = struct {
     /// label fence: 함수 경계에서 외부 label을 숨기기 위한 인덱스.
     /// findLabel은 fence 이후의 label만 검색한다.
     label_fence: usize = 0,
-    /// resolvePrivateName에서 할당된 문자열 (deinit에서 해제)
+    /// Analyzer-owned stable/decode/private names; map and symbol slices borrow these.
     resolved_names: std.ArrayList([]const u8) = undefined,
 
     /// per-scope 심볼 검색용 HashMap 배열 (O(1) 조회).
     /// scopes 배열과 같은 인덱스를 공유: scope_maps.items[scope_id] = 해당 스코프의 이름→심볼인덱스 맵.
-    /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
+    /// Keys borrow source or analyzer-owned stable names; value is a symbol index.
     scope_maps: std.ArrayList(std.StringHashMapUnmanaged(usize)),
 
     /// 원본 AST에서 새 어휘 스코프를 연 노드 → ScopeId. 변환기의 스코프 커서용.
@@ -184,11 +184,9 @@ pub const SemanticAnalyzer = struct {
     /// Source nested namespace binding SID -> shared merged member SID.
     namespace_declaration_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Active virtual namespace IIFE parameters, used to prevent nested frames
-    /// from choosing the same codegen-visible name.
+    /// from choosing the same codegen-visible name. Owns active candidate
+    /// buffers; stable symbol names belong to resolved_names instead.
     namespace_iife_param_names: std.ArrayListUnmanaged([]const u8) = .empty,
-    /// Stable copies stored on virtual namespace parameter symbols. The active
-    /// name stack only borrows these names until the namespace body is visited.
-    namespace_iife_param_stable_names: std.ArrayListUnmanaged([]const u8) = .empty,
     /// Borrowed declaration NodeIndex -> parameter spelling from the previous
     /// graph. Lowered namespace member accesses already use these spellings;
     /// reanalysis must bind them to fresh symbols in the same lexical IIFE.
@@ -457,8 +455,6 @@ pub const SemanticAnalyzer = struct {
         self.namespace_member_owners.deinit(self.allocator);
         self.namespace_declaration_owners.deinit(self.allocator);
         self.namespace_iife_param_names.deinit(self.allocator);
-        for (self.namespace_iife_param_stable_names.items) |name| self.allocator.free(name);
-        self.namespace_iife_param_stable_names.deinit(self.allocator);
         self.enum_iife_param_names.deinit(self.allocator);
         for (self.enum_iife_param_stable_names.items) |name| self.allocator.free(name);
         self.enum_iife_param_stable_names.deinit(self.allocator);
@@ -480,7 +476,7 @@ pub const SemanticAnalyzer = struct {
         self.unresolved_reference_nodes.deinit(self.allocator);
         self.unresolved_reference_write_nodes.deinit(self.allocator);
         self.labels.deinit(self.allocator);
-        // resolvePrivateName에서 할당된 문자열 해제
+        // Stable declaration and private names share one owner.
         for (self.resolved_names.items) |name| {
             self.allocator.free(name);
         }
@@ -709,6 +705,15 @@ pub const SemanticAnalyzer = struct {
         try current.put(self.allocator, name, .{ .span = span, .kind = kind });
     }
 
+    // Takes one allocator-backed allocation, including on append failure.
+    // Borrowed source and names already registered must never enter here.
+    fn registerOwnedName(self: *SemanticAnalyzer, name: []const u8) AllocError!void {
+        self.resolved_names.append(self.allocator, name) catch |err| {
+            self.allocator.free(name);
+            return err;
+        };
+    }
+
     /// identifier 텍스트에서 unicode escape sequence를 해석하여 StringValue를 반환한다.
     /// ECMAScript 사양에 따르면 private name 비교는 StringValue 기준이므로
     /// `#\u{6F}`와 `#o`는 같은 이름이다.
@@ -758,7 +763,7 @@ pub const SemanticAnalyzer = struct {
 
         const result = try self.allocator.dupe(u8, buf.items);
         // 할당된 문자열을 추적하여 deinit에서 해제
-        try self.resolved_names.append(self.allocator, result);
+        try self.registerOwnedName(result);
         return result;
     }
 
@@ -834,9 +839,11 @@ pub const SemanticAnalyzer = struct {
         // transformer 가 `addString` 으로 만든 이름(string_table span)은 owned 복사 — symbol
         // `synthetic_name` / scope_map 키로 raw 슬라이스를 들고 가면 dangling (#3100).
         const raw_name_text = try self.ast.getTextStable(self.allocator, name_span);
+        if (is_synthetic_name) try self.registerOwnedName(raw_name_text);
         var name_text = raw_name_text;
         if (!is_synthetic_name) {
             name_text = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name_text);
+            if (name_text.ptr != raw_name_text.ptr) try self.registerOwnedName(name_text);
         }
 
         // function-like 선언의 스코핑 규칙:
@@ -3566,10 +3573,6 @@ pub const SemanticAnalyzer = struct {
         self.symbols.items[sid].synthetic_kind = .namespace_iife_parameter;
         const stable_name = self.symbols.items[sid].synthetic_name;
         self.symbols.items[sid].output_name_hint = stable_name;
-        var stable_name_untracked = true;
-        errdefer if (stable_name_untracked) self.allocator.free(stable_name);
-        try self.namespace_iife_param_stable_names.append(self.allocator, stable_name);
-        stable_name_untracked = false;
         try self.namespace_iife_param_names.append(self.allocator, candidate);
         return candidate;
     }
