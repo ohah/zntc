@@ -1531,10 +1531,11 @@ pub const SemanticEditor = struct {
         return self.removeUnreachableLocalLexicalDeclarationImpl(binding_node, reachable, false);
     }
 
-    /// Remove a dead function-scoped `var` declaration after its exact static
-    /// references have been removed. The binding is hoisted, so only a plain
-    /// function-scope symbol with one declaration and no dynamic name lookup
-    /// can be discarded. Keep its SymbolId row stable as an unbound slot.
+    /// Remove a dead function- or module-scoped `var` declaration after its
+    /// exact static references have been removed. Global vars create observable
+    /// global properties, and class static blocks have a distinct var scope, so
+    /// only ordinary function and ESM module scopes are eligible. Keep its
+    /// SymbolId row stable as an unbound slot.
     pub fn removeUnreachableLocalVarDeclaration(
         self: *SemanticEditor,
         binding_node: NodeIndex,
@@ -1562,7 +1563,9 @@ pub const SemanticEditor = struct {
         const scope_id = symbol.scope_id;
         const scope_raw = scope_id.toIndex();
         const scope = self.scopes.items[scope_raw];
-        if (scope.kind != .function or scope.subtree_has_direct_eval or scope.subtree_has_with)
+        if ((scope.kind != .function and scope.kind != .module) or
+            (scope.kind == .module and !scope.is_strict) or
+            scope.subtree_has_direct_eval or scope.subtree_has_with)
             return error.InvalidScope;
         var origin_scope = symbol.origin_scope;
         var hops: usize = 0;
