@@ -1519,6 +1519,149 @@ fn everyTypeScriptImportBindingHasValueUse(
     return true;
 }
 
+/// A console-drop pass can keep TypeScript imports only when every runtime
+/// binding still has a value read in the transformed module. Otherwise the
+/// removed call can turn a formerly-live named import into an apparently
+/// type-only import during the metadata rescan, which may erase an external
+/// import and its evaluation edge. Walk exact AST parents so nested arguments
+/// and scopes inside a dropped call do not count as surviving uses.
+fn canRetainUsedTypeScriptImportsForConsoleDrop(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    plugins: anytype,
+    retained_simple_console_drops: bool,
+    found_other_transform: bool,
+    retained_define_references: bool,
+    has_dropped_labeled_statement: bool,
+    has_mapped_import_split: bool,
+) bool {
+    const minify_identifiers = if (comptime @hasField(@TypeOf(self.*), "minify_identifiers"))
+        self.minify_identifiers
+    else
+        false;
+    if (!retained_simple_console_drops or found_other_transform or retained_define_references or
+        !module.module_type.isTypeScript() or !ast.is_typescript or
+        self.flow or isFlowPath(module.path) or self.worklet_transform or
+        self.styled_components or self.emotion or self.plugins.len != 0 or plugins.len != 0 or
+        options.plugins.len != 0 or hasAstTransformHooks(self.plugins) or
+        hasAstTransformHooks(plugins) or hasAstTransformHooks(options.plugins) or
+        !options.strip_types or options.verbatim_module_syntax or options.unsupported.hasAny() or
+        options.minify_syntax or minify_identifiers or options.experimental_decorators or options.emit_decorator_metadata or
+        options.react_refresh or options.styled_components or options.emotion or options.jsx_transform or
+        ast.has_jsx or ast.has_decorator or module.uses_top_level_await or module.self_uses_top_level_await or
+        has_dropped_labeled_statement or has_mapped_import_split or
+        define_mod.astUsesDefine(ast, options.define) or module.import_bindings.len == 0 or
+        !everyTypeScriptImportBindingHasValueUse(self, module, ast, true, false)) return false;
+
+    const semantic = &(module.semantic orelse return false);
+    if (ast.nodes.items.len == 0) return false;
+    const root = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
+    );
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.getNode(root).tag != .program) return false;
+    const root_raw = @backingInt(root);
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(self.allocator);
+    if (!collectRetainedPreflightParents(self.allocator, ast, root, &parents)) return false;
+
+    var surviving_value_uses: std.AutoHashMapUnmanaged(u32, bool) = .empty;
+    defer surviving_value_uses.deinit(self.allocator);
+    for (module.import_bindings) |binding| {
+        if (binding.is_helper or binding.local_role != .import_binding or binding.callsite_target != null or
+            binding.source_type_only == true or binding.import_record_index >= module.import_records.len) return false;
+        const record = module.import_records[binding.import_record_index];
+        if (record.kind != .static_import or record.callsite_lowered or record.ts_elided or
+            record.is_lazy_resolved) return false;
+        const local = binding_scanner_mod.resolveImportLocalSymbol(binding, .{
+            .module_index = module.index,
+            .ast = ast,
+            .symbol_ids = semantic.symbol_ids,
+            .symbols = semantic.symbols.items,
+        });
+        const sid = local.semanticIndex() orelse return false;
+        if (sid >= semantic.symbols.items.len or surviving_value_uses.contains(sid)) return false;
+        surviving_value_uses.put(self.allocator, sid, false) catch return false;
+        if (semantic.symbols.items[sid].kind != .import_binding) return false;
+    }
+
+    for (semantic.references) |reference| {
+        if (!reference.isValueUse()) continue;
+        const survives = surviving_value_uses.getPtr(@backingInt(reference.symbol_id)) orelse continue;
+        if (reference.node_index.isNone()) return false;
+        const raw = @backingInt(reference.node_index);
+        if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len or
+            ast.nodes.items[raw].tag != .identifier_reference or
+            (semantic.symbol_ids[raw] orelse return false) != @backingInt(reference.symbol_id)) return false;
+
+        var current = raw;
+        var found_drop_ancestor = false;
+        var hops: usize = 0;
+        while (current != root_raw) : (hops += 1) {
+            if (hops >= ast.nodes.items.len) return false;
+            const parent = parents.get(current) orelse return false;
+            if (parent >= ast.nodes.items.len) return false;
+            if (drop_mod.isConsoleCallInAst(ast, ast.nodes.items[parent])) {
+                found_drop_ancestor = true;
+                break;
+            }
+            current = parent;
+        }
+        if (!found_drop_ancestor) survives.* = true;
+    }
+    var value_uses = surviving_value_uses.valueIterator();
+    while (value_uses.next()) |has_surviving_value_use| if (!has_surviving_value_use.*) return false;
+    return true;
+}
+
+/// Import elision is a source-time TypeScript decision. A transformed call can
+/// remove the last value read without changing whether its original import
+/// had runtime meaning. Carry that decision across metadata rescans only when
+/// the rebuilt binding has the same source local anchor and shape.
+fn carrySourceTypeOnlyImportClassificationsAcrossAstRescan(
+    allocator: std.mem.Allocator,
+    previous: []const binding_scanner_mod.ImportBinding,
+    refreshed: []binding_scanner_mod.ImportBinding,
+) !void {
+    const Anchor = struct {
+        binding_index: usize,
+        ambiguous: bool = false,
+    };
+    var by_local_span: std.AutoHashMapUnmanaged(u64, Anchor) = .empty;
+    defer by_local_span.deinit(allocator);
+
+    for (previous, 0..) |binding, index| {
+        if (binding.local_role != .import_binding or binding.is_helper or
+            binding.callsite_target != null or binding.source_type_only == null or
+            binding.local_span.start >= binding.local_span.end) continue;
+        const key = (@as(u64, binding.local_span.start) << 32) | binding.local_span.end;
+        const entry = try by_local_span.getOrPut(allocator, key);
+        if (entry.found_existing) {
+            entry.value_ptr.ambiguous = true;
+        } else {
+            entry.value_ptr.* = .{ .binding_index = index };
+        }
+    }
+
+    for (refreshed) |*binding| {
+        if (binding.source_type_only != null or binding.local_role != .import_binding or
+            binding.is_helper or binding.callsite_target != null or
+            binding.local_span.start >= binding.local_span.end) continue;
+        const key = (@as(u64, binding.local_span.start) << 32) | binding.local_span.end;
+        const entry = by_local_span.get(key) orelse continue;
+        if (entry.ambiguous or entry.binding_index >= previous.len) continue;
+        const source = previous[entry.binding_index];
+        if (source.kind != binding.kind or source.local_role != binding.local_role or
+            source.is_helper != binding.is_helper or
+            !std.mem.eql(u8, source.local_name, binding.local_name) or
+            !std.mem.eql(u8, source.imported_name, binding.imported_name)) continue;
+        binding.source_type_only = source.source_type_only;
+    }
+}
+
 /// Plain JavaScript imports are not elided by type-only import handling. A
 /// console-drop edit can therefore refresh their module records from the
 /// transformed AST and keep the same semantic graph, provided this is the only
@@ -9071,6 +9214,19 @@ fn canKeepPrepassSemanticGraphPrepared(
             options,
             retained_simple_console_drops,
         );
+    const possible_used_typescript_imports_for_console_drop =
+        canRetainUsedTypeScriptImportsForConsoleDrop(
+            self,
+            module,
+            ast,
+            options,
+            plugins,
+            retained_simple_console_drops,
+            false,
+            retained_define_references,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
     // Non-verbatim plain JS imports normally stay on the analyzer path when a
     // transform runs. These two audited subsets preserve import edges exactly:
     // graph-neutral regex literals and optional catch binding insertion.
@@ -9090,6 +9246,7 @@ fn canKeepPrepassSemanticGraphPrepared(
         possible_plain_javascript_imports_for_identifier_minification or
         possible_used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop or
+        possible_used_typescript_imports_for_console_drop or
         possible_plain_javascript_imports_for_audited_subset;
     if (!hasStableRuntimeImports(ast, options, allow_nonverbatim_imports_before_transform_scan)) return false;
 
@@ -9282,10 +9439,24 @@ fn canKeepPrepassSemanticGraphPrepared(
             has_dropped_labeled_statement,
             has_mapped_import_split,
         );
+    const used_typescript_imports_for_console_drop =
+        canRetainUsedTypeScriptImportsForConsoleDrop(
+            self,
+            module,
+            ast,
+            options,
+            plugins,
+            retained_simple_console_drops,
+            found_other_transform,
+            retained_define_references,
+            has_dropped_labeled_statement,
+            has_mapped_import_split,
+        );
     const allow_nonverbatim_imports_after_transform_scan = allow_mapped_runtime_imports or
         unchanged_plain_javascript_imports_for_identifier_minification or
         used_typescript_imports_for_identifier_minification or
         allow_plain_javascript_imports_for_console_drop or
+        used_typescript_imports_for_console_drop or
         possible_plain_javascript_imports_for_audited_subset;
     if (!options.verbatim_module_syntax and
         allow_nonverbatim_imports_before_transform_scan != allow_nonverbatim_imports_after_transform_scan and
@@ -11314,6 +11485,184 @@ fn hasTopLevelAwaitForTest(source: []const u8, corruption: RetainedTlaTestCorrup
         if (corruption == .missing_scopes) &.{} else scopes,
         &scope_owner_map,
     );
+}
+
+test "TypeScript console-drop import gate rejects missing and mismatched surviving references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { value } from './values.js'; console.log(value); process.stdout.write(String(value));";
+
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.ts");
+    module.source = source;
+    module.module_type = .ts;
+    module.ast = parser.ast;
+    module.import_records = try import_scanner.extractImports(allocator, &parser.ast);
+    module.import_bindings = try binding_scanner_mod.extractImportBindings(
+        allocator,
+        &parser.ast,
+        module.import_records,
+        null,
+    );
+    for (module.import_bindings) |*binding| binding.source_type_only = false;
+    const previous_source_bindings = module.import_bindings;
+    const exact_refreshed_bindings = try allocator.dupe(binding_scanner_mod.ImportBinding, previous_source_bindings);
+    exact_refreshed_bindings[0].source_type_only = null;
+    try carrySourceTypeOnlyImportClassificationsAcrossAstRescan(
+        allocator,
+        previous_source_bindings,
+        exact_refreshed_bindings,
+    );
+    try std.testing.expectEqual(@as(?bool, false), exact_refreshed_bindings[0].source_type_only);
+
+    const mismatched_refreshed_bindings = try allocator.dupe(binding_scanner_mod.ImportBinding, previous_source_bindings);
+    mismatched_refreshed_bindings[0].source_type_only = null;
+    mismatched_refreshed_bindings[0].local_span.start += 1;
+    try carrySourceTypeOnlyImportClassificationsAcrossAstRescan(
+        allocator,
+        previous_source_bindings,
+        mismatched_refreshed_bindings,
+    );
+    try std.testing.expectEqual(@as(?bool, null), mismatched_refreshed_bindings[0].source_type_only);
+
+    const ambiguous_source_bindings = try allocator.alloc(
+        binding_scanner_mod.ImportBinding,
+        previous_source_bindings.len + 1,
+    );
+    @memcpy(ambiguous_source_bindings[0..previous_source_bindings.len], previous_source_bindings);
+    ambiguous_source_bindings[previous_source_bindings.len] = previous_source_bindings[0];
+    ambiguous_source_bindings[previous_source_bindings.len].source_type_only = true;
+    const ambiguous_refreshed_bindings = try allocator.dupe(binding_scanner_mod.ImportBinding, previous_source_bindings);
+    ambiguous_refreshed_bindings[0].source_type_only = null;
+    try carrySourceTypeOnlyImportClassificationsAcrossAstRescan(
+        allocator,
+        ambiguous_source_bindings,
+        ambiguous_refreshed_bindings,
+    );
+    try std.testing.expectEqual(@as(?bool, null), ambiguous_refreshed_bindings[0].source_type_only);
+
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .node_scope_provenance = analyzer.node_scope_provenance,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+
+    const Plugin = @import("../plugin.zig").Plugin;
+    const no_plugins: []const Plugin = &.{};
+    const test_context = .{
+        .allocator = allocator,
+        .flow = false,
+        .worklet_transform = false,
+        .plugins = no_plugins,
+        .styled_components = false,
+        .emotion = false,
+    };
+    const options: TransformOptions = .{ .strip_types = true, .drop_console = true };
+    const semantic = if (module.semantic) |*current| current else unreachable;
+    const binding = module.import_bindings[0];
+    const sid = binding_scanner_mod.resolveImportLocalSymbol(binding, .{
+        .module_index = module.index,
+        .ast = &parser.ast,
+        .symbol_ids = semantic.symbol_ids,
+        .symbols = semantic.symbols.items,
+    }).semanticIndex() orelse return error.MissingTestImportSymbol;
+    const surviving_start = std.mem.indexOf(u8, source, "process.stdout.write") orelse unreachable;
+    const original_references = semantic.references;
+    const surviving_reference_index = for (original_references, 0..) |reference, index| {
+        if (@backingInt(reference.symbol_id) != sid or !reference.isValueUse() or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.span.start >= surviving_start) break index;
+    } else return error.MissingSurvivingImportReference;
+    const surviving_node = @backingInt(original_references[surviving_reference_index].node_index);
+    const original_node_symbol = semantic.symbol_ids[surviving_node] orelse return error.MissingSurvivingNodeSymbol;
+
+    const retains = canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    );
+    try std.testing.expect(retains);
+
+    const without_surviving_reference = try allocator.alloc(SemanticReference, original_references.len - 1);
+    @memcpy(without_surviving_reference[0..surviving_reference_index], original_references[0..surviving_reference_index]);
+    @memcpy(without_surviving_reference[surviving_reference_index..], original_references[surviving_reference_index + 1 ..]);
+    if (module.semantic) |*current| current.references = without_surviving_reference;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    if (module.semantic) |*current| current.references = original_references;
+
+    const missing_node_references = try allocator.dupe(SemanticReference, original_references);
+    missing_node_references[surviving_reference_index].node_index = .none;
+    if (module.semantic) |*current| current.references = missing_node_references;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    if (module.semantic) |*current| current.references = original_references;
+
+    analyzer.symbol_ids.items[surviving_node] = null;
+    try std.testing.expect(!canRetainUsedTypeScriptImportsForConsoleDrop(
+        &test_context,
+        &module,
+        &parser.ast,
+        options,
+        no_plugins,
+        true,
+        false,
+        false,
+        false,
+        false,
+    ));
+    analyzer.symbol_ids.items[surviving_node] = original_node_symbol;
 }
 
 test "retained graph TLA scan excludes function awaits and keeps module awaits" {
@@ -16741,6 +17090,7 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
 ) !void {
     const ast = if (module.ast) |*actual| actual else return;
     const previous_import_records = module.import_records;
+    const previous_import_bindings = module.import_bindings;
 
     var scan_result: import_scanner.ScanResult = undefined;
     {
@@ -16783,7 +17133,18 @@ pub fn resyncModuleGraphMetadataAfterAstMutation(
             }
         }
 
-        module.import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records, helper_refs);
+        const refreshed_import_bindings = try binding_scanner_mod.extractImportBindings(
+            arena_alloc,
+            ast,
+            module.import_records,
+            helper_refs,
+        );
+        try carrySourceTypeOnlyImportClassificationsAcrossAstRescan(
+            arena_alloc,
+            previous_import_bindings,
+            refreshed_import_bindings,
+        );
+        module.import_bindings = refreshed_import_bindings;
 
         // PR #3738 (C6 perf): namespace 외 모든 import local 도 interest 에 추가 — linker 의
         // .named / cjs default / esm wrapper default 분석에 share. transform_prepass 시점에는

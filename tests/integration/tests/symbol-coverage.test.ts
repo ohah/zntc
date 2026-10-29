@@ -7977,6 +7977,44 @@ describe('symbol identity coverage gate (#4819)', () => {
         stdout: 'ok',
       },
       {
+        name: 'TypeScript dropped-only external import still evaluates on fallback',
+        source:
+          "import { value } from './external-values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded' : 'missing');",
+        files: { 'external-values.js': 'globalThis.loaded = true; exports.value = 42;' },
+        args: ['--external:./external-values.js'],
+        extension: 'ts',
+        graph: 'reanalyzed',
+        stdout: 'loaded',
+      },
+      {
+        name: 'TypeScript import with a surviving value use retains the graph',
+        source:
+          "import { value } from './values.js'; console.log(value); process.stdout.write(globalThis.loaded ? 'loaded:' + String(value) : 'missing');",
+        files: { 'values.js': 'globalThis.loaded = true; export const value = 42;' },
+        extension: 'ts',
+        graph: 'retained',
+        stdout: 'loaded:42',
+      },
+      {
+        name: 'TypeScript surviving external import retains module evaluation',
+        source:
+          "import { value } from './external-values.js'; console.log(value); process.stdout.write(globalThis.loaded ? String(value) : 'missing');",
+        files: { 'external-values.js': 'globalThis.loaded = true; exports.value = 42;' },
+        args: ['--external:./external-values.js'],
+        extension: 'ts',
+        graph: 'retained',
+        stdout: '42',
+      },
+      {
+        name: 'TypeScript import with one dropped-only binding stays on fallback',
+        source:
+          "import { live, dropped } from './values.js'; console.log(dropped); process.stdout.write(String(live));",
+        files: { 'values.js': 'export const live = 42; export const dropped = 1;' },
+        extension: 'ts',
+        graph: 'reanalyzed',
+        stdout: '42',
+      },
+      {
         name: 'unresolved global only in removed subtree',
         source: "console.log(missingGlobal + readMissing()); process.stdout.write('ok');",
         graph: 'retained',
