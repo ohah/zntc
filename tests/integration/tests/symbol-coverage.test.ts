@@ -11805,11 +11805,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: 'inner true 9\n',
       },
       {
-        name: 'static-block-super-write-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'static-block-super-assignment-preserves-inherited-setter-home-receiver-and-result',
+        graph: 'retained',
         source:
-          'class Base { static set value(next) { this.saved = next; } } class Counter extends Base { static { super.value = 4; } } console.log(Counter.saved);',
-        stdout: '4\n',
+          "const events = []; class Grand extends Object { static get value() { events.push('getter'); return -1; } static set value(next) { events.push('grand:' + (this === Base ? 'base' : this === Middle ? 'middle' : 'child') + ':' + next); this.saved = 'grand:' + next; } } class Base extends Grand { static set value(next) { events.push('base:' + (this === Base ? 'base' : this === Middle ? 'middle' : 'child') + ':' + next); this.saved = 'base:' + next; } } class Middle extends Base { static set value(next) { events.push('middle:' + (this === Base ? 'base' : this === Middle ? 'middle' : 'child') + ':' + next); this.saved = 'middle:' + next; } } class Counter extends Base { static next() { events.push('rhs'); return 7; } static { this.assigned = super.value = this.next(); this.after = this.saved; } static read() { return [this.assigned, this.after, this.saved].join('|'); } } console.log(events.join(','), Counter.read(), Base.saved, Middle.saved, Grand.saved);",
+        stdout: 'rhs,base:child:7 7|base:7|base:7 undefined undefined undefined\n',
       },
       {
         name: 'static-block-super-compound-write-stays-on-reanalysis',
@@ -12484,6 +12484,162 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         'class Base extends Object { static get value() { return 3; } } ' +
         'class Counter extends Base { static { this.result = super.value++; } }';
       writeFileSync(getterOnlyEntry, getterOnlySource);
+      const nativeGetterOnly = spawnSync('node', [getterOnlyEntry], { encoding: 'utf8' });
+      expect(nativeGetterOnly.status).not.toBe(0);
+      expect(nativeGetterOnly.stderr).toContain('TypeError');
+      const getterOnlyBuild = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          getterOnlyEntry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          getterOnlyOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(getterOnlyBuild.status, getterOnlyBuild.stderr).toBe(0);
+      expect(getterOnlyBuild.stderr).toContain('semantic_graph=retained');
+      expect(getterOnlyBuild.stderr).toMatch(/clean=1(?:\s|$)/);
+      const downlevelGetterOnly = spawnSync('node', [getterOnlyOutput], { encoding: 'utf8' });
+      expect(downlevelGetterOnly.status).toBe(nativeGetterOnly.status);
+      expect(downlevelGetterOnly.stderr).toContain('TypeError');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained static-block super assignments expose ten compileable output mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-assignment-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = 'rhs,grand:child:7 7|grand:7|grand:7 own undefined undefined undefined\n';
+    const source = [
+      'const events = [];',
+      "class Grand extends Object { static get value() { events.push('getter'); return -1; } static set value(next) { events.push('grand:' + (this === Base ? 'base' : this === Middle ? 'middle' : 'child') + ':' + next); this.saved = 'grand:' + next; } }",
+      'class Base extends Grand {}',
+      "class Middle extends Base { static set value(next) { events.push('middle:' + (this === Base ? 'base' : this === Middle ? 'middle' : 'child') + ':' + next); this.saved = 'middle:' + next; } }",
+      'class Counter extends Base { static next() { events.push("rhs"); return 7; } static { Object.defineProperty(this, "value", { value: "own", writable: true, configurable: true }); } static { this.assigned = super.value = this.next(); this.after = this.saved; } static read() { return [this.assigned, this.after, this.saved].join("|"); } }',
+      'console.log(events.join(","), Counter.read(), Counter.value, Base.saved, Middle.saved, Grand.saved);',
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const setMatch = emitted.match(/__superSet\(([\w$]+), "value", ([^,\n]+), ([\w$]+)\)/);
+      expect(setMatch).toBeDefined();
+      const setCall = setMatch?.[0];
+      const home = setMatch?.[1];
+      const value = setMatch?.[2];
+      const receiver = setMatch?.[3];
+      expect(setCall).toBeDefined();
+      expect(home).toBeDefined();
+      expect(value).toBeDefined();
+      expect(receiver).toBeDefined();
+      expect(value).toContain('next()');
+
+      const mutations = [
+        {
+          name: 'wrong-home-object',
+          from: setCall!,
+          to: setCall!.replace(`${home},`, 'Object,'),
+        },
+        {
+          name: 'wrong-receiver',
+          from: setCall!,
+          to: setCall!.replace(`, ${receiver})`, `, ${home})`),
+        },
+        {
+          name: 'wrong-property-key',
+          from: setCall!,
+          to: setCall!.replace('"value"', '"missing"'),
+        },
+        {
+          name: 'skip-right-hand-side-evaluation',
+          from: setCall!,
+          to: setCall!.replace(value!, '7'),
+        },
+        {
+          name: 'skip-setter-descriptor',
+          from: 'if (desc.set) {',
+          to: 'if (false && desc.set) {',
+        },
+        {
+          name: 'setter-called-with-home-object',
+          from: 'desc.set.call(receiver, value);',
+          to: 'desc.set.call(parent, value);',
+        },
+        {
+          name: 'setter-receives-changed-value',
+          from: 'desc.set.call(receiver, value);',
+          to: 'desc.set.call(receiver, value + 1);',
+        },
+        {
+          name: 'assignment-returns-changed-value',
+          from: 'return value;',
+          to: 'return value + 1;',
+        },
+        {
+          name: 'skip-prototype-search',
+          from: 'parent = Object.getPrototypeOf(parent);',
+          to: 'parent = null;',
+        },
+        {
+          name: 'skip-descriptor-search',
+          from: 'while (parent) {',
+          to: 'while (false) {',
+        },
+      ];
+      for (const mutation of mutations) {
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(10);
+
+      const getterOnlyEntry = join(dir, 'getter-only.js');
+      const getterOnlyOutput = join(dir, 'getter-only.cjs');
+      writeFileSync(
+        getterOnlyEntry,
+        'class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { super.value = 7; } }',
+      );
       const nativeGetterOnly = spawnSync('node', [getterOnlyEntry], { encoding: 'utf8' });
       expect(nativeGetterOnly.status).not.toBe(0);
       expect(nativeGetterOnly.stderr).toContain('TypeError');
