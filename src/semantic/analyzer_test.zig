@@ -4044,3 +4044,304 @@ test "generic owned name parse arena result and ModuleStore transfer preserve kn
 test "generic owned name escaped private declarations register owned names through OOM" {
     try genericOwnedNameAllocationSweep("class C{#\\u0061=1;read(){return this.#a}}", "private-escaped");
 }
+
+const GenericOwnedNameLedger = struct {
+    const Record = struct {
+        pointer: [*]u8,
+        len: usize,
+        alignment: std.mem.Alignment,
+        live: bool = true,
+        moved: bool = false,
+        frees: usize = 0,
+    };
+    child: std.mem.Allocator,
+    records: [256]Record = undefined,
+    count: usize = 0,
+    invalid_free: usize = 0,
+    duplicate_free: usize = 0,
+    invalid_resize: usize = 0,
+    overflow: bool = false,
+
+    fn allocator(self: *GenericOwnedNameLedger) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+    fn locate(self: *const GenericOwnedNameLedger, memory: []const u8, alignment: std.mem.Alignment) ?usize {
+        for (self.records[0..self.count], 0..) |record, index| {
+            if (record.live and @intFromPtr(record.pointer) == @intFromPtr(memory.ptr) and record.len == memory.len and record.alignment == alignment) return index;
+        }
+        return null;
+    }
+    fn hasName(self: *const GenericOwnedNameLedger, name: []const u8) bool {
+        return self.locate(name, .@"1") != null;
+    }
+    fn liveCount(self: *const GenericOwnedNameLedger) usize {
+        var count: usize = 0;
+        for (self.records[0..self.count]) |record| if (record.live) {
+            count += 1;
+        };
+        return count;
+    }
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *GenericOwnedNameLedger = @ptrCast(@alignCast(ctx));
+        if (self.count == self.records.len) {
+            self.overflow = true;
+            return null;
+        }
+        const pointer = self.child.rawAlloc(len, alignment, ra) orelse return null;
+        self.records[self.count] = .{ .pointer = pointer, .len = len, .alignment = alignment };
+        self.count += 1;
+        return pointer;
+    }
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ra: usize) bool {
+        const self: *GenericOwnedNameLedger = @ptrCast(@alignCast(ctx));
+        const index = self.locate(memory, alignment) orelse {
+            self.invalid_resize += 1;
+            return false;
+        };
+        if (!self.child.rawResize(memory, alignment, len, ra)) return false;
+        self.records[index].len = len;
+        return true;
+    }
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ra: usize) ?[*]u8 {
+        const self: *GenericOwnedNameLedger = @ptrCast(@alignCast(ctx));
+        const index = self.locate(memory, alignment) orelse {
+            self.invalid_resize += 1;
+            return null;
+        };
+        // Reserve the record before a successful remap can retire old memory.
+        if (self.count == self.records.len) {
+            self.overflow = true;
+            return null;
+        }
+        const pointer = self.child.rawRemap(memory, alignment, len, ra) orelse return null;
+        if (pointer == memory.ptr) {
+            self.records[index].len = len;
+        } else {
+            self.records[index].live = false;
+            self.records[index].moved = true;
+            self.records[self.count] = .{ .pointer = pointer, .len = len, .alignment = alignment };
+            self.count += 1;
+        }
+        return pointer;
+    }
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *GenericOwnedNameLedger = @ptrCast(@alignCast(ctx));
+        const index = self.locate(memory, alignment) orelse {
+            self.invalid_free += 1;
+            for (self.records[0..self.count]) |*record| {
+                if (@intFromPtr(record.pointer) == @intFromPtr(memory.ptr) and record.len == memory.len and record.alignment == alignment and !record.live and !record.moved) {
+                    record.frees += 1;
+                    self.duplicate_free += 1;
+                    break;
+                }
+            }
+            // Invalid/duplicate ownership is asserted below, never forwarded.
+            return;
+        };
+        self.records[index].live = false;
+        self.records[index].frees += 1;
+        self.child.rawFree(memory, alignment, ra);
+    }
+    fn deinit(self: *GenericOwnedNameLedger) void {
+        // Failure-only test cleanup: assertions happen before reclaiming leaks.
+        for (self.records[0..self.count]) |*record| if (record.live) {
+            self.child.rawFree(record.pointer[0..record.len], record.alignment, @returnAddress());
+            record.live = false;
+        };
+    }
+};
+
+fn genericOwnedNamePointerCount(analyzer: *const SemanticAnalyzer, name: []const u8) usize {
+    var count: usize = 0;
+    for (analyzer.resolved_names.items) |owned| {
+        if (owned.ptr == name.ptr and owned.len == name.len) count += 1;
+    }
+    return count;
+}
+
+fn genericOwnedNameRegistryValid(analyzer: *const SemanticAnalyzer, ledger: *const GenericOwnedNameLedger) bool {
+    for (analyzer.resolved_names.items) |owned| {
+        if (genericOwnedNamePointerCount(analyzer, owned) != 1 or !ledger.hasName(owned)) return false;
+    }
+    return true;
+}
+
+fn genericOwnedNameIsRawSourceSlice(tree: *const @import("../parser/ast.zig").Ast, text: []const u8, span: @import("../lexer/token.zig").Span) bool {
+    if ((span.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT) != 0 or
+        span.start > span.end or span.end > tree.source.len) return false;
+    const expected = tree.source[span.start..span.end];
+    return text.ptr == expected.ptr and text.len == expected.len;
+}
+
+test "generic owned name registry actual source allocations have one exact owner" {
+    const Role = enum { borrowed, escaped, namespace, private, reused, diagnostic, if_function };
+    const cases = [_]struct { source: []const u8, role: Role, owners: usize }{
+        .{ .source = "let value=1;value;", .role = .borrowed, .owners = 0 },
+        .{ .source = "let \\u0061=1;a;", .role = .escaped, .owners = 1 },
+        .{ .source = "namespace N{export const value=1}", .role = .namespace, .owners = 1 },
+        .{ .source = "class C{#\\u0061=1;read(){return this.#a}}", .role = .private, .owners = 1 },
+        .{ .source = "var a=1;var \\u0061=2;a;", .role = .reused, .owners = 1 },
+        .{ .source = "let a=1;let \\u0061=2;", .role = .diagnostic, .owners = 1 },
+        .{ .source = "let a=1;if(true)function \\u0061(){}", .role = .if_function, .owners = 1 },
+    };
+    for (cases) |case| {
+        var scanner = try Scanner.init(std.testing.allocator, case.source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        parser.configureFromExtension(".ts");
+        const root = try parser.parse();
+        var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+        defer ledger.deinit();
+        var analyzer = SemanticAnalyzer.init(ledger.allocator(), &parser.ast);
+        var owner_alive = true;
+        defer if (owner_alive) analyzer.deinit();
+        analyzer.is_ts = true;
+        try analyzer.analyze();
+        const root_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse return error.MissingActualRegistryRoot;
+        var valid = genericOwnedNameRegistryValid(&analyzer, &ledger) and analyzer.resolved_names.items.len == case.owners;
+        valid = valid and ((analyzer.errors.items.len != 0) == (case.role == .diagnostic));
+        if (case.role == .borrowed) {
+            const key = analyzer.scope_maps.items[root_scope].getKey("value") orelse return error.MissingBorrowedSourceKey;
+            const sid = analyzer.scope_maps.items[root_scope].get("value") orelse return error.MissingBorrowedSourceBinding;
+            valid = valid and genericOwnedNamePointerCount(&analyzer, key) == 0 and !ledger.hasName(key) and
+                genericOwnedNameIsRawSourceSlice(&parser.ast, key, analyzer.symbols.items[sid].name);
+        } else if (case.role == .escaped or case.role == .reused or case.role == .diagnostic or case.role == .if_function) {
+            const sid = analyzer.scope_maps.items[root_scope].get("a") orelse return error.MissingActualRegistryBinding;
+            const key = analyzer.scope_maps.items[root_scope].getKey("a") orelse return error.MissingActualRegistryKey;
+            if (case.role == .escaped) {
+                valid = valid and genericOwnedNamePointerCount(&analyzer, key) == 1;
+                const alias = analyzer.scope_maps.items[root_scope].getKey("\\u0061") orelse return error.MissingActualRawAlias;
+                valid = valid and analyzer.scope_maps.items[root_scope].get(alias) == sid and genericOwnedNamePointerCount(&analyzer, alias) == 0 and
+                    genericOwnedNameIsRawSourceSlice(&parser.ast, alias, analyzer.symbols.items[sid].name);
+            } else {
+                valid = valid and genericOwnedNamePointerCount(&analyzer, key) == 0 and
+                    genericOwnedNameIsRawSourceSlice(&parser.ast, key, analyzer.symbols.items[sid].name);
+            }
+            var known_bindings: usize = 0;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .binding_identifier) continue;
+                const name = parser.ast.getText(node.span);
+                if (std.mem.eql(u8, name, "a") or std.mem.eql(u8, name, "\\u0061")) {
+                    if (analyzer.symbol_ids.items[raw]) |known| {
+                        if (@as(usize, known) == sid) known_bindings += 1;
+                    }
+                }
+            }
+            if (case.role == .reused) valid = valid and known_bindings == 2;
+            std.debug.print("generic-owned-registry branch={s} knownBindings={d} annexTargets={d} diagnostics={d}\n", .{ @tagName(case.role), known_bindings, analyzer.annex_b_variable_targets.count(), analyzer.errors.items.len });
+            if (case.role == .if_function) {
+                var actual_functions: usize = 0;
+                for (parser.ast.nodes.items) |declaration| {
+                    if (declaration.tag != .function_declaration) continue;
+                    actual_functions += 1;
+                    const name_node = parser.ast.readExtraNode(declaration.data.extra, @import("../parser/ast.zig").FunctionExtra.name);
+                    const name = parser.ast.getNode(name_node);
+                    const attached = analyzer.symbol_ids.items[@backingInt(name_node)];
+                    std.debug.print("generic-owned-registry if-function tag={s} nameTag={s} raw={s} attachedSID={any} existingKind={s} strict={}\n", .{ @tagName(declaration.tag), @tagName(name.tag), parser.ast.getText(name.span), attached, @tagName(analyzer.symbols.items[sid].kind), analyzer.scopes.items[root_scope].is_strict });
+                    valid = valid and analyzer.symbols.items[sid].kind == .variable_let and !analyzer.scopes.items[root_scope].is_strict;
+                    if (attached) |function_id| {
+                        valid = valid and function_id < analyzer.symbols.items.len and @as(usize, function_id) != sid and analyzer.symbols.items[function_id].kind.isFunctionLike();
+                    } else valid = false;
+                }
+                valid = valid and actual_functions == 1 and analyzer.annex_b_variable_targets.count() == 0;
+            }
+        } else if (case.role == .namespace) {
+            var parameters: usize = 0;
+            for (analyzer.symbols.items, 0..) |symbol, sid| {
+                if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+                parameters += 1;
+                const key = analyzer.scope_maps.items[symbol.scope_id.toIndex()].getKey(symbol.synthetic_name) orelse return error.MissingActualSyntheticKey;
+                valid = valid and genericOwnedNamePointerCount(&analyzer, symbol.synthetic_name) == 1 and key.ptr == symbol.synthetic_name.ptr and analyzer.scope_maps.items[symbol.scope_id.toIndex()].get(key) == sid;
+            }
+            valid = valid and parameters == 1 and analyzer.namespace_iife_param_names.items.len == 0;
+        } else if (case.role == .private) {
+            if (analyzer.resolved_names.items.len != 0) std.debug.print("generic-owned-registry private StringValue={s} len={d}\n", .{ analyzer.resolved_names.items[0], analyzer.resolved_names.items[0].len });
+            valid = valid and analyzer.resolved_names.items.len != 0 and std.mem.eql(u8, analyzer.resolved_names.items[0], "#a");
+        }
+        std.debug.print("generic-owned-registry role={s} pool={d} expected={d} valid={}\n", .{ @tagName(case.role), analyzer.resolved_names.items.len, case.owners, valid });
+        analyzer.deinit();
+        owner_alive = false;
+        try std.testing.expect(valid);
+        try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+        try std.testing.expectEqual(@as(usize, 0), ledger.invalid_free + ledger.duplicate_free + ledger.invalid_resize);
+        try std.testing.expect(!ledger.overflow);
+    }
+}
+
+test "generic owned name registry ledger checks actual release on success and OOM" {
+    const sources = [_][]const u8{
+        "let value=1;value;",
+        "let \\u0061=1;a;",
+        "namespace N{export const value=1}",
+        "class C{#\\u0061=1;read(){return this.#a}}",
+        "let \\u0061=1;let \\u0062=2;let \\u0063=3;let \\u0064=4;let \\u0065=5;let \\u0066=6;let \\u0067=7;let \\u0068=8;let \\u0069=9;",
+        "let a=1;if(true)function a(){}",
+        "let a=1;if(true)function \\u0061(){}",
+        "function f(a){if(true)function \\u0061(){}}",
+        "if(true)function \\u0061(){}",
+    };
+    for (sources, 0..) |source, family| {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        parser.configureFromExtension(".ts");
+        const input_root = try parser.parse();
+        var total: usize = 0;
+        var prior_names_on_oom: usize = 0;
+        var fail_at: usize = 0;
+        while (fail_at <= total) : (fail_at += 1) {
+            var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+            defer ledger.deinit();
+            var failing = OneShotFailAllocator{ .child = ledger.allocator(), .fail_at = if (fail_at == 0) std.math.maxInt(usize) else fail_at - 1 };
+            var analyzer = SemanticAnalyzer.init(failing.allocator(), &parser.ast);
+            var owner_alive = true;
+            defer if (owner_alive) analyzer.deinit();
+            analyzer.is_ts = true;
+            if (fail_at == 0) {
+                try analyzer.analyze();
+                total = failing.count;
+                if (family >= 5) {
+                    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+                    const targets = analyzer.annex_b_variable_targets.count();
+                    std.debug.print("generic-owned-registry lookup family={d} acceptedTargets={d} pool={d}\n", .{ family, targets, analyzer.resolved_names.items.len });
+                    try std.testing.expectEqual(@as(usize, if (family == 8) 1 else 0), targets);
+                    if (family == 7) {
+                        var matching_parameters: usize = 0;
+                        for (analyzer.symbols.items) |symbol| {
+                            if (symbol.kind != .parameter or symbol.synthetic_kind != null) continue;
+                            if (!std.mem.eql(u8, parser.ast.getText(symbol.name), "a")) continue;
+                            const parameters = analyzer.function_parameter_names.get(symbol.scope_id) orelse return error.MissingActualParameterBarrier;
+                            try std.testing.expect(parameters.contains("a"));
+                            matching_parameters += 1;
+                        }
+                        try std.testing.expectEqual(@as(usize, 1), matching_parameters);
+                    }
+                    if (family == 8) {
+                        const actual_root = analyzer.scope_owner_map.get(@backingInt(input_root)) orelse return error.MissingActualAcceptedRoot;
+                        var iterator = analyzer.annex_b_variable_targets.iterator();
+                        while (iterator.next()) |entry| {
+                            const target = @backingInt(entry.value_ptr.variable);
+                            try std.testing.expectEqual(.variable_var, analyzer.symbols.items[target].kind);
+                            try std.testing.expectEqual(actual_root, @backingInt(analyzer.symbols.items[target].scope_id));
+                            try std.testing.expectEqual(@as(?usize, target), analyzer.scope_maps.items[actual_root].get("a"));
+                        }
+                    }
+                }
+            } else {
+                try std.testing.expectError(error.OutOfMemory, analyzer.analyze());
+                if (analyzer.resolved_names.items.len > prior_names_on_oom) prior_names_on_oom = analyzer.resolved_names.items.len;
+            }
+            const registry_valid = genericOwnedNameRegistryValid(&analyzer, &ledger);
+            analyzer.deinit();
+            owner_alive = false;
+            try std.testing.expect(registry_valid);
+            try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+            try std.testing.expectEqual(@as(usize, 0), ledger.invalid_free + ledger.duplicate_free + ledger.invalid_resize);
+            try std.testing.expect(!ledger.overflow);
+        }
+        std.debug.print("generic-owned-registry release family={d} allocationFailures={d} priorNamesOnOOM={d}\n", .{ family, total, prior_names_on_oom });
+        if (family == 4) try std.testing.expect(prior_names_on_oom >= 8);
+    }
+}
