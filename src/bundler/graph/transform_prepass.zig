@@ -3015,6 +3015,29 @@ fn isRetainableAssignmentTarget(
     return true;
 }
 
+/// A single direct identifier in an array assignment head is moved into the
+/// generated for-of body before the body is visited. `moveLoopHead` relocates
+/// that exact source reference to the generated body scope, and the ordinary
+/// destructuring assignment visitor records the emitted read/write edges.
+/// Keep this first retained loop-head shape narrow: additional elements,
+/// defaults, nested patterns, holes, rest, and member targets have separate
+/// iteration/evaluation behavior and stay on semantic reanalysis.
+fn isRetainableSimpleForOfArrayAssignmentHead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    head_idx: ast_mod.NodeIndex,
+) bool {
+    if (head_idx.isNone() or @backingInt(head_idx) >= ast.nodes.items.len) return false;
+    const head = ast.getNode(head_idx);
+    if (head.tag != .array_assignment_target or head.data.list.len != 1) return false;
+    const start = head.data.list.start;
+    if (start >= ast.extra_data.items.len) return false;
+    const raw_target = ast.extra_data.items[start];
+    if (raw_target >= ast.nodes.items.len) return false;
+    const target_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_target));
+    return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
+}
+
 /// A direct `super` property access can keep its exact home-object identity
 /// through the class/object super-property transformer. A caller may admit
 /// optional computed-key transforms only when the full graph preflight checks
@@ -7165,6 +7188,30 @@ fn canRetainGraphForAuditedSyntaxSubset(
             defer ast.allocator.free(target_nodes);
             for (target_nodes) |target_raw| {
                 lowered_destructuring_assignment_nodes.put(ast.allocator, target_raw, {}) catch return false;
+            }
+        }
+
+        // ES5 for-of rewrites an assignment-pattern head to an assignment in
+        // its generated body. Admit only `[boundIdentifier]`: the transformer
+        // moves its source reference to that exact body scope before visiting
+        // the assignment, while the assignment visitor preserves its SymbolId.
+        // Keep every other loop-head pattern on the full analyzer path until
+        // its per-iteration and evaluation-order contract has its own proof.
+        if (options.unsupported.for_of) {
+            for (reachable_nodes) |raw_idx| {
+                const loop = ast.nodes.items[raw_idx];
+                if (loop.tag != .for_of_statement) continue;
+                const head_idx = loop.data.ternary.a;
+                if (!isRetainableSimpleForOfArrayAssignmentHead(ast, semantic, head_idx)) continue;
+                const target_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                    ast.allocator,
+                    ast,
+                    head_idx,
+                ) catch return false;
+                defer ast.allocator.free(target_nodes);
+                for (target_nodes) |target_raw| {
+                    lowered_destructuring_assignment_nodes.put(ast.allocator, target_raw, {}) catch return false;
+                }
             }
         }
 
@@ -18390,6 +18437,141 @@ fn auditedOptionalCatchGraphAdmissionForTest(
     return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
         .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
     }, &get, &set, null, optional_catch_only_out);
+}
+
+fn auditedSimpleForOfAssignmentGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
+    var get = false;
+    var set = false;
+    return canRetainGraphForAuditedSyntaxSubset(std.testing.allocator, &f.ast, &f.semantic, .{
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+    }, &get, &set, null, null);
+}
+
+test "ES5 for-of retains only a single bound array assignment target" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var retained = try runtimeHelperReanalysisTestFixture(
+        allocator,
+        "var value = 0; for ([value] of [[7], [8]]) {} console.log(value);",
+    );
+    try std.testing.expect(isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        findForOfAssignmentHead(&retained.ast) orelse return error.MissingForOfAssignmentHead,
+    ));
+    try std.testing.expect(auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        .none,
+    ));
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        @fromBackingInt(std.math.maxInt(u32)),
+    ));
+
+    const hostile_sources = [_][]const u8{
+        "var left=0,right=0; for ([left,right] of [[7,8]]) {}",
+        "var value=0; for ([[value]] of [[[7]]]) {}",
+        "var value=0; for ([value=1] of [[7]]) {}",
+        "var values=[]; for ([...values] of [[7]]) {}",
+        "var value=0; for ([,value] of [[7,8]]) {}",
+        "var value=0; for ({value} of [{value:7}]) {}",
+        "var object={value:0}; for ([object.value] of [[7]]) {}",
+        "var value=0; for ([{value}] of [[{value:7}]]) {}",
+        "var value=0; for ([value] in {row:[7]}) {}",
+        "async function run(){var value=0; for await ([value] of [[7]]) {}}",
+        "for ([missing] of [[7]]) {}",
+    };
+    for (hostile_sources) |source| {
+        var hostile = try runtimeHelperReanalysisTestFixture(allocator, source);
+        try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&hostile));
+    }
+
+    const head = findForOfAssignmentHead(&retained.ast) orelse return error.MissingForOfAssignmentHead;
+    const pattern = retained.ast.getNode(head);
+    const target_raw = retained.ast.extra_data.items[pattern.data.list.start];
+    const target_raw_index: usize = @intCast(target_raw);
+    const symbol_raw = retained.semantic.symbol_ids[target_raw_index] orelse return error.MissingAssignmentTargetSymbol;
+    const symbol_index: usize = @intCast(symbol_raw);
+    const symbol_ids = @constCast(retained.semantic.symbol_ids);
+    const symbols = @constCast(retained.semantic.symbols.items);
+    const head_raw_index: usize = @intCast(@backingInt(head));
+    const saved_head = retained.ast.nodes.items[head_raw_index];
+    retained.ast.nodes.items[head_raw_index].tag = .object_assignment_target;
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+    retained.ast.nodes.items[head_raw_index].data.list.len = 0;
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+    retained.ast.nodes.items[head_raw_index].data.list.len = 2;
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+    retained.ast.nodes.items[head_raw_index].data.list.start = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[head_raw_index] = saved_head;
+
+    const saved_target = retained.ast.nodes.items[target_raw_index];
+    retained.ast.nodes.items[target_raw_index].tag = .identifier_reference;
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.nodes.items[target_raw_index] = saved_target;
+    retained.ast.extra_data.items[pattern.data.list.start] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableSimpleForOfArrayAssignmentHead(
+        &retained.ast,
+        &retained.semantic,
+        head,
+    ));
+    retained.ast.extra_data.items[pattern.data.list.start] = target_raw;
+
+    const original_symbol_id = symbol_ids[target_raw_index];
+    symbol_ids[target_raw_index] = null;
+    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[target_raw_index] = original_symbol_id;
+    symbol_ids[target_raw_index] = std.math.maxInt(u32);
+    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    symbol_ids[target_raw_index] = original_symbol_id;
+
+    const original_symbol = symbols[symbol_index];
+    symbols[symbol_index].scope_id = .none;
+    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+    symbols[symbol_index] = original_symbol;
+    symbols[symbol_index].scope_id = @fromBackingInt(std.math.maxInt(u32));
+    try std.testing.expect(!auditedSimpleForOfAssignmentGraphAdmissionForTest(&retained));
+}
+
+fn findForOfAssignmentHead(ast: *const ast_mod.Ast) ?ast_mod.NodeIndex {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .for_of_statement and !node.data.ternary.a.isNone() and
+            @backingInt(node.data.ternary.a) < ast.nodes.items.len and
+            ast.getNode(node.data.ternary.a).tag == .array_assignment_target)
+        {
+            return node.data.ternary.a;
+        }
+    }
+    return null;
 }
 
 fn fullPrepassAuditedGraphAdmissionForTest(f: *const RuntimeHelperReanalysisTestFixture) bool {
