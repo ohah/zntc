@@ -1205,13 +1205,18 @@ pub const SemanticAnalyzer = struct {
     /// member; bindings outside the enum IIFE do not.
     fn resolveActiveEnumMember(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex) ?usize {
         if (self.enum_member_contexts.items.len == 0) return null;
+        const value_name = Scanner.decodeIdentifierEscapesAlloc(self.allocator, name) catch {
+            self.alloc_failed = true;
+            return null;
+        };
+        defer if (value_name.ptr != name.ptr) self.allocator.free(value_name);
 
         var lexical_symbol: ?usize = null;
         var lexical_scope = self.current_scope;
         while (!lexical_scope.isNone()) {
             const raw_scope = lexical_scope.toIndex();
             if (raw_scope >= self.scope_maps.items.len or raw_scope >= self.scopes.items.len) break;
-            if (self.scope_maps.items[raw_scope].get(name)) |sid| {
+            if (self.scope_maps.items[raw_scope].get(value_name)) |sid| {
                 lexical_symbol = sid;
                 break;
             }
@@ -1224,7 +1229,7 @@ pub const SemanticAnalyzer = struct {
             const enum_context = &self.enum_member_contexts.items[context_index];
             const context_scope = enum_context.scope_id;
             if (!self.isScopeAncestorOf(context_scope, self.current_scope)) continue;
-            const binding = self.enum_member_contexts.items[context_index].members.getPtr(name) orelse continue;
+            const binding = self.enum_member_contexts.items[context_index].members.getPtr(value_name) orelse continue;
 
             if (lexical_symbol) |sid| {
                 const binding_scope = self.symbols.items[sid].scope_id;
@@ -3355,7 +3360,12 @@ pub const SemanticAnalyzer = struct {
         if (key_idx.isNone() or @backingInt(key_idx) >= self.ast.nodes.items.len) return null;
         const key = self.ast.getNode(key_idx);
         return switch (key.tag) {
-            .identifier_reference, .binding_identifier => .{ .text = self.ast.identifierNameText(key) },
+            .identifier_reference, .binding_identifier => blk: {
+                const raw = self.ast.identifierNameText(key);
+                const decoded = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw);
+                // The decoder borrows unchanged source or allocates this value.
+                break :blk .{ .text = decoded, .owned = if (decoded.ptr != raw.ptr) @constCast(decoded) else null };
+            },
             .string_literal => blk: {
                 const raw = self.ast.getText(key.span);
                 const stripped = ast_mod.Ast.stripStringQuotes(raw);
