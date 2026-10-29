@@ -6816,8 +6816,11 @@ fn allSuperUsesBelongToRetainedOwners(
     reachable_nodes: []const u32,
     retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
     retained_sync_super_methods: *const std.AutoHashMapUnmanaged(u32, void),
+    allow_static_block_super_get: bool,
+    retained_method_super_use_out: *bool,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
+    retained_method_super_use_out.* = false;
     var has_super = false;
     for (reachable_nodes) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
@@ -6842,6 +6845,13 @@ fn allSuperUsesBelongToRetainedOwners(
                     const is_retained_async_method = retained_async_functions.contains(current);
                     const is_retained_sync_method = retained_sync_super_methods.contains(current);
                     if (!is_retained_async_method and !is_retained_sync_method) return false;
+                    retained_method_super_use_out.* = true;
+                    found_method = true;
+                    break;
+                },
+                .static_block => {
+                    if (!allow_static_block_super_get or
+                        !isRetainableStaticBlockSuperGet(ast, parents, raw_idx)) return false;
                     found_method = true;
                     break;
                 },
@@ -6857,6 +6867,83 @@ fn allSuperUsesBelongToRetainedOwners(
         if (!found_method) return false;
     }
     return has_super;
+}
+
+/// A downleveled static block may use `super.name` as a value through the
+/// tracked `__superGet` helper. Direct method calls have separate `.call`
+/// lowering and do not qualify as helper reads. Writes, computed keys, nested
+/// function owners, and nested member operations stay outside this helper
+/// allowlist until their receiver and identity behavior have separate proofs.
+fn isRetainableStaticBlockSuperGet(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    super_raw: u32,
+) bool {
+    if (super_raw >= ast.nodes.items.len or ast.nodes.items[super_raw].tag != .super_expression) return false;
+    const member_raw = parents.get(super_raw) orelse return false;
+    if (member_raw >= ast.nodes.items.len) return false;
+    const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(member_raw));
+    if (ast.nodes.items[member_raw].tag != .static_member_expression or
+        !isRetainableDirectSuperPropertyAccess(ast, member_idx, false)) return false;
+
+    // Parentheses are transparent for reads, but inspect the eventual use so a
+    // parenthesized member call or assignment target cannot slip through.
+    var expression_raw = member_raw;
+    var use_hops: usize = 0;
+    while (use_hops < ast.nodes.items.len) : (use_hops += 1) {
+        const parent_raw = parents.get(expression_raw) orelse break;
+        if (parent_raw >= ast.nodes.items.len) return false;
+        const parent = ast.nodes.items[parent_raw];
+        if (ast_mod.Node.Tag.isTransparentWrapper(parent.tag)) {
+            expression_raw = parent_raw;
+            continue;
+        }
+        switch (parent.tag) {
+            .chain_expression => return false,
+            .call_expression, .new_expression => {
+                const extra = parent.data.extra;
+                if (extra > ast.extra_data.items.len or
+                    ast.extra_data.items.len - extra < 4) return false;
+                const callee_raw = ast.extra_data.items[extra];
+                if (callee_raw >= ast.nodes.items.len) return false;
+                if (callee_raw == expression_raw) return false;
+            },
+            .assignment_expression => {
+                const target = parent.data.binary.left;
+                if (target.isNone() or @backingInt(target) >= ast.nodes.items.len or
+                    @backingInt(target) == expression_raw) return false;
+            },
+            .update_expression,
+            .unary_expression,
+            .tagged_template_expression,
+            .static_member_expression,
+            .computed_member_expression,
+            => return false,
+            else => {},
+        }
+        break;
+    }
+    if (use_hops >= ast.nodes.items.len) return false;
+
+    var current = super_raw;
+    var owner_hops: usize = 0;
+    while (owner_hops < ast.nodes.items.len) : (owner_hops += 1) {
+        current = parents.get(current) orelse return false;
+        if (current >= ast.nodes.items.len) return false;
+        switch (ast.nodes.items[current].tag) {
+            .static_block => return true,
+            .arrow_function_expression,
+            .function_declaration,
+            .function_expression,
+            .function,
+            .method_definition,
+            .class_declaration,
+            .class_expression,
+            => return false,
+            else => {},
+        }
+    }
+    return false;
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
@@ -7306,13 +7393,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     options: TransformOptions,
-    allow_es5_async_method_super_get: *bool,
-    allow_es5_async_method_super_set: *bool,
+    allow_tracked_super_get: *bool,
+    allow_tracked_super_set: *bool,
     regex_only_out: ?*bool,
     optional_catch_only_out: ?*bool,
 ) bool {
-    allow_es5_async_method_super_get.* = false;
-    allow_es5_async_method_super_set.* = false;
+    allow_tracked_super_get.* = false;
+    allow_tracked_super_set.* = false;
     if (regex_only_out) |out| out.* = false;
     if (optional_catch_only_out) |out| out.* = false;
     // Cover-grammar parsing may leave speculative nodes in the arena that are
@@ -8562,15 +8649,18 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
                 source_parent_map_ready = true;
             }
+            var retained_method_super_use = false;
             const retained_super_uses = allSuperUsesBelongToRetainedOwners(
                 ast,
                 reachable_nodes,
                 &retained_async_functions,
                 &retained_sync_super_methods,
+                retained_simple_named_static_blocks,
+                &retained_method_super_use,
                 &source_parent_map,
             );
-            allow_es5_async_method_super_get.* = retained_super_uses;
-            allow_es5_async_method_super_set.* = retained_super_uses;
+            allow_tracked_super_get.* = retained_super_uses;
+            allow_tracked_super_set.* = retained_super_uses and retained_method_super_use;
         }
     }
     return safe_graph;
@@ -8578,8 +8668,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
 
 /// A retained prepass graph may absorb imports introduced by audited generator,
 /// iterator, array-spread, destructuring, tagged-template, inferred class-name,
-/// bounded class lowering, and ES5 async class/object-method `super` property
-/// reads/writes.
+/// bounded class lowering, ES5 async class/object-method `super` property
+/// reads/writes, and direct static-block `super` property reads.
 /// Any other runtime helper can indicate an independently lowered construct,
 /// so keep that module on semantic resync.
 /// `__extends` and `__callSuper` are admitted only when the retained-graph
@@ -8646,8 +8736,8 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_legacy_decorator_helpers: bool,
     allow_async_helper: bool,
     allow_using_helper: bool,
-    allow_es5_async_method_super_get: bool,
-    allow_es5_async_method_super_set: bool,
+    allow_tracked_super_get: bool,
+    allow_tracked_super_set: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
@@ -8678,10 +8768,12 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
-    // `__superGet` and `__superSet` are safe when every reachable super use
-    // belongs to an ES5 async class/object method with an admitted home graph.
-    if (allow_es5_async_method_super_get) other_helpers.super_get = false;
-    if (allow_es5_async_method_super_set) other_helpers.super_set = false;
+    // `__superGet` is safe when every reachable read has an admitted home
+    // graph, including direct value reads in a retained static block.
+    // `__superSet` remains limited to admitted method owners; static blocks
+    // have no write proof in this slice.
+    if (allow_tracked_super_get) other_helpers.super_get = false;
+    if (allow_tracked_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
     if (allow_legacy_decorator_helpers) {
         other_helpers.legacy_decorator = false;
@@ -8700,6 +8792,14 @@ test "retained legacy decorators admit their tracked metadata helper" {
     const using_helpers: RuntimeHelpers = .{ .using_ctx = true };
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, true, false, false));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
+}
+
+test "retained static-block super reads admit only the tracked get helper" {
+    const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
+    const get_helper: RuntimeHelpers = .{ .super_get = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(get_helper, false, false, false, false, false, true, false));
+    const set_helper: RuntimeHelpers = .{ .super_set = true };
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(set_helper, false, false, false, false, false, true, false));
 }
 
 test "retained private method declarations and calls admit only their helpers" {
@@ -9526,8 +9626,8 @@ fn canKeepPrepassSemanticGraph(
     module: *const Module,
     options: TransformOptions,
     plugins: anytype,
-    allow_es5_async_method_super_get: *bool,
-    allow_es5_async_method_super_set: *bool,
+    allow_tracked_super_get: *bool,
+    allow_tracked_super_set: *bool,
     retained_simple_console_drops_out: ?*bool,
 ) bool {
     const source = if (!self.flow and !isFlowPath(module.path) and module.module_type == .js)
@@ -9540,7 +9640,7 @@ fn canKeepPrepassSemanticGraph(
     else
         null;
     defer if (entry_source) |owned| owned.deinit(self.allocator);
-    return canKeepPrepassSemanticGraphPrepared(self, module, options, plugins, allow_es5_async_method_super_get, allow_es5_async_method_super_set, retained_simple_console_drops_out, if (source) |*prepared| prepared else null, if (entry_source) |*prepared| prepared else null);
+    return canKeepPrepassSemanticGraphPrepared(self, module, options, plugins, allow_tracked_super_get, allow_tracked_super_set, retained_simple_console_drops_out, if (source) |*prepared| prepared else null, if (entry_source) |*prepared| prepared else null);
 }
 
 fn canKeepPrepassSemanticGraphPrepared(
@@ -9548,14 +9648,14 @@ fn canKeepPrepassSemanticGraphPrepared(
     module: *const Module,
     options: TransformOptions,
     plugins: anytype,
-    allow_es5_async_method_super_get: *bool,
-    allow_es5_async_method_super_set: *bool,
+    allow_tracked_super_get: *bool,
+    allow_tracked_super_set: *bool,
     retained_simple_console_drops_out: ?*bool,
     prepared_native_source: ?*const @import("../../transformer/native_noop_graph.zig").Source,
     prepared_entry_source: ?*const @import("../../transformer/sideeffect_entry_graph.zig").Source,
 ) bool {
-    allow_es5_async_method_super_get.* = false;
-    allow_es5_async_method_super_set.* = false;
+    allow_tracked_super_get.* = false;
+    allow_tracked_super_set.* = false;
     if (retained_simple_console_drops_out) |out| out.* = false;
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
@@ -10005,8 +10105,8 @@ fn canKeepPrepassSemanticGraphPrepared(
             direct_eval_label_and_console_drops_are_safe) and unchanged_graph_is_safe
     else
         has_any_transform or unchanged_graph_is_safe;
-    allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
-    allow_es5_async_method_super_set.* = safe_graph and retainable_async_method_super_set;
+    allow_tracked_super_get.* = safe_graph and retainable_async_method_super_get;
+    allow_tracked_super_set.* = safe_graph and retainable_async_method_super_set;
     return safe_graph;
 }
 
@@ -12488,6 +12588,8 @@ const StaticBlockPrepassTestMutation = enum {
 const StaticBlockPrepassTestResult = struct {
     source_candidate: bool,
     graph_gate: bool,
+    allow_super_get: bool,
+    allow_super_set: bool,
 };
 
 fn staticBlockPrepassDecisionForTest(
@@ -12622,7 +12724,12 @@ fn staticBlockPrepassDecisionForTest(
         &module.semantic.?,
         options,
     );
-    if (mutation != .none) return .{ .source_candidate = source_candidate, .graph_gate = false };
+    if (mutation != .none) return .{
+        .source_candidate = source_candidate,
+        .graph_gate = false,
+        .allow_super_get = false,
+        .allow_super_set = false,
+    };
 
     const Plugin = @import("../plugin.zig").Plugin;
     const context = .{
@@ -12635,17 +12742,20 @@ fn staticBlockPrepassDecisionForTest(
     };
     var allow_super_get = false;
     var allow_super_set = false;
+    const graph_gate = canKeepPrepassSemanticGraph(
+        &context,
+        &module,
+        options,
+        &[_]Plugin{},
+        &allow_super_get,
+        &allow_super_set,
+        null,
+    );
     return .{
         .source_candidate = source_candidate,
-        .graph_gate = canKeepPrepassSemanticGraph(
-            &context,
-            &module,
-            options,
-            &[_]Plugin{},
-            &allow_super_get,
-            &allow_super_set,
-            null,
-        ),
+        .graph_gate = graph_gate,
+        .allow_super_get = allow_super_get,
+        .allow_super_set = allow_super_set,
     };
 }
 
@@ -12960,13 +13070,56 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(!poisoned_inherited_class.source_candidate);
     try std.testing.expect(!poisoned_inherited_class.graph_gate);
 
-    const candidate_inherited_static_super = try staticBlockPrepassDecisionForTest(
+    const retained_inherited_static_super = try staticBlockPrepassDecisionForTest(
         "class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value; } }",
         ".js",
         options,
         .none,
     );
-    try std.testing.expect(candidate_inherited_static_super.source_candidate);
+    try std.testing.expect(retained_inherited_static_super.source_candidate);
+    try std.testing.expect(retained_inherited_static_super.graph_gate);
+    try std.testing.expect(retained_inherited_static_super.allow_super_get);
+    try std.testing.expect(!retained_inherited_static_super.allow_super_set);
+
+    const retained_static_super_read_as_call_argument = try staticBlockPrepassDecisionForTest(
+        "class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = Math.max(super.value, 2); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_read_as_call_argument.source_candidate);
+    try std.testing.expect(retained_static_super_read_as_call_argument.graph_gate);
+    try std.testing.expect(retained_static_super_read_as_call_argument.allow_super_get);
+    try std.testing.expect(!retained_static_super_read_as_call_argument.allow_super_set);
+
+    const rejected_static_block_super_uses = [_][]const u8{
+        "class Base extends Object { static set value(next) {} } class Counter extends Base { static { super.value = 4; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value += 1; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value++; } }",
+        "class Base extends Object { static value() { return 3; } } class Counter extends Base { static { this.result = super.value(); } }",
+        "class Base extends Object { static value() { return 3; } } class Counter extends Base { static { this.result = (super.value)(); } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value']; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key]; } }",
+        "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { this.result = super.value.child; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { const read = () => super.value; this.result = read(); } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value.bind(this); } }",
+    };
+    for (rejected_static_block_super_uses) |source| {
+        const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(decision.source_candidate);
+        try std.testing.expect(!decision.allow_super_get);
+        try std.testing.expect(!decision.allow_super_set);
+    }
+
+    const wrapped_static_block_super_method_call = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static value(): string { return this.name; } } class Counter extends Base { static { this.result = ((super.value as any))(); } }",
+        ".ts",
+        options,
+        .none,
+    );
+    try std.testing.expect(wrapped_static_block_super_method_call.source_candidate);
+    try std.testing.expect(!wrapped_static_block_super_method_call.allow_super_get);
+    try std.testing.expect(!wrapped_static_block_super_method_call.allow_super_set);
 
     const retained_generator_method = try staticBlockPrepassDecisionForTest(
         "class Counter { *read() { yield 1; } static { this.value = 2; } } console.log([...new Counter().read()].join(','), Counter.value);",
@@ -13948,8 +14101,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             @as(?bool, false);
     const has_dropped_labeled_statement = hasDroppedLabeledStatement(ast_ptr, opts.drop_labels);
     const has_complex_define_replacement = hasComplexDefineReplacement(ast_ptr, opts.define);
-    var allow_es5_async_method_super_get = false;
-    var allow_es5_async_method_super_set = false;
+    var allow_tracked_super_get = false;
+    var allow_tracked_super_set = false;
     var retained_simple_console_drops = false;
     const has_mapped_import_split = opts.hasMappedImportToSplit(ast_ptr);
     const flow_mapped_values_require_exact = has_mapped_import_split and (self.flow or isFlowPath(module.path));
@@ -13983,8 +14136,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             module,
             opts,
             merged_plugins,
-            &allow_es5_async_method_super_get,
-            &allow_es5_async_method_super_set,
+            &allow_tracked_super_get,
+            &allow_tracked_super_set,
             &retained_simple_console_drops,
             if (prepared_native_source) |*prepared| prepared else null,
             if (prepared_entry_source) |*prepared| prepared else null,
@@ -14587,8 +14740,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         allow_legacy_decorator_helpers,
         allow_async_helper,
         can_keep_semantic_graph and transformer.runtime_helpers.using_ctx,
-        allow_es5_async_method_super_get,
-        allow_es5_async_method_super_set,
+        allow_tracked_super_get,
+        allow_tracked_super_set,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
