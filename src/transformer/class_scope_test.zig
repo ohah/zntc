@@ -3951,6 +3951,7 @@ test "escaped private helper candidate decoder OOM preserves reservations" {
     defer counting.allocator().free(candidate);
     const count = counting.alloc_index - before;
     try std.testing.expect(Scanner.identifierValueEquals(candidate, "_a2"));
+    try std.testing.expectEqualStrings("_a2", candidate);
     try std.testing.expect(count > 0);
     for (0..count) |offset| {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
@@ -3967,6 +3968,7 @@ test "escaped private helper candidate decoder OOM preserves reservations" {
         const retry = try local.makePrivateVarName(original);
         defer failing.allocator().free(retry);
         try std.testing.expect(Scanner.identifierValueEquals(retry, "_a2"));
+        try std.testing.expectEqualStrings("_a2", retry);
     }
     std.debug.print("PRIVATE_CANDIDATE_OOM actualParserKey={s} failures={d} initFailureInjection=false\n", .{ original, count });
 }
