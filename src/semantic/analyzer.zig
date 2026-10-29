@@ -3532,7 +3532,9 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn chooseNamespaceIifeParamName(self: *SemanticAnalyzer, name_idx: NodeIndex) AllocError![]const u8 {
-        const source_name = self.ast.getText(self.ast.getNode(name_idx).span);
+        const raw_name = self.ast.getText(self.ast.getNode(name_idx).span);
+        const source_name = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name);
+        defer if (source_name.ptr != raw_name.ptr) self.allocator.free(source_name);
         var suffix: u32 = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
@@ -3540,6 +3542,7 @@ pub const SemanticAnalyzer = struct {
             else
                 try std.fmt.allocPrint(self.allocator, "_{s}{d}", .{ source_name, suffix });
             if (!self.namespaceIifeParamReserved(candidate)) return candidate;
+            self.allocator.free(candidate);
         }
     }
 
@@ -3681,11 +3684,11 @@ pub const SemanticAnalyzer = struct {
         if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
         const namespace_iife_param_name = try self.declareNamespaceIifeParameter(name_idx, node);
-        if (namespace_iife_param_name != null)
-            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         defer if (namespace_iife_param_name != null) {
             self.allocator.free(self.namespace_iife_param_names.pop() orelse unreachable);
         };
+        if (namespace_iife_param_name != null)
+            try self.implicit_arguments_owners.put(self.allocator, self.current_scope, self.current_visit_node);
         if (body.tag == .block_statement) {
             const saved_predeclared = self.predeclared_scope;
             self.predeclared_scope = self.current_scope;
@@ -6123,4 +6126,30 @@ test "Annex B scoped lexical barrier keys own escaped allocations without retain
     analyzer.removeAnnexBBarriers(added.items);
     added.clearRetainingCapacity();
     try std.testing.expectEqual(@as(usize, 0), analyzer.annex_b_barriers.count());
+}
+
+test "namespace parameter selector owns decoded source and rejected candidates on allocation failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const source = "const _N=10;const _N1=11;namespace \\u004e{export const value=_N}";
+            const ScannerType = @import("../lexer/scanner.zig").Scanner;
+            const ParserType = @import("../parser/parser.zig").Parser;
+            var scanner = try ScannerType.init(std.testing.allocator, source);
+            defer scanner.deinit();
+            var parser = ParserType.init(std.testing.allocator, &scanner);
+            defer parser.deinit();
+            parser.configureFromExtension(".ts");
+            _ = try parser.parse();
+            var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+            defer analyzer.deinit();
+            var name: ?NodeIndex = null;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag == .ts_module_declaration) name = node.data.binary.left;
+            }
+            const candidate = try analyzer.chooseNamespaceIifeParamName(name orelse return error.MissingActualNamespace);
+            defer allocator.free(candidate);
+            try std.testing.expectEqualStrings("_N2", candidate);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
 }
