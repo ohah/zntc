@@ -312,3 +312,32 @@ test "enum runtime prelude survives lazy-editor publication and independent sema
         try std.testing.expect(report.isClean());
     };
 }
+
+test "escaped enum runtime keeps container aliases and auto-counter values exact" {
+    const sources = [_][]const u8{
+        "enum \\u0045{A=9,B=A+1}console.log(E.B)",
+        "enum \\u0053elf{Self=9,B=Self+1}console.log(Self.B)",
+        "enum E{\\u0041=9,Z=50,B=A,C}console.log(E.C)",
+        "enum E{A=9,Z=50,B=\\u0041,C}console.log(E.C)",
+        "const _Self=4;enum Self{Self=9,B=Self+1}console.log(Self.B)",
+        "const \\u005fSelf=4;enum Self{Self=9,B=Self+1}console.log(Self.B)",
+        "enum E{\"\\u0041\"=9,Z=50,B=A,C}console.log(E.C)",
+        "enum E{\"\\\\u0041\"=9,A=4,B=A+6}console.log(E.B)",
+    };
+    var failures: usize = 0;
+    for (sources, 0..) |source, family| for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const result = @import("../transpile.zig").transpile(a, source, "input.ts", .{ .unsupported = Options.compat.fromESTarget(.es5), .minify_identifiers = minify }) catch |err| {
+            std.debug.print("escaped-enum-runtime family={d} minify={} build={s}\n", .{ family, minify, @errorName(err) });
+            failures += 1;
+            continue;
+        };
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
+        const ok = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, "10\n", actual.stdout);
+        std.debug.print("escaped-enum-runtime family={d} minify={} valid={} stdout={s}\n", .{ family, minify, ok, actual.stdout });
+        if (!ok) failures += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
