@@ -3707,3 +3707,74 @@ test "enum member origin birth uses the actual owner context across source famil
     for (observations[0..count]) |row| try std.testing.expectEqual(row.expected, row.actual);
     try std.testing.expectEqual(@as(usize, 0), bad);
 }
+
+test "escaped enum initial value lookup preserves source identity and lexical roles" {
+    const Case = struct { source: []const u8, role: ?symbol_mod.SyntheticKind, name: []const u8, owner: []const u8 = "enum E", key: []const u8 = "A", unresolved: bool = false };
+    const cases = [_]Case{
+        .{ .source = "enum E{\\u0041=9,B=/*read*/A+1}", .role = .enum_iife_member, .name = "A", .key = "\\u0041" },
+        .{ .source = "enum E{A=9,B=/*read*/\\u0041+1}", .role = .enum_iife_member, .name = "A" },
+        .{ .source = "enum E{\\u{41}=9,B=/*read*/A+1}", .role = .enum_iife_member, .name = "A", .key = "\\u{41}" },
+        .{ .source = "enum E{A=9,B=/*read*/\\u{41}+1}", .role = .enum_iife_member, .name = "A" },
+        .{ .source = "enum E{\\u0041=9,B=/*read*/\\u0041+1}", .role = .enum_iife_member, .name = "A", .key = "\\u0041" },
+        .{ .source = "enum E{\\u0045=9,B=/*read*/E+1}", .role = .enum_iife_member, .name = "E", .key = "\\u0045" },
+        .{ .source = "enum E{A=1,B=(()=>{enum Inner{\\u0041=9,C=/*read*/A+1}return Inner.C})()}", .role = .enum_iife_member, .name = "A", .owner = "enum Inner", .key = "\\u0041" },
+        .{ .source = "enum E{A=1,B=(()=>{const A=9;return /*read*/\\u0041})()}", .role = null, .name = "A" },
+        .{ .source = "enum E{A=1,B=(()=>{const \\u0041=9;return /*read*/A})()}", .role = null, .name = "A", .key = "\\u0041" },
+        .{ .source = "enum E{A=1,B=/*read*/E.A}", .role = .enum_iife_parameter, .name = "E", .key = "E" },
+        .{ .source = "enum E{B=/*read*/A+1,A=9}", .role = null, .name = "A", .unresolved = true },
+        .{ .source = "enum E{A=9,B=/*read*/A}", .role = .enum_iife_member, .name = "A" },
+        .{ .source = "enum E{\"\\u0041\"=9,B=/*read*/A+1}", .role = .enum_iife_member, .name = "A", .key = "\"\\u0041\"" },
+    };
+    var failures: usize = 0;
+    for (cases, 0..) |case, family| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        var parser = Parser.init(a, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_ts = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        try std.testing.expect(parser.ast.transformed_root == null);
+        const start = (std.mem.indexOf(u8, case.source, "/*read*/") orelse unreachable) + "/*read*/".len;
+        var read_node: ?NodeIndex = null;
+        for (parser.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag == .identifier_reference and node.span.start == start) read_node = @fromBackingInt(@intCast(raw));
+        }
+        const node_idx = read_node orelse return error.MissingActualEscapedEnumRead;
+        const node = parser.ast.getNode(node_idx);
+        const raw_text = parser.ast.getText(node.span);
+        const sid = analyzer.symbol_ids.items[@backingInt(node_idx)];
+        var ok = true;
+        if (case.unresolved) {
+            ok = sid == null;
+        } else if (sid) |known| {
+            const symbol = analyzer.symbols.items[known];
+            ok = symbol.synthetic_kind == case.role;
+            if (case.role == .enum_iife_member) {
+                ok = ok and std.mem.eql(u8, symbol.synthetic_name, case.name) and
+                    std.mem.eql(u8, parser.ast.getText(symbol.name), case.key);
+                if (symbol.synthetic_owner_id) |owner| {
+                    const parameter = analyzer.symbols.items[@backingInt(owner)];
+                    ok = ok and parameter.synthetic_kind == .enum_iife_parameter and
+                        symbol.scope_id == parameter.scope_id and symbol.origin_scope == parameter.scope_id and
+                        std.mem.startsWith(u8, parser.ast.getText(parameter.declaration_span), case.owner);
+                } else ok = false;
+            }
+            var rows: usize = 0;
+            for (analyzer.references.items) |reference| {
+                if (reference.flags.declare or reference.node_index != node_idx) continue;
+                rows += 1;
+                ok = ok and @backingInt(reference.symbol_id) == known and reference.flags.read and !reference.flags.write;
+            }
+            ok = ok and rows == 1;
+        } else ok = false;
+        std.debug.print("escaped-enum-initial family={d} raw={s} SID={any} expectedRole={any} valid={any}\n", .{ family, raw_text, sid, case.role, ok });
+        if (!ok) failures += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+}
