@@ -416,6 +416,9 @@ test "exact scope audit allows only detached graph-output symbol identities" {
     }{
         .{ .kind = .variable_var, .synthetic_kind = .cjs_runtime_factory, .name = "__commonJS" },
         .{ .kind = .parameter, .synthetic_kind = .cjs_runtime_internal_local, .name = "cb" },
+        .{ .kind = .variable_var, .synthetic_kind = .cjs_runtime_internal_local, .name = "runtime_local" },
+        .{ .kind = .function_decl, .synthetic_kind = .cjs_runtime_internal_local, .name = "runtime_function" },
+        .{ .kind = .catch_binding, .synthetic_kind = .cjs_runtime_internal_local, .name = "runtime_caught" },
         .{ .kind = .parameter, .synthetic_kind = .esm_runtime_internal_local, .name = "fn" },
         .{ .kind = .parameter, .synthetic_kind = .esm_runtime_internal_local, .name = "res" },
         .{ .kind = .catch_binding, .synthetic_kind = .esm_runtime_internal_local, .name = "e" },
@@ -440,6 +443,20 @@ test "exact scope audit allows only detached graph-output symbol identities" {
         .{ .kind = .variable_var, .synthetic_kind = .cjs_exports, .name = "exports_module" },
         .{ .kind = .function_decl, .synthetic_kind = .cjs_require, .name = "require_module" },
         .{ .kind = .variable_var, .synthetic_kind = .bundler_runtime_helper, .name = "__esm" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.global" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.modules" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.hot_callbacks" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.hot_data" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.schedule" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.reload" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.resolve_refresh" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.refresh_boundary" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.refresh_timer" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.enqueue_update" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.make_hot" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.original_commonjs" },
+        .{ .kind = .variable_var, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.original_esm" },
+        .{ .kind = .function_decl, .synthetic_kind = .hmr_runtime_internal_local, .name = "hmr.apply_update" },
     };
     for (detached_cases) |case| {
         const symbol = Symbol{
@@ -453,6 +470,70 @@ test "exact scope audit allows only detached graph-output symbol identities" {
         };
         const valid = try checkExactFixture(allocator, &ast, root, &.{}, &.{symbol}, &scopes, &scope_maps, &owners, &.{});
         try std.testing.expect(valid.isClean());
+
+        var lexical_origin = symbol;
+        lexical_origin.origin_scope = @fromBackingInt(0);
+        const attached_origin = try checkExactFixture(
+            allocator,
+            &ast,
+            root,
+            &.{},
+            &.{lexical_origin},
+            &scopes,
+            &scope_maps,
+            &owners,
+            &.{},
+        );
+        try std.testing.expectEqual(@as(usize, 1), attached_origin.invalid_scope);
+        try std.testing.expect(!attached_origin.isClean());
+
+        var out_of_range_origin = symbol;
+        out_of_range_origin.origin_scope = @fromBackingInt(@intCast(scopes.len));
+        const invalid_origin = try checkExactFixture(
+            allocator,
+            &ast,
+            root,
+            &.{},
+            &.{out_of_range_origin},
+            &scopes,
+            &scope_maps,
+            &owners,
+            &.{},
+        );
+        try std.testing.expectEqual(@as(usize, 1), invalid_origin.invalid_scope);
+        try std.testing.expect(!invalid_origin.isClean());
+
+        var attached_storage_scope = symbol;
+        attached_storage_scope.scope_id = @fromBackingInt(0);
+        const attached_storage = try checkExactFixture(
+            allocator,
+            &ast,
+            root,
+            &.{},
+            &.{attached_storage_scope},
+            &scopes,
+            &scope_maps,
+            &owners,
+            &.{},
+        );
+        try std.testing.expectEqual(@as(usize, 1), attached_storage.invalid_scope);
+        try std.testing.expect(!attached_storage.isClean());
+
+        var out_of_range_storage_scope = symbol;
+        out_of_range_storage_scope.scope_id = @fromBackingInt(@intCast(scopes.len));
+        const invalid_storage = try checkExactFixture(
+            allocator,
+            &ast,
+            root,
+            &.{},
+            &.{out_of_range_storage_scope},
+            &scopes,
+            &scope_maps,
+            &owners,
+            &.{},
+        );
+        try std.testing.expectEqual(@as(usize, 1), invalid_storage.invalid_scope);
+        try std.testing.expect(!invalid_storage.isClean());
     }
 
     const wrong_esm_internal_name = Symbol{
