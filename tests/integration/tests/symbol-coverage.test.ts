@@ -11705,6 +11705,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
+        name: 'generator-method-with-static-block',
+        graph: 'retained',
+        source:
+          "class Counter { *read() { yield 1; } static { this.value = 2; } } console.log([...new Counter().read()].join(','), Counter.value);",
+        stdout: '1 2\n',
+      },
+      {
         name: 'static-getter-with-static-block',
         graph: 'retained',
         source:
@@ -11775,9 +11782,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'named-class-expression-with-generator-method',
+        graph: 'retained',
+        source:
+          "const Named = 2; const Counter = class Named { *read() { yield Named.value; } static { Named.value = 1; } }; console.log([...new Counter().read()].join(','), Named);",
+        stdout: '1 2\n',
+      },
+      {
+        name: 'named-class-expression-with-async-generator-method',
         graph: 'reanalyzed',
         source:
-          'const Counter = class Named { *read() { return 1; } static { this.value = 2; } }; console.log(Counter.value);',
+          'const Counter = class Named { async *read() { yield 1; } static { this.value = 2; } }; console.log(Counter.value);',
         stdout: '2\n',
       },
       {
