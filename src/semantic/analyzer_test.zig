@@ -663,9 +663,10 @@ test "SemanticAnalyzer: const redeclaration is error" {
     try std.testing.expect(ana.errors.items.len > 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Private Name 검증 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: declared private name is valid" {
     var scanner = try Scanner.init(std.testing.allocator, "class C { #x = 1; foo() { this.#x; } }");
@@ -868,9 +869,10 @@ test "SemanticAnalyzer: template literal expressions are visited" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Hoisting 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: var in nested block is same function scope" {
     // var x = 1; { var x = 2; }
@@ -920,9 +922,10 @@ test "SemanticAnalyzer: var hoisting in function" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Function 스코프 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: same let name in different functions is valid" {
     // function f() { let x = 1; } function g() { let x = 2; }
@@ -972,9 +975,10 @@ test "SemanticAnalyzer: parameter and var redeclaration is valid" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // For loop 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: for loop with let is valid" {
     // for(let i=0; i<10; i++) { let j = i; }
@@ -1008,9 +1012,10 @@ test "SemanticAnalyzer: same let name in separate for loops is valid" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Import 재선언 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: import binding redeclared with let is error" {
     // import { x } from 'a'; let x = 1;
@@ -1044,9 +1049,10 @@ test "SemanticAnalyzer: import binding redeclared with var is error" {
     try std.testing.expect(ana.errors.items.len > 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Catch 바인딩 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: catch binding shadowed by let is error" {
     // try {} catch(e) { let e = 1; }
@@ -1121,9 +1127,10 @@ test "SemanticAnalyzer: catch clause and body block retain distinct scope owners
     try std.testing.expectEqual(body_scope_raw, @backingInt(ana.symbols.items[body_binding].scope_id));
 }
 
-// ============================================================
+// =====================================================}
+
 // Switch case 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: duplicate let in switch block is error" {
     // switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }
@@ -1157,9 +1164,10 @@ test "SemanticAnalyzer: duplicate var in switch block is valid" {
     try std.testing.expect(ana.errors.items.len == 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Generator / Async 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: let inside generator is valid" {
     // function* g() { let x = 1; }
@@ -1225,9 +1233,10 @@ test "SemanticAnalyzer: async function duplicate params is error" {
     try std.testing.expect(ana.errors.items.len > 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Class 표현식 테스트
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: named class expression is valid" {
     // let C = class C { constructor() {} }
@@ -1261,9 +1270,10 @@ test "SemanticAnalyzer: static and instance private field with same name is erro
     try std.testing.expect(ana.errors.items.len > 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // Diagnostic kind + 에러 메시지 검증
-// ============================================================
+// =====================================================}
 
 test "SemanticAnalyzer: errors have kind=semantic" {
     var scanner = try Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
@@ -1390,9 +1400,10 @@ test "SemanticAnalyzer: numeric literal const_value stores raw literal text" {
     try std.testing.expect(saw_dec and saw_exp and saw_hex and saw_neg and saw_big and saw_expr);
 }
 
-// ============================================================
+// =====================================================}
+
 // Reference Tracking 테스트
-// ============================================================
+// =====================================================}
 
 /// 테스트 헬퍼: 소스 코드를 파싱+분석하여 특정 이름의 심볼 reference_count를 반환.
 /// 같은 이름의 심볼이 여러 개이면 배열 순서대로(선언 순) 반환.
@@ -1474,9 +1485,10 @@ test "Reference: update expression counts as reference" {
     try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
 
-// ============================================================
+// =====================================================}
+
 // Enum predeclare & export binding
-// ============================================================
+// =====================================================}
 
 const AnalyzeResult = struct {
     scanner: Scanner,
@@ -1828,9 +1840,11 @@ test "#4400 analyzer: 분석 중 allocation 실패는 OutOfMemory 로 표면화 
     }
 }
 
-// ====================================================================
+// =============================================================}
+
 // D5: import type declaration + 다른 import → export 검증
-// ====================================================================
+// =============================================================}
+
 // `@expo/log-box` 의 `LogBox.ts` 같은 패턴이 fail 하던 회귀 가드.
 // parser 가 `import type { ... }` 전체 AST 를 drop 하던 게 root cause —
 // declaration 자체에 is_type_only flag 만 두고 specifier 들의 binding 정보는
@@ -1969,9 +1983,10 @@ test "Import: type-only specifier is still a binding (no runtime use enforced he
     );
 }
 
-// ====================================================================
+// =============================================================}
+
 // Private Name 시맨틱 체크
-// ====================================================================
+// =============================================================}
 
 test "Private: field read/write is allowed" {
     try analyzeNoErrors(
@@ -2105,9 +2120,10 @@ test "Private: update expression on field is allowed" {
     );
 }
 
-// ============================================================
+// =====================================================}
+
 // Top-Level Await + target 검증
-// ============================================================
+// =====================================================}
 
 /// es_target을 지정하여 분석하는 헬퍼.
 fn analyzeModuleWithTarget(source: []const u8, target: @import("../transformer/compat.zig").ESTarget) !AnalyzeResult {
@@ -2196,9 +2212,11 @@ test "TLA: for-await-of at top-level no error when target >= es2022" {
     try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
 }
 
-// ============================================================
+// =====================================================}
+
 // ClassExpression name binding (#1592)
-// ============================================================
+// =====================================================}
+
 // ECMAScript 15.7.14: ClassExpression의 name은 class body scope에
 // lexical binding되어 body 내부에서 self-reference로 보이고,
 // 외부 scope에서는 보이지 않는다.
@@ -2390,9 +2408,10 @@ test "ClassExpression: name scoped to class body — not visible outside (#1592)
     try std.testing.expect(false);
 }
 
-// ============================================================
+// =====================================================}
+
 // FunctionExpression name binding
-// ============================================================
+// =====================================================}
 
 test "FunctionExpression: self-reference resolves to inner function name" {
     var scanner = try Scanner.init(std.testing.allocator,
@@ -2454,9 +2473,10 @@ test "FunctionExpression: parameter shadows inner function name" {
     try std.testing.expectEqual(@as(u32, 2), parameter_refs);
 }
 
-// ============================================================
+// =====================================================}
+
 // per-reference 배열 (references) 테스트
-// ============================================================
+// =====================================================}
 
 const RefFixture = struct {
     scanner: Scanner,
@@ -2679,9 +2699,10 @@ test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" 
     try std.testing.expectEqual(@as(usize, 1), read_count);
 }
 
-// ============================================================
+// =====================================================}
+
 // #1669: scope-wide declare ref + per-scope stmt index + Symbol 확장
-// ============================================================
+// =====================================================}
 
 test "#1669: 함수 body 내부 선언도 declare ref 로 기록" {
     // 이전에는 top-level (scope_id==0) 선언만 `flags.declare` 로 기록됐으나, #1669 이후
@@ -2988,11 +3009,12 @@ test "#2037 regression: top-level nested var is predeclared for forward nested f
     try std.testing.expect(helper_ref_count.? > 0);
 }
 
-// ============================================================
+// =====================================================}
+
 // #1660: block / switch / module / nested-block 에서 var 와 lexical 이름 충돌
 // (ECMA §sec-block-static-semantics-early-errors / §sec-switch-statement-static-semantics-early-errors
 //  / §sec-module-semantics-static-semantics-early-errors)
-// ============================================================
+// =====================================================}
 
 test "Redecl: block var vs function" {
     try analyzeHasError("{ var f; function f() {} }", "already been declared");
@@ -3053,9 +3075,10 @@ test "Redecl: strict IIFE block const vs var" {
     try analyzeHasError("(function() { 'use strict'; { const f = 1; var f; } })", "already been declared");
 }
 
-// ============================================================
+// =====================================================}
+
 // JSX member tag root resolution
-// ============================================================
+// =====================================================}
 
 // JSX `<ns.Comp />` root resolved regardless of case — otherwise propagateSymbolId
 // copies null → bundler skips rename → ReferenceError (ExpoRoot.js case).
@@ -3104,9 +3127,10 @@ test "JSX: bare lowercase tag <div/> is intrinsic, not a variable ref" {
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
 
-// ============================================================
+// =====================================================}
+
 // #2474 catch_names dynamic — 회귀 가드
-// ============================================================
+// =====================================================}
 
 test "#2474 regression: catch destructure duplicate at index 17+ — diagnostic emitted" {
     // 이전 16-stack-cap 시 17번째 binding 부터 names 배열에 push 안 됨. 두 개의 동일
@@ -4532,4 +4556,111 @@ test "helper published name actual producer releases ownership at every allocati
     }
     std.debug.print("helper-owned-oom allocationFailures={d} priorNamesOnOOM={d}\n", .{ total, prior_names_on_oom });
     try std.testing.expect(prior_names_on_oom >= 1);
+}
+
+test "namespace member actual destructuring producer key has a teardown owner" {
+    const helpers = @import("../bundler/test_helpers.zig");
+    const counters = @import("../profile.zig");
+    const tree_mod = @import("../parser/ast.zig");
+    const source = "namespace N{export const {a}={a:1}}namespace N{export const b=a}console.log(N.b);";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.ts", source);
+    const entry = try helpers.absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("../transformer/compat.zig").fromESTarget(.es5);
+    counters.resetForTest();
+    defer counters.resetForTest();
+    counters.setIoForTest(std.testing.io);
+    counters.setLevel(.detailed);
+    counters.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(u32, 1), counters.count(.graph_discover_pm_semantic));
+    try std.testing.expectEqual(@as(u32, 1), counters.count(.graph_resync_semantic));
+    const found = graph.findModuleByPath(entry) orelse return error.MissingActualNamespaceEntry;
+    const actual = graph.moduleAtMut(found.index) orelse return error.MissingActualNamespaceEntry;
+    const tree = &(actual.ast orelse return error.MissingActualNamespaceAst);
+    const previous = actual.semantic orelse return error.MissingActualNamespaceSemantic;
+    const transformed = actual.transform_cache orelse return error.MissingActualNamespaceTransform;
+    try std.testing.expectEqual(@as(u32, 1), transformed.destructuring_temp_bindings.count());
+    var temps = transformed.destructuring_temp_bindings.keyIterator();
+    const temp: NodeIndex = @fromBackingInt((temps.next() orelse return error.MissingActualNamespaceTemp).*);
+    const binding = tree.getNode(temp);
+    try std.testing.expectEqual(.binding_identifier, binding.tag);
+    try std.testing.expect((binding.span.start & tree_mod.Ast.STRING_TABLE_BIT) != 0);
+    const root = tree.transformed_root orelse return error.MissingActualNamespaceRoot;
+    const program = tree.getNode(root);
+    var namespace_binding: ?NodeIndex = null;
+    var namespace_count: usize = 0;
+    var edges: usize = 0;
+    for (tree.extra_data.items[program.data.list.start .. program.data.list.start + program.data.list.len]) |raw| {
+        const node = tree.nodes.items[raw];
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 0) continue;
+        namespace_count += 1;
+        const body = tree.getNode(node.data.binary.right);
+        try std.testing.expectEqual(.block_statement, body.tag);
+        for (tree.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |stmt_raw| {
+            const stmt = tree.nodes.items[stmt_raw];
+            if (stmt.tag != .export_named_declaration) continue;
+            const declaration = tree.readExtraNode(stmt.data.extra, 0);
+            if (declaration.isNone()) continue;
+            const decl = tree.getNode(declaration);
+            if (decl.tag != .variable_declaration) continue;
+            const start = tree.readExtra(decl.data.extra, 1);
+            const len = tree.readExtra(decl.data.extra, 2);
+            for (tree.extra_data.items[start .. start + len]) |declarator_raw| {
+                const declarator = tree.nodes.items[declarator_raw];
+                if (declarator.tag != .variable_declarator or tree.readExtraNode(declarator.data.extra, 0) != temp) continue;
+                namespace_binding = node.data.binary.left;
+                edges += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), namespace_count);
+    try std.testing.expectEqual(@as(usize, 1), edges);
+    var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prep.deinit();
+    const names = try SemanticAnalyzer.collectNamespaceIifeParameterNames(prep.allocator(), tree, previous.symbols.items, &previous.scope_owner_map);
+    var ledger = GenericOwnedNameLedger{ .child = std.testing.allocator };
+    defer ledger.deinit();
+    var fresh = SemanticAnalyzer.init(ledger.allocator(), tree);
+    var alive = true;
+    defer if (alive) fresh.deinit();
+    fresh.is_ts = true;
+    fresh.is_module = previous.scopes[0].kind == .module;
+    fresh.is_strict_mode = previous.scopes[0].is_strict;
+    fresh.preserved_namespace_iife_parameter_names = &names;
+    try fresh.analyze();
+    try std.testing.expectEqual(@as(usize, 0), fresh.errors.items.len);
+    const owner = fresh.symbol_ids.items[@backingInt(namespace_binding orelse return error.MissingActualNamespaceOwnerBinding)] orelse return error.MissingActualNamespaceOwner;
+    var selected_key: ?[]const u8 = null;
+    var proxy: ?u32 = null;
+    for (fresh.namespace_member_groups.items) |group| {
+        if (group.owner_symbol != owner) continue;
+        const key = group.members.getKey(tree.getText(binding.span)) orelse return error.MissingActualNamespaceMemberKey;
+        try std.testing.expect(selected_key == null);
+        selected_key = key;
+        proxy = group.members.get(key);
+    }
+    const key = selected_key orelse return error.MissingActualNamespaceMemberGroup;
+    const proxy_sid = proxy orelse return error.MissingActualNamespaceProxy;
+    const symbol = fresh.symbols.items[proxy_sid];
+    try std.testing.expectEqual(binding.span, symbol.name);
+    try std.testing.expect(ledger.hasName(key));
+    const registered = genericOwnedNamePointerCount(&fresh, key);
+    std.debug.print("namespace-member-owned before temp={d} namespaceOwnerSID={d} proxySID={d} storage={d} origin={d} keyPointer=0x{x} keyLen={d} registry={d} selectedLive={} initial={d} productionResync={d}\n", .{ @backingInt(temp), owner, proxy_sid, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), @intFromPtr(key.ptr), key.len, registered, ledger.hasName(key), counters.count(.graph_discover_pm_semantic), counters.count(.graph_resync_semantic) });
+    fresh.deinit();
+    alive = false;
+    const selected_live = ledger.hasName(key);
+    std.debug.print("namespace-member-owned after selectedLive={} totalLive={d} invalid={d} duplicate={d} resize={d}\n", .{ selected_live, ledger.liveCount(), ledger.invalid_free, ledger.duplicate_free, ledger.invalid_resize });
+    try std.testing.expectEqual(false, selected_live);
+    try std.testing.expectEqual(@as(usize, 1), registered);
+    try std.testing.expectEqual(@as(usize, 0), ledger.liveCount());
+    try std.testing.expectEqual(@as(usize, 0), ledger.invalid_free + ledger.duplicate_free + ledger.invalid_resize);
+    try std.testing.expect(!ledger.overflow);
 }

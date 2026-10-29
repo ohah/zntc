@@ -19538,6 +19538,105 @@ test "static getter super retains actual entry graph without semantic resync" {
     try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
 }
 
+test "namespace member synthetic temp reaches natural ES5 merged namespace reanalysis" {
+    const helpers = @import("../test_helpers.zig");
+    const source = "namespace N{export const {a}={a:1}}namespace N{export const b=a}console.log(N.b);";
+    var prep = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prep.deinit();
+    const alloc = prep.allocator();
+    var scanner = try Scanner.init(alloc, source);
+    var parser = @import("../../parser/parser.zig").Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    const initial_root = try parser.parse();
+    var initial = SemanticAnalyzer.init(alloc, &parser.ast);
+    initial.is_ts = true;
+    initial.is_module = parser.is_module;
+    initial.is_strict_mode = parser.is_strict_mode;
+    try initial.analyze();
+    try std.testing.expectEqual(@as(usize, 0), initial.errors.items.len);
+    const initial_program = parser.ast.getNode(initial_root);
+    var initial_owner: ?u32 = null;
+    var initial_namespaces: usize = 0;
+    for (parser.ast.extra_data.items[initial_program.data.list.start .. initial_program.data.list.start + initial_program.data.list.len]) |raw| {
+        const node = parser.ast.nodes.items[raw];
+        if (node.tag != .ts_module_declaration) continue;
+        const sid = initial.symbol_ids.items[@backingInt(node.data.binary.left)] orelse return error.MissingInitialNamespaceOwner;
+        if (initial_owner) |known| try std.testing.expectEqual(known, sid) else initial_owner = sid;
+        initial_namespaces += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), initial_namespaces);
+    std.debug.print("namespace-natural-initial namespaces={d} ownerSID={d} groups={d}\n", .{ initial_namespaces, initial_owner.?, initial.namespace_member_groups.items.len });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try helpers.writeFile(tmp.dir, "entry.ts", source);
+    const entry = try helpers.absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+    defer cache.deinit();
+    var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.setIoForTest(std.testing.io);
+    profile.setLevel(.detailed);
+    profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+    try graph.build(std.testing.io, &.{entry});
+    const module = graph.findModuleByPath(entry) orelse return error.MissingNaturalNamespaceEntry;
+    const ast = &(module.ast orelse return error.MissingNaturalNamespaceAst);
+    const semantic = module.semantic orelse return error.MissingNaturalNamespaceSemantic;
+    const transformed = module.transform_cache orelse return error.MissingNaturalNamespaceTransform;
+    const root = ast.transformed_root orelse return error.MissingNaturalNamespaceOutputRoot;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(std.testing.allocator, ast, root);
+    defer std.testing.allocator.free(reachable);
+    var namespace_count: usize = 0;
+    var owner_sid: ?u32 = null;
+    var selected: ?ast_mod.NodeIndex = null;
+    var selected_scope: ?u32 = null;
+    var export_edges: usize = 0;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .ts_module_declaration or node.data.binary.flags != 0) continue;
+        namespace_count += 1;
+        const sid = semantic.symbol_ids[@backingInt(node.data.binary.left)] orelse return error.MissingNaturalNamespaceOwner;
+        if (owner_sid) |known| try std.testing.expectEqual(known, sid) else owner_sid = sid;
+        const scope = semantic.scope_owner_map.get(raw) orelse return error.MissingNaturalNamespaceScope;
+        const body = ast.getNode(node.data.binary.right);
+        try std.testing.expectEqual(.block_statement, body.tag);
+        for (ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |stmt_raw| {
+            const stmt = ast.nodes.items[stmt_raw];
+            if (stmt.tag != .export_named_declaration) continue;
+            const decl_idx = ast.readExtraNode(stmt.data.extra, 0);
+            if (decl_idx.isNone()) continue;
+            const decl = ast.getNode(decl_idx);
+            if (decl.tag != .variable_declaration) continue;
+            const start = ast.readExtra(decl.data.extra, 1);
+            const len = ast.readExtra(decl.data.extra, 2);
+            for (ast.extra_data.items[start .. start + len]) |declarator_raw| {
+                const declarator = ast.nodes.items[declarator_raw];
+                if (declarator.tag != .variable_declarator) continue;
+                const binding = ast.readExtraNode(declarator.data.extra, 0);
+                if (!transformed.destructuring_temp_bindings.contains(@backingInt(binding))) continue;
+                try std.testing.expect(selected == null);
+                const actual_binding = ast.getNode(binding);
+                try std.testing.expectEqual(.binding_identifier, actual_binding.tag);
+                try std.testing.expect((actual_binding.span.start & ast_mod.Ast.STRING_TABLE_BIT) != 0);
+                selected = binding;
+                selected_scope = scope;
+                export_edges += 1;
+            }
+        }
+    }
+    std.debug.print("namespace-natural-output modules={d} initial={d} resync={d} namespaces={d} ownerSID={any} producerTemps={d} exportEdges={d} tempNode={any} scope={any} ownerToken={any}\n", .{ graph.moduleCount(), profile.count(.graph_discover_pm_semantic), profile.count(.graph_resync_semantic), namespace_count, owner_sid, transformed.destructuring_temp_bindings.count(), export_edges, selected, selected_scope, semantic.owner_token });
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(u32, 1), profile.count(.graph_discover_pm_semantic));
+    try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
+    try std.testing.expectEqual(@as(usize, 2), namespace_count);
+    try std.testing.expectEqual(@as(usize, 1), export_edges);
+    try std.testing.expect(selected != null);
+}
+
 test "static getter super source admission preserves narrow syntax and owner boundaries" {
     const controls = [_]struct { text: []const u8, admitted: bool }{
         .{ .text = "var object={get value(){return super.value}};", .admitted = true },
