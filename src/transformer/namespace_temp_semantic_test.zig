@@ -684,3 +684,51 @@ test "namespace canonical body reservation preserves source lexical frontier bef
     }
     try std.testing.expectEqual(@as(usize, 2), bindings);
 }
+
+test "namespace escaped name parameter does not capture a known outer binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "const _N=10;namespace \\u004e{export const value=_N}console.log(N.value)";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+    var parameter: ?u32 = null;
+    var outer: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind == .namespace_iife_parameter) parameter = @intCast(raw);
+    }
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier and std.mem.eql(u8, parser.ast.identifierNameText(node), "_N")) outer = analyzer.symbol_ids.items[raw];
+    }
+    const p = parameter orelse return error.MissingNamespaceParameter;
+    const o = outer orelse return error.MissingOuterBinding;
+    const symbol = analyzer.symbols.items[p];
+    try std.testing.expect(p != o);
+    var reads: usize = 0;
+    for (analyzer.references.items) |row| {
+        if (!row.flags.declare and @backingInt(row.symbol_id) == o) reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), reads);
+    std.debug.print("namespace-capture-proof parameterSID={d} outerSID={d} kind={t} storage={d} origin={d} nameSpan={d}:{d} candidate={s}\n", .{ p, o, symbol.kind, @backingInt(symbol.scope_id), @backingInt(symbol.origin_scope), symbol.name.start, symbol.name.end, symbol.synthetic_name });
+    var transformer = try Transformer.init(alloc, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.node_scope_provenance = analyzer.node_scope_provenance;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var codegen = Codegen.initWithOptions(alloc, transformer.ast, .{ .semantic_symbols = edited.symbols.items, .semantic_scope_maps = edited.scope_maps, .generated_iife_scope_owner_map = &edited.scope_owner_map });
+    const output = try codegen.generate(root);
+    std.debug.print("namespace-capture-output-begin\n{s}\nnamespace-capture-output-end\n", .{output});
+    try std.testing.expect(!Scanner.identifierValueEquals(symbol.synthetic_name, "_N"));
+}
