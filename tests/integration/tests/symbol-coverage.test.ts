@@ -26722,6 +26722,81 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('escaped namespace parameters preserve outer binding values through the public API', () => {
+    const sources = [
+      String.raw`const _N=10;namespace \u004e{export const value=_N}console.log(N.value)`,
+      String.raw`const _\u004e=10;namespace \u004e{export const value=_\u004e}console.log(N.value)`,
+      String.raw`const _\u004e=10;namespace N{export const value=_\u004e}console.log(N.value)`,
+      String.raw`const _N=10;namespace N{export const value=_N}console.log(N.value)`,
+      String.raw`const _N=10;namespace \u004e{export namespace Child{export const value=_N}}console.log(N.Child.value)`,
+      String.raw`const _N=10;namespace \u004e.Child{export const value=_N}console.log(N.Child.value)`,
+      String.raw`const _N=10;const _N1=20;namespace \u004e{export const value=_N}console.log(N.value)`,
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-namespace-parameter-values-'));
+    const entry = join(dir, 'entry-namespace-parameter.ts');
+    const oracle = join(dir, 'oracle.cjs');
+    const output = join(dir, 'output.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const source of sources) {
+        writeFileSync(entry, source);
+        writeFileSync(
+          oracle,
+          ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES5, module: ts.ModuleKind.CommonJS },
+          }).outputText,
+        );
+        const expected = spawnSync('node', [oracle], { encoding: 'utf8' });
+        expect(expected.status, expected.stderr).toBe(0);
+        expect(expected.stdout).toBe('10\n');
+        for (const minifyIdentifiers of [false, true]) {
+          for (const coverage of [false, true]) {
+            const env = { ...process.env };
+            delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+            if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+            const runner = [
+              `import { build } from ${JSON.stringify(coreEntry)};`,
+              `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers, write: false })});`,
+              'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+              'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+            ].join('\n');
+            const proc = spawnSync('bun', ['-e', runner], {
+              cwd: join(import.meta.dir, '../../..'),
+              env,
+              encoding: 'utf8',
+            });
+            const stderr = proc.stderr ?? '';
+            expect(proc.status, stderr).toBe(0);
+            const lines = stderr.split(/\r?\n/);
+            if (coverage) {
+              const exact = lines.find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass ') &&
+                  line.includes('entry-namespace-parameter.ts'),
+              );
+              expect(exact, stderr).toBeDefined();
+              expect(exactSchemaProblems(exact!), exact).toEqual([]);
+              expect(exact).toMatch(/clean=1(?:\s|$)/);
+            } else {
+              expect(
+                lines.some((line) => line.startsWith('zntc: symbol-identity-prepass-mode ')),
+                stderr,
+              ).toBe(false);
+            }
+            const outputs = JSON.parse(proc.stdout) as string[];
+            expect(outputs).toHaveLength(1);
+            writeFileSync(output, outputs[0]);
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(expected.stdout);
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('super-set virtual provider preserves lexical globals through the public build API', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-super-set-provider-'));
     const entry = join(dir, 'entry-super-set.js');
