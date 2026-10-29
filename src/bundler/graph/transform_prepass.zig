@@ -6237,16 +6237,15 @@ fn canRetainSimpleNamedStaticBlockClasses(
                 (is_generator and options.unsupported.generator) or
                 (is_async and is_generator and options.unsupported.async_generator);
             const key_node = ast.getNode(key);
-            const exact_key_shape = switch (key_node.tag) {
+            const valid_key_shape = switch (key_node.tag) {
                 .identifier_reference => true,
                 .computed_property_key => blk: {
                     const operand = key_node.data.unary.operand;
-                    break :blk !operand.isNone() and @backingInt(operand) < ast.nodes.items.len and
-                        ast.getNode(operand).tag == .string_literal;
+                    break :blk !operand.isNone() and @backingInt(operand) < ast.nodes.items.len;
                 },
                 else => false,
             };
-            if (!exact_key_shape or method_needs_downlevel) return false;
+            if (!valid_key_shape or method_needs_downlevel) return false;
         }
     }
     return found_static_block;
@@ -12401,6 +12400,33 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_constant_key.source_candidate);
     try std.testing.expect(retained_constant_key.graph_gate);
 
+    const retained_identifier_computed_key = try staticBlockPrepassDecisionForTest(
+        "const methodName = 'read'; class Counter { [methodName]() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_identifier_computed_key.source_candidate);
+    try std.testing.expect(retained_identifier_computed_key.graph_gate);
+
+    const retained_expression_computed_key = try staticBlockPrepassDecisionForTest(
+        "const suffix = ''; class Counter { ['read' + suffix]() { return 1; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_expression_computed_key.source_candidate);
+    try std.testing.expect(retained_expression_computed_key.graph_gate);
+
+    const retained_side_effecting_computed_key = try staticBlockPrepassDecisionForTest(
+        "const order = []; function methodName() { order.push('key'); return 'read'; } class Counter { [methodName()]() { return 1; } static { order.push('block'); this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_side_effecting_computed_key.source_candidate);
+    try std.testing.expect(retained_side_effecting_computed_key.graph_gate);
+
     const named_class_expression_source = "const Named = 2; const Counter = class Named { static { Named.value = 1; } static read() { return Named.value; } }; console.log(Counter.read(), Named);";
     const retained_named_class_expression = try staticBlockPrepassDecisionForTest(
         named_class_expression_source,
@@ -12584,15 +12610,11 @@ test "#6193 retains only exact named native-class static-block lowering" {
 
     const rejected_sources = [_]struct { source: []const u8, candidate: bool }{
         .{ .source = "const C = class { static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const methodName = 'read'; const C = class Named { [methodName]() {} static { this.value = 1; } };", .candidate = false },
-        .{ .source = "const suffix = ''; const C = class Named { ['read' + suffix]() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { async *read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { async read() {} static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { value = 1; static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { #value = 1; static { this.value = 1; } };", .candidate = false },
         .{ .source = "const C = class Named { #read() {} static { this.value = 1; } };", .candidate = false },
-        .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
-        .{ .source = "class C { [\"read\" + suffix]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { #value = 1; static { this.value = 1; } }", .candidate = false },
