@@ -194,6 +194,22 @@ pub fn ES2022(comptime Transformer: type) type {
                             std.debug.panic("static computed-key memo has no direct SymbolId", .{});
                         try self.recordTempProducerSymbolId(memo.temp_producer_id, id);
                         try self.addSyntheticRefInScope(memo.computed_ref, id, static_key_memo_scope, .{ .read = true });
+                        // memoizeComputedKey records this reference before
+                        // its final class-key scope is known. Reconcile that
+                        // producer handoff after attaching the exact output
+                        // reference so finishSemanticEdit cannot leave a live
+                        // deferred temp behind.
+                        _ = try self.trackPendingTempProducerReferenceInScope(
+                            memo.computed_ref,
+                            static_key_memo_scope,
+                            .{ .read = true },
+                        );
+                        try self.bindPendingTempProducerReferencesInScope(
+                            memo.temp_producer_id,
+                            id,
+                            memo.temp_span,
+                            static_key_memo_scope,
+                        );
                     }
                     try static_key_memos_out.append(self.allocator, memo.decl);
                     try static_key_memos.append(self.allocator, .{ .raw_idx = raw_idx, .key_ref = memo.computed_key });

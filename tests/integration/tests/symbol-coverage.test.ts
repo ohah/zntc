@@ -11625,10 +11625,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '7\n',
       },
       {
-        name: 'static-block',
+        name: 'anonymous-static-block-class-expression',
         target: '--target=es2015',
         source:
-          'class C { static { globalThis.classStaticValue = 7; } } console.log(globalThis.classStaticValue);',
+          'const C = class { static { globalThis.classStaticValue = 7; } }; console.log(globalThis.classStaticValue);',
         stdout: '7\n',
       },
     ];
@@ -11678,6 +11678,150 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               line.includes(`${fixture.name}.ts`),
           );
         expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('named native-class static blocks retain exact identities only for the audited shape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-block-graph-retention-'));
+    const cases = [
+      {
+        name: 'class-self-this-var-let-and-outer-capture',
+        graph: 'retained',
+        source:
+          'const outer = 5; class Counter { static { var shared = outer + 1; let local = shared + 1; Counter.value = local; this.copy = Counter.value; } static read() { return this.copy; } } console.log(Counter.read(), typeof shared);',
+        stdout: '7 undefined\n',
+      },
+      {
+        name: 'multiple-blocks-preserve-source-order',
+        graph: 'retained',
+        source:
+          'class Counter { static { this.value = 1; } static { this.value = this.value + 1; } static read() { return this.value; } } console.log(Counter.read());',
+        stdout: '2\n',
+      },
+      {
+        name: 'anonymous-class-expression',
+        graph: 'reanalyzed',
+        source: 'const Counter = class { static { this.value = 1; } }; console.log(Counter.value);',
+        stdout: '1\n',
+      },
+      {
+        name: 'named-class-expression',
+        graph: 'reanalyzed',
+        source:
+          'const Counter = class Named { static { this.value = 1; } }; console.log(Counter.value);',
+        stdout: '1\n',
+      },
+      {
+        name: 'class-with-superclass',
+        graph: 'reanalyzed',
+        source:
+          'class Counter extends class Base {} { static { this.value = 1; } } console.log(Counter.value);',
+        stdout: '1\n',
+      },
+      {
+        name: 'computed-method-key',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { ["read"]() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'accessor-method',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { get value() { return 1; } static { this.other = 2; } } console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'async-method',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { async read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'public-instance-field',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { value = 1; static { this.other = 2; } } console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-instance-field',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #value = 1; static { this.other = 2; } } console.log(Counter.other);',
+        stdout: '2\n',
+      },
+      {
+        name: 'private-method',
+        graph: 'reanalyzed',
+        source:
+          'class Counter { #read() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'one-unsafe-class-vetoes-module-retention',
+        graph: 'reanalyzed',
+        source:
+          'class Safe { static { this.value = 1; } } const Unsafe = class { static { this.value = 2; } }; console.log(Safe.value + Unsafe.value);',
+        stdout: '3\n',
+      },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.js`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        writeFileSync(entry, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es2015',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') &&
+              line.includes(`${fixture.name}.js`),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(`${fixture.name}.js`),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(fixture.stdout);

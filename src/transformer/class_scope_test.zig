@@ -1322,6 +1322,8 @@ test "#4819 static-block computed-key memo owns an exact producer identity" {
         memos_found += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), memos_found);
+    try std.testing.expect((try transformer.finishSemanticEdit()) != null);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_producer_refs.items.len);
 }
 
 test "#4819 anonymous private class wrapper owns its generated name exactly" {
