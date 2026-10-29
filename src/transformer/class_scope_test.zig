@@ -3918,3 +3918,49 @@ test "escaped private helper reservation source capture RED" {
     }
     try std.testing.expectEqual(@as(usize, 0), mismatches);
 }
+
+test "escaped private helper candidate decoder OOM preserves reservations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "const _a=10;class C{#\\u0061=_a;read(){return this.#a}}";
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var original_name: ?[]const u8 = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .property_definition) continue;
+        const key_raw = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").PropertyExtra.key];
+        const key = parser.ast.nodes.items[key_raw];
+        try std.testing.expect(key.tag == .private_identifier);
+        original_name = parser.ast.getText(key.span);
+    }
+    const original = original_name orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("#\\u0061", original);
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var names = try es_helpers.PrivateNameAllocator.init(counting.allocator(), &parser.ast);
+    const before = counting.alloc_index;
+    const candidate = try names.makePrivateVarName(original);
+    const count = counting.alloc_index - before;
+    try std.testing.expectEqualStrings("_a2", candidate);
+    counting.allocator().free(candidate);
+    names.deinit();
+    try std.testing.expect(count > 0);
+    for (0..count) |offset| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        var local = try es_helpers.PrivateNameAllocator.init(failing.allocator(), &parser.ast);
+        defer local.deinit();
+        const reserved_before = local.reserved.count();
+        failing.fail_index = failing.alloc_index + offset;
+        try std.testing.expectError(error.OutOfMemory, local.makePrivateVarName(original));
+        try std.testing.expectEqual(reserved_before, local.reserved.count());
+        try std.testing.expect(local.reserved.contains("_a"));
+        try std.testing.expect(!local.reserved.contains("_a2"));
+        try std.testing.expectEqualStrings("#\\u0061", original);
+        failing.fail_index = std.math.maxInt(usize);
+        const retry = try local.makePrivateVarName(original);
+        defer failing.allocator().free(retry);
+        try std.testing.expectEqualStrings("_a2", retry);
+    }
+    std.debug.print("PRIVATE_CANDIDATE_OOM actualParserKey={s} failures={d} initFailureInjection=false\n", .{ original, count });
+}

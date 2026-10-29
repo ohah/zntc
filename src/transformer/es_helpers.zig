@@ -3592,7 +3592,9 @@ pub const PrivateNameAllocator = struct {
 
     /// "#bar" -> "_bar", with collision avoidance (`_bar2`, `_bar3`, ...).
     pub fn makePrivateVarName(self: *PrivateNameAllocator, orig_name: []const u8) ![]u8 {
-        const bare = orig_name[1..]; // strip '#'
+        const bare_raw = orig_name[1..]; // strip '#'; keep the producer spelling intact
+        const bare = try Scanner.decodeIdentifierEscapesAlloc(self.allocator, bare_raw);
+        defer if (bare.ptr != bare_raw.ptr) self.allocator.free(bare);
         var suffix: usize = 0;
         while (true) : (suffix += 1) {
             const candidate = if (suffix == 0)
