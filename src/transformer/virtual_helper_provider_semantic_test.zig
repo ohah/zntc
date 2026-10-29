@@ -933,3 +933,87 @@ test "virtual super-get provider preserves actual external roles and loop owners
         }
     }
 }
+
+test "virtual super-set provider observes exact initial lexical external roles" {
+    for ([_]bool{ false, true }) |minify| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const options: helpers.SourceOptions = .{ .es5 = true, .minify = minify };
+        const plugin = helpers.makePlugin(&options);
+        var hook: @import("../bundler/plugin.zig").HookContext = .{};
+        const loaded = (try plugin.load.?(plugin.context, helpers.ID_PREFIX ++ "super-set", a, &hook)).?;
+        var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, loaded.contents);
+        scanner.is_module = true;
+        var parser = @import("../parser/parser.zig").Parser.init(a, &scanner);
+        parser.is_module = true;
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(a, &parser.ast);
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+        analyzer.enable_exact_declaration_anchors = true;
+        analyzer.collect_unresolved_reference_nodes = true;
+        try analyzer.analyze();
+        const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1)));
+        const utils = @import("output_scope_test_utils.zig");
+        var parents = try utils.buildParentMap(a, &parser.ast, root);
+        const leaves = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(a, &parser.ast, root);
+        var objects: usize = 0;
+        var errors: usize = 0;
+        for (leaves) |leaf| {
+            const raw = @backingInt(leaf);
+            try std.testing.expect(raw < analyzer.symbol_ids.items.len);
+            if (analyzer.symbol_ids.items[raw] != null) continue;
+            const node = parser.ast.getNode(leaf);
+            try std.testing.expectEqual(ast.Node.Tag.identifier_reference, node.tag);
+            const spelling = parser.ast.getText(node.data.string_ref);
+            var owner = raw;
+            while (!analyzer.scope_owner_map.contains(owner)) owner = parents.get(owner) orelse return error.MissingInitialExternalOwner;
+            const scope = analyzer.scope_owner_map.get(owner).?;
+            const actual = utils.expectedScope(&parser.ast, root, &parents, &analyzer.scope_owner_map, raw) orelse return error.MissingInitialExternalScope;
+            try std.testing.expectEqual(scope, @backingInt(actual));
+            for (analyzer.references.items) |row| try std.testing.expect(row.node_index != leaf and row.declaration_node_index != leaf);
+            try std.testing.expect(analyzer.unresolved_reference_nodes.contains(raw));
+            if (std.mem.eql(u8, spelling, "Object")) {
+                objects += 1;
+            } else if (std.mem.eql(u8, spelling, "TypeError")) {
+                errors += 1;
+                try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, analyzer.scopes.items[scope].kind);
+            } else return error.UnexpectedSuperSetLexicalExternal;
+            std.debug.print("super-set initial min={any} role={s} node={d} null-slot=1 owner={d}:{s} scope={d}:{s} rows=0\n", .{ minify, spelling, raw, owner, @tagName(parser.ast.nodes.items[owner].tag), scope, @tagName(analyzer.scopes.items[scope].kind) });
+        }
+        try std.testing.expectEqual(@as(usize, 2), objects);
+        try std.testing.expectEqual(@as(usize, 1), errors);
+    }
+}
+
+test "virtual super-set provider preserves its actual initial graph without post-transform analysis" {
+    const test_helpers = @import("../bundler/test_helpers.zig");
+    const profile = @import("../profile.zig");
+    var counts: [2]u32 = undefined;
+    for ([_]bool{ false, true }, 0..) |minify, i| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try test_helpers.writeFile(tmp.dir, "entry.mjs", "var base={set value(v){this.seen=v}};var object={set['value'](v){super.value=v}};Object.setPrototypeOf(object,base);object.value=7;console.log(object.seen);");
+        const entry = try test_helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../bundler/resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../bundler/graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.minify_identifiers = minify;
+        graph.transform_options_base.unsupported = @import("compat.zig").fromESTarget(.es5);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        const provider = graph.findModuleByPath(helpers.ID_PREFIX ++ "super-set") orelse return error.MissingSuperSetProvider;
+        try std.testing.expect(provider.ast != null and provider.semantic != null);
+        counts[i] = profile.count(.graph_resync_semantic);
+        std.debug.print("super-set Graph min={any} initial={d} post={d} winning={any}\n", .{ minify, profile.count(.graph_discover_pm_semantic), counts[i], provider.runtime_helper_source != null });
+        try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
+    }
+    try std.testing.expectEqual([_]u32{ 0, 0 }, counts);
+}
