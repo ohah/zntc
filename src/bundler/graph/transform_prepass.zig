@@ -6295,6 +6295,112 @@ fn isStaticBlockPrivateMethodDeclarationKey(
     return false;
 }
 
+fn privateIdentifierNamesEqual(a: []const u8, b: []const u8) bool {
+    if (a.len < 2 or b.len < 2 or a[0] != '#' or b[0] != '#') return false;
+    return Scanner.identifierNamesEqual(a[1..], b[1..]);
+}
+
+/// Admit only a direct call whose private name resolves in its nearest class
+/// body to a simple instance private-method declaration on a named
+/// static-block class. Nested functions preserve that owner; nested classes
+/// use a separate transformer mapping and remain outside this certificate.
+fn isStaticBlockPrivateMethodCallAccess(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    access_raw: u32,
+) bool {
+    if (access_raw >= ast.nodes.items.len or
+        ast.nodes.items[access_raw].tag != .private_field_expression) return false;
+    const access = ast.nodes.items[access_raw];
+    const access_extra = access.data.extra;
+    if (access_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - access_extra < 3) return false;
+    const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[access_extra + 1]));
+    const access_flags = ast.extra_data.items[access_extra + 2];
+    if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
+        ast.getNode(key).tag != .private_identifier or
+        (access_flags & ast_mod.MemberFlags.optional_chain) != 0) return false;
+    const private_name = ast.getText(ast.getNode(key).span);
+
+    const call_raw = parents.get(access_raw) orelse return false;
+    if (call_raw >= ast.nodes.items.len or ast.nodes.items[call_raw].tag != .call_expression) return false;
+    const call_extra = ast.nodes.items[call_raw].data.extra;
+    if (call_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - call_extra < 4 or
+        ast.extra_data.items[call_extra] != access_raw or
+        (ast.extra_data.items[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+
+    var current = access_raw;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        current = parents.get(current) orelse return false;
+        if (current >= ast.nodes.items.len) return false;
+        const owner = ast.nodes.items[current];
+        if (owner.tag != .class_body) continue;
+
+        const members = owner.data.list;
+        if (members.start > ast.extra_data.items.len or
+            members.len > ast.extra_data.items.len - members.start) return false;
+        for (ast.extra_data.items[members.start .. members.start + members.len]) |member_raw| {
+            if (member_raw >= ast.nodes.items.len) return false;
+            const member = ast.nodes.items[member_raw];
+            switch (member.tag) {
+                .method_definition => {
+                    const extra = member.data.extra;
+                    if (extra > ast.extra_data.items.len or
+                        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.flags) return false;
+                    const member_key: ast_mod.NodeIndex = @fromBackingInt(
+                        @intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.key]),
+                    );
+                    if (member_key.isNone() or @backingInt(member_key) >= ast.nodes.items.len) return false;
+                    const member_key_node = ast.getNode(member_key);
+                    if (member_key_node.tag != .private_identifier or
+                        !privateIdentifierNamesEqual(private_name, ast.getText(member_key_node.span))) continue;
+                    const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
+                    const is_simple_instance_method =
+                        (flags & ast_mod.MethodFlags.is_static) == 0 and
+                        (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) == 0;
+                    return is_simple_instance_method and isStaticBlockPrivateMethodDeclarationKey(
+                        ast,
+                        parents,
+                        @intCast(@backingInt(member_key)),
+                    );
+                },
+                .property_definition => {
+                    const key_at = member.data.extra + ast_mod.PropertyExtra.key;
+                    if (key_at >= ast.extra_data.items.len) return false;
+                    const member_key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[key_at]));
+                    if (member_key.isNone() or @backingInt(member_key) >= ast.nodes.items.len) return false;
+                    const member_key_node = ast.getNode(member_key);
+                    if (member_key_node.tag == .private_identifier and
+                        privateIdentifierNamesEqual(private_name, ast.getText(member_key_node.span))) return false;
+                },
+                else => {},
+            }
+        }
+        // A nested class gets its own current_private_methods mapping. Do not
+        // resolve through an outer private environment that the current
+        // lowering pass cannot certify at that owner boundary.
+        return false;
+    }
+    return false;
+}
+
+fn isStaticBlockPrivateMethodCallKey(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    key_raw: u32,
+) bool {
+    const access_raw = parents.get(key_raw) orelse return false;
+    if (access_raw >= ast.nodes.items.len or
+        ast.nodes.items[access_raw].tag != .private_field_expression) return false;
+    const access_extra = ast.nodes.items[access_raw].data.extra;
+    if (access_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - access_extra < 3 or
+        ast.extra_data.items[access_extra + 1] != key_raw) return false;
+    return isStaticBlockPrivateMethodCallAccess(ast, parents, access_raw);
+}
+
 fn scopeChainContainsBinding(
     semantic: *const ModuleSemanticData,
     starting_scope: u32,
@@ -8174,10 +8280,18 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .private_field_expression => {
-                // Private reads/writes include method calls and brand checks.
-                // They stay on semantic reanalysis until their helper graph
-                // has a separate identity certificate.
-                if (options.unsupported.class_private_field or options.unsupported.class_private_method) return false;
+                // Direct calls of an instance private method have an exact
+                // declaration owner and producer-tracked get/init helper
+                // edges. Private fields, method values, optional calls, and
+                // accessor reads stay on semantic reanalysis.
+                if (options.unsupported.class_private_method) {
+                    if (!retained_simple_named_static_blocks) return false;
+                    if (!source_parent_map_ready) {
+                        if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                        source_parent_map_ready = true;
+                    }
+                    if (!isStaticBlockPrivateMethodCallAccess(ast, &source_parent_map, raw_idx)) return false;
+                } else if (options.unsupported.class_private_field) return false;
             },
             .private_identifier => {
                 // A lowered instance private-method declaration key has no
@@ -8190,7 +8304,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
                         source_parent_map_ready = true;
                     }
-                    if (!isStaticBlockPrivateMethodDeclarationKey(ast, &source_parent_map, raw_idx)) return false;
+                    if (!isStaticBlockPrivateMethodDeclarationKey(ast, &source_parent_map, raw_idx) and
+                        !isStaticBlockPrivateMethodCallKey(ast, &source_parent_map, raw_idx)) return false;
                 }
             },
             .static_block => {
@@ -8516,11 +8631,14 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.rest = false;
     other_helpers.class_call_check = false;
     // The static-block preflight admits only lowered instance private-method
-    // declarations with no private access edge. Their WeakSet/function
-    // bindings and __classPrivateMethodInit references carry producer-owned
-    // SymbolIds, which the exact output audit validates. Private reads still
-    // set class_private_method_get and therefore remain rejected.
+    // declarations and their direct calls. Their WeakSet/function bindings
+    // and helper references carry producer-owned SymbolIds, which the exact
+    // output audit validates. Private values, fields, and brand checks remain
+    // excluded by the source syntax gate.
     other_helpers.class_private_method_init = false;
+    // Direct private-method calls use the same producer-owned WeakSet/function
+    // identities and a tracked `__classPrivateMethodGet` runtime import.
+    other_helpers.class_private_method_get = false;
     other_helpers.spread_array = false;
     other_helpers.tagged_template_literal = false;
     other_helpers.keep_names = false;
@@ -8551,9 +8669,10 @@ test "retained legacy decorators admit their tracked metadata helper" {
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
 }
 
-test "retained private method declarations admit only their init helper" {
+test "retained private method declarations and direct calls admit only their helpers" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const init_only: RuntimeHelpers = .{ .class_private_method_init = true };
+    const get_only: RuntimeHelpers = .{ .class_private_method_get = true };
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
         init_only,
         false,
@@ -8564,8 +8683,18 @@ test "retained private method declarations admit only their init helper" {
         false,
         false,
     ));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
-        .{ .class_private_method_get = true },
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
+        get_only,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
+        .{ .class_private_method_init = true, .class_private_method_get = true },
         false,
         false,
         false,
@@ -8575,7 +8704,7 @@ test "retained private method declarations admit only their init helper" {
         false,
     ));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
-        .{ .class_private_method_init = true, .class_private_method_get = true },
+        .{ .class_private_method_get = true, .class_private_field_set = true },
         false,
         false,
         false,
@@ -12513,7 +12642,50 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .none,
     );
     try std.testing.expect(private_method_call.source_candidate);
-    try std.testing.expect(!private_method_call.graph_gate);
+    try std.testing.expect(private_method_call.graph_gate);
+
+    const private_method_call_late_declaration = try staticBlockPrepassDecisionForTest(
+        "class Counter { read() { return this.#read(); } helper() { return 3; } static { this.value = 2; } #read() { return 7; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_call_late_declaration.source_candidate);
+    try std.testing.expect(private_method_call_late_declaration.graph_gate);
+
+    const escaped_private_method_call = try staticBlockPrepassDecisionForTest(
+        "class Counter { #\\u0072ead() { return 7; } read() { return this.#read(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(escaped_private_method_call.source_candidate);
+    try std.testing.expect(escaped_private_method_call.graph_gate);
+
+    const nested_private_method_mapping = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } read() { class Inner { #other() { return 0; } read(owner) { return owner.#read(); } static { this.ready = true; } } return new Inner().read(this); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(nested_private_method_mapping.source_candidate);
+    try std.testing.expect(!nested_private_method_mapping.graph_gate);
+
+    const private_method_value = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } read() { return this.#read; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!private_method_value.graph_gate);
+
+    const optional_private_method_call = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } read() { return this.#read?.(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!optional_private_method_call.graph_gate);
 
     const private_method_brand_check = try staticBlockPrepassDecisionForTest(
         "class Counter { #read() { return 1; } static has(value) { return #read in value; } static { this.value = 2; } }",
@@ -12573,6 +12745,15 @@ test "#6193 retains only exact named native-class static-block lowering" {
     );
     try std.testing.expect(private_method_outside_static_block_class.source_candidate);
     try std.testing.expect(!private_method_outside_static_block_class.graph_gate);
+
+    const private_method_call_outside_static_block_class = try staticBlockPrepassDecisionForTest(
+        "class Safe { static { this.value = 1; } } class Other { #read() { return 2; } read() { return this.#read(); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_call_outside_static_block_class.source_candidate);
+    try std.testing.expect(!private_method_call_outside_static_block_class.graph_gate);
 
     const retained_constant_key = try staticBlockPrepassDecisionForTest(
         "class Counter { [\"read\"]() { return 1; } static { this.value = 2; } } console.log(Counter.read());",
