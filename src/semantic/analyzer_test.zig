@@ -3858,3 +3858,28 @@ test "escaped enum owned value names report allocation failures without leaks" {
         std.debug.print("escaped-enum-OOM family={d} allocationFailures={d}\n", .{ family, total });
     }
 }
+
+test "namespace generated candidate reservation follows actual active container contexts" {
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "namespace N{export namespace N{export const value=10}}", .expected = "_N1" },
+        .{ .source = "enum N{N=1,A=(()=>{namespace N{export const value=10}return N.value})()}", .expected = "_N1" },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        var scanner = try Scanner.init(alloc, case.source);
+        var parser = Parser.init(alloc, &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+        analyzer.is_ts = true;
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+        var matches: usize = 0;
+        for (analyzer.symbols.items) |symbol| {
+            if (symbol.synthetic_kind == .namespace_iife_parameter and std.mem.eql(u8, symbol.synthetic_name, case.expected)) matches += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), matches);
+    }
+}
