@@ -6300,37 +6300,15 @@ fn privateIdentifierNamesEqual(a: []const u8, b: []const u8) bool {
     return Scanner.identifierNamesEqual(a[1..], b[1..]);
 }
 
-/// Admit only a direct call whose private name resolves in its nearest class
-/// body to a simple instance private-method declaration on a named
-/// static-block class. Nested functions preserve that owner; nested classes
-/// use a separate transformer mapping and remain outside this certificate.
-fn isStaticBlockPrivateMethodCallAccess(
+/// Resolve a private method name only in the nearest class body. Nested
+/// classes have their own lowering map, so an outer declaration is not proof.
+fn isStaticBlockPrivateMethodInNearestClass(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
-    access_raw: u32,
+    reference_raw: u32,
+    private_name: []const u8,
 ) bool {
-    if (access_raw >= ast.nodes.items.len or
-        ast.nodes.items[access_raw].tag != .private_field_expression) return false;
-    const access = ast.nodes.items[access_raw];
-    const access_extra = access.data.extra;
-    if (access_extra > ast.extra_data.items.len or
-        ast.extra_data.items.len - access_extra < 3) return false;
-    const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[access_extra + 1]));
-    const access_flags = ast.extra_data.items[access_extra + 2];
-    if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
-        ast.getNode(key).tag != .private_identifier or
-        (access_flags & ast_mod.MemberFlags.optional_chain) != 0) return false;
-    const private_name = ast.getText(ast.getNode(key).span);
-
-    const call_raw = parents.get(access_raw) orelse return false;
-    if (call_raw >= ast.nodes.items.len or ast.nodes.items[call_raw].tag != .call_expression) return false;
-    const call_extra = ast.nodes.items[call_raw].data.extra;
-    if (call_extra > ast.extra_data.items.len or
-        ast.extra_data.items.len - call_extra < 4 or
-        ast.extra_data.items[call_extra] != access_raw or
-        (ast.extra_data.items[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-
-    var current = access_raw;
+    var current = reference_raw;
     var hops: usize = 0;
     while (hops <= ast.nodes.items.len) : (hops += 1) {
         current = parents.get(current) orelse return false;
@@ -6378,12 +6356,42 @@ fn isStaticBlockPrivateMethodCallAccess(
                 else => {},
             }
         }
-        // A nested class gets its own current_private_methods mapping. Do not
-        // resolve through an outer private environment that the current
-        // lowering pass cannot certify at that owner boundary.
         return false;
     }
     return false;
+}
+
+/// Admit only a direct call whose private name resolves in its nearest class
+/// body to a simple instance private-method declaration on a named
+/// static-block class. Nested functions preserve that owner; nested classes
+/// use a separate transformer mapping and remain outside this certificate.
+fn isStaticBlockPrivateMethodCallAccess(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    access_raw: u32,
+) bool {
+    if (access_raw >= ast.nodes.items.len or
+        ast.nodes.items[access_raw].tag != .private_field_expression) return false;
+    const access = ast.nodes.items[access_raw];
+    const access_extra = access.data.extra;
+    if (access_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - access_extra < 3) return false;
+    const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[access_extra + 1]));
+    const access_flags = ast.extra_data.items[access_extra + 2];
+    if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
+        ast.getNode(key).tag != .private_identifier or
+        (access_flags & ast_mod.MemberFlags.optional_chain) != 0) return false;
+    const private_name = ast.getText(ast.getNode(key).span);
+
+    const call_raw = parents.get(access_raw) orelse return false;
+    if (call_raw >= ast.nodes.items.len or ast.nodes.items[call_raw].tag != .call_expression) return false;
+    const call_extra = ast.nodes.items[call_raw].data.extra;
+    if (call_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - call_extra < 4 or
+        ast.extra_data.items[call_extra] != access_raw or
+        (ast.extra_data.items[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+
+    return isStaticBlockPrivateMethodInNearestClass(ast, parents, access_raw, private_name);
 }
 
 fn isStaticBlockPrivateMethodCallKey(
@@ -6399,6 +6407,30 @@ fn isStaticBlockPrivateMethodCallKey(
         ast.extra_data.items.len - access_extra < 3 or
         ast.extra_data.items[access_extra + 1] != key_raw) return false;
     return isStaticBlockPrivateMethodCallAccess(ast, parents, access_raw);
+}
+
+/// Admit private-method brand checks only when the right-hand side is
+/// syntactically guaranteed to be an object. Arbitrary values (especially
+/// null) stay on reanalysis because WeakSet.has does not reproduce `in` errors.
+fn isStaticBlockPrivateMethodBrandCheckKey(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    key_raw: u32,
+) bool {
+    if (key_raw >= ast.nodes.items.len or
+        ast.nodes.items[key_raw].tag != .private_identifier) return false;
+    const binary_raw = parents.get(key_raw) orelse return false;
+    if (binary_raw >= ast.nodes.items.len or
+        ast.nodes.items[binary_raw].tag != .binary_expression) return false;
+    const binary = ast.nodes.items[binary_raw].data.binary;
+    if (@backingInt(binary.left) != key_raw or binary.flags != @as(u16, @intCast(@backingInt(token_mod.Kind.kw_in))) or
+        binary.right.isNone() or @backingInt(binary.right) >= ast.nodes.items.len) return false;
+    switch (ast.nodes.items[@backingInt(binary.right)].tag) {
+        .new_expression, .object_expression, .array_expression => {},
+        else => return false,
+    }
+    const private_name = ast.getText(ast.nodes.items[key_raw].span);
+    return isStaticBlockPrivateMethodInNearestClass(ast, parents, binary_raw, private_name);
 }
 
 fn scopeChainContainsBinding(
@@ -8296,8 +8328,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .private_identifier => {
                 // A lowered instance private-method declaration key has no
                 // private access edge. Admit that key only on the exact class
-                // shape checked above; every other private identifier is an
-                // access/brand operand and remains on reanalysis.
+                // shape checked above; access operands must be an exact direct
+                // call or an object-proven private-method brand check.
                 if (options.unsupported.class_private_field or options.unsupported.class_private_method) {
                     if (!options.unsupported.class_private_method or !retained_simple_named_static_blocks) return false;
                     if (!source_parent_map_ready) {
@@ -8305,7 +8337,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         source_parent_map_ready = true;
                     }
                     if (!isStaticBlockPrivateMethodDeclarationKey(ast, &source_parent_map, raw_idx) and
-                        !isStaticBlockPrivateMethodCallKey(ast, &source_parent_map, raw_idx)) return false;
+                        !isStaticBlockPrivateMethodCallKey(ast, &source_parent_map, raw_idx) and
+                        !isStaticBlockPrivateMethodBrandCheckKey(ast, &source_parent_map, raw_idx)) return false;
                 }
             },
             .static_block => {
@@ -8630,11 +8663,11 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.read = false;
     other_helpers.rest = false;
     other_helpers.class_call_check = false;
-    // The static-block preflight admits only lowered instance private-method
-    // declarations and their direct calls. Their WeakSet/function bindings
-    // and helper references carry producer-owned SymbolIds, which the exact
-    // output audit validates. Private values, fields, and brand checks remain
-    // excluded by the source syntax gate.
+    // The static-block preflight admits lowered instance private-method
+    // declarations, direct calls, and brand checks with object-proven right
+    // operands. Their WeakSet/function bindings and references carry
+    // producer-owned SymbolIds, which the exact output audit validates.
+    // Private values, fields, and arbitrary brand-check operands stay excluded.
     other_helpers.class_private_method_init = false;
     // Direct private-method calls use the same producer-owned WeakSet/function
     // identities and a tracked `__classPrivateMethodGet` runtime import.
@@ -8669,7 +8702,7 @@ test "retained legacy decorators admit their tracked metadata helper" {
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
 }
 
-test "retained private method declarations and direct calls admit only their helpers" {
+test "retained private method declarations and calls admit only their helpers" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const init_only: RuntimeHelpers = .{ .class_private_method_init = true };
     const get_only: RuntimeHelpers = .{ .class_private_method_get = true };
@@ -12693,7 +12726,70 @@ test "#6193 retains only exact named native-class static-block lowering" {
         options,
         .none,
     );
+    try std.testing.expect(private_method_brand_check.source_candidate);
     try std.testing.expect(!private_method_brand_check.graph_gate);
+
+    const private_method_brand_check_new_instance = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static hasInstance() { return #read in new Counter(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_brand_check_new_instance.source_candidate);
+    try std.testing.expect(private_method_brand_check_new_instance.graph_gate);
+
+    const escaped_private_method_brand_check = try staticBlockPrepassDecisionForTest(
+        "class Counter { #\\u0072ead() { return 1; } static hasInstance() { return #read in new Counter(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(escaped_private_method_brand_check.source_candidate);
+    try std.testing.expect(escaped_private_method_brand_check.graph_gate);
+
+    const private_method_brand_check_object_literal = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static hasEmpty() { return #read in {}; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_brand_check_object_literal.source_candidate);
+    try std.testing.expect(private_method_brand_check_object_literal.graph_gate);
+
+    const private_method_brand_check_array_literal = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static hasEmpty() { return #read in []; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_brand_check_array_literal.source_candidate);
+    try std.testing.expect(private_method_brand_check_array_literal.graph_gate);
+
+    const private_method_brand_check_null = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } static hasNull() { return #read in null; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(private_method_brand_check_null.source_candidate);
+    try std.testing.expect(!private_method_brand_check_null.graph_gate);
+
+    const private_field_brand_check_object = try staticBlockPrepassDecisionForTest(
+        "class Counter { #value = 1; static hasEmpty() { return #value in {}; } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!private_field_brand_check_object.graph_gate);
+
+    const nested_private_method_brand_mapping = try staticBlockPrepassDecisionForTest(
+        "class Counter { #read() { return 1; } read() { class Inner { #other() { return 0; } has() { return #read in new Counter(); } static { this.ready = true; } } return new Inner().has(); } static { this.value = 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(nested_private_method_brand_mapping.source_candidate);
+    try std.testing.expect(!nested_private_method_brand_mapping.graph_gate);
 
     const static_private_method = try staticBlockPrepassDecisionForTest(
         "class Counter { static #read() { return 1; } static { this.value = 2; } }",
