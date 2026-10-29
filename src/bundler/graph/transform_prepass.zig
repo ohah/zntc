@@ -6229,13 +6229,23 @@ fn canRetainSimpleNamedStaticBlockClasses(
             const key: ast_mod.NodeIndex = @fromBackingInt(
                 @intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.key]),
             );
+            if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
             const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
             const lowered_method_flags = ast_mod.MethodFlags.is_async |
                 ast_mod.MethodFlags.is_generator |
                 ast_mod.MethodFlags.is_getter |
                 ast_mod.MethodFlags.is_setter;
-            if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
-                ast.getNode(key).tag != .identifier_reference or (flags & lowered_method_flags) != 0) return false;
+            const key_node = ast.getNode(key);
+            const exact_key_shape = switch (key_node.tag) {
+                .identifier_reference => true,
+                .computed_property_key => blk: {
+                    const operand = key_node.data.unary.operand;
+                    break :blk !operand.isNone() and @backingInt(operand) < ast.nodes.items.len and
+                        ast.getNode(operand).tag == .string_literal;
+                },
+                else => false,
+            };
+            if (!exact_key_shape or (flags & lowered_method_flags) != 0) return false;
         }
     }
     return found_static_block;
@@ -12201,6 +12211,8 @@ const StaticBlockPrepassTestMutation = enum {
     remove_static_block_body_owner,
     wrong_static_block_scope_kind,
     clear_class_name,
+    missing_method_key,
+    out_of_range_method_key,
 };
 
 const StaticBlockPrepassTestResult = struct {
@@ -12268,6 +12280,23 @@ fn staticBlockPrepassDecisionForTest(
             }
             if (!found) return error.MissingClassDeclaration;
         },
+        .missing_method_key, .out_of_range_method_key => {
+            var found = false;
+            for (parser.ast.nodes.items) |node| {
+                if (node.tag != .method_definition) continue;
+                const extra = node.data.extra;
+                if (extra > parser.ast.extra_data.items.len or
+                    parser.ast.extra_data.items.len - extra <= ast_mod.MethodExtra.key) return error.InvalidMethodExtra;
+                parser.ast.extra_data.items[extra + ast_mod.MethodExtra.key] = switch (mutation) {
+                    .missing_method_key => @backingInt(ast_mod.NodeIndex.none),
+                    .out_of_range_method_key => @intCast(parser.ast.nodes.items.len + 1),
+                    else => unreachable,
+                };
+                found = true;
+                break;
+            }
+            if (!found) return error.MissingMethodDefinition;
+        },
     }
 
     var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
@@ -12334,11 +12363,22 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained.source_candidate);
     try std.testing.expect(retained.graph_gate);
 
+    const retained_constant_key = try staticBlockPrepassDecisionForTest(
+        "class Counter { [\"read\"]() { return 1; } static { this.value = 2; } } console.log(Counter.read());",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_constant_key.source_candidate);
+    try std.testing.expect(retained_constant_key.graph_gate);
+
     for ([_]StaticBlockPrepassTestMutation{
         .remove_static_block_owner,
         .remove_static_block_body_owner,
         .wrong_static_block_scope_kind,
         .clear_class_name,
+        .missing_method_key,
+        .out_of_range_method_key,
     }) |mutation| {
         const poisoned = try staticBlockPrepassDecisionForTest(positive, ".js", options, mutation);
         try std.testing.expect(!poisoned.source_candidate);
@@ -12349,6 +12389,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
         .{ .source = "const C = class Named { static { this.value = 1; } };", .candidate = false },
         .{ .source = "class C extends Base { static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { [key]() {} static { this.value = 1; } }", .candidate = false },
+        .{ .source = "class C { [\"read\" + suffix]() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { get value() { return 1; } static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { async read() {} static { this.value = 1; } }", .candidate = false },
         .{ .source = "class C { value = 1; static { this.value = 1; } }", .candidate = false },

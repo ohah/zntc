@@ -11725,10 +11725,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1\n',
       },
       {
-        name: 'computed-method-key',
-        graph: 'reanalyzed',
+        name: 'constant-computed-method-key',
+        graph: 'retained',
         source:
           'class Counter { ["read"]() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
+        stdout: '2\n',
+      },
+      {
+        name: 'dynamic-computed-method-key',
+        graph: 'reanalyzed',
+        source:
+          'const methodName = "read"; class Counter { [methodName]() { return 1; } static { this.value = 2; } } console.log(Counter.value);',
         stdout: '2\n',
       },
       {
