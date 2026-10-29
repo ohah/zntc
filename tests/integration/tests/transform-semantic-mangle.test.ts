@@ -79,6 +79,59 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(execution.stdout).toBe('42');
   });
 
+  test('bundler retains erased namespace-export graphs and rejects extra downlevel work', async () => {
+    const fixture = await createFixture({
+      'input.ts': [
+        'export as namespace Api;',
+        'export const value: number = 40;',
+        'process.stdout.write(String(value + 2));',
+      ].join('\n'),
+      'script.ts': [
+        'export as namespace Api;',
+        'const value: number = 40;',
+        'process.stdout.write(String(value + 2));',
+      ].join('\n'),
+      'downlevel.ts': [
+        'export as namespace Api;',
+        'export class Box { value: number = 40; }',
+        'const box = new Box();',
+        'process.stdout.write(String(box.value + 2));',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const cases = [
+      { entry: 'input.ts', target: 'esnext', graph: 'retained' as const },
+      { entry: 'script.ts', target: 'esnext', graph: 'retained' as const },
+      { entry: 'downlevel.ts', target: 'es5', graph: 'reanalyzed' as const },
+    ];
+    for (const item of cases) {
+      const input = join(fixture.dir, item.entry);
+      const output = join(fixture.dir, `${item.entry}.${item.target}.cjs`);
+      const result = await runZntc(
+        [
+          '--bundle',
+          input,
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          `--target=${item.target}`,
+          '--minify-identifiers',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, `${item.entry}: ${result.stderr}`).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, item.entry, item.graph);
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+      }
+      const execution = await runNode(output);
+      expect(execution.stderr, item.entry).toBe('');
+      expect(execution.stdout, item.entry).toBe('42');
+    }
+  });
+
   async function expectNativeParity(source: string, expected: string) {
     const fixture = await createFixture({ 'input.js': source });
     cleanup = fixture.cleanup;
