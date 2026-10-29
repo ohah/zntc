@@ -1321,6 +1321,8 @@ fn isExactUnresolvedSourceRead(
     if (transformer.reference_origin_map.get(raw)) |origin| {
         if (origin != raw) return false;
     }
+    const unresolved_write_nodes = transformer.unresolved_reference_write_nodes orelse return false;
+    if (unresolved_write_nodes.contains(raw)) return false;
     const unresolved_nodes = transformer.unresolved_reference_nodes orelse return false;
     if (!unresolved_nodes.contains(raw)) return false;
     const unresolved_names = transformer.unresolved_references orelse return false;
@@ -3929,8 +3931,10 @@ fn transpileWithCallbackInternal(
     // 누락 검사기가 합성 노드를 빼도록 기록을 켠다(검사기가 켜졌을 때만 — 평소 비용 없음).
     if (symbol_coverage_env.enabled() or synthetic_coverage_env.enabled()) transformer.synthetic_idents = .empty;
     if (analyzer_storage) |*analyzer| {
-        if (analyzer.collect_unresolved_reference_nodes)
+        if (analyzer.collect_unresolved_reference_nodes) {
             transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+            transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
+        }
     }
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
@@ -6108,6 +6112,7 @@ test "#6193 erased ambient import reads need exact unresolved source identity" {
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));
@@ -6187,6 +6192,7 @@ test "#6193 erased ambient import-equals reads need exact unresolved source iden
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
@@ -6262,6 +6268,7 @@ test "#6193 erased ambient import-equals export locals stay on reanalysis" {
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(!erasedAmbientNamedNamespaceImportEqualsHaveNoOutputSemanticFacts(&transformer, output_root));
@@ -6308,6 +6315,7 @@ test "#6193 erased ambient import export locals stay on reanalysis" {
     transformer.semantic_edit_enabled = true;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.unresolved_reference_write_nodes = &analyzer.unresolved_reference_write_nodes;
     const output_root = try transformer.visitNode(source_root);
 
     try std.testing.expect(!erasedLenientJsImportDeclarationsHaveNoOutputSemanticFacts(&transformer, output_root));

@@ -214,6 +214,11 @@ pub const SemanticAnalyzer = struct {
     /// Exact source nodes that resolve to an undeclared global/host name.
     /// Coverage diagnostics must not infer external status from spelling alone.
     unresolved_reference_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Exact unresolved source nodes used as assignment/update targets. Kept
+    /// separately so narrow retained-graph proofs can distinguish a read from
+    /// a same-spelled write, including shorthand destructuring targets whose
+    /// AST leaf still has the `identifier_reference` tag.
+    unresolved_reference_write_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// Set only by the exact symbol-coverage integration gate; ordinary transpiles
     /// retain the existing name-only unresolved-global representation.
     collect_unresolved_reference_nodes: bool = false,
@@ -473,6 +478,7 @@ pub const SemanticAnalyzer = struct {
         while (unres_it.next()) |k| self.allocator.free(k.*);
         self.unresolved_references.deinit(self.allocator);
         self.unresolved_reference_nodes.deinit(self.allocator);
+        self.unresolved_reference_write_nodes.deinit(self.allocator);
         self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
         for (self.resolved_names.items) |name| {
@@ -1301,7 +1307,7 @@ pub const SemanticAnalyzer = struct {
         // Keep it unresolved instead of rebinding it to a same-named user symbol
         // during the graph's post-transform semantic refresh.
         if (self.isExplicitGlobalRefNode(node_idx)) {
-            self.recordUnresolvedReference(name, node_idx);
+            self.recordUnresolvedReference(name, node_idx, effective);
             return;
         }
 
@@ -1440,10 +1446,15 @@ pub const SemanticAnalyzer = struct {
         }
 
         // 스코프 체인을 전부 올라가도 선언을 찾지 못하면 외부 참조로 남긴다.
-        self.recordUnresolvedReference(name, node_idx);
+        self.recordUnresolvedReference(name, node_idx, effective);
     }
 
-    fn recordUnresolvedReference(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex) void {
+    fn recordUnresolvedReference(
+        self: *SemanticAnalyzer,
+        name: []const u8,
+        node_idx: NodeIndex,
+        flags: symbol_mod.ReferenceFlags,
+    ) void {
         // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
         // #4221: 이름이 string_table 슬라이스(합성 노드)일 수 있다 — emitter 소비
         // 시점까지 string_table 이 realloc 되면 dangling (#3100 클래스). declare
@@ -1454,6 +1465,11 @@ pub const SemanticAnalyzer = struct {
             self.unresolved_reference_nodes.put(self.allocator, @backingInt(node_idx), {}) catch {
                 self.alloc_failed = true;
             };
+            if (flags.write) {
+                self.unresolved_reference_write_nodes.put(self.allocator, @backingInt(node_idx), {}) catch {
+                    self.alloc_failed = true;
+                };
+            }
         }
         if (self.unresolved_references.contains(name)) return;
         // OOM 으로 미해결 글로벌 이름이 누락되면 linker 가 그 이름을 예약하지 못해
