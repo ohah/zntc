@@ -35,6 +35,7 @@ const SemanticSyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const SemanticScope = @import("../../semantic/scope.zig").Scope;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+const scope_owner_proof = @import("../../semantic/scope_owner_proof.zig");
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
 const drop_mod = @import("../../transformer/transformer/drop.zig");
@@ -16605,6 +16606,55 @@ fn minifiedConstGraphSidecarsRemainReachable(
     return true;
 }
 
+/// Class declarations have an inner self binding whose exact owner lives in
+/// class_self_symbol_map rather than on a binding node. Admit its unanchored
+/// declaration row only while the owning class, class-body scope, and name
+/// still agree with that sidecar.
+fn exactRetainedClassSelfDeclarationOwner(
+    ast: *const ast_mod.Ast,
+    symbols: []const SemanticSymbol,
+    scopes: []const SemanticScope,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    class_self_symbol_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    reachable: *const std.DynamicBitSet,
+    reference: SemanticReference,
+) ?u32 {
+    if (!reference.flags.declare or reference.flags.read or reference.flags.write or
+        reference.flags.type_context or reference.flags.value_as_type or
+        !reference.node_index.isNone() or !reference.declaration_node_index.isNone() or
+        reference.symbol_id.isNone()) return null;
+    const symbol_raw = @backingInt(reference.symbol_id);
+    if (symbol_raw >= symbols.len) return null;
+    const symbol = symbols[symbol_raw];
+    if (symbol.kind != .class_decl or symbol.scope_id.isNone() or symbol.scope_id != reference.scope_id or
+        symbol.origin_scope != symbol.scope_id) return null;
+    const scope_raw = @backingInt(symbol.scope_id);
+    if (scope_raw >= scopes.len or scopes[scope_raw].kind != .class_body or !scopes[scope_raw].is_strict)
+        return null;
+
+    var owner_raw: ?u32 = null;
+    var owners = class_self_symbol_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* != symbol_raw) continue;
+        if (owner_raw != null) return null;
+        owner_raw = entry.key_ptr.*;
+    }
+    const owner = owner_raw orelse return null;
+    if (!isNodeReachableInMinifiedGraph(owner, reachable) or owner >= ast.nodes.items.len or
+        ast.nodes.items[owner].tag != .class_declaration or
+        scope_owner_map.get(owner) != @as(?u32, @intCast(scope_raw))) return null;
+
+    const class_node = ast.nodes.items[owner];
+    const extra = class_node.data.extra;
+    if (extra >= ast.extra_data.items.len or ast.extra_data.items.len - extra < 3) return null;
+    const name_index: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+    if (name_index.isNone() or @backingInt(name_index) >= ast.nodes.items.len) return null;
+    const name = ast.nodes.items[@backingInt(name_index)];
+    if (name.tag != .binding_identifier or
+        !std.mem.eql(u8, ast.getText(name.span), symbol.nameText(ast.source))) return null;
+    return owner;
+}
+
 const MinifiedConstSidecarMutation = enum {
     all_live,
     stale_class_self_owner,
@@ -16779,20 +16829,30 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     // A scope owner can become unreachable only because syntax minification
     // removed its subtree. Accept only the exact owner/scope pairs captured
     // while the source graph was live, and only for empty block boundaries.
+    // Some analyzer scopes have multiple exact AST owners (a class static
+    // block and its body share one var scope); preserve those aliases together.
     if (scope_owner_snapshot.len != semantic.scope_owner_map.count()) return false;
-    var snapshot_scope_ids = try std.DynamicBitSet.initEmpty(scratch_alloc, semantic.scopes.len);
     var snapshot_owner_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
+    const scope_owner_counts = try scratch_alloc.alloc(u32, semantic.scopes.len);
+    const reachable_scope_owner_counts = try scratch_alloc.alloc(u32, semantic.scopes.len);
+    @memset(scope_owner_counts, 0);
+    @memset(reachable_scope_owner_counts, 0);
     var detached_scope_owners: std.ArrayListUnmanaged(@TypeOf(scope_owner_snapshot[0])) = .empty;
     for (scope_owner_snapshot) |snapshot| {
         const owner_node = snapshot.owner_node;
         const scope_id = snapshot.scope_id;
         if (owner_node >= ast.nodes.items.len or scope_id >= semantic.scopes.len or
-            snapshot_scope_ids.isSet(scope_id) or snapshot_owner_nodes.isSet(owner_node)) return false;
+            snapshot_owner_nodes.isSet(owner_node)) return false;
         const mapped_scope = semantic.scope_owner_map.get(owner_node) orelse return false;
         if (mapped_scope != scope_id or semantic.scopes[scope_id].kind != snapshot.scope_kind or
             ast.nodes.items[owner_node].tag != snapshot.owner_tag) return false;
-        snapshot_scope_ids.set(scope_id);
+        if (scope_owner_counts[scope_id] >= 2) return false;
+        scope_owner_counts[scope_id] += 1;
         snapshot_owner_nodes.set(owner_node);
+        if (reachable.isSet(owner_node)) {
+            if (reachable_scope_owner_counts[scope_id] == std.math.maxInt(u32)) return false;
+            reachable_scope_owner_counts[scope_id] += 1;
+        }
         if (!reachable.isSet(owner_node)) {
             const eligible_owner = switch (snapshot.scope_kind) {
                 .block => snapshot.owner_tag == .block_statement,
@@ -16804,7 +16864,22 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         }
     }
     for (0..semantic.scopes.len) |scope_id| {
-        if (!snapshot_scope_ids.isSet(scope_id)) return false;
+        if (semantic.scopes[scope_id].kind == .class_static_block) {
+            if (scope_owner_counts[scope_id] != 2 or !scope_owner_proof.exactClassStaticBlockScopeOwners(
+                ast,
+                semantic.scopes,
+                &semantic.scope_owner_map,
+                &reachable,
+                @intCast(scope_id),
+            )) return false;
+        } else if (scope_owner_counts[scope_id] != 1) {
+            return false;
+        }
+    }
+    for (detached_scope_owners.items) |snapshot| {
+        const scope_id = snapshot.scope_id;
+        if (scope_owner_counts[scope_id] != 1 or reachable_scope_owner_counts[scope_id] != 0)
+            return false;
     }
 
     var tracked_nodes = try std.DynamicBitSet.initEmpty(scratch_alloc, ast.nodes.items.len);
@@ -16851,7 +16926,18 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
     for (semantic.references) |reference| {
         if (reference.flags.declare) {
             const declaration = reference.declaration_node_index;
-            if (declaration.isNone()) return false;
+            if (declaration.isNone()) {
+                if (exactRetainedClassSelfDeclarationOwner(
+                    ast,
+                    semantic.symbols.items,
+                    semantic.scopes,
+                    &semantic.scope_owner_map,
+                    &semantic.class_self_symbol_map,
+                    &reachable,
+                    reference,
+                ) != null) continue;
+                return false;
+            }
             const raw = @backingInt(declaration);
             if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
             if (reachable.isSet(raw)) continue;
@@ -16891,9 +16977,7 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
             const node = reference.node_index;
             if (node.isNone() or @backingInt(node) >= ast.nodes.items.len) return false;
             const raw = @backingInt(node);
-            if (reachable.isSet(raw) and !obsolete_reference_set.isSet(raw)) {
-                return false;
-            }
+            if (reachable.isSet(raw) and !obsolete_reference_set.isSet(raw)) return false;
         }
     }
 
@@ -16934,19 +17018,52 @@ pub fn resyncAfterConstMaterializationRetainingMinifiedGraph(
         if (!try editor.elideEmptyGeneratedScopeOwner(owner)) return false;
         elided_scope_ids.set(snapshot.scope_id);
     }
+    const class_self_statement_contexts = collectMinifiedStatementContexts(scratch_alloc, ast, root) catch return false;
+    const references_for_reindex = try scratch_alloc.dupe(SemanticReference, editor.references.items);
+    for (references_for_reindex) |*reference| {
+        if (!reference.flags.declare or !reference.declaration_node_index.isNone()) continue;
+        const owner = exactRetainedClassSelfDeclarationOwner(
+            ast,
+            editor.symbols.items,
+            editor.scopes.items,
+            &editor.scope_owner_map,
+            &semantic.class_self_symbol_map,
+            &reachable,
+            reference.*,
+        ) orelse continue;
+        const context = class_self_statement_contexts[owner] orelse return false;
+        if (context.stmt_idx == SemanticReference.NO_STMT or
+            context.scope_stmt_idx == SemanticReference.NO_STMT) return false;
+        reference.stmt_idx = context.stmt_idx;
+        reference.scope_stmt_idx = context.scope_stmt_idx;
+    }
     const updated_references = (try reindexMinifiedSemanticReferences(
         scratch_alloc,
         ast,
         root,
-        editor.references.items,
+        references_for_reindex,
     )) orelse return false;
+    var validation_references: std.ArrayListUnmanaged(SemanticReference) = .empty;
+    for (updated_references) |reference| {
+        const is_exact_class_self = reference.flags.declare and reference.declaration_node_index.isNone() and
+            exactRetainedClassSelfDeclarationOwner(
+                ast,
+                editor.symbols.items,
+                editor.scopes.items,
+                &editor.scope_owner_map,
+                &semantic.class_self_symbol_map,
+                &reachable,
+                reference,
+            ) != null;
+        if (!is_exact_class_self) try validation_references.append(scratch_alloc, reference);
+    }
     if (!canRetainMinifiedSemanticGraph(
         scratch_alloc,
         ast,
         root,
         editor.symbols.items,
         editor.scopes.items,
-        updated_references,
+        validation_references.items,
         editor.symbol_ids.items,
         &semantic.unresolved_references,
         &editor.scope_owner_map,

@@ -16,6 +16,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const ScopeKind = @import("../../semantic/scope.zig").ScopeKind;
+const scope_owner_proof = @import("../../semantic/scope_owner_proof.zig");
 const ast_walk = @import("../../parser/ast_walk.zig");
 const constant_facts = @import("../constant_facts.zig");
 const ConstValue = @import("../../semantic/symbol.zig").ConstValue;
@@ -119,7 +120,7 @@ fn snapshotMinifiedScopeOwners(
     ast: *const Ast,
     semantic: ModuleSemanticData,
 ) ?[]MinifiedScopeOwnerSnapshot {
-    if (semantic.scope_owner_map.count() != semantic.scopes.len) return null;
+    if (semantic.scope_owner_map.count() < semantic.scopes.len) return null;
     const reachable_nodes = ast_walk.collectReachableNodeIndices(allocator, ast) catch return null;
     defer allocator.free(reachable_nodes);
     var reachable = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return null;
@@ -129,8 +130,9 @@ fn snapshotMinifiedScopeOwners(
         reachable.set(raw);
     }
 
-    var seen_scopes = std.DynamicBitSet.initEmpty(allocator, semantic.scopes.len) catch return null;
-    defer seen_scopes.deinit();
+    const owner_counts = allocator.alloc(u32, semantic.scopes.len) catch return null;
+    defer allocator.free(owner_counts);
+    @memset(owner_counts, 0);
     var snapshots: std.ArrayListUnmanaged(MinifiedScopeOwnerSnapshot) = .empty;
     defer snapshots.deinit(allocator);
     var owners = semantic.scope_owner_map.iterator();
@@ -138,8 +140,9 @@ fn snapshotMinifiedScopeOwners(
         const owner_node = entry.key_ptr.*;
         const scope_id = entry.value_ptr.*;
         if (owner_node >= ast.nodes.items.len or !reachable.isSet(owner_node) or
-            scope_id >= semantic.scopes.len or seen_scopes.isSet(scope_id)) return null;
-        seen_scopes.set(scope_id);
+            scope_id >= semantic.scopes.len) return null;
+        if (owner_counts[scope_id] >= 2) return null;
+        owner_counts[scope_id] += 1;
         snapshots.append(allocator, .{
             .owner_node = owner_node,
             .scope_id = scope_id,
@@ -147,8 +150,19 @@ fn snapshotMinifiedScopeOwners(
             .scope_kind = semantic.scopes[scope_id].kind,
         }) catch return null;
     }
-    for (0..seen_scopes.capacity()) |scope_id| {
-        if (!seen_scopes.isSet(scope_id)) return null;
+    for (0..semantic.scopes.len) |scope_id| {
+        if (owner_counts[scope_id] == 0) return null;
+        if (semantic.scopes[scope_id].kind == .class_static_block) {
+            if (owner_counts[scope_id] != 2 or !scope_owner_proof.exactClassStaticBlockScopeOwners(
+                ast,
+                semantic.scopes,
+                &semantic.scope_owner_map,
+                &reachable,
+                @intCast(scope_id),
+            )) return null;
+        } else if (owner_counts[scope_id] != 1) {
+            return null;
+        }
     }
     return snapshots.toOwnedSlice(allocator) catch null;
 }
@@ -797,6 +811,7 @@ const MinifiedConstInputMutation = enum {
     dead_block_local_const,
     dead_block_local_var,
     dead_block_module_var,
+    dead_block_class_static_var,
     dead_block_var_parameter_merge,
     dead_block_var_escaped_identifier,
     preexisting_detached_block_owner,
@@ -812,6 +827,13 @@ const MinifiedConstInputMutation = enum {
     unsupported_dead_class_body_scope,
     unsupported_dead_static_block_scope,
     unsupported_class_static_dead_var,
+    unsupported_class_static_dead_var_direct_eval,
+    unsupported_class_static_dead_var_external_read,
+    unsupported_class_static_dead_var_external_write,
+    unsupported_class_static_dead_var_nested_read,
+    unsupported_class_static_dead_var_nested_write,
+    unsupported_class_static_dead_var_live_redeclaration,
+    unsupported_dead_class_static_var_scope,
     unsupported_function_dead_var_external_read,
     unsupported_function_dead_var_external_write,
     unsupported_function_dead_var_nested_read,
@@ -828,6 +850,11 @@ const MinifiedConstInputMutation = enum {
     wrong_dead_var_scope_kind,
     wrong_dead_var_with_scope_flag,
     wrong_dead_var_module_strictness,
+    wrong_dead_var_static_scope_strictness,
+    wrong_dead_var_static_scope_kind,
+    wrong_dead_var_static_scope_owner,
+    wrong_dead_var_static_scope_foreign_owner,
+    wrong_dead_var_static_scope_parent,
     empty_targets,
     none_target,
     duplicate_target,
@@ -914,8 +941,44 @@ fn expectConstMaterializeGraphHandoff(
         "var local=value; console.log(local);"
     else
         unsupported_function_dead_var_body;
+    const class_static_var_tail: []const u8 = switch (mutation) {
+        .unsupported_class_static_dead_var_direct_eval => "eval('local');",
+        .unsupported_class_static_dead_var_external_read => "console.log(local);",
+        .unsupported_class_static_dead_var_external_write => "local=value;",
+        .unsupported_class_static_dead_var_nested_read => "function nested(){return local;} console.log(nested());",
+        .unsupported_class_static_dead_var_nested_write => "function nested(){local=value;} nested();",
+        .unsupported_class_static_dead_var_live_redeclaration => "var local;",
+        else => "",
+    };
+    const class_static_foreign_block: []const u8 = if (mutation == .wrong_dead_var_static_scope_foreign_owner)
+        "static { console.log('scope-owner-decoy'); }"
+    else
+        "";
+    const class_static_parent_decoy: []const u8 = if (mutation == .wrong_dead_var_static_scope_parent)
+        "class Decoy { static { console.log('scope-parent-decoy'); } }"
+    else
+        "";
     const source = if (mutation == .unsupported_module_dead_var_direct_eval)
         "export const value=7; if(value - 7) { var local=value; console.log(local); } eval('local'); console.log(value + 2); export function read(input){return value + input;}"
+    else if (mutation == .unsupported_dead_class_static_var_scope)
+        "export const value=7; if(value - 7) { class Local { static { var local=value; console.log('dead',local); } } } console.log(value+2); export function read(input){return value+input;}"
+    else if (mutation == .dead_block_class_static_var or
+        mutation == .unsupported_class_static_dead_var_direct_eval or
+        mutation == .unsupported_class_static_dead_var_external_read or
+        mutation == .unsupported_class_static_dead_var_external_write or
+        mutation == .unsupported_class_static_dead_var_nested_read or
+        mutation == .unsupported_class_static_dead_var_nested_write or
+        mutation == .unsupported_class_static_dead_var_live_redeclaration or
+        mutation == .wrong_dead_var_static_scope_strictness or
+        mutation == .wrong_dead_var_static_scope_kind or
+        mutation == .wrong_dead_var_static_scope_owner or
+        mutation == .wrong_dead_var_static_scope_foreign_owner or
+        mutation == .wrong_dead_var_static_scope_parent)
+        try std.fmt.allocPrint(
+            arena_alloc,
+            "export const value=7; {s} class Local {{ static {{ if(value - 7) {{ var local=value; console.log('dead',local); }} {s} console.log(value + 2); }} {s} }} export function read(input){{return value + input;}}",
+            .{ class_static_parent_decoy, class_static_var_tail, class_static_foreign_block },
+        )
     else if (dead_function_var_body) |body|
         try std.fmt.allocPrint(
             arena_alloc,
@@ -1022,11 +1085,23 @@ fn expectConstMaterializeGraphHandoff(
     if (mutation == .dead_block_local_let or mutation == .dead_block_local_const or
         (mutation == .dead_block_local_var and policy == .numeric_post_pass) or
         mutation == .dead_block_module_var or
+        (mutation == .dead_block_class_static_var and policy == .numeric_post_pass) or
+        mutation == .unsupported_class_static_dead_var_direct_eval or
+        mutation == .unsupported_class_static_dead_var_external_read or
+        mutation == .unsupported_class_static_dead_var_external_write or
+        mutation == .unsupported_class_static_dead_var_nested_read or
+        mutation == .unsupported_class_static_dead_var_nested_write or
+        mutation == .unsupported_class_static_dead_var_live_redeclaration or
         mutation == .dead_block_var_parameter_merge or
         mutation == .dead_block_var_escaped_identifier or
         mutation == .wrong_dead_var_origin_scope or mutation == .wrong_dead_var_scope_map or
         mutation == .wrong_dead_var_scope_symbol_count or mutation == .wrong_dead_var_scope_kind or
-        mutation == .wrong_dead_var_with_scope_flag or mutation == .wrong_dead_var_module_strictness)
+        mutation == .wrong_dead_var_with_scope_flag or mutation == .wrong_dead_var_module_strictness or
+        mutation == .wrong_dead_var_static_scope_strictness or
+        mutation == .wrong_dead_var_static_scope_kind or
+        mutation == .wrong_dead_var_static_scope_owner or
+        mutation == .wrong_dead_var_static_scope_foreign_owner or
+        mutation == .wrong_dead_var_static_scope_parent)
     {
         for (analyzer.symbols.items, 0..) |symbol, index| {
             const name = symbol.nameText(parser.ast.source);
@@ -1079,6 +1154,69 @@ fn expectConstMaterializeGraphHandoff(
             const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
             const scope = analyzer.symbols.items[local_id].scope_id.toIndex();
             analyzer.scopes.items[scope].is_strict = false;
+        },
+        .wrong_dead_var_static_scope_strictness => {
+            const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+            const scope = analyzer.symbols.items[local_id].scope_id.toIndex();
+            analyzer.scopes.items[scope].is_strict = false;
+        },
+        .wrong_dead_var_static_scope_kind => {
+            const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+            const scope = analyzer.symbols.items[local_id].scope_id.toIndex();
+            analyzer.scopes.items[scope].kind = .function;
+        },
+        .wrong_dead_var_static_scope_owner => {
+            var owner_found = false;
+            for (parser.ast.nodes.items, 0..) |node, raw| {
+                if (node.tag != .static_block) continue;
+                if (analyzer.scope_owner_map.remove(@intCast(raw))) {
+                    owner_found = true;
+                    break;
+                }
+            }
+            if (!owner_found) return error.MissingStaticBlockScopeOwner;
+        },
+        .wrong_dead_var_static_scope_foreign_owner => {
+            const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+            const target_scope: u32 = @intCast(analyzer.symbols.items[local_id].scope_id.toIndex());
+            var target_owner: ?u32 = null;
+            var foreign_owner: ?u32 = null;
+            var foreign_scope: ?u32 = null;
+            var owners = analyzer.scope_owner_map.iterator();
+            while (owners.next()) |entry| {
+                const raw = entry.key_ptr.*;
+                if (raw >= parser.ast.nodes.items.len or parser.ast.nodes.items[raw].tag != .static_block) continue;
+                if (entry.value_ptr.* == target_scope) {
+                    target_owner = raw;
+                } else if (foreign_owner == null) {
+                    foreign_owner = raw;
+                    foreign_scope = entry.value_ptr.*;
+                }
+            }
+            const target = target_owner orelse return error.MissingStaticBlockScopeOwner;
+            const foreign = foreign_owner orelse return error.MissingForeignStaticBlockScopeOwner;
+            const other_scope = foreign_scope orelse return error.MissingForeignStaticBlockScopeOwner;
+            if (!analyzer.scope_owner_map.contains(target) or
+                !analyzer.scope_owner_map.contains(foreign)) return error.MissingStaticBlockScopeOwner;
+            _ = analyzer.scope_owner_map.remove(target);
+            _ = analyzer.scope_owner_map.remove(foreign);
+            try analyzer.scope_owner_map.put(arena_alloc, target, other_scope);
+            try analyzer.scope_owner_map.put(arena_alloc, foreign, target_scope);
+        },
+        .wrong_dead_var_static_scope_parent => {
+            const local_id = dead_local_symbol_id orelse return error.MissingDeadLocalSymbol;
+            const scope_id = analyzer.symbols.items[local_id].scope_id;
+            const original_parent = analyzer.scopes.items[scope_id.toIndex()].parent;
+            var foreign_class_body: ?u32 = null;
+            for (analyzer.scopes.items, 0..) |scope, raw| {
+                if (scope.kind == .class_body and @as(u32, @intCast(raw)) != @backingInt(original_parent)) {
+                    foreign_class_body = @intCast(raw);
+                    break;
+                }
+            }
+            analyzer.scopes.items[scope_id.toIndex()].parent = @fromBackingInt(
+                foreign_class_body orelse return error.MissingForeignClassBodyScope,
+            );
         },
         else => {},
     };
@@ -1241,6 +1379,7 @@ fn expectConstMaterializeGraphHandoff(
             .dead_block_local_let,
             .dead_block_local_const,
             .dead_block_local_var,
+            .dead_block_class_static_var,
             .preexisting_detached_block_owner,
             .misassigned_dead_block_owner,
             .wrong_dead_block_owner_tag,
@@ -1254,7 +1393,14 @@ fn expectConstMaterializeGraphHandoff(
             .unsupported_dead_catch_scope,
             .unsupported_dead_class_body_scope,
             .unsupported_dead_static_block_scope,
+            .unsupported_dead_class_static_var_scope,
             .unsupported_class_static_dead_var,
+            .unsupported_class_static_dead_var_direct_eval,
+            .unsupported_class_static_dead_var_external_read,
+            .unsupported_class_static_dead_var_external_write,
+            .unsupported_class_static_dead_var_nested_read,
+            .unsupported_class_static_dead_var_nested_write,
+            .unsupported_class_static_dead_var_live_redeclaration,
             .unsupported_function_dead_var_external_read,
             .unsupported_function_dead_var_external_write,
             .unsupported_function_dead_var_nested_read,
@@ -1273,6 +1419,11 @@ fn expectConstMaterializeGraphHandoff(
             .wrong_dead_var_scope_kind,
             .wrong_dead_var_with_scope_flag,
             .wrong_dead_var_module_strictness,
+            .wrong_dead_var_static_scope_strictness,
+            .wrong_dead_var_static_scope_kind,
+            .wrong_dead_var_static_scope_owner,
+            .wrong_dead_var_static_scope_foreign_owner,
+            .wrong_dead_var_static_scope_parent,
             => {},
             .empty_targets => materialized_nodes.clearRetainingCapacity(),
             .none_target => materialized_nodes.items[0] = .none,
@@ -1375,6 +1526,7 @@ fn expectConstMaterializeGraphHandoff(
     const expect_dead_local_graph = mutation == .dead_block_local_let or mutation == .dead_block_local_const or
         (mutation == .dead_block_local_var and policy == .numeric_post_pass) or
         mutation == .dead_block_module_var or
+        mutation == .dead_block_class_static_var or
         mutation == .dead_block_var_escaped_identifier;
     const expect_var_parameter_merge = mutation == .dead_block_var_parameter_merge;
     if (mutation != .none and !expect_dead_local_graph and !expect_var_parameter_merge) {
@@ -1519,6 +1671,7 @@ test "numeric post-pass rejects malformed materialized read handoffs" {
             .stale_sidecar,
             .dead_block_local_var,
             .dead_block_module_var,
+            .dead_block_class_static_var,
             .dead_block_var_parameter_merge,
             .dead_block_var_escaped_identifier,
             .dead_block_local_let,
@@ -1535,7 +1688,14 @@ test "numeric post-pass rejects malformed materialized read handoffs" {
             .unsupported_dead_catch_scope,
             .unsupported_dead_class_body_scope,
             .unsupported_dead_static_block_scope,
+            .unsupported_dead_class_static_var_scope,
             .unsupported_class_static_dead_var,
+            .unsupported_class_static_dead_var_direct_eval,
+            .unsupported_class_static_dead_var_external_read,
+            .unsupported_class_static_dead_var_external_write,
+            .unsupported_class_static_dead_var_nested_read,
+            .unsupported_class_static_dead_var_nested_write,
+            .unsupported_class_static_dead_var_live_redeclaration,
             .unsupported_function_dead_var_external_read,
             .unsupported_function_dead_var_external_write,
             .unsupported_function_dead_var_nested_read,
@@ -1552,6 +1712,11 @@ test "numeric post-pass rejects malformed materialized read handoffs" {
             .wrong_dead_var_scope_kind,
             .wrong_dead_var_with_scope_flag,
             .wrong_dead_var_module_strictness,
+            .wrong_dead_var_static_scope_strictness,
+            .wrong_dead_var_static_scope_kind,
+            .wrong_dead_var_static_scope_owner,
+            .wrong_dead_var_static_scope_foreign_owner,
+            .wrong_dead_var_static_scope_parent,
             => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass),
         }
@@ -1574,13 +1739,24 @@ test "numeric post-pass retains the graph after removing a dead module-scoped va
     try expectConstMaterializeGraphHandoff(false, .dead_block_module_var, .numeric_post_pass);
 }
 
+test "numeric post-pass retains the graph after removing a dead class-static-block-scoped var" {
+    try expectConstMaterializeGraphHandoff(false, .dead_block_class_static_var, .numeric_post_pass);
+}
+
 test "numeric post-pass removes both scope-map keys for an escaped dead var name" {
     try expectConstMaterializeGraphHandoff(false, .dead_block_var_escaped_identifier, .numeric_post_pass);
 }
 
-test "numeric post-pass keeps eleven unsupported dead-block var hazards on fallback" {
+test "numeric post-pass keeps eighteen unsupported dead-block var hazards on fallback" {
     const cases = [_]MinifiedConstInputMutation{
         .unsupported_class_static_dead_var,
+        .unsupported_class_static_dead_var_direct_eval,
+        .unsupported_class_static_dead_var_external_read,
+        .unsupported_class_static_dead_var_external_write,
+        .unsupported_class_static_dead_var_nested_read,
+        .unsupported_class_static_dead_var_nested_write,
+        .unsupported_class_static_dead_var_live_redeclaration,
+        .unsupported_dead_class_static_var_scope,
         .unsupported_function_dead_var_external_read,
         .unsupported_function_dead_var_external_write,
         .unsupported_function_dead_var_nested_read,
@@ -1609,6 +1785,11 @@ test "numeric post-pass rejects poisoned dead-var scope metadata" {
         .wrong_dead_var_scope_kind,
         .wrong_dead_var_with_scope_flag,
         .wrong_dead_var_module_strictness,
+        .wrong_dead_var_static_scope_strictness,
+        .wrong_dead_var_static_scope_kind,
+        .wrong_dead_var_static_scope_owner,
+        .wrong_dead_var_static_scope_foreign_owner,
+        .wrong_dead_var_static_scope_parent,
     };
     inline for (cases) |mutation| {
         try expectConstMaterializeGraphHandoff(false, mutation, .numeric_post_pass);
@@ -1654,6 +1835,7 @@ test "full const pre-pass rejects malformed materialized read handoffs" {
             .none,
             .dead_block_local_var,
             .dead_block_module_var,
+            .dead_block_class_static_var,
             .dead_block_var_parameter_merge,
             .dead_block_var_escaped_identifier,
             .dead_block_local_let,
@@ -1670,7 +1852,14 @@ test "full const pre-pass rejects malformed materialized read handoffs" {
             .unsupported_dead_catch_scope,
             .unsupported_dead_class_body_scope,
             .unsupported_dead_static_block_scope,
+            .unsupported_dead_class_static_var_scope,
             .unsupported_class_static_dead_var,
+            .unsupported_class_static_dead_var_direct_eval,
+            .unsupported_class_static_dead_var_external_read,
+            .unsupported_class_static_dead_var_external_write,
+            .unsupported_class_static_dead_var_nested_read,
+            .unsupported_class_static_dead_var_nested_write,
+            .unsupported_class_static_dead_var_live_redeclaration,
             .unsupported_function_dead_var_external_read,
             .unsupported_function_dead_var_external_write,
             .unsupported_function_dead_var_nested_read,
@@ -1687,6 +1876,11 @@ test "full const pre-pass rejects malformed materialized read handoffs" {
             .wrong_dead_var_scope_kind,
             .wrong_dead_var_with_scope_flag,
             .wrong_dead_var_module_strictness,
+            .wrong_dead_var_static_scope_strictness,
+            .wrong_dead_var_static_scope_kind,
+            .wrong_dead_var_static_scope_owner,
+            .wrong_dead_var_static_scope_foreign_owner,
+            .wrong_dead_var_static_scope_parent,
             => {},
             else => try expectConstMaterializeGraphHandoff(false, mutation, .pre_pass),
         }

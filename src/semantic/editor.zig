@@ -8,6 +8,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const ast_mod = @import("../parser/ast.zig");
 const scope_mod = @import("scope.zig");
 const symbol_mod = @import("symbol.zig");
+const scope_owner_proof = @import("scope_owner_proof.zig");
 
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
@@ -1531,11 +1532,11 @@ pub const SemanticEditor = struct {
         return self.removeUnreachableLocalLexicalDeclarationImpl(binding_node, reachable, false);
     }
 
-    /// Remove a dead function- or module-scoped `var` declaration after its
-    /// exact static references have been removed. Global vars create observable
-    /// global properties, and class static blocks have a distinct var scope, so
-    /// only ordinary function and ESM module scopes are eligible. Keep its
-    /// SymbolId row stable as an unbound slot.
+    /// Remove a dead function-, module-, or class-static-block-scoped `var`
+    /// declaration after its exact static references have been removed. Global
+    /// vars create observable global properties. Class static blocks are
+    /// eligible only when their AST node and body are the exact two owners of
+    /// the strict var scope. Keep its SymbolId row stable as an unbound slot.
     pub fn removeUnreachableLocalVarDeclaration(
         self: *SemanticEditor,
         binding_node: NodeIndex,
@@ -1563,8 +1564,27 @@ pub const SemanticEditor = struct {
         const scope_id = symbol.scope_id;
         const scope_raw = scope_id.toIndex();
         const scope = self.scopes.items[scope_raw];
-        if ((scope.kind != .function and scope.kind != .module) or
+        if ((scope.kind != .function and scope.kind != .module and scope.kind != .class_static_block) or
             (scope.kind == .module and !scope.is_strict) or
+            (scope.kind == .function and
+                scope_owner_proof.exactClassStaticBlockScopeOwners(
+                    self.ast,
+                    self.scopes.items,
+                    &self.scope_owner_map,
+                    reachable,
+                    @intCast(scope_raw),
+                )) or
+            (scope.kind == .class_static_block and
+                (!scope.is_strict or scope.parent.isNone() or
+                    scope.parent.toIndex() >= self.scopes.items.len or
+                    self.scopes.items[scope.parent.toIndex()].kind != .class_body or
+                    !scope_owner_proof.exactClassStaticBlockScopeOwners(
+                        self.ast,
+                        self.scopes.items,
+                        &self.scope_owner_map,
+                        reachable,
+                        @intCast(scope_raw),
+                    ))) or
             scope.subtree_has_direct_eval or scope.subtree_has_with)
             return error.InvalidScope;
         var origin_scope = symbol.origin_scope;
