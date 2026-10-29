@@ -11819,6 +11819,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '5 5\n',
       },
       {
+        name: 'static-block-super-postfix-update-fallback-keeps-temp-in-owner-scope',
+        graph: 'reanalyzed',
+        source:
+          'class Base { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super.value++; } } console.log(Counter.result, Counter.saved);',
+        stdout: '3 4\n',
+      },
+      {
+        name: 'multiple-static-block-super-postfix-temps-keep-distinct-owners',
+        graph: 'reanalyzed',
+        source:
+          'class Base { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.first = super.value++; } static { this.second = super.value--; } } console.log(Counter.first, Counter.second, Counter.saved);',
+        stdout: '3 4 3\n',
+      },
+      {
         name: 'static-block-super-method-call-retains-exact-graph',
         graph: 'retained',
         source:
