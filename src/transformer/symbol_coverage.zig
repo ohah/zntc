@@ -3610,7 +3610,8 @@ fn checkExactImpl(
     }
     for (symbols, 0..) |symbol, sid| {
         const id: u32 = @intCast(sid);
-        const valid_detached_output = symbol.scope_id.isNone() and exactDetachedOutputSymbolShape(&symbol) and
+        const valid_detached_output = symbol.scope_id.isNone() and symbol.origin_scope.isNone() and
+            exactDetachedOutputSymbolShape(&symbol) and
             exactDetachedOutputSymbolHasNoLexicalEdges(id, symbol_ids, references, scope_maps);
         // `origin_scope` is semantic provenance used by var redeclaration
         // checks. It may be a detached source scope after lowering, but it
