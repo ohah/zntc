@@ -11,8 +11,19 @@ const Symbol = @import("../semantic/symbol.zig").Symbol;
 const rt = @import("../bundler/runtime_helpers.zig");
 pub const Error = std.mem.Allocator.Error || @import("errors.zig").Error;
 const bindings = @import("bindings.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const NamespaceFrame = @import("codegen.zig").NamespaceFrame;
 const NamespacePrefix = @import("codegen.zig").NamespacePrefix;
+
+// Property value keys have a different role from source spelling and SymbolId.
+fn enumValueKey(self: anytype, allocator: std.mem.Allocator, key: NodeIndex) ![]const u8 {
+    const node = self.ast.getNode(key);
+    return switch (node.tag) {
+        .identifier_reference, .binding_identifier => try Scanner.decodeIdentifierEscapesAlloc(allocator, self.ast.getText(node.span)),
+        .string_literal => (try self.ast.staticKeyName(allocator, key)) orelse Ast.stripStringQuotes(self.ast.getText(node.span)),
+        else => Ast.stripStringQuotes(self.ast.getText(node.span)),
+    };
+}
 
 /// enum Color { Red, Green = 5, Blue } →
 /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
@@ -43,8 +54,14 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
 
     // 멤버 이름→값 매핑 (enum 자기 참조 인라이닝용)
+    var value_arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer value_arena.deinit();
+    const value_allocator = value_arena.allocator();
     var member_values: std.StringHashMapUnmanaged(EnumMemberValue) = .empty;
-    defer member_values.deinit(self.allocator);
+    const member_keys = try value_allocator.alloc([]const u8, member_indices.len);
+    for (member_indices, 0..) |raw, index| {
+        member_keys[index] = try enumValueKey(self, value_allocator, self.ast.getNode(@fromBackingInt(@intCast(raw))).data.binary.left);
+    }
 
     // 1차 패스에서 needs_rename도 같이 판별 (별도 순회 불필요)
     var needs_rename = false;
@@ -53,11 +70,9 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     {
         var auto_value: i64 = 0;
         var auto_valid = true;
-        for (member_indices) |raw_idx| {
+        for (member_indices, 0..) |raw_idx, index| {
             const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
-            const member_name = self.ast.getNode(member.data.binary.left);
-            const raw_text = self.ast.getText(member_name.span);
-            const mt = Ast.stripStringQuotes(raw_text);
+            const mt = member_keys[index];
             const member_init_idx = member.data.binary.right;
 
             if (!needs_rename and std.mem.eql(u8, mt, name_text)) {
@@ -69,17 +84,18 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
                 if (init_node.tag == .numeric_literal) {
                     const num_text = self.ast.getText(init_node.span);
                     if (std.fmt.parseInt(i64, num_text, 10)) |v| {
-                        try member_values.put(self.allocator, mt, .{ .int = v });
+                        try member_values.put(value_allocator, mt, .{ .int = v });
                         auto_value = v + 1;
                         auto_valid = true;
                     } else |_| {
-                        try member_values.put(self.allocator, mt, .{ .raw = num_text });
+                        try member_values.put(value_allocator, mt, .{ .raw = num_text });
                         auto_valid = false;
                     }
                 } else if (init_node.tag == .identifier_reference) {
-                    const ref_text = self.ast.getText(init_node.span);
+                    const ref_raw = self.ast.getText(init_node.span);
+                    const ref_text = try Scanner.decodeIdentifierEscapesAlloc(value_allocator, ref_raw);
                     if (member_values.get(ref_text)) |resolved| {
-                        try member_values.put(self.allocator, mt, resolved);
+                        try member_values.put(value_allocator, mt, resolved);
                         switch (resolved) {
                             .int => |v| {
                                 auto_value = v + 1;
@@ -94,14 +110,14 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
                     }
                 } else if (init_node.tag == .string_literal) {
                     const str_text = self.ast.getText(init_node.span);
-                    try member_values.put(self.allocator, mt, .{ .str = str_text });
+                    try member_values.put(value_allocator, mt, .{ .str = str_text });
                     auto_valid = false;
                 } else {
                     auto_valid = false;
                 }
             } else {
                 if (auto_valid) {
-                    try member_values.put(self.allocator, mt, .{ .int = auto_value });
+                    try member_values.put(value_allocator, mt, .{ .int = auto_value });
                     auto_value += 1;
                 }
             }
@@ -155,7 +171,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
 
     // 2차 패스: 각 멤버 출력
     var auto_value: i64 = 0;
-    for (member_indices) |raw_idx| {
+    for (member_indices, 0..) |raw_idx, index| {
         const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         // ts_enum_member: binary = { left=name, right=init_val }
         const member_name_idx = member.data.binary.left;
@@ -167,7 +183,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
         const member_text = Ast.stripStringQuotes(raw_text);
 
         // String enum 멤버는 reverse mapping 을 만들지 않음 (TS spec).
-        const is_string_member = if (member_values.get(member_text)) |resolved|
+        const is_string_member = if (member_values.get(member_keys[index])) |resolved|
             resolved == .str
         else
             false;
@@ -191,7 +207,8 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
             const init_node = self.ast.getNode(member_init_idx);
             // enum 멤버가 다른 멤버를 참조하는 경우 → 인라이닝
             if (init_node.tag == .identifier_reference) {
-                const ref_text = self.ast.getText(init_node.span);
+                const ref_raw = self.ast.getText(init_node.span);
+                const ref_text = try Scanner.decodeIdentifierEscapesAlloc(value_allocator, ref_raw);
                 if (member_values.get(ref_text)) |resolved| {
                     // 인라인된 값 출력 + 원본을 주석으로
                     switch (resolved) {
@@ -200,7 +217,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
                         .str => |s| try self.write(s),
                     }
                     try self.write(" /* ");
-                    try self.write(ref_text);
+                    try self.write(ref_raw);
                     try self.write(" */");
                 } else {
                     try self.emitNode(member_init_idx);
@@ -210,7 +227,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
                 try self.emitNode(member_init_idx);
             }
             // auto_value 갱신: 1차 패스의 resolved 값을 사용 (identifier_reference 인라인 포함)
-            if (member_values.get(member_text)) |resolved| {
+            if (member_values.get(member_keys[index])) |resolved| {
                 switch (resolved) {
                     .int => |v| {
                         auto_value = v + 1;
@@ -472,7 +489,10 @@ fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind
         const symbol = self.options.semantic_symbols[raw_id];
         if (symbol.synthetic_kind != expected_kind or @backingInt(symbol.scope_id) != scope) continue;
         if (symbol.kind != .parameter) return null;
-        if (selected != null) return null;
+        if (selected) |known| {
+            // Initial enum declarations retain raw/canonical keys for one SID.
+            if (expected_kind != .enum_iife_parameter or known != raw_id) return null;
+        }
         selected = @intCast(raw_id);
     }
     return selected;
@@ -1265,6 +1285,7 @@ test "escaped enum parameter selector treats same SID aliases as one owner" {
     const symbols = [_]Symbol{
         .{ .name = span, .scope_id = @fromBackingInt(0), .kind = .parameter, .declaration_span = span, .synthetic_kind = .enum_iife_parameter },
         .{ .name = span, .scope_id = @fromBackingInt(0), .kind = .parameter, .declaration_span = span, .synthetic_kind = .enum_iife_parameter },
+        .{ .name = span, .scope_id = @fromBackingInt(0), .kind = .parameter, .declaration_span = span, .synthetic_kind = .namespace_iife_parameter },
     };
     var maps: [1]ScopeMap = .{.empty};
     defer maps[0].deinit(std.testing.allocator);
@@ -1280,4 +1301,10 @@ test "escaped enum parameter selector treats same SID aliases as one owner" {
     try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .enum_iife_parameter));
     try std.testing.expect(maps[0].remove("foreign"));
     try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .enum_iife_parameter));
+    try maps[0].put(std.testing.allocator, "N", 2);
+    try std.testing.expectEqual(@as(?u32, 2), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .namespace_iife_parameter));
+    try maps[0].put(std.testing.allocator, "\\u004e", 2);
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .namespace_iife_parameter));
+    try std.testing.expect(maps[0].remove("\\u004e"));
+    try std.testing.expectEqual(@as(?u32, 2), generatedIifeParamSymbolId(&view, @fromBackingInt(1), .namespace_iife_parameter));
 }
