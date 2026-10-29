@@ -26222,6 +26222,80 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('ES5 Flow static object getter super retains its exact graph through the public build API', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-static-getter-super-'));
+    const entry = join(dir, 'entry-flow.js');
+    const native = join(dir, 'native.js');
+    const output = join(dir, 'out.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const getterBodies = [
+      'super.value',
+      'super.value+1',
+      'super.value*2',
+      'super.value===7',
+      'super.value||0',
+      'super.value&&8',
+      'super.value?3:4',
+      'super.value,5',
+      'super.value>2',
+      '-super.value',
+    ];
+    const makeSource = (flow: boolean) =>
+      [
+        ...getterBodies.map(
+          (body, index) =>
+            `var parent${index}${flow ? ':any' : ''}={value:7};` +
+            `var object${index}={get value(){return ${body}}};` +
+            `Object.setPrototypeOf(object${index},parent${index});`,
+        ),
+        `console.log(${getterBodies.map((_, index) => `object${index}.value`).join(',')});`,
+      ].join('');
+    writeFileSync(entry, makeSource(true));
+    writeFileSync(native, makeSource(false));
+    try {
+      const expected = spawnSync('node', [native], { encoding: 'utf8' });
+      expect(expected.status, expected.stderr).toBe(0);
+      expect(expected.stdout).toBe('7 8 14 true 7 8 3 5 true -7\n');
+      for (const minifyIdentifiers of [false, true]) {
+        const runner = [
+          `import { build } from ${JSON.stringify(coreEntry)};`,
+          `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', flow: true, minifyIdentifiers, write: false })});`,
+          'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+          'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+        ].join('\n');
+        const proc = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        const stderr = proc.stderr ?? '';
+        expect(proc.status, stderr).toBe(0);
+        const lines = stderr.split(/\r?\n/);
+        const exact = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry-flow.js'),
+        );
+        expect(exact, stderr).toBeDefined();
+        expect(exactSchemaProblems(exact!), exact).toEqual([]);
+        expect(exact).toMatch(/clean=1(?:\s|$)/);
+        const mode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+            line.includes('entry-flow.js'),
+        );
+        expect(mode, stderr).toContain('semantic_graph=retained');
+        const outputs = JSON.parse(proc.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        writeFileSync(output, outputs[0]);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(expected.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Flow value path-split imports retain exact source identity through the public build API', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-flow-value-pathsplit-'));
     const entry = join(dir, 'entry-flow.js');
