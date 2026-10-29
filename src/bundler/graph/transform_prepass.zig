@@ -1967,6 +1967,65 @@ fn isSupportedStaticNamedReExport(ast: *const ast_mod.Ast, export_decl: module_p
     return true;
 }
 
+fn hasOnlySimpleExportedVarBindings(ast: *const ast_mod.Ast, declaration: ast_mod.Node) bool {
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const start = extras[extra + 1];
+    const len = extras[extra + 2];
+    if (len == 0 or start > extras.len or len > extras.len - start) return false;
+    for (extras[start..][0..len]) |raw_declarator| {
+        if (raw_declarator >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator];
+        if (declarator.tag != .variable_declarator or
+            declarator.data.extra > extras.len or extras.len - declarator.data.extra < 3) return false;
+        const raw_binding = extras[declarator.data.extra];
+        if (raw_binding >= ast.nodes.items.len or
+            ast.nodes.items[raw_binding].tag != .binding_identifier) return false;
+    }
+    return true;
+}
+
+/// Export wrappers around top-level `var` declarations with simple bindings
+/// and named function declarations preserve their source bindings and
+/// references through this transform.
+/// The enclosing prepass separately validates the module's export metadata;
+/// local export lists, re-exports, default exports, and export-all remain on
+/// their existing conservative paths.
+fn isRetainableTopLevelExportedDeclaration(
+    ast: *const ast_mod.Ast,
+    raw_statement: usize,
+    statement: ast_mod.Node,
+    top_level_statements: *const std.DynamicBitSet,
+) bool {
+    if (ast.is_typescript or statement.tag != .export_named_declaration or
+        !top_level_statements.isSet(raw_statement)) return false;
+    const extra = statement.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return false;
+    const export_decl = module_parser.readExportNamedExtras(ast, extra);
+    if (export_decl.specs_start > ast.extra_data.items.len or
+        export_decl.specs_len > ast.extra_data.items.len - export_decl.specs_start or
+        export_decl.attrs_start > ast.extra_data.items.len or
+        export_decl.attrs_len > ast.extra_data.items.len - export_decl.attrs_start) return false;
+    if (export_decl.decl.isNone() or !export_decl.source.isNone() or
+        export_decl.specs_len != 0 or export_decl.attrs_len != 0 or
+        @backingInt(export_decl.decl) >= ast.nodes.items.len) return false;
+    const declaration = ast.nodes.items[@backingInt(export_decl.decl)];
+    return switch (declaration.tag) {
+        .variable_declaration => hasOnlySimpleExportedVarBindings(ast, declaration) and
+            ast.variableDeclarationKind(declaration) == .@"var",
+        .function_declaration => blk: {
+            const function_extra = declaration.data.extra;
+            if (function_extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - function_extra <= ast_mod.FunctionExtra.name) break :blk false;
+            const name = ast.readExtraNode(declaration.data.extra, ast_mod.FunctionExtra.name);
+            break :blk !name.isNone() and @backingInt(name) < ast.nodes.items.len and
+                ast.nodes.items[@backingInt(name)].tag == .binding_identifier;
+        },
+        else => false,
+    };
+}
+
 /// Top-level local export lists retain their local references, while a narrow
 /// static named re-export subset preserves its loader record through lowering.
 /// Namespace exports, attributes, and string names still require the full
@@ -7715,8 +7774,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_object_method = true;
                 }
             },
-            // This allowlist deliberately leaves module graph edits and all
-            // other downlevel families on the existing resync path.
+            // Export declaration wrappers have a separate exact shape check
+            // below. Other module graph edits and downlevel families remain
+            // on the existing resync path.
             .program,
             .boolean_literal,
             .null_literal,
@@ -7815,6 +7875,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 // downlevel helper and emitted array/call shape are not part
                 // of this source-node allowlist.
                 if (!options.jsx_transform or options.unsupported.spread) return false;
+            },
+            .export_named_declaration => {
+                if (!isRetainableTopLevelExportedDeclaration(
+                    ast,
+                    raw_idx,
+                    node,
+                    &top_level_statements,
+                )) return false;
             },
             else => return false,
         }
@@ -17946,6 +18014,8 @@ test "regex literals are graph-neutral in the audited ES5 subset" {
         "var r=/[\\u{41}-\\u{5A}]/u;",
         "var r=/a.b/sy;",
         "function matches(input){var r=/x.y/s;return r.test(input)}",
+        "export function matches(input){var r=/x.y/s;return r.test(input)}",
+        "export var lineBreak=/./s;",
     };
     for (sources, 0..) |source, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -17975,6 +18045,13 @@ test "regex literal graph neutrality does not admit hostile surrounding syntax" 
         .{ .source = "var value=fn?.(/./s);", .is_module = true },
         .{ .source = "let value=1;console.log(/./s.test(\"x\"),value);", .is_module = true },
         .{ .source = "function run(value=1){return /./s.test(value)}", .is_module = true },
+        .{ .source = "export default function run(value){return /./s.test(value)}", .is_module = true },
+        .{ .source = "export const lineBreak=/./s;", .is_module = true },
+        .{ .source = "export let lineBreak=/./s;", .is_module = true },
+        .{ .source = "export var {lineBreak}={lineBreak:/./s};", .is_module = true },
+        .{ .source = "export * from './dep.js';var r=/./s;", .is_module = true },
+        .{ .source = "var r=/./s;export {r};", .is_module = true },
+        .{ .source = "export {value} from './dep.js';var r=/./s;", .is_module = true },
     };
     for (controls, 0..) |control, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -17984,6 +18061,81 @@ test "regex literal graph neutrality does not admit hostile surrounding syntax" 
         if (admitted) std.debug.print("hostile regex source unexpectedly admitted index={d} source={s}\n", .{ index, control.source });
         try std.testing.expect(!admitted);
     }
+}
+
+test "exported declaration retention rejects malformed wrappers and detached owners" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var fixture = try runtimeHelperReanalysisTestFixture(
+        arena.allocator(),
+        "export function matches(value){return /./s.test(value)}",
+    );
+    const ast = &fixture.ast;
+    var export_raw: ?usize = null;
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .export_named_declaration) {
+            export_raw = raw;
+            break;
+        }
+    }
+    const raw = export_raw orelse return error.MissingExportDeclaration;
+    const original_node = ast.nodes.items[raw];
+    var top_level = try ast_walk.topLevelStatementMask(ast);
+    defer top_level.deinit();
+    try std.testing.expect(isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+
+    ast.nodes.items[raw].data.extra = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, ast.nodes.items[raw], &top_level));
+    ast.nodes.items[raw] = original_node;
+
+    const extra = original_node.data.extra;
+    const original_extras = [6]u32{
+        ast.extra_data.items[extra],
+        ast.extra_data.items[extra + 1],
+        ast.extra_data.items[extra + 2],
+        ast.extra_data.items[extra + 3],
+        ast.extra_data.items[extra + 4],
+        ast.extra_data.items[extra + 5],
+    };
+    ast.extra_data.items[extra + 2] = 1;
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra + 2] = original_extras[2];
+
+    ast.extra_data.items[extra + 1] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra + 1] = original_extras[1];
+
+    ast.extra_data.items[extra] = @intCast(ast.nodes.items.len - 1);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra] = original_extras[0];
+
+    ast.extra_data.items[extra + 3] = @intCast(ast.nodes.items.len - 1);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra + 3] = original_extras[3];
+
+    ast.extra_data.items[extra + 5] = 1;
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra + 5] = original_extras[5];
+
+    ast.extra_data.items[extra + 4] = std.math.maxInt(u32);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[extra + 4] = original_extras[4];
+
+    const function = ast.nodes.items[original_extras[0]];
+    const function_name_slot = function.data.extra + ast_mod.FunctionExtra.name;
+    const original_function_name = ast.extra_data.items[function_name_slot];
+    ast.extra_data.items[function_name_slot] = @backingInt(ast_mod.NodeIndex.none);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.extra_data.items[function_name_slot] = original_function_name;
+
+    top_level.unset(raw);
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    top_level.set(raw);
+
+    ast.is_typescript = true;
+    try std.testing.expect(!isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
+    ast.is_typescript = false;
+    try std.testing.expect(isRetainableTopLevelExportedDeclaration(ast, raw, original_node, &top_level));
 }
 
 test "computed accessor super authority source admission keeps nested and Object boundaries" {

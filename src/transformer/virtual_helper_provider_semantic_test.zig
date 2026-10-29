@@ -608,33 +608,84 @@ test "ES5 regex literal variants compile with exact runtime output and no semant
 test "regex-retained imported function keeps normal tree shaking" {
     const test_helpers = @import("../bundler/test_helpers.zig");
     const profile = @import("../profile.zig");
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try test_helpers.writeFile(tmp.dir, "entry.mjs", "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));");
-    try test_helpers.writeFile(tmp.dir, "lib.mjs", "export function live(){var r=/./s;return r.test('\\n')}export function dead(){console.log('DEAD')}");
-    const entry = try test_helpers.absPath(&tmp, "entry.mjs");
-    defer std.testing.allocator.free(entry);
-    profile.resetForTest();
     defer profile.resetForTest();
-    profile.setIoForTest(std.testing.io);
-    profile.addFromCsv("graph.resync.semantic");
-    var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .platform = .node,
-        .format = .cjs,
-        .unsupported = @import("compat.zig").fromESTarget(.es5),
-    });
-    defer bundler.deinit();
-    const result = try bundler.bundle(std.testing.io);
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEAD") == null);
-    const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
-    defer std.testing.allocator.free(actual.stdout);
-    defer std.testing.allocator.free(actual.stderr);
-    try std.testing.expect(actual.term == .exited);
-    try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
-    try std.testing.expectEqualStrings("true true\n", actual.stdout);
+    for ([_]bool{ false, true }) |minify_identifiers| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try test_helpers.writeFile(tmp.dir, "entry.mjs", "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));");
+        try test_helpers.writeFile(tmp.dir, "lib.mjs", "export function live(){var r=/./s;return r.test('\\n')}export function dead(){console.log('DEAD')}");
+        const entry = try test_helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+        var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .unsupported = @import("compat.zig").fromESTarget(.es5),
+            .minify_identifiers = minify_identifiers,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "DEAD") == null);
+        const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+        defer std.testing.allocator.free(actual.stdout);
+        defer std.testing.allocator.free(actual.stderr);
+        try std.testing.expect(actual.term == .exited);
+        try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
+        try std.testing.expectEqualStrings("true true\n", actual.stdout);
+        try std.testing.expectEqual(@as(u32, 1), profile.count(.graph_resync_semantic));
+    }
+}
+
+test "ES5 regex export retention keeps the remaining static-import fallback" {
+    const test_helpers = @import("../bundler/test_helpers.zig");
+    const profile = @import("../profile.zig");
+    defer profile.resetForTest();
+    const Case = struct {
+        name: []const u8,
+        entry: []const u8,
+        library: []const u8,
+        minify_identifiers: bool,
+        expected_resyncs: u32,
+    };
+    const cases = [_]Case{
+        .{ .name = "exported regex only", .entry = "import {live} from './lib.mjs';console.log(live());", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
+        .{ .name = "import plus exported regex", .entry = "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 1 },
+        .{ .name = "minified import plus exported regex", .entry = "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .expected_resyncs = 1 },
+    };
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try test_helpers.writeFile(tmp.dir, "entry.mjs", case.entry);
+        try test_helpers.writeFile(tmp.dir, "lib.mjs", case.library);
+        const entry = try test_helpers.absPath(&tmp, "entry.mjs");
+        defer std.testing.allocator.free(entry);
+        profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.resync.semantic");
+        var bundler = @import("../bundler/bundler.zig").Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .platform = .node,
+            .format = .cjs,
+            .unsupported = @import("compat.zig").fromESTarget(.es5),
+            .minify_identifiers = case.minify_identifiers,
+        });
+        defer bundler.deinit();
+        const result = try bundler.bundle(std.testing.io);
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        if (case.expected_resyncs != profile.count(.graph_resync_semantic))
+            std.debug.print("regex graph boundary failed case={s} expected={d} actual={d}\n", .{
+                case.name,
+                case.expected_resyncs,
+                profile.count(.graph_resync_semantic),
+            });
+        try std.testing.expectEqual(case.expected_resyncs, profile.count(.graph_resync_semantic));
+    }
 }
 
 test "virtual provider actual winning load disk source copy preserves current graph" {
