@@ -3910,6 +3910,12 @@ test "escaped private helper reservation source capture RED" {
         const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
         try std.testing.expect(native.term == .exited and native.term.exited == 0);
         try std.testing.expectEqualStrings("10\n", native.stdout);
+        // Reject actual unlowered syntax semantically before standalone codegen,
+        // matching the main pipeline detector without hiding native-oracle checks.
+        if ((try privateSourceRedTuple(source)) != 0) {
+            mismatches += 1;
+            continue;
+        }
         const result = try @import("../transpile.zig").transpile(a, source, "private-reservation.js", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
         const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code } });
         const matches = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, native.stdout, actual.stdout);
