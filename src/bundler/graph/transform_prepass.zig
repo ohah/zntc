@@ -6889,7 +6889,9 @@ const StaticBlockSuperUse = enum {
 /// `__superSet`; computed writes capture their key in a producer-tracked temp.
 /// Logical/nullish assignment and postfix updates also use producer-tracked
 /// temps. `**=` uses the exact-audited global `Math` reference. Direct method
-/// calls have separate `.call` lowering and do not qualify here.
+/// calls have separate `.call` lowering and do not qualify here. Only a direct
+/// named `super.name` read may continue through named static members; computed
+/// continuations, nested writes, and calls stay outside this proof.
 /// Direct `||=` and `&&=` assignments use the tracked get/set helpers without a
 /// generated temp. Direct `??=` captures its get value through the tracked temp
 /// producer and validates that binding/reference identity in the exact output
@@ -6897,7 +6899,7 @@ const StaticBlockSuperUse = enum {
 /// transform's explicit global `Math` reference, which the bundler audit reserves
 /// before retaining the graph. Key expressions that contain optional chains,
 /// nested `super`, or private access, nested function owners of `super`, and
-/// nested member operations remain outside this proof.
+/// computed member continuations remain outside this proof.
 fn isRetainableStaticBlockSuperUse(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -6907,6 +6909,7 @@ fn isRetainableStaticBlockSuperUse(
     const member_raw = parents.get(super_raw) orelse return null;
     if (member_raw >= ast.nodes.items.len) return null;
     const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(member_raw));
+    const named_direct_super_access = ast.nodes.items[member_raw].tag == .static_member_expression;
     if ((ast.nodes.items[member_raw].tag != .static_member_expression and
         ast.nodes.items[member_raw].tag != .computed_member_expression) or
         !isRetainableDirectSuperPropertyAccess(ast, member_idx, false)) return null;
@@ -6971,9 +6974,22 @@ fn isRetainableStaticBlockSuperUse(
                 else
                     .prefix_update;
             },
+            .static_member_expression => {
+                if (!named_direct_super_access) return null;
+                const outer: ast_mod.NodeIndex = @fromBackingInt(@intCast(parent_raw));
+                if (ast_mod.spineHasOptionalChain(ast, outer)) return null;
+                const extra = parent.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3 or
+                    ast.extra_data.items[extra] != expression_raw or ast.extra_data.items[extra + 2] != 0)
+                    return null;
+                const property_raw = ast.extra_data.items[extra + 1];
+                if (property_raw >= ast.nodes.items.len or
+                    ast.nodes.items[property_raw].tag != .identifier_reference) return null;
+                expression_raw = parent_raw;
+                continue;
+            },
             .unary_expression,
             .tagged_template_expression,
-            .static_member_expression,
             .computed_member_expression,
             => return null,
             else => {},
@@ -13210,6 +13226,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_read.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_read.allow_super_set);
 
+    const retained_static_super_nested_member_read = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super.value.child.name; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_nested_member_read.source_candidate);
+    try std.testing.expect(retained_static_super_nested_member_read.graph_gate);
+    try std.testing.expect(retained_static_super_nested_member_read.allow_super_get);
+    try std.testing.expect(!retained_static_super_nested_member_read.allow_super_set);
+
     const retained_static_super_computed_writes = [_][]const u8{
         "class Base extends Object { static set value(next) {} } class Counter extends Base { static { this.result = super['value'] = 4; } }",
         "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { this.result = super['value'] += 2; } }",
@@ -13332,6 +13359,20 @@ test "#6193 retains only exact named native-class static-block lowering" {
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value.bind(this); } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key?.name]; } }",
         "class Base extends Object { static get key() { return 'value'; } static get value() { return 3; } } class Counter extends Base { static { this.result = super[super.key]; } }",
+        "class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super.value[key]; } }",
+        "class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super.value?.child; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child?.name; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child.name[key]; } }",
+        "class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super.value.child(); } }",
+        "class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super.value.child.name(); } }",
+        "class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super.value.child.name?.(); } }",
+        "class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super.value.child.name.bind(this)(); } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name = 4; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name += 4; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super.value.child.name ||= 4; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { ++super.value.child.name; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child.name++; } }",
+        "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name; } }",
     };
     for (rejected_static_block_super_uses) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
