@@ -11979,11 +11979,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'get:child,get:child,get:child,get:child,get:child,get:child leaf:child|5|alt:child|10|6|deep\n',
       },
       {
-        name: 'computed-root-nested-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'computed-root-nested-static-block-super-read-retains-key-and-receiver',
+        graph: 'retained',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name; } } console.log(Counter.result);",
-        stdout: '2\n',
+          "const events = []; class Base extends Object { static get value() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:' + receiver); return { child: { name: 'value:' + receiver } }; } } class Counter extends Base { static key() { events.push('key'); return 'value'; } static { this.result = super[this.key()].child.name; } } console.log(events.join(','), Counter.result);",
+        stdout: 'key,get:child value:child\n',
       },
       {
         name: 'single-named-continuation-after-computed-static-block-super-read-retains-key-and-receiver',
@@ -12000,87 +12000,87 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
-        name: 'computed-static-block-super-two-member-continuations-stay-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'computed-static-block-super-three-named-continuations-retain-graph',
+        graph: 'retained',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { next: { name: 2 } } }; } } class Counter extends Base { static { this.result = super[key].child.next.name; } } console.log(Counter.result);",
         stdout: '2\n',
       },
       {
         name: 'computed-static-block-super-computed-continuation-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key][key]; } } console.log(Counter.result);",
-        stdout: 'undefined\n',
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: { value: 2 } } }; } } class Counter extends Base { static { this.result = super[key].child.name[key]; } } console.log(Counter.result);",
+        stdout: '2\n',
       },
       {
         name: 'computed-static-block-super-optional-root-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key]?.child; } } console.log(Counter.result.name);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key]?.child.name; } } console.log(Counter.result);",
         stdout: '2\n',
       },
       {
         name: 'computed-static-block-super-optional-continuation-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child?.name; } } console.log(Counter.result);",
-        stdout: '2\n',
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name?.value; } } console.log(Counter.result);",
+        stdout: 'undefined\n',
       },
       {
         name: 'computed-static-block-super-nested-call-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child(); } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super[key].child.name(); } } console.log(Counter.result);",
         stdout: '3\n',
       },
       {
         name: 'computed-static-block-super-optional-call-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child?.(); } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super[key].child.name?.(); } } console.log(Counter.result);",
         stdout: '3\n',
       },
       {
         name: 'computed-static-block-super-bound-call-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child() { return this === Counter; } }; } } class Counter extends Base { static { this.result = super[key].child.bind(this)(); } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return this === Counter; } } }; } } class Counter extends Base { static { this.result = super[key].child.name.bind(this)(); } } console.log(Counter.result);",
         stdout: 'true\n',
       },
       {
         name: 'computed-static-block-super-nested-write-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child = 4; this.result = 1; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name = 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-compound-write-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child += 4; this.result = 1; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name += 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-logical-write-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child ||= 4; this.result = 1; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name ||= 4; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-prefix-update-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { ++super[key].child; this.result = 1; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { ++super[key].child.name; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
         name: 'computed-static-block-super-nested-postfix-update-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child++; this.result = 1; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { super[key].child.name++; this.result = 1; } } console.log(Counter.result);",
         stdout: '1\n',
       },
       {
@@ -12740,7 +12740,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('retained single computed-root static-block super reads expose ten compileable output mutants', async () => {
+  test('retained computed-root static-block super chains expose compileable output mutants', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-computed-root-read-mutants-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
@@ -12748,8 +12748,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       'key:first,get:first:child,key:second,get:second:child first:child|second:child\n';
     const source = [
       'const events = [];',
-      "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { child: 'first:' + receiver }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { child: 'second:' + receiver }; } }",
-      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].child, super[this.key('second')].child]; } }",
+      "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { branch: { leaf: 'first:' + receiver } }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { branch: { next: { leaf: 'second:' + receiver } } }; } }",
+      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].branch.leaf, super[this.key('second')].branch.next.leaf]; } }",
       "console.log(events.join(','), Counter.results.join('|'));",
     ].join('\n');
     try {
@@ -12804,8 +12804,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const firstGet = getCalls[0]!;
       const secondGet = getCalls[1]!;
       expect(firstGet.key).not.toBe(secondGet.key);
-      const firstChain = `${firstGet.call}.child`;
+      const firstChain = `${firstGet.call}.branch.leaf`;
+      const secondChain = `${secondGet.call}.branch.next.leaf`;
       expect(emitted).toContain(firstChain);
+      expect(emitted).toContain(secondChain);
       const firstKeyCall = emitted.match(/[\w$]+\.key\(\s*['"]first['"]\s*\)/)?.[0];
       expect(firstKeyCall).toBeDefined();
 
@@ -12836,8 +12838,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           to: `(${firstKeyCall}, ${firstKeyCall})`,
         },
         { name: 'bypass-super-get', from: firstGet.call, to: 'null' },
-        { name: 'wrong-nested-member', from: firstChain, to: `${firstGet.call}.missing` },
-        { name: 'truncated-computed-chain', from: firstChain, to: firstGet.call },
+        {
+          name: 'wrong-nested-member',
+          from: secondChain,
+          to: `${secondGet.call}.branch.missing.next.leaf`,
+        },
+        {
+          name: 'wrong-final-member',
+          from: firstChain,
+          to: `${firstGet.call}.branch.missing`,
+        },
+        {
+          name: 'truncated-computed-chain',
+          from: firstChain,
+          to: `${firstGet.call}.branch`,
+        },
         {
           name: 'duplicate-super-get',
           from: firstGet.call,
@@ -12861,7 +12876,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           `${mutation.name} escaped the runtime oracle`,
         ).toBe(true);
       }
-      expect(mutations).toHaveLength(10);
+      expect(mutations).toHaveLength(11);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
