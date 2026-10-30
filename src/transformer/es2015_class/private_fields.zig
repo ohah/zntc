@@ -819,7 +819,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 self,
                 try receiver.use(self, span),
                 try es_helpers.makeVoidZero(self, span),
-                token_mod.Kind.neq,
+                token_mod.Kind.neq2,
                 span,
             );
             const html_dda = try makePrivateInLogical(self, html_dda_type, not_undefined, token_mod.Kind.amp2, span);
