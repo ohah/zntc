@@ -6879,6 +6879,7 @@ const StaticBlockSuperUse = enum {
     compound_assignment,
     logical_assignment,
     nullish_assignment,
+    exponentiation_assignment,
     prefix_update,
     postfix_update,
 };
@@ -6893,8 +6894,10 @@ const StaticBlockSuperUse = enum {
 /// Direct `||=` and `&&=` assignments use the tracked get/set helpers without a
 /// generated temp. Direct `??=` captures its get value through the tracked temp
 /// producer and validates that binding/reference identity in the exact output
-/// audit. Computed keys, nested function owners, and nested member operations
-/// remain outside this proof.
+/// audit. Direct `**=` uses the tracked super get/set helpers and the exponentiation
+/// transform's explicit global `Math` reference, which the bundler audit reserves
+/// before retaining the graph. Computed keys, nested function owners, and nested
+/// member operations remain outside this proof.
 fn isRetainableStaticBlockSuperUse(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -6943,6 +6946,8 @@ fn isRetainableStaticBlockSuperUse(
                         use = .logical_assignment;
                     } else if (parent.data.binary.flags == @backingInt(token_mod.Kind.question2_eq)) {
                         use = .nullish_assignment;
+                    } else if (parent.data.binary.flags == @backingInt(token_mod.Kind.star2_eq)) {
+                        use = .exponentiation_assignment;
                     } else {
                         const operator_flags = parent.data.binary.flags;
                         if (operator_flags > std.math.maxInt(u16)) return null;
@@ -8826,8 +8831,9 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__superGet` is safe when every reachable read has an admitted home
     // graph, including direct value reads and postfix updates in a retained
     // static block. `__superSet` is safe for admitted method owners, exact
-    // static-block simple, supported compound, logical, nullish, prefix, and
-    // postfix writes; other compound static-block writes remain excluded.
+    // static-block simple, supported compound, logical, nullish, exponentiation,
+    // prefix, and postfix writes. Exponentiation's explicit Math global is
+    // separately recorded and exact-audited before graph retention.
     if (allow_tracked_super_get) other_helpers.super_get = false;
     if (allow_tracked_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
@@ -13181,6 +13187,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_compound_addition.allow_super_get);
     try std.testing.expect(retained_static_super_compound_addition.allow_super_set);
 
+    const retained_static_super_exponentiation_assignment = try staticBlockPrepassDecisionForTest(
+        "class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super.value **= 2; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_exponentiation_assignment.source_candidate);
+    try std.testing.expect(retained_static_super_exponentiation_assignment.graph_gate);
+    try std.testing.expect(retained_static_super_exponentiation_assignment.allow_super_get);
+    try std.testing.expect(retained_static_super_exponentiation_assignment.allow_super_set);
+
     const retained_static_super_compound_operators = [_][]const u8{
         "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=",
     };
@@ -13254,7 +13271,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_multiple_static_block_super_postfix_updates.allow_super_set);
 
     const rejected_static_block_super_uses = [_][]const u8{
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value **= 2; } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] ||= 4; } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] ??= 4; } }",
         "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { super.value.child &&= 4; } }",
@@ -13262,7 +13278,9 @@ test "#6193 retains only exact named native-class static-block lowering" {
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { (super.value) ??= 4; } }",
         "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { const write = () => super.value &&= 4; write(); } }",
         "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { const write = () => super.value ??= 4; write(); } }",
+        "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { const write = () => super.value **= 4; write(); } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] *= 2; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] **= 2; } }",
         "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key] -= 1; } }",
         "class Base extends Object { static set value(next) {} } class Counter extends Base { static { super['value'] = 4; } }",
         "const key = 'value'; class Base extends Object { static set value(next) {} } class Counter extends Base { static { super[key] = 4; } }",
