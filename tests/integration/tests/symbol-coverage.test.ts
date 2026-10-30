@@ -12948,6 +12948,155 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('retained computed-root static-block super call keys preserve bound member-read arguments', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-bound-member-read-arg-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = 'key,get:true,read:true,pick:leaf:true 42\n';
+    const source = [
+      'const events = [];',
+      "const keyProvider = { get continuation() { events.push('read:' + (this === keyProvider)); return 'leaf'; }, pick(value) { events.push('pick:' + value + ':' + (this === keyProvider)); return value; } };",
+      "class Base extends Object { static get value() { events.push('get:' + (this !== Base)); return { child: { leaf: 42 } }; } }",
+      "class Counter extends Base { static key() { events.push('key'); return 'value'; } static { this.result = super[this.key()].child[keyProvider.pick(keyProvider.continuation)]; } }",
+      "console.log(events.join(','), Counter.result);",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const napi = await buildNapi({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2015',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const getCalls = [...emitted.matchAll(/__superGet\((\w+),\s*([^,]+),\s*(\w+)\)/g)].map(
+        (match) => ({ call: match[0]!, home: match[1]!, receiver: match[3]! }),
+      );
+      expect(getCalls).toHaveLength(1);
+      const getCall = getCalls[0]!;
+      const keyProvider = emitted.match(/([\w$]+)\.pick\(/)?.[1];
+      const readExpression = emitted.match(/([\w$]+)\.continuation\b/)?.[0];
+      const pickCall = emitted.match(/([\w$]+\.pick\(\s*[\w$]+\.continuation\s*\))/)?.[1];
+      const keyCall = emitted.match(/([\w$]+)\.key\(\s*\)/)?.[0];
+      expect(keyProvider).toBeDefined();
+      expect(readExpression).toBeDefined();
+      expect(pickCall).toBeDefined();
+      expect(keyCall).toBeDefined();
+      const continuationCallee = pickCall!.slice(0, pickCall!.indexOf('('));
+      const computedChain = `${getCall.call}.child[${pickCall}]`;
+      expect(emitted).toContain(computedChain);
+
+      const mutations = [
+        {
+          name: 'wrong-super-home-object',
+          from: getCall.call,
+          to: getCall.call.replace(`${getCall.home},`, 'Object,'),
+        },
+        {
+          name: 'wrong-super-getter-receiver',
+          from: getCall.call,
+          to: getCall.call.replace(`, ${getCall.receiver})`, `, ${getCall.home})`),
+        },
+        { name: 'wrong-super-key-producer', from: keyCall!, to: "'missing'" },
+        {
+          name: 'wrong-bound-member-read-key',
+          from: readExpression!,
+          to: `${keyProvider}.missing`,
+        },
+        {
+          name: 'bound-member-read-evaluated-twice',
+          from: readExpression!,
+          to: `(${readExpression}, ${readExpression})`,
+        },
+        {
+          name: 'bound-member-read-skipped',
+          from: pickCall!,
+          to: `${continuationCallee}('leaf')`,
+        },
+        {
+          name: 'bound-member-read-loses-getter-receiver',
+          from: readExpression!,
+          to: `Object.getOwnPropertyDescriptor(${keyProvider}, 'continuation').get.call(Object)`,
+        },
+        {
+          name: 'continuation-call-evaluated-twice',
+          from: computedChain,
+          to: `${getCall.call}.child[(${pickCall}, ${pickCall})]`,
+        },
+        {
+          name: 'continuation-call-loses-receiver',
+          from: computedChain,
+          to: `${getCall.call}.child[(0, ${continuationCallee})(${readExpression})]`,
+        },
+        {
+          name: 'bypass-super-get',
+          from: getCall.call,
+          to: 'null',
+        },
+        {
+          name: 'wrong-nested-super-member',
+          from: computedChain,
+          to: `${getCall.call}.missing[${pickCall}]`,
+        },
+      ];
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(11);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('retained static-block super postfix updates expose ten compileable output mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-update-mutants-'));
     const entry = join(dir, 'entry.js');
