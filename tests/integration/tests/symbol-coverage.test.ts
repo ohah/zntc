@@ -12010,7 +12010,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'computed-static-block-super-computed-continuation-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
-          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: { value: 2 } } }; } } class Counter extends Base { static { this.result = super[key].child.name[key]; } } console.log(Counter.result);",
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: { value: 2 } } }; } } class Counter extends Base { static key() { return 'value'; } static { this.result = super[key].child.name[this.key()]; } } console.log(Counter.result);",
         stdout: '2\n',
       },
       {
@@ -12748,8 +12748,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       'key:first,get:first:child,key:second,get:second:child first:child|second:child\n';
     const source = [
       'const events = [];',
-      "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { branch: { leaf: 'first:' + receiver } }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { branch: { next: { leaf: 'second:' + receiver } } }; } }",
-      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].branch.leaf, super[this.key('second')].branch.next.leaf]; } }",
+      "const firstLeafKey = 'leafOne'; const secondLeafKey = 'leafTwo';",
+      "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { branch: { leafOne: 'first:' + receiver } }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { branch: { next: { leafTwo: 'second:' + receiver } } }; } }",
+      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].branch[firstLeafKey], super[this.key('second')].branch.next[secondLeafKey]]; } }",
       "console.log(events.join(','), Counter.results.join('|'));",
     ].join('\n');
     try {
@@ -12804,10 +12805,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const firstGet = getCalls[0]!;
       const secondGet = getCalls[1]!;
       expect(firstGet.key).not.toBe(secondGet.key);
-      const firstChain = `${firstGet.call}.branch.leaf`;
-      const secondChain = `${secondGet.call}.branch.next.leaf`;
-      expect(emitted).toContain(firstChain);
-      expect(emitted).toContain(secondChain);
+      const firstChain = `${firstGet.call}.branch`;
+      const secondChain = `${secondGet.call}.branch.next`;
+      const firstContinuationTail = emitted
+        .slice(emitted.indexOf(firstChain) + firstChain.length)
+        .match(/^\[(\w+)\]/)?.[0];
+      const secondContinuationTail = emitted
+        .slice(emitted.indexOf(secondChain) + secondChain.length)
+        .match(/^\[(\w+)\]/)?.[0];
+      expect(firstContinuationTail).toMatch(/^\[\w+\]$/);
+      expect(secondContinuationTail).toMatch(/^\[\w+\]$/);
+      const firstComputedChain = `${firstChain}${firstContinuationTail}`;
+      const secondComputedChain = `${secondChain}${secondContinuationTail}`;
+      expect(emitted).toContain(firstComputedChain);
+      expect(emitted).toContain(secondComputedChain);
+      const secondContinuationKey = secondContinuationTail!.slice(1, -1);
       const firstKeyCall = emitted.match(/[\w$]+\.key\(\s*['"]first['"]\s*\)/)?.[0];
       expect(firstKeyCall).toBeDefined();
 
@@ -12840,18 +12852,18 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         { name: 'bypass-super-get', from: firstGet.call, to: 'null' },
         {
           name: 'wrong-nested-member',
-          from: secondChain,
-          to: `${secondGet.call}.branch.missing.next.leaf`,
+          from: secondComputedChain,
+          to: `${secondGet.call}.branch.missing.next[${secondContinuationKey}]`,
         },
         {
-          name: 'wrong-final-member',
-          from: firstChain,
-          to: `${firstGet.call}.branch.missing`,
+          name: 'wrong-computed-continuation-key',
+          from: firstComputedChain,
+          to: `${firstChain}[${secondContinuationKey}]`,
         },
         {
           name: 'truncated-computed-chain',
-          from: firstChain,
-          to: `${firstGet.call}.branch`,
+          from: firstComputedChain,
+          to: firstChain,
         },
         {
           name: 'duplicate-super-get',
