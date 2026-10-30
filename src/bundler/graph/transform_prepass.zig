@@ -6877,6 +6877,7 @@ const StaticBlockSuperUse = enum {
     get,
     assignment,
     compound_assignment,
+    logical_assignment,
     postfix_update,
 };
 
@@ -6886,9 +6887,11 @@ const StaticBlockSuperUse = enum {
 /// outside this proof because its downlevel `Math.pow` path has separate global
 /// identity behavior. A postfix update uses both helpers and owns its generated
 /// temp in the lowered static-block function. Direct method calls have separate
-/// `.call` lowering and do not qualify here. Logical assignments, prefix
-/// updates, computed keys, nested function owners, and nested member operations
-/// remain outside this proof.
+/// `.call` lowering and do not qualify here. Direct `||=` and `&&=` assignments
+/// use the tracked get/set helpers without a generated temp. `??=` remains
+/// outside this proof because its nullish lowering captures the get value in a
+/// generated temp. Prefix updates, computed keys, nested function owners, and
+/// nested member operations remain outside this proof.
 fn isRetainableStaticBlockSuperUse(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -6931,6 +6934,10 @@ fn isRetainableStaticBlockSuperUse(
                     if (expression_raw != member_raw) return null;
                     if (parent.data.binary.flags == @backingInt(token_mod.Kind.eq)) {
                         use = .assignment;
+                    } else if (parent.data.binary.flags == @backingInt(token_mod.Kind.pipe2_eq) or
+                        parent.data.binary.flags == @backingInt(token_mod.Kind.amp2_eq))
+                    {
+                        use = .logical_assignment;
                     } else {
                         const operator_flags = parent.data.binary.flags;
                         if (operator_flags > std.math.maxInt(u16)) return null;
@@ -8812,7 +8819,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__superGet` is safe when every reachable read has an admitted home
     // graph, including direct value reads and postfix updates in a retained
     // static block. `__superSet` is safe for admitted method owners, exact
-    // static-block simple assignments, direct += updates, and postfix updates;
+    // static-block simple, supported compound, `||=`/`&&=`, and postfix writes;
     // other compound static-block writes remain excluded.
     if (allow_tracked_super_get) other_helpers.super_get = false;
     if (allow_tracked_super_set) other_helpers.super_set = false;
@@ -13185,6 +13192,22 @@ test "#6193 retains only exact named native-class static-block lowering" {
         try std.testing.expect(retained_compound.allow_super_set);
     }
 
+    const retained_static_super_logical_operators = [_][]const u8{ "||=", "&&=" };
+    for (retained_static_super_logical_operators) |operator| {
+        const source = try std.mem.concat(std.testing.allocator, u8, &.{
+            "class Base extends Object { static get value() { return 3; } static set value(next) {} } " ++
+                "class Counter extends Base { static { this.result = super.value ",
+            operator,
+            " 2; } }",
+        });
+        defer std.testing.allocator.free(source);
+        const retained_logical = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(retained_logical.source_candidate);
+        try std.testing.expect(retained_logical.graph_gate);
+        try std.testing.expect(retained_logical.allow_super_get);
+        try std.testing.expect(retained_logical.allow_super_set);
+    }
+
     const retained_static_super_postfix_without_setter = try staticBlockPrepassDecisionForTest(
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value++; } }",
         ".js",
@@ -13209,9 +13232,11 @@ test "#6193 retains only exact named native-class static-block lowering" {
 
     const rejected_static_block_super_uses = [_][]const u8{
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value **= 2; } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value ||= 4; } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value &&= 4; } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value ??= 4; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] ||= 4; } }",
+        "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { super.value.child &&= 4; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { (super.value) ||= 4; } }",
+        "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { const write = () => super.value &&= 4; write(); } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value'] *= 2; } }",
         "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key] -= 1; } }",
         "class Base extends Object { static set value(next) {} } class Counter extends Base { static { super['value'] = 4; } }",
