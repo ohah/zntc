@@ -11843,8 +11843,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'get:child,set:child:3,get:child,set:child:2,get:child,set:child:3,get:child,set:child:2 3,2,3,2 2 own\n',
       },
       {
-        name: 'static-block-super-computed-prefix-update-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'static-block-super-computed-prefix-update-retains-exact-graph',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = ++super["value"]; } } console.log(Counter.result, Counter.saved);',
         stdout: '4 4\n',
@@ -11893,8 +11893,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '9 729 729\n',
       },
       {
-        name: 'computed-static-block-super-exponentiation-assignment-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'computed-static-block-super-exponentiation-assignment-retains-exact-graph',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super["value"] **= 2; } } console.log(Counter.result, Counter.saved);',
         stdout: '9 9\n',
@@ -11936,17 +11936,38 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: 'Counter\n',
       },
       {
-        name: 'computed-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'computed-static-block-super-read-retains-exact-graph',
+        graph: 'retained',
         source:
           "class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value']; } } console.log(Counter.result);",
         stdout: '3\n',
       },
       {
-        name: 'dynamic-computed-static-block-super-read-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'dynamic-computed-static-block-super-read-retains-source-key-identity',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key]; } } console.log(Counter.result);",
+        stdout: '3\n',
+      },
+      {
+        name: 'computed-static-block-super-nullish-assignment-preserves-key-and-value-temp-identity',
+        graph: 'retained',
+        source:
+          "const events = []; class Base extends Object { static get value() { events.push('get:' + (this === Base ? 'base' : 'child')); return this.saved; } static set value(next) { events.push('set:' + (this === Base ? 'base' : 'child') + ':' + next); this.saved = next; } } class Counter extends Base { static key(name) { events.push('key:' + name); return 'value'; } static next() { events.push('rhs'); return 2; } static { const _a = 'source'; this.saved = null; this.result = super[this.key('nullish')] ??= this.next(); this.collision = _a; } } console.log(events.join(','), Counter.result, Counter.saved, Counter.collision);",
+        stdout: 'key:nullish,get:child,rhs,set:child:2 2 2 source\n',
+      },
+      {
+        name: 'multiple-static-block-computed-super-postfix-temps-retain-distinct-producers',
+        graph: 'retained',
+        source:
+          "class Base extends Object { static get value() { return this.saved ?? 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static key() { return 'value'; } static { const _a = 'first'; this.first = super[this.key()]++; this.firstLocal = _a; } static { const _a = 'second'; this.second = super[this.key()]++; this.secondLocal = _a; } } console.log(Counter.first, Counter.firstLocal, Counter.second, Counter.secondLocal, Counter.saved);",
+        stdout: '3 first 4 second 5\n',
+      },
+      {
+        name: 'optional-key-computed-static-block-super-read-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { const key = { name: 'value' }; this.result = super[key?.name]; } } console.log(Counter.result);",
         stdout: '3\n',
       },
       {
@@ -13348,6 +13369,330 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const downlevelGetterOnly = spawnSync('node', [getterOnlyOutput], { encoding: 'utf8' });
       expect(downlevelGetterOnly.status).not.toBe(0);
       expect(downlevelGetterOnly.stderr).toContain('TypeError');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained computed static-block super keys keep distinct key and nullish temp identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-computed-key-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected =
+      'key:zero,get:zero:child,key:nullish,get:nullish:child,rhs:nullish,set:nullish:child:3,key:kept,get:kept:child,key:present,get:present:child,rhs:present,set:present:child:10 0,3,3,10 0 3 3 10 source\n';
+    const source = [
+      'const events = [];',
+      "class Base extends Object { static get zero() { events.push('get:zero:' + (this === Base ? 'wrong' : 'child')); return this.savedZero; } static set zero(next) { events.push('set:zero:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.savedZero = next; } static get nullish() { events.push('get:nullish:' + (this === Base ? 'wrong' : 'child')); return this.savedNullish; } static set nullish(next) { events.push('set:nullish:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.savedNullish = next; } static get kept() { events.push('get:kept:' + (this === Base ? 'wrong' : 'child')); return this.savedKept; } static set kept(next) { events.push('set:kept:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.savedKept = next; } static get present() { events.push('get:present:' + (this === Base ? 'wrong' : 'child')); return this.savedPresent; } static set present(next) { events.push('set:present:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.savedPresent = next; } }",
+      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static next(name, value) { events.push('rhs:' + name); return value; } static { const _a = 'source'; this.savedZero = 0; this.savedNullish = null; this.savedKept = 3; this.savedPresent = null; this.results = []; this.results.push(super[this.key('zero')] ??= this.next('zero', 8)); this.results.push(super[this.key('nullish')] ??= this.next('nullish', 3)); this.results.push(super[this.key('kept')] ??= this.next('kept', 9)); this.results.push(super[this.key('present')] ??= this.next('present', 10)); this.collision = _a; } }",
+      "console.log(events.join(','), Counter.results.join(','), Counter.savedZero, Counter.savedNullish, Counter.savedKept, Counter.savedPresent, Counter.collision);",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const identity = (build.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity).toBeDefined();
+      expect(
+        Number(identity?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? 0),
+      ).toBeGreaterThanOrEqual(1);
+      const downlevel = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(downlevel.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const keyCaptures = [
+        ...emitted.matchAll(/([\w$]+)\s*=\s*(?:[\w$]+\()?([\w$]+)\.key\("([^"]+)"\)\)?/g),
+      ];
+      expect(keyCaptures).toHaveLength(4);
+      expect(keyCaptures.map((capture) => capture[3])).toEqual([
+        'zero',
+        'nullish',
+        'kept',
+        'present',
+      ]);
+      const keyTemps = keyCaptures.map((capture) => capture[1]);
+      expect(new Set(keyTemps).size).toBe(4);
+
+      const valueCapturePattern =
+        /\(([\w$]+)\s*=\s*(__superGet\(([\w$]+),\s*([\w$]+),\s*([\w$]+)\))\)\s*!=\s*null\s*\?\s*([\w$]+)\s*:\s*__superSet\(/g;
+      const valueCaptures = [...emitted.matchAll(valueCapturePattern)];
+      expect(valueCaptures).toHaveLength(4);
+      const valueTemps = valueCaptures.map((capture) => capture[1]);
+      expect(new Set(valueTemps).size).toBe(4);
+      expect(new Set([...keyTemps, ...valueTemps]).size).toBe(8);
+      for (let index = 0; index < valueCaptures.length; index++) {
+        const capture = valueCaptures[index]!;
+        expect(capture[6]).toBe(capture[1]);
+        expect(capture[4]).toBe(keyTemps[index]);
+      }
+
+      const extractCall = (marker: string, fromIndex = 0) => {
+        const start = emitted.indexOf(marker, fromIndex);
+        expect(start, marker).not.toBe(-1);
+        const open = start + marker.lastIndexOf('(');
+        let depth = 0;
+        let quote = '';
+        let escaped = false;
+        for (let index = open; index < emitted.length; index++) {
+          const char = emitted[index]!;
+          if (quote) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === quote) quote = '';
+            continue;
+          }
+          if (char === "'" || char === '"' || char === '`') quote = char;
+          else if (char === '(') depth++;
+          else if (char === ')' && --depth === 0) return emitted.slice(start, index + 1);
+        }
+        throw new Error(`unterminated call: ${marker}`);
+      };
+      const replaceCallArgument = (call: string, argumentIndex: number, replacement: string) => {
+        const open = call.indexOf('(');
+        expect(open).toBeGreaterThanOrEqual(0);
+        const ranges: Array<[number, number]> = [];
+        let start = open + 1;
+        let roundDepth = 0;
+        let squareDepth = 0;
+        let braceDepth = 0;
+        let quote = '';
+        let escaped = false;
+        for (let index = start; index < call.length - 1; index++) {
+          const char = call[index]!;
+          if (quote) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === quote) quote = '';
+            continue;
+          }
+          if (char === "'" || char === '"' || char === '`') quote = char;
+          else if (char === '(') roundDepth++;
+          else if (char === ')') roundDepth--;
+          else if (char === '[') squareDepth++;
+          else if (char === ']') squareDepth--;
+          else if (char === '{') braceDepth++;
+          else if (char === '}') braceDepth--;
+          else if (char === ',' && roundDepth === 0 && squareDepth === 0 && braceDepth === 0) {
+            ranges.push([start, index]);
+            start = index + 1;
+          }
+        }
+        ranges.push([start, call.length - 1]);
+        const range = ranges[argumentIndex];
+        expect(range, `${call} argument ${argumentIndex}`).toBeDefined();
+        return call.slice(0, range![0]) + replacement + call.slice(range![1]);
+      };
+      const keyAssignText = keyCaptures[1]![0];
+      const keyExpression = keyAssignText.slice(keyAssignText.indexOf('=') + 1).trim();
+      const thirdValueCapture = valueCaptures[2]!;
+      const thirdGetCall = thirdValueCapture[2]!;
+      const fourthValueCapture = valueCaptures[3]!;
+      const fourthSetCall = extractCall('__superSet(', fourthValueCapture.index!);
+      const firstKey = keyTemps[0]!;
+      const thirdKey = keyTemps[2]!;
+      const fourthKey = keyTemps[3]!;
+      const firstValue = valueTemps[0]!;
+      const thirdValue = valueTemps[2]!;
+      const thirdCaptureText = thirdValueCapture[0];
+      const crossValueRead = thirdCaptureText.replace(
+        new RegExp(`\\?\\s*${thirdValue}\\s*:`),
+        `? ${firstValue} :`,
+      );
+      const crossValueWrite = thirdCaptureText.replace(
+        new RegExp(`\\(${thirdValue}\\s*=`),
+        `(${firstValue} =`,
+      );
+      const mutations = [
+        {
+          name: 'computed-key-read-crosses-producer',
+          from: thirdGetCall,
+          to: thirdGetCall.replace(`, ${thirdKey},`, `, ${firstKey},`),
+        },
+        {
+          name: 'computed-key-write-crosses-producer',
+          from: keyCaptures[2]![0],
+          to: keyCaptures[2]![0].replace(/^[\w$]+(?=\s*=)/, firstKey),
+        },
+        {
+          name: 'computed-key-expression-evaluated-twice',
+          from: keyAssignText,
+          to: `(${keyTemps[1]} = ${keyExpression}, ${keyTemps[1]} = ${keyExpression})`,
+        },
+        { name: 'nullish-value-read-crosses-producer', from: thirdCaptureText, to: crossValueRead },
+        {
+          name: 'nullish-value-write-crosses-producer',
+          from: thirdCaptureText,
+          to: crossValueWrite,
+        },
+        {
+          name: 'computed-set-key-crosses-producer',
+          from: fourthSetCall,
+          to: fourthSetCall.replace(`, ${fourthKey},`, `, ${firstKey},`),
+        },
+        {
+          name: 'computed-get-receiver-changed',
+          from: thirdGetCall,
+          to: replaceCallArgument(
+            thirdGetCall,
+            2,
+            thirdGetCall.slice(
+              thirdGetCall.indexOf('(') + 1,
+              thirdGetCall.indexOf(',', thirdGetCall.indexOf('(')),
+            ),
+          ),
+        },
+        {
+          name: 'computed-set-receiver-changed',
+          from: fourthSetCall,
+          to: replaceCallArgument(
+            fourthSetCall,
+            3,
+            fourthSetCall.slice(
+              fourthSetCall.indexOf('(') + 1,
+              fourthSetCall.indexOf(',', fourthSetCall.indexOf('(')),
+            ),
+          ),
+        },
+      ];
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(8);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('computed static-block super compound keys preserve native ToPropertyKey conversions', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-computed-property-key-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const napiOutput = join(dir, 'napi-output.cjs');
+    const expected = 'key-expression,coerce:string,get:child,rhs,coerce:string,set:child:2 2\n';
+    const source = [
+      'const events = [];',
+      "const key = { [Symbol.toPrimitive](hint) { events.push('coerce:' + hint); return 'value'; } };",
+      "class Base extends Object { static get value() { events.push('get:' + (this === Base ? 'base' : 'child')); return null; } static set value(next) { events.push('set:' + (this === Base ? 'base' : 'child') + ':' + next); } }",
+      "class Counter extends Base { static getKey() { events.push('key-expression'); return key; } static next() { events.push('rhs'); return 2; } static { this.result = super[this.getKey()] ??= this.next(); } }",
+      "console.log(events.join(','), Counter.result);",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const identity = (build.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity).toBeDefined();
+      expect(
+        Number(identity?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? 0),
+      ).toBeGreaterThanOrEqual(1);
+
+      const downlevel = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(downlevel.stdout).toBe(expected);
+
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const buildOptions = JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2015',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      const runner = [
+        `import { build } from ${JSON.stringify(coreEntry)};`,
+        `const result = await build(${buildOptions});`,
+        'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+        'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+      ].join('\n');
+      const napiBuild = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(napiBuild.status, napiBuild.stderr).toBe(0);
+      const napiIdentity = (napiBuild.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(napiIdentity, napiBuild.stderr).toBeDefined();
+      expect(napiIdentity).toMatch(/clean=1(?:\s|$)/);
+      expect(
+        Number(napiIdentity?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? 0),
+      ).toBeGreaterThanOrEqual(1);
+      const napiMode = (napiBuild.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(napiMode, napiBuild.stderr).toContain('semantic_graph=retained');
+      const napiOutputs = JSON.parse(napiBuild.stdout) as string[];
+      expect(napiOutputs).toHaveLength(1);
+      writeFileSync(napiOutput, napiOutputs[0]!);
+      const napiDownlevel = spawnSync('node', [napiOutput], { encoding: 'utf8' });
+      expect(napiDownlevel.status, napiDownlevel.stderr).toBe(0);
+      expect(napiDownlevel.stdout).toBe(expected);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
