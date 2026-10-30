@@ -7070,8 +7070,9 @@ fn isRetainableStaticBlockSuperUse(
 }
 
 /// A single terminal call on a nested `super[key]` member may be retained when
-/// every argument is a pure value or an exact-bound source reference. The
-/// parent walk proves the callee is that member chain and rejects later chains.
+/// every argument is a pure value, an exact-bound source reference, or an
+/// exact-bound non-optional member read. The parent walk proves the callee is
+/// that member chain and rejects later chains.
 fn isRetainableStaticBlockSuperContinuationCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -7090,7 +7091,9 @@ fn isRetainableStaticBlockSuperContinuationCall(
     for (extras[args_start .. args_start + args_len]) |raw_arg| {
         if (raw_arg >= ast.nodes.items.len) return false;
         const arg_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_arg));
-        if (!isSafeConstructorValue(ast, semantic, arg_idx)) return false;
+        if (isSafeConstructorValue(ast, semantic, arg_idx) or
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, arg_idx, .disallowed)) continue;
+        return false;
     }
     return true;
 }
@@ -13451,6 +13454,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_bound_argument.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_root_nested_member_invocation_bound_argument.allow_super_set);
 
+    const retained_static_super_computed_root_nested_member_invocation_member_read_argument = try staticBlockPrepassDecisionForTest(
+        "const key = 'value'; const keyProvider = { get argument() { return 'ok'; } }; class Base extends Object { static get value() { return { child: { marker: 'child', read(value) { return this.marker + ':' + value; } } }; } } class Counter extends Base { static { this.result = super[key].child.read(keyProvider.argument); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_member_read_argument.source_candidate);
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_member_read_argument.graph_gate);
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_member_read_argument.allow_super_get);
+    try std.testing.expect(!retained_static_super_computed_root_nested_member_invocation_member_read_argument.allow_super_set);
+
     const rejected_static_super_continuation_invocations = [_][]const u8{
         "super[key]('argument')",
         "(super[key])('argument')",
@@ -13472,6 +13486,35 @@ test "#6193 retains only exact named native-class static-block lowering" {
             rejected_static_super_continuation_prefix,
             invocation,
             rejected_static_super_continuation_suffix,
+        });
+        defer std.testing.allocator.free(source);
+        const rejected = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(rejected.source_candidate);
+        try std.testing.expect(!rejected.allow_super_get);
+        try std.testing.expect(!rejected.allow_super_set);
+    }
+
+    const rejected_static_super_continuation_member_read_arguments = [_][]const u8{
+        "keys?.continuation",
+        "keys.continuation?.value",
+        "external.continuation",
+        "keys[missing]",
+        "keys[keys.pick()]",
+        "keys.get().continuation",
+        "this.continuation",
+        "super[key]",
+        "(keys.continuation, 'argument')",
+        "keys.continuation = 'argument'",
+        "...keys.args",
+    };
+    const rejected_static_super_member_argument_prefix =
+        "const key = 'value'; const keys = { get continuation() { return 'argument'; }, get() { return { continuation: 'argument' }; }, pick() { return 'continuation'; }, args: [] }; class Base extends Object { static get value() { return { child: { read(value) { return value; } } }; } } class Counter extends Base { static { this.result = super[key].child.read(";
+    const rejected_static_super_member_argument_suffix = "); } }";
+    for (rejected_static_super_continuation_member_read_arguments) |argument| {
+        const source = try std.mem.concat(std.testing.allocator, u8, &.{
+            rejected_static_super_member_argument_prefix,
+            argument,
+            rejected_static_super_member_argument_suffix,
         });
         defer std.testing.allocator.free(source);
         const rejected = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
