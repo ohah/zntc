@@ -6878,6 +6878,7 @@ const StaticBlockSuperUse = enum {
     assignment,
     compound_assignment,
     logical_assignment,
+    prefix_update,
     postfix_update,
 };
 
@@ -6885,13 +6886,13 @@ const StaticBlockSuperUse = enum {
 /// tracked `__superGet` helper. Direct simple and supported compound assignments
 /// use tracked `__superSet`; compound assignments use both helpers. `**=` stays
 /// outside this proof because its downlevel `Math.pow` path has separate global
-/// identity behavior. A postfix update uses both helpers and owns its generated
-/// temp in the lowered static-block function. Direct method calls have separate
-/// `.call` lowering and do not qualify here. Direct `||=` and `&&=` assignments
-/// use the tracked get/set helpers without a generated temp. `??=` remains
-/// outside this proof because its nullish lowering captures the get value in a
-/// generated temp. Prefix updates, computed keys, nested function owners, and
-/// nested member operations remain outside this proof.
+/// identity behavior. Both prefix and postfix updates use the tracked get/set
+/// helpers; postfix owns a generated temp in the lowered static-block function.
+/// Direct method calls have separate `.call` lowering and do not qualify here.
+/// Direct `||=` and `&&=` assignments use the tracked get/set helpers without a
+/// generated temp. `??=` remains outside this proof because its nullish lowering
+/// captures the get value in a generated temp. Computed keys, nested function
+/// owners, and nested member operations remain outside this proof.
 fn isRetainableStaticBlockSuperUse(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -6953,10 +6954,12 @@ fn isRetainableStaticBlockSuperUse(
                     expression_raw != member_raw or ast.extra_data.items[extra] != expression_raw) return null;
                 const operator_and_flags = ast.extra_data.items[extra + 1];
                 const operator = operator_and_flags & 0xff;
-                if ((operator_and_flags & ast_mod.UnaryFlags.postfix) == 0 or
-                    (operator != @backingInt(token_mod.Kind.plus2) and
-                        operator != @backingInt(token_mod.Kind.minus2))) return null;
-                use = .postfix_update;
+                if (operator != @backingInt(token_mod.Kind.plus2) and
+                    operator != @backingInt(token_mod.Kind.minus2)) return null;
+                use = if ((operator_and_flags & ast_mod.UnaryFlags.postfix) != 0)
+                    .postfix_update
+                else
+                    .prefix_update;
             },
             .unary_expression,
             .tagged_template_expression,
@@ -13208,6 +13211,22 @@ test "#6193 retains only exact named native-class static-block lowering" {
         try std.testing.expect(retained_logical.allow_super_set);
     }
 
+    const retained_static_super_prefix_operators = [_][]const u8{ "++", "--" };
+    for (retained_static_super_prefix_operators) |operator| {
+        const source = try std.mem.concat(std.testing.allocator, u8, &.{
+            "class Base extends Object { static get value() { return 3; } static set value(next) {} } " ++
+                "class Counter extends Base { static { this.result = ",
+            operator,
+            "super.value; } }",
+        });
+        defer std.testing.allocator.free(source);
+        const retained_prefix = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(retained_prefix.source_candidate);
+        try std.testing.expect(retained_prefix.graph_gate);
+        try std.testing.expect(retained_prefix.allow_super_get);
+        try std.testing.expect(retained_prefix.allow_super_set);
+    }
+
     const retained_static_super_postfix_without_setter = try staticBlockPrepassDecisionForTest(
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super.value++; } }",
         ".js",
@@ -13245,7 +13264,10 @@ test "#6193 retains only exact named native-class static-block lowering" {
         "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { super.value.child *= 2; } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { (super.value) = 4; } }",
         "class Base extends Object { static set value(next) {} } class Counter extends Base { static { const write = () => super.value = 4; write(); } }",
-        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = ++super.value; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { ++super['value']; } }",
+        "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { ++super.value.child; } }",
+        "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { ++(super.value); } }",
+        "class Base extends Object { static get value() { return 3; } static set value(next) {} } class Counter extends Base { static { const update = () => --super.value; update(); } }",
         "class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super['value']++; } }",
         "const key = 'value'; class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { this.result = super[key]++; } }",
         "class Base extends Object { static get value() { return { child: 3 }; } } class Counter extends Base { static { this.result = super.value.child++; } }",
