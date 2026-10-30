@@ -12952,12 +12952,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-nested-member-call-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
-    const expected = 'get:true,call:child:ok child:ok\n';
+    const expected = 'get:true,argument:true,call:child:ok child:ok\n';
     const source = [
       "const key = 'value';",
       'const events = [];',
+      "const keyProvider = { get argument() { events.push('argument:' + (this === keyProvider)); return 'ok'; } };",
       "class Base extends Object { static get value() { events.push('get:' + (this !== Base)); return { child: { marker: 'child', read(argument) { events.push('call:' + this.marker + ':' + argument); return this.marker + ':' + argument; } } }; } }",
-      "class Counter extends Base { static { this.result = super[key].child.read('ok'); } }",
+      'class Counter extends Base { static { this.result = super[key].child.read(keyProvider.argument); } }',
       "console.log(events.join(','), Counter.result);",
     ].join('\n');
     try {
@@ -13012,7 +13013,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(getCalls).toHaveLength(1);
       const getCall = getCalls[0]!;
       const nestedInvocation = emitted.match(
-        /(__superGet\(\w+,\s*[^,]+,\s*\w+\)\.child\.read\(\s*['"]ok['"]\s*\))/,
+        /(__superGet\(\w+,\s*[^,]+,\s*\w+\)\.child\.read\(\s*[\w$]+\.argument\s*\))/,
       )?.[1];
       expect(nestedInvocation).toBeDefined();
       const invocationCallee = nestedInvocation!.slice(0, nestedInvocation!.lastIndexOf('('));
@@ -13055,7 +13056,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         {
           name: 'wrong-method-argument',
           from: nestedInvocation!,
-          to: nestedInvocation!.replace('ok', 'wrong'),
+          to: nestedInvocation!.replace('.argument', '.missing'),
+        },
+        {
+          name: 'argument-member-read-evaluated-twice',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace(
+            invocationArguments,
+            `${invocationArguments}, ${invocationArguments}`,
+          ),
         },
         {
           name: 'nested-method-called-twice',
@@ -13095,7 +13104,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           `${mutation.name} escaped the runtime oracle`,
         ).toBe(true);
       }
-      expect(mutations).toHaveLength(11);
+      expect(mutations).toHaveLength(12);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
