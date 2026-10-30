@@ -12740,17 +12740,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('retained computed-root static-block super chains expose compileable output mutants', async () => {
+  test('retained computed-root static-block super chains with nested call keys expose compileable output mutants', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-computed-root-read-mutants-'));
     const entry = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
     const expected =
-      'key:first,get:first:child,continuation:leafOne:true,key:second,get:second:child,continuation:leafTwo:true first:child|second:child\n';
+      'key:first,get:first:child,normalize:leafOne:true,continuation:leafOne:true,key:second,get:second:child,normalize:leafTwo:true,continuation:leafTwo:true first:child|second:child\n';
     const source = [
       'const events = [];',
-      "const keyProvider = { pick(name) { events.push('continuation:' + name + ':' + (this === keyProvider)); return name; } };",
+      "const keyProvider = { normalize(name) { events.push('normalize:' + name + ':' + (this === keyProvider)); return name; }, pick(name) { events.push('continuation:' + name + ':' + (this === keyProvider)); return name; } };",
       "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { branch: { leafOne: 'first:' + receiver } }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { branch: { next: { leafTwo: 'second:' + receiver } } }; } }",
-      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].branch[keyProvider.pick('leafOne')], super[this.key('second')].branch.next[keyProvider.pick('leafTwo')]]; } }",
+      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].branch[keyProvider.pick(keyProvider.normalize('leafOne'))], super[this.key('second')].branch.next[keyProvider.pick(keyProvider.normalize('leafTwo'))]]; } }",
       "console.log(events.join(','), Counter.results.join('|'));",
     ].join('\n');
     try {
@@ -12807,17 +12807,33 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(firstGet.key).not.toBe(secondGet.key);
       const firstChain = `${firstGet.call}.branch`;
       const secondChain = `${secondGet.call}.branch.next`;
-      const firstContinuationCall = emitted.match(/[\w$]+\.pick\(\s*['"]leafOne['"]\s*\)/)?.[0];
-      const secondContinuationCall = emitted.match(/[\w$]+\.pick\(\s*['"]leafTwo['"]\s*\)/)?.[0];
+      const firstContinuationCall = emitted.match(
+        /[\w$]+\.pick\(\s*[\w$]+\.normalize\(\s*['"]leafOne['"]\s*\)\s*\)/,
+      )?.[0];
+      const secondContinuationCall = emitted.match(
+        /[\w$]+\.pick\(\s*[\w$]+\.normalize\(\s*['"]leafTwo['"]\s*\)\s*\)/,
+      )?.[0];
       expect(firstContinuationCall).toBeDefined();
       expect(secondContinuationCall).toBeDefined();
+      const firstNestedContinuationCall = firstContinuationCall!.match(
+        /[\w$]+\.normalize\(\s*['"]leafOne['"]\s*\)/,
+      )?.[0];
+      expect(firstNestedContinuationCall).toBeDefined();
       const firstComputedChain = `${firstChain}[${firstContinuationCall}]`;
       const secondComputedChain = `${secondChain}[${secondContinuationCall}]`;
       expect(emitted).toContain(firstComputedChain);
       expect(emitted).toContain(secondComputedChain);
-      const firstContinuationCallee = firstContinuationCall!.replace(
-        /\(\s*['"]leafOne['"]\s*\)$/,
-        '',
+      const firstContinuationCallee = firstContinuationCall!.slice(
+        0,
+        firstContinuationCall!.indexOf('('),
+      );
+      const firstContinuationArgument = firstContinuationCall!.slice(
+        firstContinuationCall!.indexOf('(') + 1,
+        -1,
+      );
+      const firstNestedContinuationCallee = firstNestedContinuationCall!.slice(
+        0,
+        firstNestedContinuationCall!.indexOf('('),
       );
       const firstKeyCall = emitted.match(/[\w$]+\.key\(\s*['"]first['"]\s*\)/)?.[0];
       expect(firstKeyCall).toBeDefined();
@@ -12867,7 +12883,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         {
           name: 'computed-continuation-loses-call-receiver',
           from: firstComputedChain,
-          to: `${firstChain}[(0, ${firstContinuationCallee})('leafOne')]`,
+          to: `${firstChain}[(0, ${firstContinuationCallee})(${firstContinuationArgument})]`,
+        },
+        {
+          name: 'nested-continuation-wrong-key',
+          from: firstContinuationCall!,
+          to: firstContinuationCall!.replace(
+            firstNestedContinuationCall!,
+            firstNestedContinuationCall!.replace('leafOne', 'leafTwo'),
+          ),
+        },
+        {
+          name: 'nested-continuation-evaluated-twice',
+          from: firstContinuationCall!,
+          to: firstContinuationCall!.replace(
+            firstNestedContinuationCall!,
+            `(${firstNestedContinuationCall}, ${firstNestedContinuationCall})`,
+          ),
+        },
+        {
+          name: 'nested-continuation-loses-call-receiver',
+          from: firstContinuationCall!,
+          to: firstContinuationCall!.replace(
+            firstNestedContinuationCall!,
+            `(0, ${firstNestedContinuationCallee})('leafOne')`,
+          ),
+        },
+        {
+          name: 'nested-continuation-call-skipped',
+          from: firstContinuationCall!,
+          to: firstContinuationCall!.replace(firstNestedContinuationCall!, "'leafOne'"),
         },
         {
           name: 'truncated-computed-chain',
@@ -12897,7 +12942,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           `${mutation.name} escaped the runtime oracle`,
         ).toBe(true);
       }
-      expect(mutations).toHaveLength(13);
+      expect(mutations).toHaveLength(17);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
