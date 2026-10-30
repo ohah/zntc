@@ -3441,13 +3441,13 @@ fn isRetainableBoundStaticFieldEffectCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
     allow_computed_member_callee: bool,
+    allow_computed_nested_member_callee: bool,
     // Each caller explicitly gates optional calls and bounded exact-bound
     // call arguments for the edge it is validating.
     allow_optional_call: bool,
     bound_call_argument_depth: BoundCallArgumentDepth,
-    // Nested argument calls may use safe computed-member callees, but not
-    // effectful computed keys within those callees unless the bounded mode
-    // explicitly admits one exact-bound key call.
+    // Nested computed-member callees are enabled separately so callers can
+    // keep the root call and its argument calls on the same callee contract.
     computed_member_key_call_mode: ComputedMemberKeyCallMode,
 ) bool {
     if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
@@ -3496,7 +3496,8 @@ fn isRetainableBoundStaticFieldEffectCall(
             ast,
             semantic,
             argument_idx,
-            true,
+            allow_computed_nested_member_callee,
+            allow_computed_nested_member_callee,
             computed_member_key_call_mode == .sequence_final or
                 computed_member_key_call_mode == .sequence_argument_optional_key_call or
                 computed_member_key_call_mode == .sequence_argument_member_read_optional_nested_call,
@@ -3543,6 +3544,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
                 @fromBackingInt(@intCast(raw_item)),
                 false,
                 false,
+                false,
                 .none,
                 .disallowed,
             )) return false;
@@ -3558,6 +3560,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
                 ast,
                 semantic,
                 last_idx,
+                true,
                 true,
                 false,
                 .one,
@@ -3612,6 +3615,7 @@ fn isRetainableBoundStaticFieldMemberRead(
                 semantic,
                 property_idx,
                 false,
+                true,
                 key_call_mode == .sequence_final or
                     (key_call_mode == .sequence_argument_member_read and optional_key_call),
                 switch (key_call_mode) {
@@ -7040,9 +7044,10 @@ fn isRetainableStaticBlockSuperUse(
     return null;
 }
 
-/// Computed continuation keys may use pure values or one ordinary call whose
-/// callee and arguments have exact source identities. The shared call validator
-/// rejects optional calls, computed callees, nested calls, and unbound names.
+/// Computed continuation keys may use pure values or one ordinary call with a
+/// single nested ordinary call argument. Each callee and every leaf argument
+/// must have exact source identities. The shared validator rejects optional
+/// calls, computed callees, deeper nesting, and unbound names.
 fn isRetainableStaticBlockContinuationKey(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -7057,7 +7062,8 @@ fn isRetainableStaticBlockContinuationKey(
         key_idx,
         false,
         false,
-        .none,
+        false,
+        .one,
         .disallowed,
     );
 }
@@ -13280,6 +13286,45 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_root_nested_read.graph_gate);
     try std.testing.expect(retained_static_super_computed_root_nested_read.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_root_nested_read.allow_super_set);
+
+    const retained_static_super_computed_root_nested_call_key = try staticBlockPrepassDecisionForTest(
+        "const key = 'value'; const keys = { normalize(value) { return value; }, pick(value) { return value; } }; class Base extends Object { static get value() { return { child: { name: { value: 'ok' } } }; } } class Counter extends Base { static { this.result = super[key].child.name[keys.pick(keys.normalize('value'))]; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_computed_root_nested_call_key.source_candidate);
+    try std.testing.expect(retained_static_super_computed_root_nested_call_key.graph_gate);
+    try std.testing.expect(retained_static_super_computed_root_nested_call_key.allow_super_get);
+    try std.testing.expect(!retained_static_super_computed_root_nested_call_key.allow_super_set);
+
+    const rejected_nested_continuation_call_keys = [_][]const u8{
+        "keys.pick(keys.normalize(keys.lower('leaf')))",
+        "keys?.pick(keys.normalize('leaf'))",
+        "keys.pick?.(keys.normalize('leaf'))",
+        "keys.pick(keys.normalize?.('leaf'))",
+        "keys['pick'](keys.normalize('leaf'))",
+        "keys.pick(keys['normalize']('leaf'))",
+        "pick(keys.normalize('leaf'))",
+        "keys.pick(normalize('leaf'))",
+        "keys.pick(keys.normalize(missing))",
+        "keys.pick(keys.normalize((keys.record(), 'leaf')))",
+    };
+    const rejected_nested_continuation_prefix =
+        "const key = 'value'; const keys = { pick(value) { return value; }, normalize(value) { return value; }, lower(value) { return value; }, record() {} }; class Base extends Object { static get value() { return { child: { name: { leaf: 1 } } }; } } class Counter extends Base { static { this.result = super[key].child.name[";
+    const rejected_nested_continuation_suffix = "]; } }";
+    for (rejected_nested_continuation_call_keys) |key_expression| {
+        const source = try std.mem.concat(std.testing.allocator, u8, &.{
+            rejected_nested_continuation_prefix,
+            key_expression,
+            rejected_nested_continuation_suffix,
+        });
+        defer std.testing.allocator.free(source);
+        const rejected = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(rejected.source_candidate);
+        try std.testing.expect(!rejected.allow_super_get);
+        try std.testing.expect(!rejected.allow_super_set);
+    }
 
     const retained_static_super_nested_member_read = try staticBlockPrepassDecisionForTest(
         "class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super.value.child.name; } }",
