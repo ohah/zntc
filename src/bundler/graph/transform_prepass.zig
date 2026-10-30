@@ -6893,15 +6893,16 @@ const StaticBlockSuperUse = enum {
 /// calls have separate `.call` lowering and do not qualify here. A direct named
 /// `super.name` read may continue through named static members. A direct computed
 /// `super[key]` read may also continue through non-optional computed members with
-/// pure literal or exact-bound source keys. Optional chains, effectful computed
-/// keys, nested writes, and calls stay outside this proof.
+/// pure literal, exact-bound source, or validated ordinary-call keys. Optional
+/// chains, unvalidated effectful keys, nested writes, and calls stay outside
+/// this proof.
 /// Direct `||=` and `&&=` assignments use the tracked get/set helpers without a
 /// generated temp. Direct `??=` captures its get value through the tracked temp
 /// producer and validates that binding/reference identity in the exact output
 /// audit. Direct `**=` uses the tracked super get/set helpers and the exponentiation
 /// transform's explicit global `Math` reference, which the bundler audit reserves
 /// before retaining the graph. A direct computed root key follows its own producer
-/// audit; continuation keys must be pure literals or exact-bound source values.
+/// audit; continuation keys must be pure values or validated source-bound calls.
 /// Optional chains, nested `super` or private access in keys, and nested function
 /// owners of `super` remain outside this proof.
 fn isRetainableStaticBlockSuperUse(
@@ -7001,7 +7002,7 @@ fn isRetainableStaticBlockSuperUse(
                     ast.extra_data.items[extra] != expression_raw or ast.extra_data.items[extra + 2] != 0)
                     return null;
                 const property_raw = ast.extra_data.items[extra + 1];
-                if (property_raw >= ast.nodes.items.len or !isSafeConstructorValue(
+                if (property_raw >= ast.nodes.items.len or !isRetainableStaticBlockContinuationKey(
                     ast,
                     semantic,
                     @fromBackingInt(@intCast(property_raw)),
@@ -7037,6 +7038,28 @@ fn isRetainableStaticBlockSuperUse(
         }
     }
     return null;
+}
+
+/// Computed continuation keys may use pure values or one ordinary call whose
+/// callee and arguments have exact source identities. The shared call validator
+/// rejects optional calls, computed callees, nested calls, and unbound names.
+fn isRetainableStaticBlockContinuationKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    key_idx: ast_mod.NodeIndex,
+) bool {
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
+    if (isSafeConstructorValue(ast, semantic, key_idx)) return true;
+    if (ast.getNode(key_idx).tag != .call_expression) return false;
+    return isRetainableBoundStaticFieldEffectCall(
+        ast,
+        semantic,
+        key_idx,
+        false,
+        false,
+        .none,
+        .disallowed,
+    );
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
@@ -13248,7 +13271,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(!retained_static_super_computed_read.allow_super_set);
 
     const retained_static_super_computed_root_nested_read = try staticBlockPrepassDecisionForTest(
-        "const key = 'value'; const leaf = 'value'; class Base extends Object { static get value() { return { child: { name: { value: 'ok' } } }; } } class Counter extends Base { static { this.result = super[key].child.name[leaf]; } }",
+        "const key = 'value'; const keys = { pick() { return 'value'; } }; class Base extends Object { static get value() { return { child: { name: { value: 'ok' } } }; } } class Counter extends Base { static { this.result = super[key].child.name[keys.pick()]; } }",
         ".js",
         options,
         .none,
