@@ -11873,9 +11873,37 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'static-block-super-exponentiation-assignment-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source:
           'class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super.value **= 2; } } console.log(Counter.result, Counter.saved);',
+        stdout: '9 9\n',
+      },
+      {
+        name: 'static-block-super-exponentiation-assignment-preserves-home-receiver-and-order',
+        graph: 'retained',
+        source:
+          "const events = []; class Base extends Object { static get value() { events.push('get:' + (this === Base ? 'wrong' : 'child')); return this.saved; } static set value(next) { events.push('set:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.saved = next; } } class Counter extends Base { static next() { events.push('rhs'); return 2; } static { Object.defineProperty(this, 'value', { value: 'own', writable: true, configurable: true }); this.saved = 3; this.result = super.value **= this.next(); this.after = this.saved; } } console.log(events.join(','), Counter.result, Counter.after, Counter.saved, Counter.value);",
+        stdout: 'get:child,rhs,set:child:9 9 9 9 own\n',
+      },
+      {
+        name: 'multiple-static-block-super-exponentiation-writes-retain-each-owner',
+        graph: 'retained',
+        source:
+          'class Base extends Object { static get value() { return this.saved; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.saved = 3; this.first = super.value **= 2; } static { this.second = super.value **= 3; } } console.log(Counter.first, Counter.second, Counter.saved);',
+        stdout: '9 729 729\n',
+      },
+      {
+        name: 'computed-static-block-super-exponentiation-assignment-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          'class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { this.result = super["value"] **= 2; } } console.log(Counter.result, Counter.saved);',
+        stdout: '9 9\n',
+      },
+      {
+        name: 'arrow-owned-static-block-super-exponentiation-assignment-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          'class Base extends Object { static get value() { return 3; } static set value(next) { this.saved = next; } } class Counter extends Base { static { const write = () => super.value **= 2; this.result = write(); } } console.log(Counter.result, Counter.saved);',
         stdout: '9 9\n',
       },
       {
@@ -13297,6 +13325,275 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       writeFileSync(
         getterOnlyEntry,
         'class Base extends Object { static get value() { return undefined; } } class Counter extends Base { static { super.value ??= 1; } }',
+      );
+      const nativeGetterOnly = spawnSync('node', [getterOnlyEntry], { encoding: 'utf8' });
+      expect(nativeGetterOnly.status).not.toBe(0);
+      expect(nativeGetterOnly.stderr).toContain('TypeError');
+      const getterOnlyBuild = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          getterOnlyEntry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          getterOnlyOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(getterOnlyBuild.status, getterOnlyBuild.stderr).toBe(0);
+      expect(getterOnlyBuild.stderr).toContain('semantic_graph=retained');
+      const downlevelGetterOnly = spawnSync('node', [getterOnlyOutput], { encoding: 'utf8' });
+      expect(downlevelGetterOnly.status).not.toBe(0);
+      expect(downlevelGetterOnly.stderr).toContain('TypeError');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained static-block super exponentiation keeps generated Math distinct from source bindings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-exp-math-shadow-'));
+    const expected = 'get:child,set:child:9 9 9\n';
+    const mathDeclaration =
+      "Math = { pow(left, right) { events.push('local-pow'); return left + right; } };";
+    const cases = [
+      { name: 'var-in-block', prefix: '', block: `var ${mathDeclaration}` },
+      { name: 'const-in-block', prefix: '', block: `const ${mathDeclaration}` },
+      { name: 'const-at-module', prefix: `const ${mathDeclaration}`, block: '' },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.js`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        const source = [
+          'const events = [];',
+          fixture.prefix,
+          "class Base extends Object { static get value() { events.push('get:' + (this === Base ? 'wrong' : 'child')); return this.saved; } static set value(next) { events.push('set:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.saved = next; } }",
+          `class Counter extends Base { static next() { return 2; } static { ${fixture.block} this.saved = 3; this.result = super.value **= this.next(); } }`,
+          "console.log(events.join(','), Counter.result, Counter.saved);",
+        ]
+          .filter(Boolean)
+          .join('\n');
+        writeFileSync(entry, source);
+        const native = spawnSync('node', [entry], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(expected);
+
+        const build = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es2015',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+        );
+        expect(build.status, `${fixture.name}: ${build.stderr}`).toBe(0);
+        expect(build.stderr, fixture.name).toContain('semantic_graph=retained');
+        const identity = (build.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') &&
+              line.includes(`${fixture.name}.js`),
+          );
+        expect(identity, `${fixture.name}: ${build.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          const expectedCount = counter === 'shadowed_external_reference' ? 1 : 0;
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${identity}`,
+          ).toBe(expectedCount);
+        }
+        expect(identity, fixture.name).toMatch(/clean=0(?:\s|$)/);
+        const downlevel = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(downlevel.status, `${fixture.name}: ${downlevel.stderr}`).toBe(0);
+        expect(downlevel.stdout, fixture.name).toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained static-block super exponentiation assignments expose compileable output mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-exp-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = 'get:child,rhs,set:child:9 9 9 9 own\n';
+    const source = [
+      'const events = [];',
+      "class Base extends Object { static get value() { events.push('get:' + (this === Base ? 'wrong' : 'child')); return this.saved; } static set value(next) { events.push('set:' + (this === Base ? 'wrong' : 'child') + ':' + next); this.saved = next; } }",
+      "class Counter extends Base { static next() { events.push('rhs'); return 2; } static { Object.defineProperty(this, 'value', { value: 'own', writable: true, configurable: true }); this.saved = 3; this.result = super.value **= this.next(); this.after = this.saved; } }",
+      "console.log(events.join(','), Counter.result, Counter.after, Counter.saved, Counter.value);",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const identity = (build.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity).toBeDefined();
+      expect(
+        Number(identity?.match(/generated_scope_owners_checked=(\d+)/)?.[1] ?? 0),
+      ).toBeGreaterThanOrEqual(1);
+      const downlevel = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(downlevel.status, downlevel.stderr).toBe(0);
+      expect(downlevel.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const extractCall = (marker: string, fromIndex = 0) => {
+        const start = emitted.indexOf(marker, fromIndex);
+        expect(start, marker).not.toBe(-1);
+        const open = start + marker.lastIndexOf('(');
+        let depth = 0;
+        let quote = '';
+        let escaped = false;
+        for (let index = open; index < emitted.length; index++) {
+          const char = emitted[index]!;
+          if (quote) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === quote) quote = '';
+            continue;
+          }
+          if (char === "'" || char === '"' || char === '`') quote = char;
+          else if (char === '(') depth++;
+          else if (char === ')' && --depth === 0) return emitted.slice(start, index + 1);
+        }
+        throw new Error(`unterminated call: ${marker}`);
+      };
+      const powCall = extractCall('Math.pow(');
+      const powArguments = powCall.slice('Math.pow('.length, -1);
+      let depth = 0;
+      let comma = -1;
+      for (let index = 0; index < powArguments.length; index++) {
+        if (powArguments[index] === '(') depth++;
+        else if (powArguments[index] === ')') depth--;
+        else if (powArguments[index] === ',' && depth === 0) {
+          comma = index;
+          break;
+        }
+      }
+      expect(comma).toBeGreaterThan(0);
+      const left = powArguments.slice(0, comma).trim();
+      const right = powArguments.slice(comma + 1).trim();
+      const getStart = powCall.indexOf('__superGet(');
+      const getCall = extractCall('__superGet(', getStart);
+      const powOffset = emitted.indexOf(powCall);
+      const setStart = emitted.indexOf('__superSet(', powOffset + powCall.length);
+      const setCall = extractCall('__superSet(', setStart);
+      const getHome = getCall.match(/^__superGet\(([^,]+),/)?.[1];
+      const getReceiver = getCall.match(/,\s*([\w$]+)\)$/)?.[1];
+      const setHome = setCall.match(/^__superSet\(([^,]+),/)?.[1];
+      const setReceiver = setCall.match(/,\s*([\w$]+)\)$/)?.[1];
+      expect(getHome).toBeDefined();
+      expect(getReceiver).toBeDefined();
+      expect(setHome).toBeDefined();
+      expect(setReceiver).toBeDefined();
+
+      const mutations = [
+        { name: 'wrong-get-home', from: getCall, to: getCall.replace(`${getHome},`, 'Object,') },
+        {
+          name: 'wrong-get-receiver',
+          from: getCall,
+          to: getCall.replace(`, ${getReceiver})`, `, ${getHome})`),
+        },
+        { name: 'wrong-get-key', from: getCall, to: getCall.replace('"value"', '"missing"') },
+        { name: 'wrong-set-home', from: setCall, to: setCall.replace(`${setHome},`, 'Object,') },
+        {
+          name: 'wrong-set-receiver',
+          from: setCall,
+          to: setCall.replace(new RegExp(`,\\s*${setReceiver}\\)$`), `, ${setHome})`),
+        },
+        { name: 'wrong-set-key', from: setCall, to: setCall.replace('"value"', '"missing"') },
+        { name: 'wrong-math-global', from: powCall, to: powCall.replace('Math.pow', 'Object.pow') },
+        {
+          name: 'wrong-math-operation',
+          from: powCall,
+          to: powCall.replace('Math.pow', 'Math.min'),
+        },
+        { name: 'wrong-math-argument-order', from: powCall, to: `Math.pow(${right}, ${left})` },
+        {
+          name: 'getter-evaluated-twice',
+          from: powCall,
+          to: `Math.pow(${left} + ${left}, ${right})`,
+        },
+        {
+          name: 'rhs-evaluated-twice',
+          from: powCall,
+          to: `Math.pow(${left}, ${right} + ${right})`,
+        },
+        { name: 'super-get-skipped', from: getCall, to: '0' },
+        { name: 'super-set-skipped', from: setCall, to: '0' },
+        {
+          name: 'setter-descriptor-skipped',
+          from: 'if (desc.set) {',
+          to: 'if (false && desc.set) {',
+        },
+        {
+          name: 'getter-called-with-home',
+          from: 'desc.get.call(receiver)',
+          to: 'desc.get.call(parent)',
+        },
+        {
+          name: 'setter-called-with-home',
+          from: 'desc.set.call(receiver, value);',
+          to: 'desc.set.call(parent, value);',
+        },
+        { name: 'rhs-result-changed', from: 'return 2;', to: 'return 3;' },
+      ];
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(17);
+
+      const getterOnlyEntry = join(dir, 'getter-only.js');
+      const getterOnlyOutput = join(dir, 'getter-only.cjs');
+      writeFileSync(
+        getterOnlyEntry,
+        'class Base extends Object { static get value() { return 3; } } class Counter extends Base { static { super.value **= 2; } }',
       );
       const nativeGetterOnly = spawnSync('node', [getterOnlyEntry], { encoding: 'utf8' });
       expect(nativeGetterOnly.status).not.toBe(0);
