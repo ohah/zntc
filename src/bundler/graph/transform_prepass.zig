@@ -6889,9 +6889,11 @@ const StaticBlockSuperUse = enum {
 /// `__superSet`; computed writes capture their key in a producer-tracked temp.
 /// Logical/nullish assignment and postfix updates also use producer-tracked
 /// temps. `**=` uses the exact-audited global `Math` reference. Direct method
-/// calls have separate `.call` lowering and do not qualify here. Only a direct
-/// named `super.name` read may continue through named static members; computed
-/// continuations, nested writes, and calls stay outside this proof.
+/// calls have separate `.call` lowering and do not qualify here. A direct named
+/// `super.name` read may continue through named static members; a direct
+/// computed `super[key]` read may continue through one named static member.
+/// Computed continuations, longer computed-root chains, nested writes, and calls
+/// stay outside this proof.
 /// Direct `||=` and `&&=` assignments use the tracked get/set helpers without a
 /// generated temp. Direct `??=` captures its get value through the tracked temp
 /// producer and validates that binding/reference identity in the exact output
@@ -6918,6 +6920,7 @@ fn isRetainableStaticBlockSuperUse(
     // Parentheses are transparent for reads, but inspect the eventual use so a
     // parenthesized member call or assignment target cannot slip through.
     var expression_raw = member_raw;
+    var named_continuations_after_computed_root: usize = 0;
     var use_hops: usize = 0;
     while (use_hops < ast.nodes.items.len) : (use_hops += 1) {
         const parent_raw = parents.get(expression_raw) orelse break;
@@ -6975,7 +6978,10 @@ fn isRetainableStaticBlockSuperUse(
                     .prefix_update;
             },
             .static_member_expression => {
-                if (!named_direct_super_access) return null;
+                if (!named_direct_super_access) {
+                    if (named_continuations_after_computed_root != 0) return null;
+                    named_continuations_after_computed_root = 1;
+                }
                 const outer: ast_mod.NodeIndex = @fromBackingInt(@intCast(parent_raw));
                 if (ast_mod.spineHasOptionalChain(ast, outer)) return null;
                 const extra = parent.data.extra;
@@ -13226,6 +13232,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_read.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_read.allow_super_set);
 
+    const retained_static_super_computed_root_nested_read = try staticBlockPrepassDecisionForTest(
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 'ok' }; } } class Counter extends Base { static { this.result = super[key].child; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_computed_root_nested_read.source_candidate);
+    try std.testing.expect(retained_static_super_computed_root_nested_read.graph_gate);
+    try std.testing.expect(retained_static_super_computed_root_nested_read.allow_super_get);
+    try std.testing.expect(!retained_static_super_computed_root_nested_read.allow_super_set);
+
     const retained_static_super_nested_member_read = try staticBlockPrepassDecisionForTest(
         "class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super.value.child.name; } }",
         ".js",
@@ -13373,6 +13390,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
         "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { ++super.value.child.name; } }",
         "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child.name++; } }",
         "class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super[key][key]; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super[key]?.child; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 'ok' } }; } } class Counter extends Base { static { this.result = super[key].child?.name; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child(); } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child?.(); } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child.bind(this)(); } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child = 4; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child += 4; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child ||= 4; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { ++super[key].child; } }",
+        "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child++; } }",
     };
     for (rejected_static_block_super_uses) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);

@@ -11986,11 +11986,102 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '2\n',
       },
       {
+        name: 'single-named-continuation-after-computed-static-block-super-read-retains-key-and-receiver',
+        graph: 'retained',
+        source:
+          "const events = []; class Base extends Object { static get value() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:' + receiver); return { child: 'value:' + receiver }; } } class Counter extends Base { static key() { events.push('key'); return 'value'; } static { this.result = super[this.key()].child; } } console.log(events.join(','), Counter.result);",
+        stdout: 'key,get:child value:child\n',
+      },
+      {
         name: 'computed-continuation-static-block-super-read-stays-on-reanalysis',
         graph: 'reanalyzed',
         source:
           "const key = 'name'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super.value.child[key]; } } console.log(Counter.result);",
         stdout: '2\n',
+      },
+      {
+        name: 'computed-static-block-super-two-member-continuations-stay-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child.name; } } console.log(Counter.result);",
+        stdout: '2\n',
+      },
+      {
+        name: 'computed-static-block-super-computed-continuation-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key][key]; } } console.log(Counter.result);",
+        stdout: 'undefined\n',
+      },
+      {
+        name: 'computed-static-block-super-optional-root-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key]?.child; } } console.log(Counter.result.name);",
+        stdout: '2\n',
+      },
+      {
+        name: 'computed-static-block-super-optional-continuation-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: { name: 2 } }; } } class Counter extends Base { static { this.result = super[key].child?.name; } } console.log(Counter.result);",
+        stdout: '2\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-call-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child(); } } console.log(Counter.result);",
+        stdout: '3\n',
+      },
+      {
+        name: 'computed-static-block-super-optional-call-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child() { return 3; } }; } } class Counter extends Base { static { this.result = super[key].child?.(); } } console.log(Counter.result);",
+        stdout: '3\n',
+      },
+      {
+        name: 'computed-static-block-super-bound-call-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child() { return this === Counter; } }; } } class Counter extends Base { static { this.result = super[key].child.bind(this)(); } } console.log(Counter.result);",
+        stdout: 'true\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-write-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child = 4; this.result = 1; } } console.log(Counter.result);",
+        stdout: '1\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-compound-write-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child += 4; this.result = 1; } } console.log(Counter.result);",
+        stdout: '1\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-logical-write-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child ||= 4; this.result = 1; } } console.log(Counter.result);",
+        stdout: '1\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-prefix-update-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { ++super[key].child; this.result = 1; } } console.log(Counter.result);",
+        stdout: '1\n',
+      },
+      {
+        name: 'computed-static-block-super-nested-postfix-update-stays-on-reanalysis',
+        graph: 'reanalyzed',
+        source:
+          "const key = 'value'; class Base extends Object { static get value() { return { child: 2 }; } } class Counter extends Base { static { super[key].child++; this.result = 1; } } console.log(Counter.result);",
+        stdout: '1\n',
       },
       {
         name: 'optional-nested-static-block-super-read-stays-on-reanalysis',
@@ -12626,6 +12717,133 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         { name: 'truncated-member-chain', from: firstChain, to: getCall! },
         { name: 'duplicate-super-get', from: getCall!, to: `(${getCall}, ${getCall})` },
         { name: 'read-from-home-class', from: getCall!, to: 'Base.value' },
+      ];
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained single computed-root static-block super reads expose ten compileable output mutants', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-computed-root-read-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected =
+      'key:first,get:first:child,key:second,get:second:child first:child|second:child\n';
+    const source = [
+      'const events = [];',
+      "class Base extends Object { static get first() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:first:' + receiver); return { child: 'first:' + receiver }; } static get second() { const receiver = this === Base ? 'wrong' : 'child'; events.push('get:second:' + receiver); return { child: 'second:' + receiver }; } }",
+      "class Counter extends Base { static key(name) { events.push('key:' + name); return name; } static { this.results = [super[this.key('first')].child, super[this.key('second')].child]; } }",
+      "console.log(events.join(','), Counter.results.join('|'));",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const napi = await buildNapi({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2015',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const getCalls = [...emitted.matchAll(/__superGet\((\w+),\s*([^,]+),\s*(\w+)\)/g)].map(
+        (match) => ({ call: match[0], home: match[1]!, key: match[2]!, receiver: match[3]! }),
+      );
+      expect(getCalls).toHaveLength(2);
+      const firstGet = getCalls[0]!;
+      const secondGet = getCalls[1]!;
+      expect(firstGet.key).not.toBe(secondGet.key);
+      const firstChain = `${firstGet.call}.child`;
+      expect(emitted).toContain(firstChain);
+      const firstKeyCall = emitted.match(/[\w$]+\.key\(\s*['"]first['"]\s*\)/)?.[0];
+      expect(firstKeyCall).toBeDefined();
+
+      const mutations = [
+        {
+          name: 'wrong-home-object',
+          from: firstGet.call,
+          to: firstGet.call.replace(`${firstGet.home},`, 'Object,'),
+        },
+        {
+          name: 'wrong-getter-receiver',
+          from: firstGet.call,
+          to: firstGet.call.replace(`, ${firstGet.receiver})`, `, ${firstGet.home})`),
+        },
+        {
+          name: 'crossed-computed-key-producer',
+          from: firstGet.call,
+          to: firstGet.call.replace(firstGet.key, secondGet.key),
+        },
+        {
+          name: 'wrong-computed-key-expression',
+          from: firstKeyCall!,
+          to: firstKeyCall!.replace('first', 'second'),
+        },
+        {
+          name: 'computed-key-expression-evaluated-twice',
+          from: firstKeyCall!,
+          to: `(${firstKeyCall}, ${firstKeyCall})`,
+        },
+        { name: 'bypass-super-get', from: firstGet.call, to: 'null' },
+        { name: 'wrong-nested-member', from: firstChain, to: `${firstGet.call}.missing` },
+        { name: 'truncated-computed-chain', from: firstChain, to: firstGet.call },
+        {
+          name: 'duplicate-super-get',
+          from: firstGet.call,
+          to: `(${firstGet.call}, ${firstGet.call})`,
+        },
+        { name: 'read-from-home-class', from: firstGet.call, to: `${firstGet.home}.first` },
       ];
       for (const mutation of mutations) {
         expect(mutation.to, mutation.name).not.toBe(mutation.from);
