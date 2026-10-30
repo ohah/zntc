@@ -12028,8 +12028,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: 'undefined\n',
       },
       {
-        name: 'computed-static-block-super-nested-call-stays-on-reanalysis',
-        graph: 'reanalyzed',
+        name: 'computed-static-block-super-nested-member-call-retains-graph',
+        graph: 'retained',
         source:
           "const key = 'value'; class Base extends Object { static get value() { return { child: { name() { return 3; } } }; } } class Counter extends Base { static { this.result = super[key].child.name(); } } console.log(Counter.result);",
         stdout: '3\n',
@@ -12943,6 +12943,159 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ).toBe(true);
       }
       expect(mutations).toHaveLength(17);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retained computed-root static-block super nested member calls preserve receivers and expose compileable mutants', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-nested-member-call-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = 'get:true,call:child:ok child:ok\n';
+    const source = [
+      "const key = 'value';",
+      'const events = [];',
+      "class Base extends Object { static get value() { events.push('get:' + (this !== Base)); return { child: { marker: 'child', read(argument) { events.push('call:' + this.marker + ':' + argument); return this.marker + ':' + argument; } } }; } }",
+      "class Counter extends Base { static { this.result = super[key].child.read('ok'); } }",
+      "console.log(events.join(','), Counter.result);",
+    ].join('\n');
+    try {
+      writeFileSync(entry, source);
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(build.status, build.stderr).toBe(0);
+      const entryDiagnostics = build.stderr.split(/\r?\n/).filter((line) => line.includes(entry));
+      expect(entryDiagnostics.some((line) => line.includes('semantic_graph=retained'))).toBe(true);
+      expect(entryDiagnostics.some((line) => line.includes('clean=1'))).toBe(true);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const napi = await buildNapi({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2015',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(expected);
+
+      const emitted = readFileSync(output, 'utf8');
+      const getCalls = [...emitted.matchAll(/__superGet\((\w+),\s*([^,]+),\s*(\w+)\)/g)].map(
+        (match) => ({ call: match[0]!, home: match[1]!, key: match[2]!, receiver: match[3]! }),
+      );
+      expect(getCalls).toHaveLength(1);
+      const getCall = getCalls[0]!;
+      const nestedInvocation = emitted.match(
+        /(__superGet\(\w+,\s*[^,]+,\s*\w+\)\.child\.read\(\s*['"]ok['"]\s*\))/,
+      )?.[1];
+      expect(nestedInvocation).toBeDefined();
+      const invocationCallee = nestedInvocation!.slice(0, nestedInvocation!.lastIndexOf('('));
+      const invocationArguments = nestedInvocation!.slice(
+        nestedInvocation!.lastIndexOf('(') + 1,
+        -1,
+      );
+
+      const mutations = [
+        {
+          name: 'wrong-super-home-object',
+          from: getCall.call,
+          to: getCall.call.replace(`${getCall.home},`, 'Object,'),
+        },
+        {
+          name: 'wrong-super-getter-receiver',
+          from: getCall.call,
+          to: getCall.call.replace(`, ${getCall.receiver})`, `, ${getCall.home})`),
+        },
+        {
+          name: 'wrong-super-root-key',
+          from: getCall.call,
+          to: getCall.call.replace(getCall.key, "'missing'"),
+        },
+        {
+          name: 'wrong-nested-member',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace('.child.read', '.missing.read'),
+        },
+        {
+          name: 'wrong-method-name',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace('.read(', '.write('),
+        },
+        {
+          name: 'nested-method-loses-receiver',
+          from: nestedInvocation!,
+          to: `(0, ${invocationCallee})(${invocationArguments})`,
+        },
+        {
+          name: 'wrong-method-argument',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace('ok', 'wrong'),
+        },
+        {
+          name: 'nested-method-called-twice',
+          from: nestedInvocation!,
+          to: `(${nestedInvocation}, ${nestedInvocation})`,
+        },
+        {
+          name: 'nested-method-call-skipped',
+          from: nestedInvocation!,
+          to: `${getCall.call}.child.read`,
+        },
+        {
+          name: 'super-get-evaluated-twice',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace(getCall.call, `(${getCall.call}, ${getCall.call})`),
+        },
+        {
+          name: 'wrong-child-receiver',
+          from: nestedInvocation!,
+          to: nestedInvocation!.replace('.child.read', '.child.marker.read'),
+        },
+      ];
+      expect(mutations.length).toBeGreaterThanOrEqual(10);
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(11);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
