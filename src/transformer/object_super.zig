@@ -393,7 +393,7 @@ pub fn prepareHome(self: *Transformer, producer_node: NodeIndex, allow_late_outp
                 try collectLexicalArgumentsReferences(self, producer_node, &arguments_refs);
                 if (arguments_refs.items.len == 0)
                     std.debug.panic("object-super arguments wrapper has no source arguments references", .{});
-                const parent_scope = homeObjectParentScope(self, producer_node, self.current_scope);
+                const parent_scope = homeObjectWrapperParentScope(self, producer_node, self.current_scope);
                 const arguments_origin = arguments_refs.items[0];
                 created.arguments_outer_ref = if (self.getSymbolIdAt(arguments_origin) != null)
                     try self.makeUserRefNamedAtScope("arguments", arguments_origin, parent_scope)
@@ -608,7 +608,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
     defer arguments_refs.deinit(self.allocator);
     if (home.arguments_alias_span) |alias_span|
         try collectHomeArgumentsAliasReferences(self, obj, alias_span, &arguments_refs);
-    const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
+    const parent_scope = homeObjectWrapperParentScope(self, obj, self.current_scope);
     const arguments_ref = home.arguments_outer_ref;
     if (home.arguments_alias_span != null and arguments_ref.isNone())
         std.debug.panic("object-super arguments wrapper lost its outer reference", .{});
@@ -684,6 +684,24 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
 /// the emitted object still records the lexical scope that contains the
 /// expression, so use its parent for the generated home wrapper.
 fn homeObjectParentScope(self: *Transformer, root: NodeIndex, fallback: ScopeId) ScopeId {
+    return findHomeObjectParentScope(self, root, fallback, false);
+}
+
+/// A function wrapper cannot be inserted under a lowered formal-parameter
+/// environment when its body owns that environment: doing so would make the
+/// environment a descendant of the wrapper that it already contains. Place
+/// only wrapped home-object expressions outside that formal scope. The
+/// assignment-temp path must keep the parameter scope as its exact owner.
+fn homeObjectWrapperParentScope(self: *Transformer, root: NodeIndex, fallback: ScopeId) ScopeId {
+    return findHomeObjectParentScope(self, root, fallback, true);
+}
+
+fn findHomeObjectParentScope(
+    self: *Transformer,
+    root: NodeIndex,
+    fallback: ScopeId,
+    escape_lowered_parameter_environment: bool,
+) ScopeId {
     if (!self.semantic_edit_enabled or root.isNone()) return fallback;
     var queue: std.ArrayList(NodeIndex) = .empty;
     defer queue.deinit(self.allocator);
@@ -699,7 +717,20 @@ fn homeObjectParentScope(self: *Transformer, root: NodeIndex, fallback: ScopeId)
         seen.put(self.allocator, raw, {}) catch return fallback;
         if (self.outputOwnedScope(node_idx)) |scope| {
             const parent = self.outputScopeParent(scope);
-            if (!parent.isNone()) return parent;
+            if (!parent.isNone()) {
+                // A lowered formal-parameter environment belongs to the
+                // method found below this object literal, not to the object
+                // expression itself. Put the wrapper in the lexical scope
+                // outside that method so reparenting its generated parameter
+                // and body scopes cannot make the wrapper its own ancestor.
+                if (escape_lowered_parameter_environment and
+                    self.loweredParameterEnvironmentOutputScope(parent) != null)
+                {
+                    const lexical_parent = self.outputScopeParent(parent);
+                    if (!lexical_parent.isNone()) return lexical_parent;
+                }
+                return parent;
+            }
         }
         var it = ast_walk.children(self.ast, self.ast.getNode(node_idx));
         while (it.next()) |child| queue.append(self.allocator, child) catch return fallback;
@@ -844,7 +875,9 @@ fn bindWrappedHomeParameter(
                     editor.symbolVisibleFrom(id, owned_scope)
                 else
                     false;
-                if (!visible) try self.reparentGeneratedScope(owned_scope, wrapper_scope);
+                if (!visible) {
+                    try self.reparentGeneratedScope(owned_scope, wrapper_scope);
+                }
             }
         }
 
