@@ -16319,7 +16319,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('object spread keeps ten unrelated Object-shadow helper shapes on reanalysis', () => {
+  test('object spread retains exact global helpers for safe fields and reanalyzes other class shapes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-spread-object-shadow-fallback-matrix-'));
     const entry = join(dir, 'entry.js');
     const cases = [
@@ -16347,6 +16347,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'static-field',
+        graph: 'retained',
+        shadowedExternal: 2,
         body: ['class C { static value = 7; }', 'console.log(copied.value, C.value);'],
       },
       {
@@ -16422,7 +16424,28 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const expectedGraph = 'graph' in fixture ? fixture.graph : 'reanalyzed';
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${expectedGraph}`,
+        );
+        if ('graph' in fixture && fixture.graph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected =
+              counter === 'shadowed_external_reference' ? fixture.shadowedExternal : 0;
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(expected);
+          }
+          expect(report).toMatch(/clean=0(?:\s|$)/);
+        }
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
@@ -26086,7 +26109,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 static-field lowering avoids module-wide Object veto and preserves class shadow fallback', () => {
+  test('ES5 static-field lowering retains the audited class-scope Object shadow', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-field-object-shadow-scope-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'out.cjs');
@@ -26105,7 +26128,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         label: 'Object in the static-field declaration scope',
-        graph: 'reanalyzed',
+        graph: 'retained',
         shadowedExternal: 1,
         source: [
           'function read(Object) {',
@@ -26173,25 +26196,157 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 class accessors with shadowed Object stay on the verified reanalysis path', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-accessor-object-shadow-fallback-'));
-    const input = join(dir, 'entry.js');
-    const output = join(dir, 'out.cjs');
+  test('ES5 static fields retain exact global Object across five shadow scopes and two modes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-field-object-shadow-matrix-'));
+    const input = join(dir, 'entry.ts');
+    const shared =
+      'var api = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };';
+    const fixtures = [
+      {
+        name: 'module',
+        shadowed: true,
+        source: [
+          shared,
+          'var Object = api;',
+          'class Handler { static value = 42; }',
+          'console.log(Handler.value, Object.marker);',
+        ].join('\n'),
+      },
+      {
+        name: 'parameter',
+        shadowed: true,
+        source: [
+          shared,
+          'function run(Object) { class Handler { static value = 42; } return Handler.value + " " + Object.marker; }',
+          'console.log(run(api));',
+        ].join('\n'),
+      },
+      {
+        name: 'local',
+        shadowed: true,
+        source: [
+          shared,
+          'function run() { var Object = api; class Handler { static value = 42; } return Handler.value + " " + Object.marker; }',
+          'console.log(run());',
+        ].join('\n'),
+      },
+      {
+        name: 'enclosing-parameter',
+        shadowed: true,
+        source: [
+          shared,
+          'function run(Object) { function make() { class Handler { static value = 42; } return Handler.value; } return make() + " " + Object.marker; }',
+          'console.log(run(api));',
+        ].join('\n'),
+      },
+      {
+        name: 'unrelated-function',
+        shadowed: false,
+        source: [
+          shared,
+          'function unrelated(Object) { return Object.marker; }',
+          'class Handler { static value = 42; }',
+          'console.log(Handler.value, unrelated(api));',
+        ].join('\n'),
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', flags: [] },
+      { name: 'minified', flags: ['--minify-identifiers'] },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(5);
+      expect(modes).toHaveLength(2);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, fixture.name + ': ' + native.stderr).toBe(0);
+        expect(native.stdout, fixture.name).toBe('42 source\n');
+        for (const mode of modes) {
+          const output = join(dir, fixture.name + '-' + mode.name + '.cjs');
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              '--target=es5',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, fixture.name + '/' + mode.name + ': ' + proc.stderr).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, proc.stderr).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected =
+              counter === 'shadowed_external_reference' ? (fixture.shadowed ? 1 : 0) : 0;
+            expect(
+              Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+              fixture.name + '/' + mode.name + ': ' + counter + ': ' + report,
+            ).toBe(expected);
+          }
+          expect(report).toMatch(fixture.shadowed ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        }
+      }
+
+      writeFileSync(input, fixtures[0]!.source);
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napi.outputFiles[0]!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe('42 source\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('static-field Object.defineProperty has ten compileable shadow mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-field-object-shadow-mutants-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'output.cjs');
     writeFileSync(
-      input,
+      entry,
       [
-        'function run(Object) {',
-        '  class Handler { get value() { return 42; } }',
-        '  return new Handler().value;',
-        '}',
-        'console.log(run({ defineProperty: function () { throw new Error("source Object was called"); } }));',
+        'var Object = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+        'class Handler { static value = 42; }',
+        'console.log(Handler.value, Object.marker);',
       ].join('\n'),
     );
 
     try {
       const proc = spawnSync(
         ZNTC_BIN,
-        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
         {
           cwd: dir,
           env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
@@ -26199,10 +26354,138 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
-      expect(proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+        expect(Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1), report).toBe(
+          expected,
+        );
+      }
+      expect(report).toMatch(/clean=0(?:\s|$)/);
+
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+      const globalBuiltinMatch = emitted.match(/Object\.defineProperty(?=\s*\()/);
+      const globalBuiltin = globalBuiltinMatch?.[0];
+      expect(sourceObjectName).toBeDefined();
+      expect(sourceObjectName).not.toBe('Object');
+      expect(globalBuiltin).toBe('Object.defineProperty');
+      const expected = '42 source\n';
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('42\n');
+      expect(actual.stdout).toBe(expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: local + '.defineProperty' },
+        { name: 'computed-double-quote', expression: local + '["defineProperty"]' },
+        { name: 'computed-single-quote', expression: local + "['defineProperty']" },
+        { name: 'parenthesized-member', expression: '(' + local + ').defineProperty' },
+        { name: 'parenthesized-computed-member', expression: '(' + local + ')["defineProperty"]' },
+        { name: 'comma-expression', expression: '(0, ' + local + '.defineProperty)' },
+        { name: 'bound-local', expression: local + '.defineProperty.bind(' + local + ')' },
+        { name: 'bound-null', expression: local + '.defineProperty.bind(null)' },
+        { name: 'optional-member', expression: local + '?.defineProperty' },
+        { name: 'computed-concatenated-key', expression: local + '["define" + "Property"]' },
+      ];
+      expect(mutations).toHaveLength(10);
+      const offset = globalBuiltinMatch?.index ?? -1;
+      expect(offset).not.toBe(-1);
+      for (const mutation of mutations) {
+        const mutated =
+          emitted.slice(0, offset) +
+          mutation.expression +
+          emitted.slice(offset + globalBuiltin!.length);
+        const mutantPath = join(dir, mutation.name + '.cjs');
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, mutation.name + ': ' + syntax.stderr).toBe(0);
+        const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          mutant.status !== 0 || mutant.stdout !== expected,
+          mutation.name + ' escaped the runtime oracle',
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 unsupported class members reanalyze while source-dependent static fields retain', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-accessor-object-shadow-fallback-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    const cases = [
+      {
+        name: 'accessor',
+        graph: 'reanalyzed',
+        declaration: 'class Handler { get value() { return 42; } }',
+        read: 'new Handler().value',
+        expected: '42\n',
+      },
+      {
+        name: 'instance-field',
+        graph: 'reanalyzed',
+        declaration: 'class Handler { value = 42; }',
+        read: 'new Handler().value',
+        expected: '42\n',
+      },
+      {
+        name: 'source-dependent-static-field',
+        graph: 'retained',
+        declaration: 'class Handler { static value = Object.marker; }',
+        read: 'Handler.value',
+        expected: 'source\n',
+      },
+      {
+        name: 'this-dependent-static-field',
+        graph: 'reanalyzed',
+        declaration: 'class Handler { static value = this; }',
+        read: 'Handler.value === Handler',
+        expected: 'true\n',
+      },
+      {
+        name: 'derived-static-field',
+        graph: 'reanalyzed',
+        declaration: 'class Base {} class Handler extends Base { static value = 42; }',
+        read: 'Handler.value',
+        expected: '42\n',
+      },
+    ] as const;
+
+    try {
+      for (const fixture of cases) {
+        writeFileSync(
+          input,
+          [
+            'function run(Object) {',
+            `  ${fixture.declaration}`,
+            `  return ${fixture.read};`,
+            '}',
+            'console.log(run({ marker: "source", defineProperty: function () { throw new Error("source Object was called"); } }));',
+          ].join('\n'),
+        );
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        expect(proc.stderr, fixture.name).toContain(`semantic_graph=${fixture.graph}`);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.expected);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -35862,7 +36145,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'source Object bindings remain separate from generated class-field globals',
         source:
           'var Object = { defineProperty() { throw new Error("captured generated global"); } }; class ShadowedStaticField { static value = 9; } console.log(ShadowedStaticField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
         shadowedExternal: true,
       },

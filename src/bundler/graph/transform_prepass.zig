@@ -5849,10 +5849,11 @@ fn isSimpleClass(
         const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_member_idx));
         if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
-        // Plain lowered methods use exact explicit-global Object refs. Keep
-        // field/accessor helper producers and extends helpers on reanalysis.
-        if (source_object_shadows_class and member.tag != .method_definition) return false;
         if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
+        // Plain methods and the static-field subset above use exact
+        // explicit-global Object refs. Keep other field/accessor producers
+        // and extends helpers on reanalysis.
+        if (source_object_shadows_class and member.tag != .method_definition) return false;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
