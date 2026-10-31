@@ -2146,14 +2146,30 @@ fn hasOnlySimpleExportedVarBindings(ast: *const ast_mod.Ast, declaration: ast_mo
     return true;
 }
 
-/// Export wrappers around top-level `var` declarations with simple bindings
-/// and named function declarations preserve their source bindings and
-/// references through this transform.
+/// Export wrappers around top-level `var`, module-scope `let`/`const` with
+/// simple bindings, and named function declarations preserve their source
+/// bindings and references through this transform.
 /// The enclosing prepass separately validates the module's export metadata;
 /// local export lists, re-exports, default exports, and export-all remain on
 /// their existing conservative paths.
 fn isRetainableTopLevelExportedDeclaration(
     ast: *const ast_mod.Ast,
+    raw_statement: usize,
+    statement: ast_mod.Node,
+    top_level_statements: *const std.DynamicBitSet,
+) bool {
+    return isRetainableTopLevelExportedDeclarationWithSemantic(
+        ast,
+        null,
+        raw_statement,
+        statement,
+        top_level_statements,
+    );
+}
+
+fn isRetainableTopLevelExportedDeclarationWithSemantic(
+    ast: *const ast_mod.Ast,
+    semantic: ?*const ModuleSemanticData,
     raw_statement: usize,
     statement: ast_mod.Node,
     top_level_statements: *const std.DynamicBitSet,
@@ -2173,7 +2189,9 @@ fn isRetainableTopLevelExportedDeclaration(
     const declaration = ast.nodes.items[@backingInt(export_decl.decl)];
     return switch (declaration.tag) {
         .variable_declaration => hasOnlySimpleExportedVarBindings(ast, declaration) and
-            ast.variableDeclarationKind(declaration) == .@"var",
+            (ast.variableDeclarationKind(declaration) == .@"var" or
+                (semantic != null and
+                    isRetainableProgramScopeLexicalDeclaration(ast, semantic.?, declaration))),
         .function_declaration => blk: {
             const function_extra = declaration.data.extra;
             if (function_extra > ast.extra_data.items.len or
@@ -2874,6 +2892,51 @@ fn isBoundSourceIdentifierBinding(
     node_idx: ast_mod.NodeIndex,
 ) bool {
     return hasValidSourceSymbol(ast, semantic, node_idx, .binding_identifier);
+}
+
+/// A program-scope `let`/`const` becomes `var` under block-scoping lowering,
+/// but its binding already belongs to the emitted module/global var scope.
+/// Keep this graph only for simple, exact source bindings in that same scope;
+/// Nested blocks, function bodies, patterns, and class-static scopes still need
+/// their independently audited scope-move paths. Loop heads have separate
+/// retained contracts and are not admitted by this predicate.
+fn isRetainableProgramScopeLexicalDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (declaration.tag != .variable_declaration) return false;
+    const declaration_kind = ast.variableDeclarationKind(declaration);
+    if (declaration_kind != .let and declaration_kind != .@"const") return false;
+    const extra = declaration.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3) return false;
+    const start = ast.extra_data.items[extra + 1];
+    const len = ast.extra_data.items[extra + 2];
+    if (len == 0 or start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return false;
+    for (ast.extra_data.items[start .. start + len]) |raw_declarator| {
+        if (raw_declarator >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator];
+        if (declarator.tag != .variable_declarator or declarator.data.extra >= ast.extra_data.items.len) return false;
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[declarator.data.extra]));
+        if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len or
+            ast.getNode(binding).tag != .binding_identifier or
+            !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
+        const binding_raw = @backingInt(binding);
+        const symbol_raw = semantic.symbol_ids[binding_raw] orelse return false;
+        if (symbol_raw >= semantic.symbols.items.len) return false;
+        const symbol = semantic.symbols.items[symbol_raw];
+        if (symbol.kind != .variable_let and symbol.kind != .variable_const) return false;
+        if (symbol.scope_id.isNone() or @backingInt(symbol.scope_id) >= semantic.scopes.len or
+            @backingInt(symbol.scope_id) >= semantic.scope_maps.len) return false;
+        const scope_index = @backingInt(symbol.scope_id);
+        const scope_kind = semantic.scopes[scope_index].kind;
+        if (scope_kind != .module and scope_kind != .global) return false;
+        // The source spelling must still resolve to this exact row in the
+        // owning scope map. Escaped/aliased spellings conservatively fall back.
+        const source_name = ast.getText(symbol.name);
+        if (semantic.scope_maps[scope_index].get(source_name) != symbol_raw) return false;
+    }
+    return true;
 }
 
 fn isBoundSourceIdentifierAssignmentTarget(
@@ -8771,6 +8834,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_lowered_optional_catch_binding = false;
+    var found_lowered_program_scope_lexical = false;
     var found_lowered_new_target = false;
     var found_safe_template_literal = false;
     var found_lowered_optional_chaining = false;
@@ -8826,6 +8890,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
+                const retained_program_scope_lexical = options.unsupported.block_scoping and
+                    kind != .@"var" and
+                    isRetainableProgramScopeLexicalDeclaration(ast, semantic, node);
                 var retained_using_declaration = false;
                 if (options.unsupported.using and kind.isUsing()) {
                     // Synchronous using declarations directly owned by a
@@ -8852,7 +8919,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     !lowered_for_in_heads.contains(raw_idx) and
                     !lowered_for_of_heads.contains(raw_idx) and
                     !lowered_for_await_heads.contains(raw_idx) and
-                    !lowered_classic_for_heads.contains(raw_idx)) return false;
+                    !lowered_classic_for_heads.contains(raw_idx) and
+                    !retained_program_scope_lexical) return false;
+                if (retained_program_scope_lexical) found_lowered_program_scope_lexical = true;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -9426,8 +9495,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (!options.jsx_transform or options.unsupported.spread) return false;
             },
             .export_named_declaration => {
-                if (!isRetainableTopLevelExportedDeclaration(
+                if (!isRetainableTopLevelExportedDeclarationWithSemantic(
                     ast,
+                    semantic,
                     raw_idx,
                     node,
                     &top_level_statements,
@@ -9448,6 +9518,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_generator or
         found_lowered_async_generator or
         found_lowered_async_function or
+        found_lowered_program_scope_lexical or
         found_lowered_static_block or
         found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
@@ -22096,8 +22167,8 @@ test "plain imports with direct eval remain on full semantic analysis" {
     try std.testing.expect(!fullPrepassAuditedGraphAdmissionForTest(&fixture));
 }
 
-test "regex literal graph neutrality does not admit hostile surrounding syntax" {
-    const Control = struct { source: []const u8, is_module: bool };
+test "regex literal graph neutrality admits only independently audited surrounding syntax" {
+    const Control = struct { source: []const u8, is_module: bool, expected: bool = false };
     const controls = [_]Control{
         .{ .source = "eval(\"var hidden=1\");var r=/./s;", .is_module = false },
         .{ .source = "function f(){eval(\"var hidden=1\");return /./s.test(\"x\")}", .is_module = false },
@@ -22107,11 +22178,11 @@ test "regex literal graph neutrality does not admit hostile surrounding syntax" 
         .{ .source = "class C{#method(){}} var r=/./s;", .is_module = true },
         .{ .source = "async function* values(){yield /./s;await 1}", .is_module = true },
         .{ .source = "var value=fn?.(/./s);", .is_module = true },
-        .{ .source = "let value=1;console.log(/./s.test(\"x\"),value);", .is_module = true },
+        .{ .source = "let value=1;console.log(/./s.test(\"x\"),value);", .is_module = true, .expected = true },
         .{ .source = "function run(value=1){return /./s.test(value)}", .is_module = true },
         .{ .source = "export default function run(value){return /./s.test(value)}", .is_module = true },
-        .{ .source = "export const lineBreak=/./s;", .is_module = true },
-        .{ .source = "export let lineBreak=/./s;", .is_module = true },
+        .{ .source = "export const lineBreak=/./s;", .is_module = true, .expected = true },
+        .{ .source = "export let lineBreak=/./s;", .is_module = true, .expected = true },
         .{ .source = "export var {lineBreak}={lineBreak:/./s};", .is_module = true },
         .{ .source = "export * from './dep.js';var r=/./s;", .is_module = true },
         .{ .source = "var r=/./s;export {r};", .is_module = true },
@@ -22120,10 +22191,12 @@ test "regex literal graph neutrality does not admit hostile surrounding syntax" 
     for (controls, 0..) |control, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
-        const f = try runtimeHelperReanalysisTestFixtureForSource(arena.allocator(), control.source, control.is_module);
+        var f = try runtimeHelperReanalysisTestFixtureForSource(arena.allocator(), control.source, control.is_module);
         const admitted = fullPrepassAuditedGraphAdmissionForTest(&f);
-        if (admitted) std.debug.print("hostile regex source unexpectedly admitted index={d} source={s}\n", .{ index, control.source });
-        try std.testing.expect(!admitted);
+        if (admitted != control.expected)
+            std.debug.print("regex surrounding syntax mismatch index={d} expected={any} actual={any} source={s}\n", .{ index, control.expected, admitted, control.source });
+        try std.testing.expectEqual(control.expected, admitted);
+        if (control.expected) try expectRegexTransformPreservesExactSemanticIds(arena.allocator(), &f);
     }
 }
 
@@ -22635,4 +22708,60 @@ test "ES5 Flow retains ten static getter super graph variants" {
     try std.testing.expect(profile.count(.graph_discover_pm_semantic) != 0);
     try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
     try std.testing.expect(graph.findModuleByPath(entry).?.transform_cache != null);
+}
+
+test "ES5 program-scope lexical declarations alone admit the retained graph" {
+    const Cases = struct {
+        source: []const u8,
+        expected: bool,
+    };
+    const cases = [_]Cases{
+        .{ .source = "let value = 1;", .expected = true },
+        .{ .source = "const first = 1, second = 2;", .expected = true },
+        .{ .source = "export let value = 1;", .expected = true },
+        .{ .source = "export const first = 1, second = 2;", .expected = true },
+        .{ .source = "{ let value = 1; }", .expected = false },
+        .{ .source = "function read() { const value = 1; return value; }", .expected = false },
+        .{ .source = "for (let value = 0; value < 1; value++) {}", .expected = true },
+        .{ .source = "class Read { static { let value = 1; } }", .expected = false },
+        .{ .source = "let { value } = { value: 1 };", .expected = false },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const fixture = try runtimeHelperReanalysisTestFixture(arena.allocator(), case.source);
+        var allow_get = false;
+        var allow_set = false;
+        const retained = canRetainGraphForAuditedSyntaxSubset(
+            arena.allocator(),
+            &fixture.ast,
+            &fixture.semantic,
+            .{
+                .strip_types = true,
+                .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+            },
+            &allow_get,
+            &allow_set,
+            null,
+            null,
+        );
+        if (retained != case.expected) {
+            std.debug.print("program lexical gate mismatch source={s} retained={any}\n", .{ case.source, retained });
+            for (fixture.semantic.symbols.items, 0..) |symbol, symbol_index| {
+                const scope_index = @backingInt(symbol.scope_id);
+                std.debug.print("  symbol={d} name={s} kind={s} scope={d}:{s} map={any}\n", .{
+                    symbol_index,
+                    fixture.ast.getText(symbol.name),
+                    @tagName(symbol.kind),
+                    scope_index,
+                    if (scope_index < fixture.semantic.scopes.len) @tagName(fixture.semantic.scopes[scope_index].kind) else "invalid",
+                    if (scope_index < fixture.semantic.scope_maps.len)
+                        fixture.semantic.scope_maps[scope_index].get(fixture.ast.getText(symbol.name))
+                    else
+                        null,
+                });
+            }
+        }
+        try std.testing.expectEqual(case.expected, retained);
+    }
 }

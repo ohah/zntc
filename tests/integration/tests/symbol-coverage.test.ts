@@ -42653,3 +42653,226 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 600_000);
 });
+
+describe('ES5 program-scope lexical declarations retain the bundler graph (#6193)', () => {
+  test('top-level let/const keep exact graph identities and reject ten reference mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-program-lexical-retained-'));
+    const input = join(dir, 'entry.mjs');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'output.cjs');
+    const minifiedOutput = join(dir, 'minified.cjs');
+    const exportedInput = join(dir, 'exported.mjs');
+    const exportedNative = join(dir, 'exported-oracle.mjs');
+    const exportedOutput = join(dir, 'exported.cjs');
+    const names = Array.from({ length: 10 }, (_, index) => `value${index}`);
+    const expected =
+      Array.from({ length: 10 }, (_, index) => (index === 0 ? 110 : index + 10)).join(' ') +
+      ' true\n';
+    const source = [
+      ...names.map(
+        (name, index) => `${index % 2 === 0 ? 'let' : 'const'} ${name} = ${index + 10};`,
+      ),
+      'value0 += 100;',
+      `console.log(${names.join(', ')}, /./s.test("\\n"));`,
+    ].join('\n');
+    try {
+      writeFileSync(input, source);
+      writeFileSync(nativeInput, source);
+      const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const retained = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          minifiedOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedMode = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const report = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, retained.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const minified = spawnSync('node', [minifiedOutput], { encoding: 'utf8' });
+      expect(minified.status, minified.stderr).toBe(0);
+      expect(minified.stdout).toBe(expected);
+
+      const exportedSource =
+        'export let live = 3; export const fixed = 4; live += 2; console.log(live, fixed);';
+      writeFileSync(exportedInput, exportedSource);
+      writeFileSync(exportedNative, exportedSource);
+      const exportedOracle = spawnSync('node', [exportedNative], { encoding: 'utf8' });
+      expect(exportedOracle.status, exportedOracle.stderr).toBe(0);
+      expect(exportedOracle.stdout).toBe('5 4\n');
+      const exported = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          exportedInput,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          exportedOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(exported.status, exported.stderr).toBe(0);
+      expect(exported.stderr).toContain('semantic_graph=retained');
+      const exportedReport = (exported.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(exportedReport, exported.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(exportedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${exportedReport}`,
+        ).toBe(0);
+      }
+      expect(exportedReport).toMatch(/clean=1(?:\s|$)/);
+      const exportedActual = spawnSync('node', [exportedOutput], { encoding: 'utf8' });
+      expect(exportedActual.status, exportedActual.stderr).toBe(0);
+      expect(exportedActual.stdout).toBe(exportedOracle.stdout);
+
+      const readable = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(readable.status, readable.stderr).toBe(0);
+      expect(readable.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const logStart = emitted.indexOf('console.log(');
+      expect(logStart).toBeGreaterThanOrEqual(0);
+      const logEnd = emitted.indexOf(');', logStart) + 1;
+      expect(logEnd).toBeGreaterThan(logStart);
+      const logCall = emitted.slice(logStart, logEnd + 1);
+      expect(names.every((name) => logCall.includes(name))).toBe(true);
+
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const replacement = names[(index + 1) % names.length];
+        const token = new RegExp(`\\b${name}\\b`);
+        expect(logCall.match(token), name).toHaveLength(1);
+        const mutatedCall = logCall.replace(token, replacement);
+        const mutated = emitted.slice(0, logStart) + mutatedCall + emitted.slice(logEnd + 1);
+        const mutantPath = join(dir, `reference-${index}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${name} -> ${replacement}`).not.toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('ten nested or non-program lexical scopes continue to use semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-program-lexical-reanalysis-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'output.cjs');
+    const fixtures = [
+      { name: 'plain-block-let', source: '{ let value = 1; console.log(value); }', stdout: '1\n' },
+      {
+        name: 'plain-block-const',
+        source: '{ const value = 2; console.log(value); }',
+        stdout: '2\n',
+      },
+      {
+        name: 'if-block',
+        source: 'if (true) { let value = 3; console.log(value); }',
+        stdout: '3\n',
+      },
+      {
+        name: 'while-block',
+        source: 'while (true) { const value = 4; console.log(value); break; }',
+        stdout: '4\n',
+      },
+      {
+        name: 'switch-scope',
+        source: 'switch (1) { case 1: let value = 5; console.log(value); break; }',
+        stdout: '5\n',
+      },
+      {
+        name: 'function-scope',
+        source: 'function read() { let value = 6; return value; } console.log(read());',
+        stdout: '6\n',
+      },
+      {
+        name: 'arrow-function-scope',
+        source: 'const read = () => { let value = 7; return value; }; console.log(read());',
+        stdout: '7\n',
+      },
+      {
+        name: 'captured-block-scope',
+        source: '{ let value = 8; const read = () => value; console.log(read()); }',
+        stdout: '8\n',
+      },
+      {
+        name: 'catch-body-scope',
+        source: 'try { throw 9; } catch (error) { let value = error; console.log(value); }',
+        stdout: '9\n',
+      },
+      {
+        name: 'class-static-scope',
+        source: 'class Read { static { let value = 10; console.log(value); } }',
+        stdout: '10\n',
+      },
+    ] as const;
+    try {
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.stdout);
+
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+        );
+        expect(bundled.status, `${fixture.name}: ${bundled.stderr}`).toBe(0);
+        const mode = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${fixture.name}: ${bundled.stderr}`).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
