@@ -2925,8 +2925,15 @@ fn isRetainableSynchronousFunctionScope(
                 ast.extra_data.items.len - extra <= flags_slot) break :blk false;
             break :blk (ast.extra_data.items[extra + flags_slot] & ast_mod.ArrowFlags.is_async) == 0;
         },
-        // Methods may be replaced by class/object lowerers; admit them only
-        // through their own owner-specific retained-graph contracts.
+        .method_definition => blk: {
+            const extra: usize = owner.data.extra;
+            const flags_slot: usize = ast_mod.MethodExtra.flags;
+            if (extra >= ast.extra_data.items.len or
+                ast.extra_data.items.len - extra <= flags_slot) break :blk false;
+            const flags = ast.extra_data.items[extra + flags_slot];
+            const allowed_flags = @as(u32, ast_mod.MethodFlags.is_static);
+            break :blk (flags & ~allowed_flags) == 0;
+        },
         else => false,
     };
 }
@@ -22761,6 +22768,17 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "export const first = 1, second = 2;", .expected = true },
         .{ .source = "function read() { let value = 1; return value; }", .expected = true },
         .{ .source = "const read = () => { const value = 2; return value; };", .expected = true },
+        .{ .source = "const value = { read() { let local = 1; return local; } };", .expected = true },
+        .{ .source = "class Read { read() { const local = 1; return local; } }", .expected = true },
+        .{ .source = "class Read { static read() { let local = 1; return local; } }", .expected = true },
+        .{ .source = "class Read { constructor() { let local = 1; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { read({ input }) { const local = input; return local; } }", .expected = true },
+        .{ .source = "class Read { async read() { let local = 1; return local; } }", .expected = false },
+        .{ .source = "class Read { *read() { let local = 1; yield local; } }", .expected = false },
+        .{ .source = "const value = { async read() { let local = 1; return local; } };", .expected = false },
+        .{ .source = "const value = { *read() { let local = 1; yield local; } };", .expected = false },
+        .{ .source = "const value = { get read() { let local = 1; return local; } };", .expected = false },
+        .{ .source = "const value = { set read(input) { let local = input; } };", .expected = false },
         .{ .source = "async function read() { let value = 3; return value; }", .expected = false },
         .{ .source = "function* read() { let value = 4; yield value; }", .expected = false },
         .{ .source = "var values = { async *read() { const value = 5; yield value; } };", .expected = false },
@@ -22808,4 +22826,37 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         }
         try std.testing.expectEqual(case.expected, retained);
     }
+
+    var malformed_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer malformed_arena.deinit();
+    var malformed_fixture = try runtimeHelperReanalysisTestFixture(
+        malformed_arena.allocator(),
+        "class Read { read() { const local = 1; return local; } }",
+    );
+    var changed_method_flags = false;
+    for (malformed_fixture.ast.nodes.items) |node| {
+        if (node.tag != .method_definition) continue;
+        const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
+        if (flags_at >= malformed_fixture.ast.extra_data.items.len) break;
+        malformed_fixture.ast.extra_data.items[flags_at] = 0x80;
+        changed_method_flags = true;
+        break;
+    }
+    try std.testing.expect(changed_method_flags);
+    var allow_get = false;
+    var allow_set = false;
+    const malformed_retained = canRetainGraphForAuditedSyntaxSubset(
+        malformed_arena.allocator(),
+        &malformed_fixture.ast,
+        &malformed_fixture.semantic,
+        .{
+            .strip_types = true,
+            .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        },
+        &allow_get,
+        &allow_set,
+        null,
+        null,
+    );
+    try std.testing.expect(!malformed_retained);
 }
