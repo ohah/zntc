@@ -8380,8 +8380,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .super_expression => {
                 // Object-method lowering records the generated home-object
-                // binding and reads in the edited semantic graph.
-                if (options.unsupported.object_extensions and source_binds_object) return false;
+                // binding and exact Object.getPrototypeOf global reference
+                // in the edited semantic graph. Linker shadow resolution is
+                // scoped to that explicit reference.
             },
             .object_property => {
                 // Shorthand lowering duplicates the key as property text and
