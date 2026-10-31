@@ -7701,6 +7701,7 @@ fn awaitBelongsToRetainableAsyncFunction(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
     retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
+    retained_async_generator_methods: *const std.AutoHashMapUnmanaged(u32, void),
     await_node: u32,
 ) bool {
     var current = parents.get(await_node) orelse return false;
@@ -7713,8 +7714,9 @@ fn awaitBelongsToRetainableAsyncFunction(
             .function_expression,
             .function,
             .arrow_function_expression,
-            .method_definition,
             => return retained_async_functions.contains(current),
+            .method_definition => return retained_async_functions.contains(current) or
+                retained_async_generator_methods.contains(current),
             else => current = parents.get(current) orelse return false,
         }
     }
@@ -8755,6 +8757,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         ast,
                         &source_parent_map,
                         &retained_async_functions,
+                        &retained_async_generator_methods,
                         @intCast(raw_idx),
                     )) return false;
                     found_lowered_async_function = true;
@@ -14234,6 +14237,22 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
     );
     try std.testing.expect(static_async_generator_method.graph_gate);
 
+    const async_generator_await_method = try staticBlockPrepassDecisionForTest(
+        "class Box { async *items() { yield await Promise.resolve(1); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(async_generator_await_method.graph_gate);
+
+    const shadowed_async_generator_await_method = try staticBlockPrepassDecisionForTest(
+        "var Object = {}; class Box { static async *items() { yield await Promise.resolve(Object.name); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(shadowed_async_generator_await_method.graph_gate);
+
     const nested_function_arguments = try staticBlockPrepassDecisionForTest(
         "class Box { async *items() { var read = function () { return arguments[0]; }; yield read('nested'); } }",
         ".js",
@@ -14241,6 +14260,14 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         .none,
     );
     try std.testing.expect(nested_function_arguments.graph_gate);
+
+    for ([_][]const u8{
+        "class Box { async *items() { var nested = async () => await Promise.resolve(1); yield await nested(); } }",
+        "class Box { async *items() { var nested = async function () { return await Promise.resolve(1); }; yield await nested(); } }",
+    }) |source| {
+        const nested_async_await = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(nested_async_await.graph_gate);
+    }
 
     for ([_]TransformOptions.compat.ESTarget{ .es2015, .es2017 }) |target| {
         var partial_async_generator_downlevel = options;
@@ -14257,11 +14284,9 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
     const rejected_sources = [_][]const u8{
         "var Object = {}; class Base { read() {} } class Box extends Base { *items() { yield super.read(); } }",
         "var Object = {}; var key = 'items'; class Box { *[key]() { yield 1; } }",
-        "var Object = {}; class Box { async *items() { yield await Promise.resolve(1); } }",
         "var Object = {}; class Box { *items() { eval('0'); yield 1; } }",
         "class Base {} class Box extends Base { *items() { yield 1; } }",
         "var key = 'items'; class Box { *[key]() { yield 1; } }",
-        "class Box { async *items() { yield await Promise.resolve(1); } }",
         "class Box { *items() { eval('0'); yield 1; } }",
         "class Base {} class Box extends Base { async *items() { yield 1; } }",
         "var key = 'items'; class Box { async *[key]() { yield 1; } }",
@@ -14270,6 +14295,8 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { async *items() { eval('0'); yield 1; } }",
         "class Box { @decorator async *items() { yield 1; } }",
         "class Box { async *items(value = arguments) { yield value; } }",
+        "class Box { async *items() { var nested = async () => { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
+        "class Box { async *items() { var nested = async function () { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
     };
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
