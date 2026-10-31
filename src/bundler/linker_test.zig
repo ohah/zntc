@@ -8782,9 +8782,9 @@ test "self namespace two exports real disk receipt allocation failures preserve 
     std.debug.print("self-two-warm actualReceiptSymbols=3 OOM failures={d} retry=true\n", .{failures});
 }
 
-test "generated class Object globals pinned descriptor families preserve eight native outcomes" {
+test "generated class Object globals pinned descriptor families preserve eight native families and descriptor invariants" {
     const a = std.testing.allocator;
-    const cases = [_]struct { name: []const u8, source: []const u8 }{
+    const cases = [_]struct { name: []const u8, source: []const u8, expected: []const u8 = "[7,17,17]\n" }{
         .{ .name = "instance-method", .source = "function run(Object){class C{value(){return 7}};return[new C().value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
         .{ .name = "static-getter", .source = "function run(Object){class C{static get value(){return 7}};return[C.value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
         .{ .name = "instance-getter", .source = "function run(Object){class C{get value(){return 7}};return[new C().value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
@@ -8793,6 +8793,10 @@ test "generated class Object globals pinned descriptor families preserve eight n
         .{ .name = "string-key", .source = "function run(Object){class C{static 'value'(){return 7}};return[C.value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
         .{ .name = "async-static", .source = "async function run(Object){class C{static async value(){return 7}};return[await C.value(),eval(\"Object\"),Object]}run(17).then(v=>console.log(JSON.stringify(v)));" },
         .{ .name = "generator-static", .source = "function run(Object){class C{static *value(){yield 7}};return[C.value().next().value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "computed-key-once", .source = "function run(Object){var calls=0;function key(){calls++;return 'value'}class C{static [key()](){return 7}}return[C.value(),calls,eval('Object'),Object]}console.log(JSON.stringify(run(17)));", .expected = "[7,1,17,17]\n" },
+        .{ .name = "method-descriptor-flags", .source = "function run(Object){class C{value(){return 7}}var d=globalThis.Object.getOwnPropertyDescriptor(C.prototype,'value');return[new C().value(),d.enumerable,d.configurable,d.writable,eval('Object'),Object]}console.log(JSON.stringify(run(17)));", .expected = "[7,false,true,true,17,17]\n" },
+        .{ .name = "accessor-descriptor-flags", .source = "function run(Object){class C{get value(){return this.n||0}set value(v){this.n=v}}var c=new C;c.value=7;var d=globalThis.Object.getOwnPropertyDescriptor(C.prototype,'value');return[c.value,d.enumerable,d.configurable,typeof d.get,typeof d.set,eval('Object'),Object]}console.log(JSON.stringify(run(17)));", .expected = "[7,false,true,\"function\",\"function\",17,17]\n" },
+        .{ .name = "static-get-set", .source = "function run(Object){class C{static get value(){return this.n||0}static set value(v){this.n=v}}C.value=7;return[C.value,eval('Object'),Object]}console.log(JSON.stringify(run(17)));" },
     };
     var runtime_failures: usize = 0;
     var missing_providers: usize = 0;
@@ -8806,7 +8810,7 @@ test "generated class Object globals pinned descriptor families preserve eight n
         defer a.free(native.stdout);
         defer a.free(native.stderr);
         try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
-        try std.testing.expectEqualStrings("[7,17,17]\n", native.stdout);
+        try std.testing.expectEqualStrings(case.expected, native.stdout);
         try writeFile(tmp.dir, "entry.mjs", case.source);
         var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
             .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -8855,6 +8859,57 @@ test "generated class Object globals pinned descriptor families preserve eight n
                 try parents.put(a, @backingInt(child), raw);
             };
         }
+        var helper_imports: usize = 0;
+        var helper_calls: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (!binding.is_helper or !std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
+            const anchor = binding.local_symbol_node orelse return error.MissingFamilyHelperAnchor;
+            try std.testing.expect(@backingInt(anchor) < sem.symbol_ids.len);
+            const helper_sid = sem.symbol_ids[@backingInt(anchor)] orelse return error.MissingFamilyHelperSid;
+            try std.testing.expectEqual(binding.local_symbol.semanticIndex().?, helper_sid);
+            const resolved = result.linker.getResolvedBinding(module.index.toU32(), binding.local_span) orelse return error.MissingFamilyResolvedHelper;
+            const provider = result.graph.getModule(resolved.canonical.module_index) orelse return error.MissingFamilyResolvedProvider;
+            try std.testing.expectEqualStrings(@import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property", provider.path);
+            const exported = provider.findExportBinding(resolved.canonical.export_name) orelse return error.MissingFamilyHelperExport;
+            const export_anchor = exported.local_symbol_node orelse return error.MissingFamilyExportAnchor;
+            const provider_sem = provider.semantic.?;
+            try std.testing.expect(@backingInt(export_anchor) < provider_sem.symbol_ids.len);
+            try std.testing.expectEqual(provider.findLocalExportSemanticIndex("__classDefineProperty"), provider_sem.symbol_ids[@backingInt(export_anchor)]);
+            for (reachable) |raw| {
+                const node = ast.nodes.items[raw];
+                if (node.tag != .call_expression or ast.extra_data.items[node.data.extra + 2] != 3) continue;
+                const callee = ast.extra_data.items[node.data.extra];
+                if (callee >= sem.symbol_ids.len or sem.symbol_ids[callee] != @as(?u32, helper_sid)) continue;
+                var cursor = callee;
+                var hops: usize = 0;
+                const use_scope = while (hops < ast.nodes.items.len) : (hops += 1) {
+                    if (sem.scope_owner_map.get(cursor)) |scope| break scope;
+                    cursor = parents.get(cursor) orelse return error.MissingFamilyHelperParent;
+                } else return error.CyclicFamilyHelperParents;
+                var refs: usize = 0;
+                for (sem.references) |reference| if (@backingInt(reference.node_index) == callee) {
+                    try std.testing.expectEqual(helper_sid, @backingInt(reference.symbol_id));
+                    try std.testing.expectEqual(use_scope, @backingInt(reference.scope_id));
+                    try std.testing.expect(reference.flags.read and !reference.flags.write);
+                    refs += 1;
+                };
+                try std.testing.expectEqual(@as(usize, 1), refs);
+                var ancestor = use_scope;
+                var scope_hops: usize = 0;
+                while (ancestor != parameter_scope) : (scope_hops += 1) {
+                    try std.testing.expect(scope_hops < sem.scopes.len);
+                    const parent = sem.scopes[ancestor].parent;
+                    try std.testing.expect(!parent.isNone());
+                    ancestor = @backingInt(parent);
+                }
+                std.debug.print("PINNED_FAMILY_HELPER name={s} callee={d} SID={d} useScope={d} parameterScope={d} actualProvider={d}\n", .{ case.name, callee, helper_sid, use_scope, parameter_scope, provider.index.toU32() });
+                helper_calls += 1;
+            }
+            helper_imports += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), helper_imports);
+        try std.testing.expectEqual(@as(usize, 1), providers);
+        try std.testing.expect(helper_calls > 0);
         var descriptor_calls: usize = 0;
         for (reachable) |raw| {
             const node = ast.nodes.items[raw];
@@ -8876,6 +8931,7 @@ test "generated class Object globals pinned descriptor families preserve eight n
             std.debug.print("PINNED_FAMILY_DESCRIPTOR name={s} receiver={d} receiverSID={any} parameterNode={d} parameterSID={d} parameterScope={d} useScope={d} providers={d}\n", .{ case.name, receiver, sem.symbol_ids[receiver], parameter_node, parameter_sid, parameter_scope, use_scope, providers });
             descriptor_calls += 1;
         }
+        try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
         const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
         defer output.deinit(a);
         try writeFile(tmp.dir, "output.cjs", output.output);
@@ -8891,4 +8947,32 @@ test "generated class Object globals pinned descriptor families preserve eight n
     std.debug.print("PINNED_FAMILY_TOTAL sources={d} runtimeFailures={d} missingProviders={d}\n", .{ cases.len, runtime_failures, missing_providers });
     try std.testing.expectEqual(@as(usize, 0), runtime_failures);
     try std.testing.expectEqual(@as(usize, 0), missing_providers);
+}
+
+test "generated class Object globals keep unmeasured async generator and constructor roles outside the family" {
+    const a = std.testing.allocator;
+    const sources = [_][]const u8{
+        "function run(Object){class C{static async *value(){yield 7}}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{async value(){return 7}}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{*value(){yield 7}}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{constructor(){this.n=7}}return[new C().n,eval('Object'),Object]}run(17);",
+    };
+    for (sources, 0..) |source, index| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", source);
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        }, false);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        var providers: usize = 0;
+        var modules = result.graph.modulesIterator();
+        while (modules.next()) |provider| {
+            if (std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property")) providers += 1;
+        }
+        std.debug.print("PINNED_FAMILY_EXCLUDED index={d} providers={d}\n", .{ index, providers });
+        try std.testing.expectEqual(@as(usize, 0), providers);
+    }
 }

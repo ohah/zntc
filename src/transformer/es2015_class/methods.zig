@@ -427,12 +427,29 @@ pub fn Methods(comptime Transformer: type) type {
 
         /// A non-root parameter pinned by direct eval cannot be renamed. Only
         /// use the class runtime's outer provider when its Object is unshadowed.
-        fn needsPinnedClassDescriptorHelper(self: *Transformer, info: MethodInfo, use_scope: ScopeId) bool {
-            if (!info.is_static or info.source_member_idx.isNone()) return false;
-            const source = self.ast.getNode(info.source_member_idx);
-            if (source.tag != .method_definition or self.readU32(source.data.extra, MethodExtra.flags) != ast_mod.MethodFlags.is_static) return false;
+        fn needsPinnedClassDescriptorHelper(self: *Transformer, source_member_idx: NodeIndex, use_scope: ScopeId) bool {
+            if (source_member_idx.isNone() or @backingInt(source_member_idx) >= self.parser_node_count) return false;
+            const source = self.ast.getNode(source_member_idx);
+            if (source.tag != .method_definition) return false;
+            const flags = self.readU32(source.data.extra, MethodExtra.flags);
+            const role = flags & ~ast_mod.MethodFlags.is_static;
+            switch (role) {
+                0, ast_mod.MethodFlags.is_getter, ast_mod.MethodFlags.is_setter => {},
+                ast_mod.MethodFlags.is_async, ast_mod.MethodFlags.is_generator => {
+                    if ((flags & ast_mod.MethodFlags.is_static) == 0) return false;
+                },
+                // Async generators, private/generated accessors, and TS-only
+                // member roles are outside this measured descriptor family.
+                else => return false,
+            }
             const key = self.ast.getNode(self.readNodeIdx(source.data.extra, MethodExtra.key));
-            if (key.tag != .identifier_reference and key.tag != .binding_identifier) return false;
+            switch (key.tag) {
+                .identifier_reference, .binding_identifier, .string_literal, .computed_property_key => {},
+                else => return false,
+            }
+            if ((flags & ast_mod.MethodFlags.is_static) == 0 and role == 0 and
+                (key.tag == .identifier_reference or key.tag == .binding_identifier) and
+                std.mem.eql(u8, self.ast.getText(key.data.string_ref), "constructor")) return false;
             const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
             const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
             const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -443,7 +460,7 @@ pub fn Methods(comptime Transformer: type) type {
             if (scope.isNone()) {
                 // The non-editing path has no generated IIFE scope yet. Its
                 // actual source method owner gives the class-definition scope.
-                const method_scope = self.scope_owner_map.get(@backingInt(info.source_member_idx)) orelse return false;
+                const method_scope = self.scope_owner_map.get(@backingInt(source_member_idx)) orelse return false;
                 if (method_scope >= scopes.len or scopes[method_scope].kind != .function) return false;
                 const class_scope = scopes[method_scope].parent;
                 if (class_scope.isNone() or @backingInt(class_scope) >= scopes.len or scopes[@backingInt(class_scope)].kind != .class_body) return false;
@@ -466,6 +483,16 @@ pub fn Methods(comptime Transformer: type) type {
                 scope = scopes[raw].parent;
             }
             return false;
+        }
+
+        fn makePinnedClassDescriptorCallee(self: *Transformer, source_member_idx: NodeIndex, reference_scope: ScopeId) Transformer.Error!?NodeIndex {
+            if (!needsPinnedClassDescriptorHelper(self, source_member_idx, reference_scope)) return null;
+            self.runtime_helpers.class_call_check = true;
+            self.class_define_property_used = true;
+            const previous = self.current_scope;
+            if (!reference_scope.isNone()) self.current_scope = reference_scope;
+            defer self.current_scope = previous;
+            return try es_helpers.makeRuntimeHelperRef(self, "__classDefineProperty");
         }
 
         /// method → Object.defineProperty(ClassName.prototype, "method", { configurable: true, writable: true, value: function() {} })
@@ -493,17 +520,10 @@ pub fn Methods(comptime Transformer: type) type {
             const obj_str_span = try self.ast.addString("Object");
             const dp_str_span = try self.ast.addString("defineProperty");
             const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
-            const call = if (needsPinnedClassDescriptorHelper(self, info, reference_scope)) blk: {
-                self.runtime_helpers.class_call_check = true;
-                self.class_define_property_used = true;
-                const helper_ref = ref: {
-                    const previous = self.current_scope;
-                    if (!reference_scope.isNone()) self.current_scope = reference_scope;
-                    defer self.current_scope = previous;
-                    break :ref try es_helpers.makeRuntimeHelperRef(self, "__classDefineProperty");
-                };
-                break :blk try es_helpers.makeCallExpr(self, helper_ref, &.{ target, key_arg, desc_obj }, span);
-            } else try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_arg, desc_obj, span);
+            const call = if (try makePinnedClassDescriptorCallee(self, info.source_member_idx, reference_scope)) |helper_ref|
+                try es_helpers.makeCallExpr(self, helper_ref, &.{ target, key_arg, desc_obj }, span)
+            else
+                try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_arg, desc_obj, span);
             return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = info.member_span,
@@ -630,7 +650,10 @@ pub fn Methods(comptime Transformer: type) type {
                     try buildFreshPrototypeRef(self, class_name_span, span, reference_scope);
 
                 const key_str = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
-                const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_str, desc_obj, span);
+                const call = if (try makePinnedClassDescriptorCallee(self, info.source_member_idx, reference_scope)) |helper_ref|
+                    try es_helpers.makeCallExpr(self, helper_ref, &.{ target, key_str, desc_obj }, span)
+                else
+                    try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_str, desc_obj, span);
                 const stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
                     .span = info.member_span,
