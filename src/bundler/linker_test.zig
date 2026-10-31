@@ -8113,11 +8113,12 @@ fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
             try std.testing.expect(provider_binding_raw < provider_sem.symbol_ids.len);
             const provider_sid = provider_sem.symbol_ids[provider_binding_raw] orelse return error.MissingProviderExportSid;
             var external_reads: usize = 0;
-            for (provider_ast.nodes.items, 0..) |node, function_raw| {
-                if (node.tag != .function_declaration) continue;
+            for (provider_ast.nodes.items) |node| {
+                if (node.tag != .variable_declarator) continue;
                 const declaration_name = provider_ast.extra_data.items[node.data.extra];
                 if (declaration_name >= provider_sem.symbol_ids.len or provider_sem.symbol_ids[declaration_name] != @as(?u32, provider_sid)) continue;
-                const provider_function = node;
+                const function_raw = provider_ast.extra_data.items[node.data.extra + 2];
+                const provider_function = provider_ast.nodes.items[function_raw];
                 const provider_body = provider_ast.nodes.items[provider_ast.extra_data.items[provider_function.data.extra + 2]];
                 const provider_ret = provider_ast.nodes.items[provider_ast.extra_data.items[provider_body.data.list.start]];
                 const provider_call = provider_ast.getNode(provider_ret.data.unary.operand);
@@ -8287,6 +8288,35 @@ test "generated class Object globals keep unused raw and short helper names abse
             defer a.free(actual.stderr);
             try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
             try std.testing.expectEqualStrings("[true,\"undefined\",\"undefined\"]\n", actual.stdout);
+        }
+    }
+}
+
+test "generated class Object globals standalone helper aliases preserve raw and short eval observations" {
+    const a = std.testing.allocator;
+    const source = "function run(Object){class C{static value(){return 7}}return[C.value(),eval('Object'),eval('typeof __classDefineProperty'),eval('typeof $cDp')]}console.log(JSON.stringify(run(17)));";
+    for ([_]bool{ false, true }) |minify_whitespace| {
+        for ([_]bool{ false, true }) |minify_identifiers| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            var result = try @import("../transpile.zig").transpile(a, source, "entry.cjs", .{
+                .es_target = .es5,
+                .minify_whitespace = minify_whitespace,
+                .minify_identifiers = minify_identifiers,
+            });
+            defer result.deinit(a);
+            try writeFile(tmp.dir, "output.cjs", result.code);
+            const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+            defer a.free(output_path);
+            const syntax = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "--check", output_path } });
+            defer a.free(syntax.stdout);
+            defer a.free(syntax.stderr);
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, syntax.term);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expectEqualStrings("[7,17,\"undefined\",\"undefined\"]\n", actual.stdout);
         }
     }
 }
