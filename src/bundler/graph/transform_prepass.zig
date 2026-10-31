@@ -4661,6 +4661,54 @@ fn isSafeConstructorVarDeclaration(
     return true;
 }
 
+/// A direct base-class constructor `let`/`const` already belongs to the
+/// constructor's emitted function scope. Keep only initialized simple bindings
+/// with exact source rows, safe initializers, and no reads before the complete
+/// declaration statement; derived constructors and nested blocks use separate
+/// scope/`super` contracts and do not call this predicate.
+fn isSafeConstructorDirectLexicalDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (!isRetainableSameVarScopeLexicalDeclaration(ast, semantic, declaration)) return false;
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len == 0 or declarators_start > extras.len or
+        declarators_len > extras.len - declarators_start) return false;
+
+    const declaration_kind = ast.variableDeclarationKind(declaration);
+    for (extras[declarators_start .. declarators_start + declarators_len]) |raw_declarator| {
+        if (raw_declarator >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+        const type_annotation: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+        const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+        if (!type_annotation.isNone() or initializer.isNone() or
+            !isSafeConstructorValue(ast, semantic, initializer) or
+            !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
+
+        const binding_raw = @backingInt(binding);
+        if (binding_raw >= semantic.symbol_ids.len) return false;
+        const symbol_raw = semantic.symbol_ids[binding_raw] orelse return false;
+        if (symbol_raw >= semantic.symbols.items.len) return false;
+        if (declaration_kind == .@"const" and !hasOnlyReadReferencesToBinding(ast, semantic, binding)) return false;
+
+        for (semantic.references) |reference| {
+            if (@backingInt(reference.symbol_id) != symbol_raw or reference.flags.declare) continue;
+            if (reference.node_index.isNone() or @backingInt(reference.node_index) >= ast.nodes.items.len or
+                ast.getNode(reference.node_index).span.start < declaration.span.end) return false;
+        }
+    }
+    return true;
+}
+
 fn isSafeConstructorForEachHead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -5091,6 +5139,21 @@ fn isSafeConstructorBodyStatement(
         },
         else => return false,
     }
+}
+
+fn isSafeConstructorRootBodyStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag == .variable_declaration) {
+        const kind = ast.variableDeclarationKind(statement);
+        if (kind == .let or kind == .@"const")
+            return isSafeConstructorDirectLexicalDeclaration(ast, semantic, statement);
+    }
+    return isSafeConstructorBodyStatement(ast, semantic, statement_idx);
 }
 
 fn isEarlierConstructorParameterReference(
@@ -5787,6 +5850,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     method_extra: u32,
+    allow_direct_lexical: bool,
 ) bool {
     const extras = ast.extra_data.items;
     if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.body) return false;
@@ -5873,8 +5937,13 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         }
     }
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
-        if (raw_statement_idx >= ast.nodes.items.len or
-            !isSafeConstructorBodyStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) return false;
+        if (raw_statement_idx >= ast.nodes.items.len) return false;
+        const statement_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement_idx));
+        const safe = if (allow_direct_lexical)
+            isSafeConstructorRootBodyStatement(ast, semantic, statement_idx)
+        else
+            isSafeConstructorBodyStatement(ast, semantic, statement_idx);
+        if (!safe) return false;
     }
     return true;
 }
@@ -6111,7 +6180,7 @@ fn isSimpleClass(
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
             if (has_empty_explicit_constructor or flags != 0 or
-                !isSimpleParamsConstructorBodyGraphSafe(ast, semantic, method_extra)) return false;
+                !isSimpleParamsConstructorBodyGraphSafe(ast, semantic, method_extra, super.isNone())) return false;
             has_empty_explicit_constructor = true;
             continue;
         }
@@ -22771,7 +22840,18 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "const value = { read() { let local = 1; return local; } };", .expected = true },
         .{ .source = "class Read { read() { const local = 1; return local; } }", .expected = true },
         .{ .source = "class Read { static read() { let local = 1; return local; } }", .expected = true },
-        .{ .source = "class Read { constructor() { let local = 1; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { constructor() { let local = 1; this.value = local; } }", .expected = true },
+        .{ .source = "class Read { constructor() { const local = 1; this.value = local; } }", .expected = true },
+        .{ .source = "class Read { constructor() { let local; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { constructor(input) { let local = input; this.value = local; } }", .expected = true },
+        .{ .source = "var Holder = class Local { constructor(input) { let value = input; this.value = value; } };", .expected = true },
+        .{ .source = "class Read { constructor() { let first = 1; let second = first + 1; this.value = second; } }", .expected = true },
+        .{ .source = "class Read { constructor() { let local = local; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { constructor() { let local = later; let later = 1; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { constructor() { this.value = local; let local = 1; } }", .expected = false },
+        .{ .source = "class Read { constructor() { { let local = 1; this.value = local; } } }", .expected = false },
+        .{ .source = "class Read { constructor() { let { local } = { local: 1 }; this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { let local = 1; super(); this.value = local; } }", .expected = false },
         .{ .source = "class Read { read({ input }) { const local = input; return local; } }", .expected = true },
         .{ .source = "class Read { async read() { let local = 1; return local; } }", .expected = false },
         .{ .source = "class Read { *read() { let local = 1; yield local; } }", .expected = false },
