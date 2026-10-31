@@ -6279,8 +6279,9 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
 
 /// Keep base-less async-generator methods on object literals only when each
 /// lowered method has an exact source function owner and the same narrow
-/// implicit-arguments parameter certificate used for class methods. Computed
-/// names and `super` retain the full semantic reanalysis fallback.
+/// implicit-arguments parameter certificate used for class methods. Direct
+/// method-body `super` uses also need that exact home-object owner; computed
+/// names and nested `super` uses retain the full semantic reanalysis fallback.
 fn registerRetainableEs5AsyncGeneratorObjectMethods(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6302,8 +6303,9 @@ fn registerRetainableEs5AsyncGeneratorObjectMethods(
         const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
         if (flags != (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator)) continue;
         if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
-            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key or
-            methodHasSuperExpression(ast, method)) return false;
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key) return false;
+        const has_super = methodHasSuperExpression(ast, method);
+        if (has_super and !methodSuperUsesOnlyDirectMethodBody(ast, method)) return false;
         const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
         ));
@@ -7267,6 +7269,7 @@ fn allSuperUsesBelongToRetainedOwners(
     semantic: *const ModuleSemanticData,
     reachable_nodes: []const u32,
     retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
+    retained_async_generator_methods: *const std.AutoHashMapUnmanaged(u32, void),
     retained_sync_super_methods: *const std.AutoHashMapUnmanaged(u32, void),
     allow_static_block_super_get: bool,
     retained_method_super_use_out: *bool,
@@ -7297,8 +7300,10 @@ fn allSuperUsesBelongToRetainedOwners(
                 },
                 .method_definition => {
                     const is_retained_async_method = retained_async_functions.contains(current);
+                    const is_retained_async_generator_method = retained_async_generator_methods.contains(current);
                     const is_retained_sync_method = retained_sync_super_methods.contains(current);
-                    if (!is_retained_async_method and !is_retained_sync_method) return false;
+                    if (!is_retained_async_method and !is_retained_async_generator_method and
+                        !is_retained_sync_method) return false;
                     retained_method_super_use_out.* = true;
                     found_method = true;
                     break;
@@ -9381,6 +9386,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 semantic,
                 reachable_nodes,
                 &retained_async_functions,
+                &retained_async_generator_methods,
                 &retained_sync_super_methods,
                 retained_simple_named_static_blocks,
                 &retained_method_super_use,
@@ -14661,6 +14667,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
         "var values = { async *items(value = arguments[1]) { for await (const item of [Promise.resolve(1)]) yield value + item; } };",
         "var values = { async *items() { yield arguments[0]; } };",
         "var outer = { values: { async *items(value = arguments[1]) { yield value; } } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { yield super.read(); } };",
     };
     for (retained_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
@@ -14670,7 +14677,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
     const rejected_sources = [_][]const u8{
         "var values = { async *[key]() { yield 1; } };",
         "var values = { async *['items']() { yield 1; } };",
-        "var values = { async *items() { yield super.read(); } };",
+        "var values = { async *items() { const read = () => super.read(); yield read(); } };",
         "var values = { async *items() { eval('0'); yield 1; } };",
         "var values = { async *items(value = arguments?.[1]) { yield value; } };",
         "var values = { async *items(index = 0, value = arguments[index]) { yield value; } };",
