@@ -42831,7 +42831,114 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
-  test('twelve nested or non-var lexical scopes continue to use semantic reanalysis', () => {
+  test('synchronous object and class method bodies retain exact local identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-method-var-scope-lexical-retained-'));
+    const names = Array.from({ length: 10 }, (_, index) => `methodValue${index}`);
+    const declarations = names
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = ${index + 10};`)
+      .join('\n');
+    const expected = `${names.map((_, index) => (index === 0 ? 110 : index + 10)).join(' ')}\n`;
+    const fixtures = [
+      {
+        name: 'object-method',
+        source: `const reader = { read() {\n${declarations}\nmethodValue0 += 100;\nreturn [${names.join(', ')}].join(' ');\n} };\nconsole.log(reader.read());`,
+      },
+      {
+        name: 'class-method',
+        source: `class Reader { read() {\n${declarations}\nmethodValue0 += 100;\nreturn [${names.join(', ')}].join(' ');\n} }\nconsole.log(new Reader().read());`,
+      },
+      {
+        name: 'class-static-method',
+        source: `class Reader { static read() {\n${declarations}\nmethodValue0 += 100;\nreturn [${names.join(', ')}].join(' ');\n} }\nconsole.log(Reader.read());`,
+      },
+      {
+        name: 'class-pattern-parameter-method',
+        source: `class Reader { read({ input }) {\nif (input !== 99) throw 0;\n${declarations}\nmethodValue0 += 100;\nreturn [${names.join(', ')}].join(' ');\n} }\nconsole.log(new Reader().read({ input: 99 }));`,
+      },
+    ] as const;
+    try {
+      for (const fixture of fixtures) {
+        const input = join(dir, `${fixture.name}.mjs`);
+        const native = spawnSync('node', ['--input-type=module', '-e', fixture.source], {
+          encoding: 'utf8',
+        });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(expected);
+        writeFileSync(input, fixture.source);
+
+        const output = join(dir, `${fixture.name}.cjs`);
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+        );
+        expect(bundled.status, `${fixture.name}: ${bundled.stderr}`).toBe(0);
+        const mode = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${fixture.name}: ${bundled.stderr}`).toContain('semantic_graph=retained');
+        const report = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(report, `${fixture.name}: ${bundled.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+
+        const emitted = readFileSync(output, 'utf8');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(native.stdout);
+        const returnStart = emitted.lastIndexOf('return [');
+        expect(returnStart, fixture.name).toBeGreaterThanOrEqual(0);
+        const returnListStart = returnStart + 'return ['.length;
+        const returnListEnd = emitted.indexOf(']', returnListStart);
+        expect(returnListEnd, fixture.name).toBeGreaterThan(returnListStart);
+        const returnList = emitted.slice(returnListStart, returnListEnd);
+        const emittedNames = returnList.split(',').map((name) => name.trim());
+        expect(emittedNames).toHaveLength(names.length);
+        expect(new Set(emittedNames).size, fixture.name).toBe(names.length);
+        expect(
+          emittedNames.every((name) => /^[A-Za-z_$][\w$]*$/.test(name)),
+          fixture.name,
+        ).toBe(true);
+        for (let index = 0; index < emittedNames.length; index += 1) {
+          const mutatedNames = [...emittedNames];
+          const replacement = emittedNames[(index + 1) % emittedNames.length];
+          mutatedNames[index] = replacement;
+          const mutatedList = mutatedNames.join(', ');
+          const mutated =
+            emitted.slice(0, returnListStart) + mutatedList + emitted.slice(returnListEnd);
+          const mutantPath = join(dir, `${fixture.name}-reference-${index}.cjs`);
+          writeFileSync(mutantPath, mutated);
+          const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+          expect(syntax.status, `${fixture.name} reference ${index}: ${syntax.stderr}`).toBe(0);
+          const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+          expect(mutant.status, `${fixture.name} reference ${index}: ${mutant.stderr}`).toBe(0);
+          expect(mutant.stdout, `${fixture.name} reference ${index} -> ${replacement}`).not.toBe(
+            expected,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('nested, patterned, and unsupported method scopes continue to use semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-reanalysis-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
@@ -42887,6 +42994,48 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
         name: 'class-static-scope',
         source: 'class Read { static { let value = 10; console.log(value); } }',
         stdout: '10\n',
+      },
+      {
+        name: 'method-nested-block-scope',
+        source:
+          'const reader = { read() { { let value = 14; return value; } } }; console.log(reader.read());',
+        stdout: '14\n',
+      },
+      {
+        name: 'method-pattern-binding',
+        source:
+          'class Read { read() { const { value } = { value: 15 }; return value; } } console.log(new Read().read());',
+        stdout: '15\n',
+      },
+      {
+        name: 'constructor-local-binding',
+        source:
+          'class Read { constructor() { let value = 20; this.value = value; } } console.log(new Read().value);',
+        stdout: '20\n',
+      },
+      {
+        name: 'async-method',
+        source:
+          'const reader = { async read() { const value = 16; return value; } }; reader.read().then(console.log);',
+        stdout: '16\n',
+      },
+      {
+        name: 'generator-method',
+        source:
+          'const reader = { *read() { let value = 17; yield value; } }; console.log(reader.read().next().value);',
+        stdout: '17\n',
+      },
+      {
+        name: 'getter-method',
+        source:
+          'const reader = { get value() { let local = 18; return local; } }; console.log(reader.value);',
+        stdout: '18\n',
+      },
+      {
+        name: 'setter-method',
+        source:
+          'let result; const reader = { set value(input) { let local = input; result = local; } }; reader.value = 19; console.log(result);',
+        stdout: '19\n',
       },
       {
         name: 'async-generator-method-owner',
