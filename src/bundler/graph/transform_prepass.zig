@@ -2497,11 +2497,11 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     return found_super;
 }
 
-/// Object async-generator super lowering can preserve at most three synchronous
-/// lexical-arrow levels under the exact method home owner. Keep deeper arrows,
-/// async arrows, ordinary functions, nested methods, and parameter initializers
-/// on the reanalysis path until each has its own owner proof.
-fn methodSuperUsesOnlyBodyOrAtMostThreeSyncArrowLevels(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+/// Object async-generator super lowering can preserve synchronous lexical-arrow
+/// chains of any depth under the exact method home owner. Async arrows, ordinary
+/// functions, nested methods, and parameter initializers remain on reanalysis
+/// until each has its own owner proof.
+fn methodSuperUsesOnlyBodyOrSyncArrowChain(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
     if (method.tag != .method_definition) return false;
     const extra = method.data.extra;
     if (extra > ast.extra_data.items.len or
@@ -2518,18 +2518,23 @@ fn methodSuperUsesOnlyBodyOrAtMostThreeSyncArrowLevels(ast: *const ast_mod.Ast, 
     }
 
     const Work = struct { node: ast_mod.NodeIndex, arrow_depth: usize = 0, super_allowed: bool = true };
+    const WorkState = struct { arrow_depth: usize, super_allowed: bool };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(ast.allocator);
-    var seen: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+    var seen: std.AutoHashMapUnmanaged(u32, WorkState) = .empty;
     defer seen.deinit(ast.allocator);
     stack.append(ast.allocator, .{ .node = body_idx }) catch return false;
     var found_super = false;
     while (stack.pop()) |work| {
         if (work.node.isNone() or @backingInt(work.node) >= ast.nodes.items.len) return false;
         const raw_idx = @backingInt(work.node);
-        const work_state = work.arrow_depth * 2 + @intFromBool(work.super_allowed);
+        const work_state: WorkState = .{
+            .arrow_depth = work.arrow_depth,
+            .super_allowed = work.super_allowed,
+        };
         if (seen.get(raw_idx)) |previous_state| {
-            if (previous_state != work_state) return false;
+            if (previous_state.arrow_depth != work_state.arrow_depth or
+                previous_state.super_allowed != work_state.super_allowed) return false;
             continue;
         }
         seen.put(ast.allocator, raw_idx, work_state) catch return false;
@@ -2566,7 +2571,7 @@ fn methodSuperUsesOnlyBodyOrAtMostThreeSyncArrowLevels(ast: *const ast_mod.Ast, 
                     if (arrow_params_have_super) return false;
                 }
                 const flags = ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.flags];
-                if (arrow_depth > 3 or (flags & ast_mod.ArrowFlags.is_async) != 0) super_allowed = false;
+                if ((flags & ast_mod.ArrowFlags.is_async) != 0) super_allowed = false;
             },
             .function_declaration,
             .function_expression,
@@ -6377,7 +6382,7 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
 /// Keep base-less async-generator methods on object literals only when each
 /// lowered method has an exact source function owner and the same narrow
 /// implicit-arguments parameter certificate used for class methods. Direct
-/// method-body `super` uses and up to three synchronous lexical-arrow levels also
+/// method-body `super` uses and synchronous lexical-arrow chains of any depth also
 /// need that exact home-object owner; computed names and other nested `super`
 /// uses retain the full semantic reanalysis fallback.
 fn registerRetainableEs5AsyncGeneratorObjectMethods(
@@ -6403,7 +6408,7 @@ fn registerRetainableEs5AsyncGeneratorObjectMethods(
         if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key) return false;
         const has_super = methodHasSuperExpression(ast, method);
-        if (has_super and !methodSuperUsesOnlyBodyOrAtMostThreeSyncArrowLevels(ast, method)) return false;
+        if (has_super and !methodSuperUsesOnlyBodyOrSyncArrowChain(ast, method)) return false;
         const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
         ));
@@ -14770,6 +14775,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { var read = () => () => super.read(); yield read()(); } };",
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { var read = (label) => () => super.read() + ':' + label; yield read('captured')(); } };",
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { var read = (outer) => (middle) => (inner) => super.read() + ':' + outer + ':' + middle + ':' + inner; yield read('outer')('middle')('inner'); } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { var read = () => () => () => () => () => super.read(); yield read()()()()(); } };",
     };
     for (retained_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
@@ -14779,7 +14785,6 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
     const rejected_sources = [_][]const u8{
         "var values = { async *[key]() { yield 1; } };",
         "var values = { async *['items']() { yield 1; } };",
-        "var values = { async *items() { var read = () => () => () => () => super.read(); yield read()()()(); } };",
         "var values = { async *items() { const read = async () => super.read(); yield await read(); } };",
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { const read = () => super.read(); yield read(); } };",
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items(value = super.read()) { yield value; } };",
@@ -14797,7 +14802,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
         "var values = { async *items(value = (arguments[1])) { yield value; } };",
         "var values = { async *items() { const nested = () => eval('0'); yield 1; } };",
     };
-    try std.testing.expectEqual(@as(usize, 19), rejected_sources.len);
+    try std.testing.expectEqual(@as(usize, 18), rejected_sources.len);
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
         try std.testing.expect(!decision.graph_gate);
