@@ -8464,22 +8464,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .object_expression => {
                 if (hasDirectSpreadElement(ast, node)) {
                     if (options.unsupported.object_spread) {
-                        // Lowering emits Object.assign. Only a source Object
-                        // binding visible from this expression can shadow it;
-                        // unrelated nested bindings do not require reanalysis.
-                        if (source_binds_object) {
-                            if (!source_parent_map_ready) {
-                                source_parent_map_ready = true;
-                                if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
-                            }
-                            if (sourceBindingShadowsGeneratedGlobalAtNode(
-                                ast,
-                                semantic,
-                                &source_parent_map,
-                                @intCast(raw_idx),
-                                "Object",
-                            )) return false;
-                        }
+                        // Object.assign is produced through makeGlobalRef. Its
+                        // exact generated reference is retained as an explicit
+                        // global and Object is reserved in the edited module
+                        // graph before final naming, so a source Object shadow
+                        // remains an audit observation without requiring resync.
                         found_lowered_object_spread = true;
                     } else if (options.unsupported.spread) {
                         return false;
@@ -8774,23 +8763,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .jsx_spread_attribute => {
                 if (!options.jsx_transform) return false;
                 if (options.unsupported.object_spread) {
-                    // JSX lowering materializes Object.assign after this
-                    // source-graph preflight. Only a source Object binding
-                    // visible from this spread can shadow it; unrelated
-                    // nested bindings do not require reanalysis.
-                    if (source_binds_object) {
-                        if (!source_parent_map_ready) {
-                            source_parent_map_ready = true;
-                            if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
-                        }
-                        if (sourceBindingShadowsGeneratedGlobalAtNode(
-                            ast,
-                            semantic,
-                            &source_parent_map,
-                            @intCast(raw_idx),
-                            "Object",
-                        )) return false;
-                    }
+                    // JSX spread lowering uses the same makeGlobalRef-backed
+                    // Object.assign producer as object-literal spread. Its
+                    // explicit global and reserved name survive graph edits.
                     found_lowered_object_spread = true;
                 }
             },
