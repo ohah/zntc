@@ -831,7 +831,31 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (!existing_read) return error.InvalidRestArgumentsOwner;
                 selected = id;
             }
-            return if (selected) |id| @fromBackingInt(id) else null;
+            if (selected) |id| return @fromBackingInt(id);
+            // Async generators lower their wrapper before this parameter
+            // pass. When the exact source parameter engine survives but
+            // has no handoff plan, generated default reads still use that
+            // same SymbolId instead of an unbound `arguments` spelling.
+            return @import("native_arguments.zig").existingParameterEngine(self, owner.params_node, owner.body_scope);
+        }
+
+        fn makeArgumentsEngineReference(self: *Transformer, id: @import("../semantic/symbol.zig").SymbolId) Transformer.Error!NodeIndex {
+            const reference = try self.makeSyntheticRefForSymbol(id, self.current_scope, .{ .read = true });
+            if (self.native_arguments_declaration_origins.get(@backingInt(id))) |owner_scope| {
+                try @import("native_arguments.zig").recordReference(self, reference, id, owner_scope, self.current_scope);
+            } else {
+                @import("native_arguments.zig").recordParameterReference(
+                    self,
+                    reference,
+                    id,
+                    self.semantic_editor.?.symbols.items[@backingInt(id)].scope_id,
+                    self.current_scope,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => @panic("lowered arguments read lost its exact source parameter engine"),
+                };
+            }
+            return reference;
         }
 
         fn lowerParamsImpl(
@@ -916,10 +940,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         // `...[c, d = c]`: the slice goes to a temp and the pattern
                         // reads it, like a destructured parameter. A pattern left on
                         // the `var` stayed ES2015 syntax (#5668).
-                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span, rest_owner);
+                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span, rest_owner, unlinked_engine);
                         continue;
                     }
-                    const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span, rest_owner);
+                    const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span, rest_owner, unlinked_engine);
                     try body_stmts.append(self.allocator, rest_stmt);
                     // rest를 params에 넣지 않음
                     continue;
@@ -955,12 +979,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         const read = struct {
                             fn call(t: *Transformer, from_arguments: bool, temp: es_helpers.TempIdentityCapture, index: usize, at: Span, engine: ?@import("../semantic/symbol.zig").SymbolId) Transformer.Error!NodeIndex {
                                 if (!from_arguments) return es_helpers.makeTempRefFromIdentity(t, temp, at, .{ .read = true });
-                                const arguments = if (engine) |id| blk: {
-                                    const reference = try t.makeSyntheticRefForSymbol(id, t.current_scope, .{ .read = true });
-                                    const owner_scope = t.semantic_editor.?.symbols.items[@backingInt(id)].scope_id;
-                                    try @import("native_arguments.zig").recordReference(t, reference, id, owner_scope, t.current_scope);
-                                    break :blk reference;
-                                } else try es_helpers.makeGlobalRef(t, "arguments");
+                                const arguments = if (engine) |id|
+                                    try makeArgumentsEngineReference(t, id)
+                                else
+                                    try es_helpers.makeGlobalRef(t, "arguments");
                                 return es_helpers.makeComputedMember(t, arguments, try es_helpers.makeNumericLiteral(t, @intCast(index)), at);
                             }
                         }.call;
@@ -1478,6 +1500,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             body_stmts: *std.ArrayList(NodeIndex),
             span: Span,
             rest_owner: ?RestArgumentsOwner,
+            unlinked_engine: ?@import("../semantic/symbol.zig").SymbolId,
         ) Transformer.Error!void {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
@@ -1489,7 +1512,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 .variable_var,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
-            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span, rest_owner));
+            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span, rest_owner, unlinked_engine));
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1517,7 +1540,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
         }
 
         /// var rest = [].slice.call(arguments, N)
-        fn buildRestSlice(self: *Transformer, binding: NodeIndex, start_index: usize, span: Span, rest_owner: ?RestArgumentsOwner) Transformer.Error!NodeIndex {
+        fn buildRestSlice(
+            self: *Transformer,
+            binding: NodeIndex,
+            start_index: usize,
+            span: Span,
+            rest_owner: ?RestArgumentsOwner,
+            unlinked_engine: ?@import("../semantic/symbol.zig").SymbolId,
+        ) Transformer.Error!NodeIndex {
             // [] (empty array)
             const empty_arr_list = try self.ast.addNodeList(&.{});
             const empty_arr = try self.ast.addNode(.{
@@ -1537,6 +1567,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             // arguments
             const args_ref = if (rest_owner) |owner|
                 try self.makeNativeArgumentsRef(owner.body_scope, owner.body_scope, span)
+            else if (unlinked_engine) |id|
+                try makeArgumentsEngineReference(self, id)
             else
                 try es_helpers.makeGlobalRef(self, "arguments");
 

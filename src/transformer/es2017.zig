@@ -453,11 +453,21 @@ pub fn ES2017(comptime Transformer: type) type {
             const arguments_plan = @import("native_arguments.zig");
             const native_owner = self.outputOwnedScope(params_idx) orelse state_parent_scope;
             const parameter_handoff = !native_params_retained and arguments_plan.canHandoffParameterEngine(self, params_idx, state_parent_scope);
+            const existing_parameter_engine = if (self.options.unsupported.default_params)
+                arguments_plan.existingParameterEngine(self, params_idx, state_parent_scope)
+            else
+                null;
             const args_ref = if ((native_owner == state_parent_scope and arguments_plan.hasAvailableEngineSlot(self, native_owner)) or
                 arguments_plan.hasRetainedParameterEngine(self, params_idx, state_parent_scope) or parameter_handoff)
                 try self.makeNativeArgumentsRef(native_owner, state_parent_scope, span)
-            else
-                try es_helpers.makeGlobalRef(self, "arguments");
+            else if (existing_parameter_engine) |id| blk: {
+                const reference = try self.makeSyntheticRefForSymbol(id, state_parent_scope, .{ .read = true });
+                arguments_plan.recordParameterReference(self, reference, id, native_owner, state_parent_scope) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => @panic("async generator source arguments reference lost its exact parameter engine"),
+                };
+                break :blk reference;
+            } else try es_helpers.makeGlobalRef(self, "arguments");
             const helper_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ this_arg, args_ref, lowered_inner }, span);
 
             // outer wrapper: function name(<params>) { return __asyncGenerator(...); }
@@ -1079,12 +1089,12 @@ test "async generator kept parameter engines preserve ten native contexts" {
                 try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
                 try std.testing.expectEqualStrings(native.stdout, actual.stdout);
             }
-            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es2015, 1);
+            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es2015, 1, false);
         }
     }
 }
 
-test "async generator erased parameter engines preserve ten native contexts" {
+test "async generator erased parameter engines preserve the source arguments SymbolId" {
     const sources = [_][]const u8{
         "async function*f(value=7){yield value}(async()=>console.log((await f().next()).value))();",
         "const f=async function*(value=7){yield value};(async()=>console.log((await f().next()).value))();",
@@ -1096,6 +1106,14 @@ test "async generator erased parameter engines preserve ten native contexts" {
         "async function*f({count}={count:7}){yield count}(async()=>console.log((await f().next()).value))();",
         "async function*f(get=()=>7){yield get()}(async()=>console.log((await f().next()).value))();",
         "async function*__asyncGenerator(value=7,other=value+1){yield other}(async()=>console.log((await __asyncGenerator().next()).value))();",
+        "async function*f(value=arguments.length){yield value+':'+arguments.length}(async()=>{const out=[];for await(const step of f())out.push(step);console.log(out.join(','))})();",
+        "class C{async*f(value=arguments.length){for await(const ignored of [0])yield value+':'+arguments.length}}new C().f().next().then(step=>console.log(step.value));",
+        "async function*f(value=(()=>arguments.length)()){yield value}(async()=>console.log((await f().next()).value))();",
+        "async function*f(value=arguments.length){yield value+':'+arguments.length}(async()=>console.log((await f(42).next()).value))();",
+        "async function*f(value=arguments[1]){yield value}(async()=>console.log((await f(void 0,42).next()).value))();",
+        "async function*f(value=arguments.length,...rest){yield value+':'+rest.length+':'+arguments.length}(async()=>{const out=[];for await(const step of f(void 0,4,5))out.push(step);console.log(out.join(','))})();",
+        "async function*f(value=arguments.length,...[head,tail]){yield value+':'+head+':'+tail}(async()=>console.log((await f(void 0,4,5).next()).value))();",
+        "async function*f(arguments=3){yield arguments}(async()=>console.log((await f().next()).value))();",
     };
     for (sources, 0..) |source, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1118,12 +1136,12 @@ test "async generator erased parameter engines preserve ten native contexts" {
                 try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
                 try std.testing.expectEqualStrings(native.stdout, actual.stdout);
             }
-            try checkKeptParameterEngineBirth(a, source, target, index == 0 and target == .es5, 1);
+            if (index >= 10 and index < 17) try checkKeptParameterEngineBirth(a, source, target, true, 1, true);
         }
     }
 }
 
-fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool, expected_forwards: usize) !void {
+fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, target: @import("compat.zig").ESTarget, check_negative: bool, expected_forwards: usize, expect_source_parameter_engine: bool) !void {
     const symbol_mod = @import("../semantic/symbol.zig");
     const utils = @import("output_scope_test_utils.zig");
     var scanner = try @import("../lexer/scanner.zig").Scanner.init(a, source);
@@ -1175,19 +1193,31 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
         const symbol = editor.symbols.items[id];
         try std.testing.expectEqual(symbol_mod.SymbolKind.parameter, symbol.kind);
         try std.testing.expectEqual(@as(?symbol_mod.SyntheticKind, .implicit_arguments), symbol.synthetic_kind);
-        try std.testing.expectEqual(@as(?ScopeId, symbol.scope_id), t.native_arguments_declaration_origins.get(id));
         try std.testing.expect(!t.explicit_global_reference_nodes.contains(@backingInt(argument)));
-        const creation = t.native_arguments_reference_origins.get(@backingInt(argument)) orelse return error.MissingNativeReferenceCreationOrigin;
-        try std.testing.expectEqual(@as(u32, id), @backingInt(creation.symbol_id));
-        try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
         const use_scope = utils.expectedScope(t.ast, output, &parents, &owners, @backingInt(argument)) orelse return error.MissingActualArgumentsScope;
-        if (target == .es5) {
-            if (expected_forwards == 1) try std.testing.expectEqual(@as(?u32, id), source_engine_by_body.get(@backingInt(use_scope)));
-            try std.testing.expectEqual(use_scope, symbol.scope_id);
+        if (expect_source_parameter_engine) {
+            try std.testing.expectEqual(@as(?u32, id), source_engine_by_body.get(@backingInt(use_scope)));
+            try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+            try std.testing.expectEqual(@as(?ScopeId, null), t.native_arguments_declaration_origins.get(id));
+            const creation = t.native_arguments_reference_origins.get(@backingInt(argument)) orelse return error.MissingParameterReferenceOrigin;
+            try std.testing.expect(creation.source_parameter_engine);
+            try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
+            try std.testing.expectEqual(use_scope, creation.scope);
+            try std.testing.expect((try @import("native_arguments.zig").publication(&t, @backingInt(argument))) != null);
             try std.testing.expectEqual(@as(usize, 0), t.native_arguments_parameter_handoffs.count());
         } else {
-            try std.testing.expect(use_scope != symbol.scope_id);
-            try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+            try std.testing.expectEqual(@as(?ScopeId, symbol.scope_id), t.native_arguments_declaration_origins.get(id));
+            const creation = t.native_arguments_reference_origins.get(@backingInt(argument)) orelse return error.MissingNativeReferenceCreationOrigin;
+            try std.testing.expectEqual(@as(u32, id), @backingInt(creation.symbol_id));
+            try std.testing.expectEqual(symbol.scope_id, creation.owner_scope);
+            if (target == .es5) {
+                if (expected_forwards == 1) try std.testing.expectEqual(@as(?u32, id), source_engine_by_body.get(@backingInt(use_scope)));
+                try std.testing.expectEqual(use_scope, symbol.scope_id);
+                try std.testing.expectEqual(@as(usize, 0), t.native_arguments_parameter_handoffs.count());
+            } else {
+                try std.testing.expect(use_scope != symbol.scope_id);
+                try std.testing.expectEqual(symbol.scope_id, editor.scopes.items[use_scope.toIndex()].parent);
+            }
         }
         var reads: usize = 0;
         var declarations: usize = 0;
@@ -1206,12 +1236,69 @@ fn checkKeptParameterEngineBirth(a: std.mem.Allocator, source: []const u8, targe
                 reads += 1;
             }
         }
-        try std.testing.expectEqual(@as(usize, 1), declarations);
+        if (!expect_source_parameter_engine) try std.testing.expectEqual(@as(usize, 1), declarations);
         try std.testing.expectEqual(@as(usize, 1), reads);
-        if (check_negative) try checkNativeArgumentsPublicationNegatives(&t, argument, helper);
+        if (check_negative) {
+            if (expect_source_parameter_engine)
+                try checkSourceParameterReferencePublicationNegatives(&t, argument, helper)
+            else
+                try checkNativeArgumentsPublicationNegatives(&t, argument, helper);
+        }
         forwards += 1;
     }
     try std.testing.expectEqual(expected_forwards, forwards);
+}
+
+fn checkSourceParameterReferencePublicationNegatives(t: *@import("transformer.zig").Transformer, argument: NodeIndex, sibling: @import("../semantic/symbol.zig").SymbolId) !void {
+    const native = @import("native_arguments.zig");
+    const raw = @backingInt(argument);
+    const editor = &t.semantic_editor.?;
+    const original = t.native_arguments_reference_origins.get(raw).?;
+    var row_index: ?usize = null;
+    for (editor.references.items, 0..) |row, index| if (row.node_index == argument) {
+        try std.testing.expect(row_index == null);
+        row_index = index;
+    };
+    const index = row_index.?;
+    const original_row = editor.references.items[index];
+    const original_node_id = t.symbol_ids.items[raw];
+    const original_editor_id = editor.symbol_ids.items[raw];
+    const Mutation = enum { source_identity, owner_scope, use_scope, origin_stmt, origin_scope_stmt, row_sid, row_scope, row_stmt, row_scope_stmt, row_flags, node_sid };
+    for (std.enums.values(Mutation)) |mutation| {
+        const origin = t.native_arguments_reference_origins.getPtr(raw).?;
+        const row = &editor.references.items[index];
+        switch (mutation) {
+            .source_identity => origin.source_parameter_engine = false,
+            .owner_scope => origin.owner_scope = t.programScope(),
+            .use_scope => origin.scope = t.programScope(),
+            .origin_stmt => origin.stmt +%= 1,
+            .origin_scope_stmt => origin.scope_stmt +%= 1,
+            .row_sid => row.symbol_id = sibling,
+            .row_scope => row.scope_id = t.programScope(),
+            .row_stmt => row.stmt_idx +%= 1,
+            .row_scope_stmt => row.scope_stmt_idx +%= 1,
+            .row_flags => row.flags = .{ .write = true },
+            .node_sid => {
+                t.symbol_ids.items[raw] = @backingInt(sibling);
+                editor.symbol_ids.items[raw] = @backingInt(sibling);
+            },
+        }
+        const expected = switch (mutation) {
+            .row_sid, .node_sid => error.InvalidSymbol,
+            .owner_scope, .use_scope, .row_scope, .source_identity => error.InvalidScope,
+            else => error.InvalidNode,
+        };
+        try std.testing.expectError(expected, native.publication(t, raw));
+        origin.* = original;
+        row.* = original_row;
+        t.symbol_ids.items[raw] = original_node_id;
+        editor.symbol_ids.items[raw] = original_editor_id;
+        const restored = (try native.publication(t, raw)).?;
+        try std.testing.expectEqual(original.symbol_id, restored.symbol_id);
+        try std.testing.expectEqual(original.scope, restored.scope);
+        try std.testing.expectEqual(original.stmt, restored.stmt);
+        try std.testing.expectEqual(original.scope_stmt, restored.scope_stmt);
+    }
 }
 
 fn checkNativeArgumentsPublicationNegatives(t: *@import("transformer.zig").Transformer, argument: NodeIndex, sibling: @import("../semantic/symbol.zig").SymbolId) !void {
@@ -1288,6 +1375,6 @@ test "async generator kept parameter engines survive private initializer clones"
             try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
-        try checkKeptParameterEngineBirth(a, source, target, false, 2);
+        try checkKeptParameterEngineBirth(a, source, target, false, 2, false);
     }
 }
