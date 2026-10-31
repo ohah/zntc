@@ -3237,6 +3237,7 @@ fn isSafeConstructorValue(
 
 const ComputedMemberKeyCallMode = enum {
     disallowed,
+    static_block_super_argument,
     sequence_final,
     sequence_argument_member_read,
     sequence_argument_optional_key_call,
@@ -3614,38 +3615,64 @@ fn isRetainableBoundStaticFieldMemberRead(
         if (current.tag == .static_member_expression) {
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
-            if (key_call_mode == .disallowed or
-                ast.getNode(property_idx).tag != .call_expression) return false;
-            const key_call_extra = ast.getNode(property_idx).data.extra;
-            if (key_call_extra > extras.len or extras.len - key_call_extra < 4) return false;
-            const optional_key_call =
-                (extras[key_call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
-            if (!isRetainableBoundStaticFieldEffectCall(
-                ast,
-                semantic,
-                property_idx,
-                false,
-                true,
-                false,
-                key_call_mode == .sequence_final or
-                    (key_call_mode == .sequence_argument_member_read and optional_key_call),
-                switch (key_call_mode) {
-                    .sequence_final => .one,
-                    .sequence_argument_member_read => .two,
-                    else => .none,
-                },
-                if (key_call_mode == .sequence_argument_member_read and optional_key_call)
-                    .sequence_argument_optional_key_call
-                else if (key_call_mode == .sequence_argument_member_read)
-                    .sequence_argument_member_read_optional_nested_call
-                else
-                    .disallowed,
-            )) return false;
+            if (key_call_mode == .static_block_super_argument) {
+                if (!isRetainableStaticBlockSuperArgumentKeyCall(ast, semantic, property_idx)) return false;
+            } else {
+                if (key_call_mode == .disallowed or
+                    ast.getNode(property_idx).tag != .call_expression) return false;
+                const key_call_extra = ast.getNode(property_idx).data.extra;
+                if (key_call_extra > extras.len or extras.len - key_call_extra < 4) return false;
+                const optional_key_call =
+                    (extras[key_call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
+                if (!isRetainableBoundStaticFieldEffectCall(
+                    ast,
+                    semantic,
+                    property_idx,
+                    false,
+                    true,
+                    false,
+                    key_call_mode == .sequence_final or
+                        (key_call_mode == .sequence_argument_member_read and optional_key_call),
+                    switch (key_call_mode) {
+                        .sequence_final => .one,
+                        .sequence_argument_member_read => .two,
+                        else => .none,
+                    },
+                    if (key_call_mode == .sequence_argument_member_read and optional_key_call)
+                        .sequence_argument_optional_key_call
+                    else if (key_call_mode == .sequence_argument_member_read)
+                        .sequence_argument_member_read_optional_nested_call
+                    else
+                        .disallowed,
+                )) return false;
+            }
         }
         saw_member = true;
         current_idx = receiver_idx;
     }
     return false;
+}
+
+/// A computed key inside a static-block super continuation argument may call
+/// an exact-bound identifier or dot-member callee once. Keep its arguments to
+/// source-bound values so optional calls, computed callees, and nested effects
+/// stay on the graph-resync path.
+fn isRetainableStaticBlockSuperArgumentKeyCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    return isRetainableBoundStaticFieldEffectCall(
+        ast,
+        semantic,
+        call_idx,
+        false,
+        false,
+        false,
+        false,
+        .none,
+        .disallowed,
+    );
 }
 
 fn isRetainableUnresolvedStaticFieldCallCallee(
@@ -7071,8 +7098,9 @@ fn isRetainableStaticBlockSuperUse(
 
 /// A single terminal call on a nested `super[key]` member may be retained when
 /// every argument is a pure value, an exact-bound source reference, or an
-/// exact-bound non-optional member read. The parent walk proves the callee is
-/// that member chain and rejects later chains.
+/// exact-bound non-optional member read. A computed member-read key may also
+/// use one exact-bound ordinary call with safe source-bound arguments. The
+/// parent walk proves the callee is that member chain and rejects later chains.
 fn isRetainableStaticBlockSuperContinuationCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -7092,7 +7120,7 @@ fn isRetainableStaticBlockSuperContinuationCall(
         if (raw_arg >= ast.nodes.items.len) return false;
         const arg_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_arg));
         if (isSafeConstructorValue(ast, semantic, arg_idx) or
-            isRetainableBoundStaticFieldMemberRead(ast, semantic, arg_idx, .disallowed)) continue;
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, arg_idx, .static_block_super_argument)) continue;
         return false;
     }
     return true;
