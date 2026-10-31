@@ -33822,6 +33822,91 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('pinned direct eval class descriptors preserve intrinsic calls and static helper observations', () => {
+    const cases = [
+      {
+        name: 'pinned-tuple',
+        source:
+          "function run(Object){class C{static value(){return 7}}return [C.value(),eval('Object'),Object]}console.log(JSON.stringify(run(17)));",
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'static-eval-helper-name',
+        source:
+          "function run(Object){class C{static value(){return 7}}return [C.value(),eval('Object'),eval('typeof __classDefineProperty')]}console.log(JSON.stringify(run(17)));",
+        expected: '[7,17,"undefined"]\n',
+      },
+      {
+        name: 'unused-source-helper-binding',
+        source:
+          "var __classDefineProperty=17;var Object=17;class C{}console.log(JSON.stringify([new C() instanceof C,eval('Object'),eval('__classDefineProperty'),__classDefineProperty]));",
+        expected: '[true,17,17,17]\n',
+      },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-pinned-class-descriptor-'));
+    const entry = join(dir, 'entry.cjs');
+    const oracle = join(dir, 'native.cjs');
+    const output = join(dir, 'output.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const item of cases) {
+        writeFileSync(entry, item.source);
+        writeFileSync(oracle, item.source);
+        const native = spawnSync('node', [oracle], { encoding: 'utf8' });
+        expect(native.status, item.name + native.stderr).toBe(0);
+        expect(native.stdout).toBe(item.expected);
+        for (const minifyIdentifiers of [false, true]) {
+          const cli = spawnSync(
+            ZNTC_BIN,
+            [
+              entry,
+              '--target=es5',
+              ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '-o',
+              output,
+            ],
+            { encoding: 'utf8' },
+          );
+          expect(cli.status, item.name + cli.stderr).toBe(0);
+          if (item.name === 'unused-source-helper-binding') {
+            expect(readFileSync(output, 'utf8')).not.toContain('.defineProperty');
+          }
+          const cliRuntime = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(cliRuntime.status, item.name + cliRuntime.stderr).toBe(0);
+          expect(cliRuntime.stdout).toBe(native.stdout);
+          for (const treeShaking of [false, true]) {
+            for (const coverage of [false, true]) {
+              const env = { ...process.env };
+              delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+              delete env.ZNTC_DEBUG_SYNTHETIC_COVERAGE;
+              if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+              const runner = [
+                `import { build } from ${JSON.stringify(coreEntry)};`,
+                `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers, treeShaking, diskCache: false, write: false })});`,
+                'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+                'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+              ].join('\n');
+              const built = spawnSync('bun', ['-e', runner], {
+                cwd: join(import.meta.dir, '../../..'),
+                env,
+                encoding: 'utf8',
+              });
+              expect(built.status, item.name + built.stderr).toBe(0);
+              const outputs = JSON.parse(built.stdout) as string[];
+              expect(outputs).toHaveLength(1);
+              writeFileSync(output, outputs[0]);
+              const actual = spawnSync('node', [output], { encoding: 'utf8' });
+              expect(actual.status, item.name + actual.stderr).toBe(0);
+              expect(actual.stdout).toBe(native.stdout);
+            }
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('downlevel class descriptor globals preserve user Object bindings through the public API', () => {
     // The same ten inputs are also exercised by the external hostile matrix.
     const sources = [

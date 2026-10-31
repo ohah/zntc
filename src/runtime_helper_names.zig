@@ -38,6 +38,7 @@ pub const NAMES = struct {
     // transformer-emitted downlevel (RN/ES5 타겟에서 다수 emit)
     pub const EXTENDS_MIN = "$eX"; // __extends (ES2015 class)
     pub const CLASS_CALL_CHECK_MIN = "$cC"; // __classCallCheck
+    pub const CLASS_DEFINE_PROPERTY_MIN = "$cDp"; // __classDefineProperty
     pub const CALL_SUPER_MIN = "$cS"; // __callSuper
     pub const SUPER_GET_MIN = "$sPg"; // __superGet
     pub const SUPER_SET_MIN = "$sPs"; // __superSet
@@ -232,6 +233,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     // transformer-emitted downlevel (#1621)
     .{ .base = "__extends", .short = NAMES.EXTENDS_MIN },
     .{ .base = "__classCallCheck", .short = NAMES.CLASS_CALL_CHECK_MIN },
+    .{ .base = "__classDefineProperty", .short = NAMES.CLASS_DEFINE_PROPERTY_MIN },
     .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
     .{ .base = "__superGet", .short = NAMES.SUPER_GET_MIN },
     .{ .base = "__superSet", .short = NAMES.SUPER_SET_MIN },

@@ -39,6 +39,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     super_get: ?[]const u8 = null,
     super_set: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
+    class_define_property: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_generator: ?[]const u8 = null,
     await_helper: ?[]const u8 = null,
@@ -548,6 +549,18 @@ pub const CLASS_CALL_CHECK_RUNTIME =
     \\
 ;
 pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++ "=function(instance,Constructor){if(!(instance instanceof Constructor))throw new TypeError(\"Cannot call a class as a function\")};";
+
+/// The provider is outside a pinned source parameter's lexical environment.
+/// Keep this a pure declaration: unused class families must not read Object.
+pub const CLASS_DEFINE_PROPERTY_RUNTIME =
+    \\var __classDefineProperty = function(target, key, descriptor) {
+    \\  return Object.defineProperty(target, key, descriptor);
+    \\};
+    \\
+;
+pub const CLASS_DEFINE_PROPERTY_RUNTIME_MIN = "var " ++ NAMES.CLASS_DEFINE_PROPERTY_MIN ++ "=function(t,k,d){return Object.defineProperty(t,k,d)};";
+pub const CLASS_CORE_RUNTIME = CLASS_CALL_CHECK_RUNTIME ++ CLASS_DEFINE_PROPERTY_RUNTIME;
+pub const CLASS_CORE_RUNTIME_MIN = CLASS_CALL_CHECK_RUNTIME_MIN ++ CLASS_DEFINE_PROPERTY_RUNTIME_MIN;
 
 /// __callSuper: super() 호출을 Reflect.construct로 래핑 (SWC _call_super 호환).
 /// 네이티브 ES6 클래스(Error, Map 등)를 extends할 때 .call()이 불가하므로
@@ -2183,6 +2196,17 @@ fn appendRuntimeHelpersInternal(
             default_name,
             local_names.class_call_check orelse default_name,
         );
+    }
+    if (helpers.class_call_check) {
+        if (local_names.class_define_property) |local| {
+            try appendRuntimeTemplateWithLocalName(
+                buf,
+                allocator,
+                if (minify) CLASS_DEFINE_PROPERTY_RUNTIME_MIN else CLASS_DEFINE_PROPERTY_RUNTIME,
+                helperName("__classDefineProperty", minify),
+                local,
+            );
+        }
     }
     if (helpers.class_static_private_field) {
         const access_name = helperName("__classCheckPrivateStaticAccess", minify);

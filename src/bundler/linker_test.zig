@@ -7803,15 +7803,13 @@ test "foreign namespace provider source proof rejects reserved declaration flag 
 }
 
 // Exercise the production prepass separately from its initial source analyzer.
-fn checkGeneratedClassObjectAuthority(comptime nested: bool, comptime dynamic: bool) !void {
+fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     const a = std.testing.allocator;
-    const source = if (dynamic)
-        "function run(Object){class C{static value(){return 7}}return[C.value(),Object,eval(\"Object\")]}console.log(JSON.stringify(run(17)));"
-    else if (nested)
+    const source = if (nested)
         "function run(Object){class C{static value(){return 10}}return[C.value(),Object]}console.log(JSON.stringify(run(17)));"
     else
         "let calls=0;class C{static value(){return 10}}var Object=function(){calls++};console.log(C.value(),calls);";
-    const expected = if (dynamic) "[7,17,17]\n" else if (nested) "[10,17]\n" else "10 0\n";
+    const expected = if (nested) "[10,17]\n" else "10 0\n";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.mjs", source);
@@ -7855,17 +7853,6 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool, comptime dynamic: b
     try std.testing.expect(initial_owner_scope < module.semantic.?.scopes.len);
     try std.testing.expectEqual(if (nested) .function else .module, module.semantic.?.scopes[initial_owner_scope].kind);
     try std.testing.expectEqual(if (nested) @as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(initial_root_scope)) else .none, module.semantic.?.scopes[initial_owner_scope].parent);
-    const explicit_source_read: ?u32 = if (dynamic) blk: {
-        const function = ast.nodes.items[source_owner_raw];
-        const body = ast.nodes.items[ast.extra_data.items[function.data.extra + 2]];
-        const ret = ast.nodes.items[ast.extra_data.items[body.data.list.start + 1]];
-        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.return_statement, ret.tag);
-        const array = ast.getNode(ret.data.unary.operand);
-        const read = ast.extra_data.items[array.data.list.start + 1];
-        try std.testing.expectEqual(@as(?u32, initial_sid), module.semantic.?.symbol_ids[read]);
-        try std.testing.expect(module.semantic.?.scopes[initial_owner_scope].blocksMangling());
-        break :blk read;
-    } else null;
     const initial_nodes = ast.nodes.items.len;
     graph.transform_options_base.unsupported = TransformOptions.compat.fromESTarget(.es5);
     graph.runTransformerPrePass(module, module.parse_arena.?.allocator());
@@ -7929,48 +7916,10 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool, comptime dynamic: b
     const raw = object_raw.?;
     try std.testing.expect(raw < metadata.symbol_ids.len);
     if (metadata.symbol_ids[raw] != null) authority_errors += 1;
-    const canonical = if (dynamic) blk: {
-        if (linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid))) |selected|
-            try std.testing.expectEqualStrings("Object", selected);
-        if (metadata.renames.get(current_source_sid)) |selected|
-            try std.testing.expectEqualStrings("Object", selected);
-        try std.testing.expectEqualStrings("Object", transformed.getText(transformed.nodes.items[source_binding].data.string_ref));
-        const read = explicit_source_read.?;
-        try std.testing.expect(read < sem.symbol_ids.len);
-        try std.testing.expectEqual(@as(?u32, current_source_sid), sem.symbol_ids[read]);
-        try std.testing.expect(sem.scopes[output_owner_scope].blocksMangling());
-        var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-        defer parents.deinit(a);
-        for (reachable) |parent| {
-            var children = @import("../parser/ast_walk.zig").children(transformed, transformed.nodes.items[parent]);
-            while (children.next()) |child| if (!child.isNone()) {
-                try parents.put(a, @backingInt(child), parent);
-            };
-        }
-        var cursor = raw;
-        var hops: usize = 0;
-        const use_scope = while (hops < transformed.nodes.items.len) : (hops += 1) {
-            if (sem.scope_owner_map.get(cursor)) |scope| break scope;
-            cursor = parents.get(cursor) orelse return error.MissingDescriptorParent;
-        } else return error.CyclicDescriptorParents;
-        try std.testing.expect(use_scope < sem.scopes.len);
-        var ancestor = use_scope;
-        var scope_hops: usize = 0;
-        while (ancestor != output_owner_scope) : (scope_hops += 1) {
-            try std.testing.expect(scope_hops < sem.scopes.len);
-            const parent = sem.scopes[ancestor].parent;
-            try std.testing.expect(!parent.isNone());
-            ancestor = @backingInt(parent);
-        }
-        std.debug.print("PINNED_OBJECT binding={d} initialSID={d} currentSID={d} explicitRead={d} external={d} physicalNull={} useScope={d} pinnedScope={d} dynamic={}\n", .{ source_binding, initial_sid, current_source_sid, read, raw, metadata.symbol_ids[raw] == null, use_scope, output_owner_scope, sem.scopes[output_owner_scope].blocksMangling() });
-        break :blk "Object";
-    } else blk: {
-        const selected = linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid)) orelse return error.MissingObjectShadowCanonicalName;
-        try std.testing.expect(!std.mem.eql(u8, selected, transformed.getText(transformed.nodes.items[source_binding].data.string_ref)));
-        try std.testing.expectEqualStrings(selected, metadata.renames.get(current_source_sid) orelse return error.MissingObjectShadowMetadataName);
-        if (nested) try std.testing.expect(linker.moduleHasNestedShadow(index.toU32()));
-        break :blk selected;
-    };
+    const canonical = linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid)) orelse return error.MissingObjectShadowCanonicalName;
+    try std.testing.expect(!std.mem.eql(u8, canonical, transformed.getText(transformed.nodes.items[source_binding].data.string_ref)));
+    try std.testing.expectEqualStrings(canonical, metadata.renames.get(current_source_sid) orelse return error.MissingObjectShadowMetadataName);
+    if (nested) try std.testing.expect(linker.moduleHasNestedShadow(index.toU32()));
     // Render these exact nodes separately: generated global and known source
     // binding must consume different names from the same AST and metadata.
     const Codegen = @import("../codegen/codegen.zig").Codegen;
@@ -8014,13 +7963,244 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool, comptime dynamic: b
 }
 
 test "generated class Object globals keep root binding authority through graph metadata" {
-    try checkGeneratedClassObjectAuthority(false, false);
+    try checkGeneratedClassObjectAuthority(false);
 }
 
 test "generated class Object globals keep parameter authority through graph metadata" {
-    try checkGeneratedClassObjectAuthority(true, false);
+    try checkGeneratedClassObjectAuthority(true);
 }
 
-test "generated class Object globals keep pinned direct eval source identity RED" {
-    try checkGeneratedClassObjectAuthority(true, true);
+fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
+    const a = std.testing.allocator;
+    const source = if (static_probe)
+        "function run(Object){class C{static value(){return 7}}return[C.value(),Object,eval(\"Object\"),eval(\"typeof __classDefineProperty\")]}console.log(JSON.stringify(run(17)));"
+    else
+        "function run(Object){class C{static value(){return 7}}return[C.value(),Object,eval(\"Object\")]}console.log(JSON.stringify(run(17)));";
+    const expected = if (static_probe) "[7,17,17,\"undefined\"]\n" else "[7,17,17]\n";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", source);
+    var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, false);
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    result.linker.populateImportSymbols();
+    const index = findModuleIdx(result.graph, "entry.mjs").?;
+    const module = result.graph.moduleAtMut(index).?;
+    const ast = &module.ast.?;
+    const sem = &module.semantic.?;
+    const root = ast.transformed_root.?;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, ast, root);
+    defer a.free(reachable);
+    var source_binding: ?u32 = null;
+    var source_owner: ?u32 = null;
+    for (reachable) |raw| {
+        const node = ast.nodes.items[raw];
+        if (node.tag != .function_declaration) continue;
+        const params = ast.functionParamsList(node);
+        if (params.len != 1) continue;
+        const binding = ast.extra_data.items[params.start];
+        if (ast.nodes.items[binding].tag != .binding_identifier) continue;
+        try std.testing.expect(source_binding == null);
+        source_binding = binding;
+        source_owner = raw;
+    }
+    const source_binding_raw = source_binding orelse return error.MissingPinnedParameter;
+    try std.testing.expect(source_binding_raw < sem.symbol_ids.len);
+    const source_sid = sem.symbol_ids[source_binding_raw] orelse return error.MissingPinnedParameterSid;
+    try std.testing.expect(source_sid < sem.symbols.items.len);
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.parameter, sem.symbols.items[source_sid].kind);
+    try std.testing.expectEqualStrings("Object", ast.getText(ast.nodes.items[source_binding_raw].data.string_ref));
+    const source_scope = sem.scope_owner_map.get(source_owner.?) orelse return error.MissingPinnedOwner;
+    try std.testing.expectEqual(source_scope, @backingInt(sem.symbols.items[source_sid].scope_id));
+    try std.testing.expect(sem.scopes[source_scope].subtree_has_direct_eval and !sem.scopes[source_scope].subtree_has_with);
+    const function = ast.nodes.items[source_owner.?];
+    const body = ast.nodes.items[ast.extra_data.items[function.data.extra + 2]];
+    const ret = ast.nodes.items[ast.extra_data.items[body.data.list.start + body.data.list.len - 1]];
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.return_statement, ret.tag);
+    const array = ast.getNode(ret.data.unary.operand);
+    const source_read = ast.extra_data.items[array.data.list.start + 1];
+    try std.testing.expectEqual(@as(?u32, source_sid), sem.symbol_ids[source_read]);
+    var helper_sid: ?u32 = null;
+    for (module.import_bindings) |ib| {
+        if (!ib.is_helper or !std.mem.eql(u8, ib.imported_name, "__classDefineProperty")) continue;
+        const anchor = ib.local_symbol_node orelse return error.MissingPinnedHelperAnchor;
+        try std.testing.expect(@backingInt(anchor) < sem.symbol_ids.len);
+        helper_sid = sem.symbol_ids[@backingInt(anchor)] orelse return error.MissingPinnedHelperSid;
+        try std.testing.expectEqual(ib.local_symbol.semanticIndex().?, helper_sid.?);
+    }
+    const helper = helper_sid orelse return error.MissingPinnedHelper;
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, sem.symbols.items[helper].kind);
+    try std.testing.expectEqual(@as(?usize, helper), sem.helper_scope_map.get("__classDefineProperty"));
+    var descriptor: ?u32 = null;
+    for (reachable) |raw| {
+        const call = ast.nodes.items[raw];
+        if (call.tag != .call_expression or ast.extra_data.items[call.data.extra + 2] != 3) continue;
+        const callee = ast.extra_data.items[call.data.extra];
+        if (callee >= sem.symbol_ids.len or sem.symbol_ids[callee] != @as(?u32, helper)) continue;
+        try std.testing.expect(descriptor == null);
+        descriptor = callee;
+    }
+    const callee = descriptor orelse return error.MissingPinnedDescriptorCall;
+    var marked = false;
+    for (module.transform_cache.?.helper_ref_nodes) |raw| if (raw == callee) {
+        marked = true;
+    };
+    try std.testing.expect(marked);
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(a);
+    for (reachable) |raw| {
+        var children = @import("../parser/ast_walk.zig").children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| if (!child.isNone()) {
+            try parents.put(a, @backingInt(child), raw);
+        };
+    }
+    var cursor = callee;
+    var hops: usize = 0;
+    const use_scope = while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (sem.scope_owner_map.get(cursor)) |scope| break scope;
+        cursor = parents.get(cursor) orelse return error.MissingPinnedDescriptorParent;
+    } else return error.CyclicPinnedDescriptorParents;
+    var reads: usize = 0;
+    for (sem.references) |reference| if (@backingInt(reference.node_index) == callee) {
+        try std.testing.expectEqual(helper, @backingInt(reference.symbol_id));
+        try std.testing.expectEqual(use_scope, @backingInt(reference.scope_id));
+        try std.testing.expect(reference.flags.read and !reference.flags.write);
+        reads += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), reads);
+    var ancestor = use_scope;
+    var scope_hops: usize = 0;
+    while (ancestor != source_scope) : (scope_hops += 1) {
+        try std.testing.expect(scope_hops < sem.scopes.len);
+        const parent = sem.scopes[ancestor].parent;
+        try std.testing.expect(!parent.isNone());
+        ancestor = @backingInt(parent);
+    }
+    var metadata = try result.linker.buildMetadataForAst(ast, index.toU32(), true, null, .esm, true);
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(?u32, helper), metadata.symbol_ids[callee]);
+    if (metadata.renames.get(source_sid)) |name| try std.testing.expectEqualStrings("Object", name);
+    const Codegen = @import("../codegen/codegen.zig").Codegen;
+    var binding_codegen = Codegen.initWithOptions(a, ast, .{ .linking_metadata = &metadata });
+    defer binding_codegen.deinit();
+    try std.testing.expectEqualStrings("Object", std.mem.trim(u8, try binding_codegen.generate(@fromBackingInt(source_binding_raw)), " \r\n\t"));
+    {
+        const runtime_entry = result.graph.moduleAtMut(findModuleIdx(result.graph, "entry.mjs").?).?;
+        var providers: usize = 0;
+        for (runtime_entry.import_bindings) |binding| {
+            if (!binding.is_helper or !std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
+            const local = binding.local_symbol_node orelse return error.MissingDescriptorImportAnchor;
+            const local_raw = @backingInt(local);
+            try std.testing.expect(local_raw < runtime_entry.semantic.?.symbol_ids.len);
+            const local_sid = runtime_entry.semantic.?.symbol_ids[local_raw] orelse return error.MissingDescriptorImportSid;
+            try std.testing.expectEqual(binding.local_symbol.semanticIndex().?, local_sid);
+            try std.testing.expect(binding.import_record_index < runtime_entry.import_records.len);
+            const provider = result.graph.getModule(runtime_entry.import_records[binding.import_record_index].resolved) orelse return error.MissingDescriptorProvider;
+            const exported = provider.findExportBinding("__classDefineProperty") orelse return error.MissingDescriptorExport;
+            const provider_binding = exported.local_symbol_node orelse return error.MissingDescriptorExportAnchor;
+            const provider_ast = &provider.ast.?;
+            const provider_sem = &provider.semantic.?;
+            const provider_root = provider_ast.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@intCast(provider_ast.nodes.items.len - 1)));
+            const root_scope = provider_sem.scope_owner_map.get(@backingInt(provider_root)) orelse return error.MissingProviderRootScope;
+            try std.testing.expect(root_scope < provider_sem.scope_maps.len);
+            try std.testing.expect(!provider_sem.scope_maps[root_scope].contains("Object"));
+            const provider_binding_raw = @backingInt(provider_binding);
+            try std.testing.expect(provider_binding_raw < provider_sem.symbol_ids.len);
+            const provider_sid = provider_sem.symbol_ids[provider_binding_raw] orelse return error.MissingProviderExportSid;
+            var external_reads: usize = 0;
+            for (provider_ast.nodes.items) |node| {
+                if (node.tag != .variable_declarator) continue;
+                const declaration_name = provider_ast.extra_data.items[node.data.extra];
+                if (declaration_name >= provider_sem.symbol_ids.len or provider_sem.symbol_ids[declaration_name] != @as(?u32, provider_sid)) continue;
+                const function_raw = provider_ast.extra_data.items[node.data.extra + 2];
+                const provider_function = provider_ast.nodes.items[function_raw];
+                const provider_body = provider_ast.nodes.items[provider_ast.extra_data.items[provider_function.data.extra + 2]];
+                const provider_ret = provider_ast.nodes.items[provider_ast.extra_data.items[provider_body.data.list.start]];
+                const provider_call = provider_ast.getNode(provider_ret.data.unary.operand);
+                const provider_member = provider_ast.nodes.items[provider_ast.extra_data.items[provider_call.data.extra]];
+                const provider_object = provider_ast.extra_data.items[provider_member.data.extra];
+                try std.testing.expect(provider_object < provider_sem.symbol_ids.len);
+                try std.testing.expectEqual(@as(?u32, null), provider_sem.symbol_ids[provider_object]);
+                const function_scope = provider_sem.scope_owner_map.get(function_raw) orelse return error.MissingProviderFunctionScope;
+                try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(root_scope)), provider_sem.scopes[function_scope].parent);
+                external_reads += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), external_reads);
+            providers += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), providers);
+    }
+
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
+    defer output.deinit(a);
+    try writeFile(tmp.dir, "native.cjs", source);
+    try writeFile(tmp.dir, "output.cjs", output.output);
+    const native_path = try @import("test_helpers.zig").absPath(&tmp, "native.cjs");
+    defer a.free(native_path);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+    defer a.free(output_path);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", native_path } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expectEqualStrings(expected, native.stdout);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    if (actual.term != .exited or actual.term.exited != 0) std.debug.print("pinned helper runtime: {s}\n{s}\n", .{ actual.stderr, output.output });
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "generated class Object globals preserve pinned direct eval through an isolated helper" {
+    try checkPinnedClassDescriptorAuthority(false);
+}
+
+test "generated class Object globals preserve static eval of the new helper name" {
+    try checkPinnedClassDescriptorAuthority(true);
+}
+
+test "generated class Object globals keep root eval and with outside the pinned helper family" {
+    const a = std.testing.allocator;
+    const sources = [_][]const u8{
+        "eval('var Object=17');function run(Object){class C{static value(){return 7}}return[C.value(),eval('Object'),Object]}console.log(run(17));",
+        "({[eval(\"var Object=17;'x'\")](){}});function run(Object){class C{static value(){return 7}}return[C.value(),eval('Object'),Object]}console.log(run(17));",
+        "function run(Object){with({}){class C{static value(){return 7}}return C.value()}}console.log(run(17));",
+        "var Object=17;function run(Object){class C{static value(){return 7}}return[C.value(),eval('Object'),Object]}console.log(run(17));",
+    };
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.cjs", source);
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.cjs", .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        }, false);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        const module = result.graph.getModule(findModuleIdx(result.graph, "entry.cjs").?).?;
+        const sem = module.semantic.?;
+        const ast = &module.ast.?;
+        var calls: usize = 0;
+        for (module.import_bindings) |binding| {
+            if (!binding.is_helper or !std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
+            const anchor = binding.local_symbol_node orelse return error.MissingUnusedHelperAnchor;
+            try std.testing.expect(@backingInt(anchor) < sem.symbol_ids.len);
+            const sid = sem.symbol_ids[@backingInt(anchor)] orelse return error.MissingUnusedHelperSid;
+            const root = ast.transformed_root orelse return error.MissingUnusedHelperRoot;
+            const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, ast, root);
+            defer a.free(reachable);
+            for (reachable) |raw| {
+                const node = ast.nodes.items[raw];
+                if (node.tag != .call_expression) continue;
+                const callee = ast.extra_data.items[node.data.extra];
+                if (callee < sem.symbol_ids.len and sem.symbol_ids[callee] == @as(?u32, sid)) calls += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), calls);
+    }
 }

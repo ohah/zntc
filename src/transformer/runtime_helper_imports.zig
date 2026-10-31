@@ -88,7 +88,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .keep_names, .bases = &.{"__name"} },
     .{ .bit = .class_private_method_init, .bases = &.{"__classPrivateMethodInit"} },
     .{ .bit = .class_private_method_get, .bases = &.{"__classPrivateMethodGet"} },
-    .{ .bit = .class_call_check, .bases = &.{"__classCallCheck"} },
+    .{ .bit = .class_call_check, .bases = &.{ "__classCallCheck", "__classDefineProperty" } },
     .{ .bit = .call_super, .bases = &.{"__callSuper"} },
     .{ .bit = .super_get, .bases = &.{"__superGet"} },
     .{ .bit = .super_set, .bases = &.{"__superSet"} },
