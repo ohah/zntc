@@ -26837,6 +26837,192 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator default parameter handoff preserves exact identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-default-parameter-handoff-'));
+    const input = join(dir, 'entry.unknown');
+    const nativeInput = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.js');
+    const source = [
+      'async function* src(nLong, opts = {}) {',
+      '  yield nLong + (opts.k || 0);',
+      '}',
+      '(async () => {',
+      '  const it = src(1, { k: 2 });',
+      '  console.log((await it.next()).value, (await src(5).next()).value);',
+      '})();',
+    ].join('\n');
+    writeFileSync(input, source);
+    writeFileSync(nativeInput, source);
+
+    try {
+      const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('3 5\n');
+
+      const result = runCoverage(input, TARGETS[0], dir, true);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(transformIdentityAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(postMinifyAuditProblems(result.stderr), result.stderr).toEqual([]);
+      expect(transpileGraphModeProblems(result.stderr, true)).toEqual([]);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator direct arguments.length defaults retain scalar behavior and graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-parameter-arguments-length-'));
+    const input = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'zero-arguments',
+        source:
+          'class Box { async *items(value = arguments.length) { yield value; } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: '0\n',
+      },
+      {
+        name: 'undefined-first-with-extra-argument',
+        source:
+          'class Box { async *items(value = arguments.length) { yield value; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '2\n',
+      },
+      {
+        name: 'explicit-first-argument',
+        source:
+          'class Box { async *items(value = arguments.length) { yield value; } } new Box().items(7, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '7\n',
+      },
+      {
+        name: 'two-certified-defaults',
+        source:
+          'class Box { async *items(first = arguments.length, second = arguments.length) { yield first + ":" + second; } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: '0:0\n',
+      },
+      {
+        name: 'for-await-body',
+        source:
+          'class Box { async *items(value = arguments.length) { for await (const item of [Promise.resolve("item")]) yield value + ":" + item; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '2:item\n',
+      },
+      {
+        name: 'static-method',
+        source:
+          'class Box { static async *items(value = arguments.length) { yield value; } } Box.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '2\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(6);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      const bodyArguments =
+        'class Box { async *items(value = arguments.length) { yield value + ":" + arguments.length; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });';
+      writeFileSync(input, bodyArguments);
+      const nativeBodyArguments = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(nativeBodyArguments.status, nativeBodyArguments.stderr).toBe(0);
+      expect(nativeBodyArguments.stdout).toBe('2:2\n');
+      const reanalyzedOutput = join(dir, 'body-arguments-reanalyzed.cjs');
+      const reanalyzed = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          reanalyzedOutput,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(reanalyzed.status, reanalyzed.stderr).toBe(0);
+      const reanalyzedLines = (reanalyzed.stderr ?? '').split(/\r?\n/);
+      const reanalyzedMode = reanalyzedLines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+      );
+      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=reanalyzed');
+      const reanalyzedReport = reanalyzedLines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+      );
+      expect(reanalyzedReport, reanalyzed.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(reanalyzedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `body-arguments/reanalyzed: ${counter}: ${reanalyzedReport}`,
+        ).toBe(0);
+      }
+      const actualBodyArguments = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
+      expect(actualBodyArguments.status, actualBodyArguments.stderr).toBe(0);
+      expect(actualBodyArguments.stdout).toBe(nativeBodyArguments.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator captured arguments exposes ten compileable owner mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-arguments-mutants-'));
     const input = join(dir, 'entry.js');

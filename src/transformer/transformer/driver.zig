@@ -404,8 +404,10 @@ fn moveUnusedParameterEngine(self: anytype, function_owner: NodeIndex, old_param
     try @import("../native_arguments.zig").record(self, @fromBackingInt(id), body_scope);
 }
 
-/// A native non-simple replacement retains the original parameter environment.
-/// Publish its actual formal edge without relocating any binding or reference.
+/// Preserve an output formal-list edge when lowering leaves live identities in
+/// the source parameter environment. This includes native non-simple formals
+/// and a simple lowered list whose original implicit arguments engine remains
+/// observable from that environment.
 fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_params: NodeIndex, new_params: NodeIndex, body_scope: @import("../../semantic/scope.zig").ScopeId) Error!bool {
     if (!self.semantic_edit_enabled or body_scope.isNone() or old_params == new_params) return false;
     for ([_]NodeIndex{ function_owner, old_params, new_params }) |node|
@@ -430,7 +432,42 @@ fn retainNativeParameterCarrier(self: anytype, function_owner: NodeIndex, old_pa
     for (0..formals.len) |offset| {
         if (@import("../native_constructor_timing.zig").simpleFormalBinding(self, self.ast.readExtraNode(formals.start, @intCast(offset))) == null) non_simple = true;
     }
-    if (!non_simple) return false;
+    if (!non_simple) {
+        // A generated native-arguments read may already have a parameter
+        // handoff plan for this source formal list. Leave its carrier
+        // unclaimed so completeParameterHandoff can validate and publish it.
+        var pending_handoffs = self.native_arguments_parameter_handoffs.iterator();
+        while (pending_handoffs.next()) |entry| {
+            if (entry.value_ptr.params == old_params) return false;
+        }
+        if (!self.semantic_edit_enabled) return false;
+        const editor = if (self.semantic_editor) |*value| value else return false;
+        if (source_scope.toIndex() >= editor.scope_maps.items.len or body_scope.toIndex() >= editor.scope_maps.items.len or
+            editor.scope_maps.items[body_scope.toIndex()].get("arguments") != null) return false;
+        const id = editor.scope_maps.items[source_scope.toIndex()].get("arguments") orelse return false;
+        if (id >= editor.symbols.items.len) return false;
+        const engine = editor.symbols.items[id];
+        if (engine.scope_id != source_scope or engine.kind != .parameter or engine.synthetic_kind != .implicit_arguments or
+            engine.reference_count == 0 or engine.write_count != 0) return false;
+        for (editor.symbols.items, 0..) |symbol, other| {
+            if (other != id and symbol.synthetic_kind == .implicit_arguments and symbol.scope_id == body_scope) return false;
+        }
+        var declarations: usize = 0;
+        var reads: usize = 0;
+        for (editor.references.items) |row| {
+            if (@backingInt(row.symbol_id) != id) continue;
+            if (row.flags.declare) {
+                if (!row.node_index.isNone() or !row.declaration_node_index.isNone() or row.scope_id != source_scope or
+                    !std.meta.eql(row.flags, @as(@import("../../semantic/symbol.zig").ReferenceFlags, .{ .declare = true }))) return false;
+                declarations += 1;
+                continue;
+            }
+            if (!row.flags.read or row.flags.write or (row.scope_id != source_scope and row.scope_id != body_scope))
+                return false;
+            reads += 1;
+        }
+        if (declarations != 1 or reads != engine.reference_count) return false;
+    }
     try self.remapCopiedScopeOwner(old_params, new_params);
     return true;
 }
