@@ -2422,6 +2422,79 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe('3 9');
   });
 
+  test('standalone transpile keeps generated Object external before a shadow initializes', () => {
+    const source = `
+      class Shadowed { static value() { return 'ok'; } }
+      const Object = {
+        defineProperty() { throw new Error('source Object was called before initialization'); },
+        marker: 42,
+      };
+      console.log(Shadowed.value(), Object.marker);
+    `;
+    const execute = (code: string) => {
+      const output: string[] = [];
+      const consoleStub = {
+        log: (...values: unknown[]) => output.push(values.map(String).join(' ')),
+      };
+      new Function('console', code)(consoleStub);
+      return output.join('\n');
+    };
+    const expected = execute(source);
+    expect(expected).toBe('ok 42');
+
+    const configurations = [
+      { name: 'default', options: {} },
+      { name: 'keep-names', options: { keepNames: true } },
+      { name: 'syntax-only', options: { minifySyntax: true } },
+      { name: 'identifier-minify', options: { minifyIdentifiers: true } },
+    ];
+    for (const configuration of configurations) {
+      const result = transpile(source, {
+        filename: `object-shadow-${configuration.name}.js`,
+        target: 'es5',
+        format: 'cjs',
+        platform: 'node',
+        ...configuration.options,
+      });
+      expect(result.code, configuration.name).toContain('Object.defineProperty');
+      expect(execute(result.code), configuration.name).toBe(expected);
+    }
+  });
+
+  test('standalone transpile renames only Object bindings visible to generated class helpers', () => {
+    const source = `
+      const Object$1 = 'occupied';
+      function unrelated(Object) { return Object.marker; }
+      function make(Object) {
+        class Shadowed { static value() { return 'ok'; } }
+        return Shadowed;
+      }
+      const O\\u0062ject = {
+        defineProperty() { throw new Error('source Object was called'); },
+        marker: 42,
+      };
+      const result = make({
+        defineProperty() { throw new Error('parameter Object was called'); },
+      });
+      console.log(result.value(), Object.marker, unrelated({ marker: 7 }), Object$1);
+    `;
+    const result = transpile(source, {
+      filename: 'nested-object-shadow.js',
+      target: 'es5',
+      format: 'cjs',
+      platform: 'node',
+    });
+    const output: string[] = [];
+    const consoleStub = {
+      log: (...values: unknown[]) => output.push(values.map(String).join(' ')),
+    };
+    new Function('console', result.code)(consoleStub);
+    expect(output.join('\n')).toBe('ok 42 7 occupied');
+    expect(result.code).toContain('Object.defineProperty');
+    expect(result.code).toContain('Object$2');
+    expect(result.code).toContain('function unrelated(Object)');
+  });
+
   test('CommonJS script mangling preserves direct eval and with lookup names', async () => {
     const fixture = await createFixture({
       'input.cjs': `
