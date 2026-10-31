@@ -6277,6 +6277,53 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
     return true;
 }
 
+/// Keep base-less async-generator methods on object literals only when each
+/// lowered method has an exact source function owner and the same narrow
+/// implicit-arguments parameter certificate used for class methods. Computed
+/// names and `super` retain the full semantic reanalysis fallback.
+fn registerRetainableEs5AsyncGeneratorObjectMethods(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    object_node: ast_mod.Node,
+    retained_async_generator_methods: *std.AutoHashMapUnmanaged(u32, void),
+    retained_parameter_arguments_defaults: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (object_node.tag != .object_expression) return false;
+    const properties = object_node.data.list;
+    if (properties.start > ast.extra_data.items.len or
+        properties.len > ast.extra_data.items.len - properties.start) return false;
+    for (ast.extra_data.items[properties.start .. properties.start + properties.len]) |raw_property| {
+        if (raw_property >= ast.nodes.items.len) return false;
+        const method = ast.nodes.items[raw_property];
+        if (method.tag != .method_definition) continue;
+        const method_extra = method.data.extra;
+        if (method_extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.deco_len) return false;
+        const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+        if (flags != (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator)) continue;
+        if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key or
+            methodHasSuperExpression(ast, method)) return false;
+        const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+            ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
+        ));
+        if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
+            ast.getNode(key).tag != .identifier_reference) return false;
+        const owner = semantic.scope_owner_map.get(raw_property) orelse return false;
+        if (owner >= semantic.scopes.len or semantic.scopes[owner].kind != .function or
+            semantic.scopes[owner].blocksMangling() or
+            methodHasUnsupportedImplicitArgumentsParameterReferences(
+                ast,
+                semantic,
+                method,
+                owner,
+                retained_parameter_arguments_defaults,
+            )) return false;
+        retained_async_generator_methods.put(ast.allocator, raw_property, {}) catch return false;
+    }
+    return true;
+}
+
 fn methodHasUnsupportedImplicitArgumentsParameterReferences(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -8533,6 +8580,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     class_node,
                     &lowered_simple_constructor_default_nodes,
                 )) return false;
+        }
+    }
+
+    if (options.unsupported.async_generator and options.unsupported.async_await and
+        options.unsupported.generator)
+    {
+        for (reachable_nodes) |raw_idx| {
+            const object_node = ast.nodes.items[raw_idx];
+            if (object_node.tag != .object_expression) continue;
+            if (!registerRetainableEs5AsyncGeneratorObjectMethods(
+                ast,
+                semantic,
+                object_node,
+                &retained_async_generator_methods,
+                &retained_async_generator_parameter_arguments_defaults,
+            )) return false;
         }
     }
 
@@ -14580,6 +14643,47 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { async *items() { var nested = async () => { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
         "class Box { async *items() { var nested = async function () { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
     };
+    for (rejected_sources) |source| {
+        const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(!decision.graph_gate);
+    }
+}
+
+test "#6193 retains exact base-less ES5 async generator object method owners" {
+    const options: TransformOptions = .{
+        .strip_types = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    };
+    const retained_sources = [_][]const u8{
+        "var values = { async *items() { yield 1; } };",
+        "var values = { async *items(value = arguments.length) { yield value; } };",
+        "var values = { async *items(value = arguments[1]) { yield value; } };",
+        "var values = { async *items(value = arguments[1]) { for await (const item of [Promise.resolve(1)]) yield value + item; } };",
+        "var values = { async *items() { yield arguments[0]; } };",
+        "var outer = { values: { async *items(value = arguments[1]) { yield value; } } };",
+    };
+    for (retained_sources) |source| {
+        const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(decision.graph_gate);
+    }
+
+    const rejected_sources = [_][]const u8{
+        "var values = { async *[key]() { yield 1; } };",
+        "var values = { async *['items']() { yield 1; } };",
+        "var values = { async *items() { yield super.read(); } };",
+        "var values = { async *items() { eval('0'); yield 1; } };",
+        "var values = { async *items(value = arguments?.[1]) { yield value; } };",
+        "var values = { async *items(index = 0, value = arguments[index]) { yield value; } };",
+        "function nextIndex() { return 1; } var values = { async *items(value = arguments[nextIndex()]) { yield value; } };",
+        "var values = { async *items(value = arguments[0 + 1]) { yield value; } };",
+        "var values = { async *items(value = arguments[0]++) { yield value; } };",
+        "var values = { async *items(value = arguments) { yield value; } };",
+        "var values = { async *items(arguments, value = arguments[1]) { yield value; } };",
+        "var values = { async *items({ value } = {}) { yield value; } };",
+        "var values = { async *items(value = (arguments[1])) { yield value; } };",
+        "var values = { async *items() { const nested = () => eval('0'); yield 1; } };",
+    };
+    try std.testing.expectEqual(@as(usize, 14), rejected_sources.len);
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
         try std.testing.expect(!decision.graph_gate);
