@@ -134,6 +134,18 @@ pub const CompletedAlias = struct {
     initializer: NodeIndex,
 };
 
+pub const CompletedGetter = struct {
+    source_export: SourceExport,
+    key: NodeIndex,
+    params: NodeIndex,
+    body: NodeIndex,
+    getter: NodeIndex,
+    scope: ScopeId,
+    read: NodeIndex,
+    exported: u32,
+    map: std.StringHashMapUnmanaged(usize),
+};
+
 /// Graph-local output proof. This is never serialized or recovered by name.
 pub const Completed = struct {
     module: *const Module,
@@ -144,10 +156,7 @@ pub const Completed = struct {
     binding: NodeIndex,
     declarator: NodeIndex,
     statement: NodeIndex,
-    getter: NodeIndex,
-    getter_scope: ScopeId,
-    read: NodeIndex,
-    exported: u32,
+    getters: []const CompletedGetter,
     aliases: []const CompletedAlias = &.{},
     nodes: []const ast_mod.Node,
     ids: []const ?u32,
@@ -165,7 +174,6 @@ pub const Completed = struct {
     boundary: u32,
     maps: []const std.StringHashMapUnmanaged(usize),
     root_map: std.StringHashMapUnmanaged(usize),
-    getter_map: std.StringHashMapUnmanaged(usize),
     cache: @import("module.zig").TransformCache,
     foreign_target: ?@import("binding_scanner.zig").CallsiteTarget = null,
     foreign_provider: ?ProviderSnapshot = null,
@@ -206,7 +214,7 @@ pub fn captureInstalledDiskSource(module: *Module, pair: *const @import("module_
     const ast = if (module.ast) |*value| value else return;
     const sem = if (module.semantic) |*value| value else return;
     if (ast.nodes.items.len == 0 or ast.is_typescript or ast.has_jsx or ast.has_decorator or
-        sem.scopes.len != 1 or (sem.symbols.items.len != 1 and sem.symbols.items.len != 2) or
+        sem.scopes.len != 1 or (sem.symbols.items.len < 1 or sem.symbols.items.len > 3) or
         ast.getNode(@fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)))).tag != .program or
         !sameBacking(ast_mod.Node, ast.nodes.items, pair.ast.nodes.items) or
         !sameBacking(u32, ast.extra_data.items, pair.ast.extra_data.items) or
@@ -261,6 +269,14 @@ fn matchesRestoredSource(module: *const Module, ast: *const Ast, sem: *const Sem
         sameBacking(std.StringHashMapUnmanaged(usize), receipt.maps, sem.scope_maps) and std.meta.eql(receipt.owners, sem.scope_owner_map);
 }
 
+const SourceExport = struct {
+    exported: u32,
+    name: []const u8,
+    binding: NodeIndex,
+    declaration_row: ?usize = null,
+    statement: NodeIndex = .none,
+};
+
 const Source = struct {
     root: NodeIndex,
     scope: ScopeId,
@@ -268,7 +284,8 @@ const Source = struct {
     declaration: NodeIndex,
     holder: u32,
     row: usize,
-    exported: u32,
+    exports: [2]SourceExport,
+    export_count: usize,
 };
 
 const SourceAlias = struct {
@@ -325,8 +342,9 @@ fn isReflectGet(ast: *const Ast, sem: *const Semantic, call: ast_mod.Node, expor
 }
 
 fn source(graph: *Graph, module: *const Module) !?Source {
-    if (module.wrap_kind != .none or module.transform_cache != null or module.import_bindings.len != 1 or
-        module.import_records.len != 1 or module.export_bindings.len != 1 or module.dynamic_imports.items.len != 0 or
+    const export_count = module.export_bindings.len;
+    if (graph.moduleCount() != 1 or module.index.toU32() != 0 or module.wrap_kind != .none or module.transform_cache != null or module.import_bindings.len != 1 or
+        module.import_records.len != 1 or (export_count != 1 and export_count != 2) or module.dynamic_imports.items.len != 0 or
         module.reachable_stmts != null or module.symbol_to_stmt != null) return null;
     if (module.parse_arena == null) return null;
     const ast = if (module.ast) |*value| value else return null;
@@ -334,7 +352,7 @@ fn source(graph: *Graph, module: *const Module) !?Source {
     if (ast.nodes.items.len == 0 or
         (!sameBacking(u8, ast.source, module.source) and !matchesRestoredSource(module, ast, sem))) return null;
     if (ast.transformed_root != null or ast.transform_boundary != null or ast.is_typescript or ast.has_jsx or ast.has_decorator or
-        sem.scopes.len != 1 or sem.symbols.items.len != 2 or sem.runtime_identities != null or
+        sem.scopes.len != 1 or sem.symbols.items.len != export_count + 1 or sem.runtime_identities != null or
         sem.strict_output_context.functions.len != 0 or graph.shouldRunTransformerPrePass(module, false)) return null;
     for (sem.scopes) |scope| if (scope.blocksMangling()) return null;
     const root: NodeIndex = @fromBackingInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
@@ -350,25 +368,52 @@ fn source(graph: *Graph, module: *const Module) !?Source {
     const declaration = binding.local_declaration_node orelse return null;
     if (@backingInt(specifier) >= sem.symbol_ids.len) return null;
     const holder = sem.symbol_ids[@backingInt(specifier)] orelse return null;
-    const exported = module.export_bindings[0];
-    if (exported.public_key_origin != null or exported.public_key_literal != null or exported.public_key_binding_value != null or
-        exported.has_public_key_literal or !asciiIdentifier(exported.exported_name) or !asciiIdentifier(exported.local_name)) return null;
-    const export_node = exported.local_symbol_node orelse return null;
-    if (@backingInt(export_node) >= sem.symbol_ids.len) return null;
-    const export_sid = sem.symbol_ids[@backingInt(export_node)] orelse return null;
-    if (export_sid == holder or export_sid >= sem.symbols.items.len or holder >= sem.symbols.items.len or
-        sem.symbols.items[export_sid].kind != .variable_const or sem.symbols.items[export_sid].scope_id != root_scope) return null;
-    // The shared coordinate collector and child walk use arena scratch.
+    if (holder >= sem.symbols.items.len) return null;
+    const holder_symbol = sem.symbols.items[holder];
+    const holder_span = holder_symbol.name;
+    if (holder_span.start & Ast.STRING_TABLE_BIT != 0 or holder_span.start > holder_span.end or holder_span.end > ast.source.len or
+        !asciiIdentifier(ast.getText(holder_span))) return null;
+    if (sem.scope_maps.len != sem.scopes.len or sem.scope_maps[root_scope.toIndex()].count() != export_count + 1 or
+        sem.scope_maps[root_scope.toIndex()].get(ast.getText(holder_symbol.name)) != @as(?usize, holder)) return null;
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const scratch_allocator = scratch.allocator();
     const source_contexts = try @import("../semantic/statement_coordinates.zig").collect(scratch_allocator, ast, root);
-    if (@backingInt(export_node) >= source_contexts.len) return null;
-    const export_context = source_contexts[@backingInt(export_node)] orelse return null;
+    var exports: [2]SourceExport = undefined;
+    var last_export_statement: u32 = 0;
+    for (module.export_bindings, 0..) |exported, i| {
+        if (exported.public_key_origin != null or exported.public_key_literal != null or exported.public_key_binding_value != null or
+            exported.has_public_key_literal or !asciiIdentifier(exported.exported_name) or !asciiIdentifier(exported.local_name)) return null;
+        const export_node = exported.local_symbol_node orelse return null;
+        if (@backingInt(export_node) >= sem.symbol_ids.len or @backingInt(export_node) >= source_contexts.len) return null;
+        const export_sid = sem.symbol_ids[@backingInt(export_node)] orelse return null;
+        if (export_sid == holder or export_sid >= sem.symbols.items.len or
+            sem.symbols.items[export_sid].kind != .variable_const or sem.symbols.items[export_sid].scope_id != root_scope) return null;
+        const span = sem.symbols.items[export_sid].name;
+        if (span.start & Ast.STRING_TABLE_BIT != 0 or span.start > span.end or span.end > ast.source.len or !asciiIdentifier(ast.getText(span)) or
+            !std.mem.eql(u8, exported.exported_name, ast.getText(span)) or !std.mem.eql(u8, exported.local_name, ast.getText(span)) or
+            ast.getNode(export_node).tag != .binding_identifier or !std.meta.eql(ast.getNode(export_node).data.string_ref, span) or
+            sem.scope_maps[root_scope.toIndex()].get(ast.getText(span)) != @as(?usize, export_sid)) return null;
+        for (exports[0..i]) |previous| if (previous.exported == export_sid or previous.binding == export_node or
+            std.mem.eql(u8, previous.name, exported.exported_name)) return null;
+        const context = source_contexts[@backingInt(export_node)] orelse return null;
+        last_export_statement = @max(last_export_statement, context.stmt_idx);
+        var declaration_row: ?usize = null;
+        for (sem.references, 0..) |reference, row_index| {
+            if (!reference.flags.declare or
+                (@backingInt(reference.symbol_id) != export_sid and reference.declaration_node_index != export_node)) continue;
+            if (declaration_row != null or @backingInt(reference.symbol_id) != export_sid or reference.declaration_node_index != export_node or
+                !reference.node_index.isNone() or !std.meta.eql(reference.flags, sem_mod.ReferenceFlags{ .declare = true }) or
+                reference.scope_id != root_scope or reference.stmt_idx != context.stmt_idx or reference.scope_stmt_idx != context.scope_stmt_idx) return null;
+            declaration_row = row_index;
+        }
+        if (declaration_row == null) return null;
+        exports[i] = .{ .exported = export_sid, .name = exported.exported_name, .binding = export_node, .declaration_row = declaration_row };
+    }
     const reachable = try walk.collectReachableNodeIndicesFrom(scratch_allocator, ast, root);
     const parents = try scratch_allocator.alloc(u32, ast.nodes.items.len);
     @memset(parents, 0);
-    var arguments: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var arguments: std.AutoHashMapUnmanaged(u32, usize) = .empty;
     for (reachable) |raw| {
         const parent = ast.nodes.items[raw];
         var children = walk.children(ast, parent);
@@ -381,27 +426,17 @@ fn source(graph: *Graph, module: *const Module) !?Source {
             .assignment_expression, .update_expression, .new_expression, .import_expression => return null,
             else => {},
         }
-        if (!isReflectGet(ast, sem, parent, exported.exported_name)) continue;
-        if (!ast.hasExtra(parent.data.extra, 2)) return null;
-        const start = ast.extra_data.items[parent.data.extra + 1];
-        const len = ast.extra_data.items[parent.data.extra + 2];
-        if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return null;
-        if (len != 2) return null;
-        try arguments.put(scratch_allocator, ast.extra_data.items[start], {});
+        const read = reflectGet(ast, sem, parent) orelse continue;
+        if (read.receiver >= sem.symbol_ids.len or sem.symbol_ids[read.receiver] != holder) continue;
+        var selected: ?usize = null;
+        for (exports[0..export_count], 0..) |exported, i| if (std.mem.eql(u8, exported.name, read.exported_name)) {
+            selected = i;
+        };
+        try arguments.put(scratch_allocator, read.receiver, selected orelse return null);
     }
-    // Raw source spans, not decoded scanner labels, define this ASCII-only
-    // family. Escaped bindings remain on the supported existing path.
-    const holder_symbol = sem.symbols.items[holder];
-    const export_symbol = sem.symbols.items[export_sid];
-    for ([_]@import("../lexer/token.zig").Span{ holder_symbol.name, export_symbol.name }) |span| {
-        if (span.start & Ast.STRING_TABLE_BIT != 0 or span.start > span.end or span.end > ast.source.len or
-            !asciiIdentifier(ast.getText(span))) return null;
-    }
-    if (sem.scope_maps.len != sem.scopes.len or sem.scope_maps[root_scope.toIndex()].count() != 2 or
-        sem.scope_maps[root_scope.toIndex()].get(ast.getText(holder_symbol.name)) != @as(?usize, holder) or
-        sem.scope_maps[root_scope.toIndex()].get(ast.getText(export_symbol.name)) != @as(?usize, export_sid)) return null;
     var row: ?usize = null;
     var reads: usize = 0;
+    var key_reads = [_]usize{ 0, 0 };
     for (sem.references, 0..) |reference, index| {
         if (@backingInt(reference.symbol_id) != holder) continue;
         if (reference.flags.declare) {
@@ -409,19 +444,18 @@ fn source(graph: *Graph, module: *const Module) !?Source {
             row = index;
         } else {
             if (!std.meta.eql(reference.flags, sem_mod.ReferenceFlags{ .read = true }) or reference.scope_id != root_scope) return null;
-            reads += 1;
-            // Only an actual reachable value argument with one structural
-            // parent. Stale/orphan arena nodes cannot supply this witness.
             const raw = @backingInt(reference.node_index);
-            if (raw >= parents.len or parents[raw] != 1 or !arguments.contains(raw)) return null;
+            if (raw >= parents.len or parents[raw] != 1) return null;
+            const key_index = arguments.get(raw) orelse return null;
             const context = source_contexts[raw] orelse return null;
-            if (reference.stmt_idx != context.stmt_idx or reference.scope_stmt_idx != context.scope_stmt_idx or context.stmt_idx <= export_context.stmt_idx) return null;
+            if (reference.stmt_idx != context.stmt_idx or reference.scope_stmt_idx != context.scope_stmt_idx or context.stmt_idx <= last_export_statement) return null;
+            reads += 1;
+            key_reads[key_index] += 1;
         }
     }
-    if (reads == 0) return null;
-    // No source function/class/loop or declaration beyond the known export.
-    // A scalar initializer leaves no pending lowering or foreign helper demand.
-    var scalar_export = false;
+    if (reads == 0 or (export_count == 2 and (reads != 2 or key_reads[0] != 1 or key_reads[1] != 1))) return null;
+    var scalar_exports: usize = 0;
+    var ordered_exports: [2]SourceExport = undefined;
     const statements = walk.topLevelStatementIndices(ast) orelse return null;
     for (statements) |raw| {
         const node = ast.getNode(@fromBackingInt(raw));
@@ -429,7 +463,7 @@ fn source(graph: *Graph, module: *const Module) !?Source {
             .directive, .expression_statement => {},
             .import_declaration => if (raw != @backingInt(declaration)) return null,
             .export_named_declaration => {
-                if (!ast.hasExtra(node.data.extra, 5)) return null;
+                if (scalar_exports >= export_count or !ast.hasExtra(node.data.extra, 5)) return null;
                 const decl_raw = ast.extra_data.items[node.data.extra];
                 if (decl_raw >= ast.nodes.items.len) return null;
                 const decl = ast.nodes.items[decl_raw];
@@ -440,20 +474,29 @@ fn source(graph: *Graph, module: *const Module) !?Source {
                 const declarator_raw = ast.extra_data.items[declarations_start];
                 if (declarator_raw >= ast.nodes.items.len) return null;
                 const item = ast.nodes.items[declarator_raw];
-                if (item.tag != .variable_declarator or !ast.hasExtra(item.data.extra, 2) or ast.extra_data.items[item.data.extra] != @backingInt(export_node) or
+                if (item.tag != .variable_declarator or !ast.hasExtra(item.data.extra, 2) or
                     ast.extra_data.items[item.data.extra + 1] != @backingInt(NodeIndex.none)) return null;
+                var selected: ?SourceExport = null;
+                for (exports[0..export_count]) |known| if (@backingInt(known.binding) == ast.extra_data.items[item.data.extra]) {
+                    if (selected != null) return null;
+                    selected = known;
+                };
+                const known = selected orelse return null;
+                for (ordered_exports[0..scalar_exports]) |previous| if (previous.exported == known.exported) return null;
+                ordered_exports[scalar_exports] = known;
+                ordered_exports[scalar_exports].statement = @fromBackingInt(raw);
                 const initializer = ast.extra_data.items[item.data.extra + 2];
                 if (initializer >= ast.nodes.items.len) return null;
                 switch (ast.nodes.items[initializer].tag) {
-                    .numeric_literal, .string_literal, .boolean_literal, .null_literal => scalar_export = true,
+                    .numeric_literal, .string_literal, .boolean_literal, .null_literal => scalar_exports += 1,
                     else => return null,
                 }
             },
             else => return null,
         }
     }
-    if (!scalar_export) return null;
-    return .{ .root = root, .scope = root_scope, .specifier = specifier, .declaration = declaration, .holder = holder, .row = row orelse return null, .exported = export_sid };
+    if (scalar_exports != export_count) return null;
+    return .{ .root = root, .scope = root_scope, .specifier = specifier, .declaration = declaration, .holder = holder, .row = row orelse return null, .exports = ordered_exports, .export_count = export_count };
 }
 
 /// A foreign consumer is admitted with namespace imports from one provider,
@@ -635,7 +678,16 @@ fn foreignSource(graph: *Graph, consumer: *Module, provider: *Module) !?ForeignI
         };
     }
     const foreign = ForeignInput{
-        .consumer = .{ .root = root, .scope = root_scope, .specifier = specifiers[0], .declaration = declarations[0], .holder = holders[0], .row = declaration_rows[0] orelse return null, .exported = @backingInt(provider_witness.symbol.inner) },
+        .consumer = .{
+            .root = root,
+            .scope = root_scope,
+            .specifier = specifiers[0],
+            .declaration = declarations[0],
+            .holder = holders[0],
+            .row = declaration_rows[0] orelse return null,
+            .exports = .{ .{ .exported = @backingInt(provider_witness.symbol.inner), .name = provider_witness.exported_name, .binding = provider_witness.local_symbol_node }, undefined },
+            .export_count = 1,
+        },
         .aliases = aliases,
         .provider = provider,
         .provider_semantic = provider_sem.*,
@@ -695,6 +747,7 @@ pub fn lower(graph: *Graph, options: Options) !void {
 }
 
 fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInput) !void {
+    if ((input.export_count != 1 and input.export_count != 2) or (foreign != null and input.export_count != 1)) return error.InvalidSelfNamespaceHolder;
     const a = module.parse_arena.?.allocator();
     // Value snapshots retain old backing; never deinit the source arena here.
     const old_ast = module.ast.?;
@@ -705,9 +758,6 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     ast.* = try Ast.cloneForTransformer(&old_ast, a);
     ast.transform_boundary = parser_count;
     var editor = try old_sem.beginEdit(a, ast);
-    const export_name = if (foreign) |value| value.exported_name else module.export_bindings[0].exported_name;
-    const key_span = try ast.addString(export_name);
-    const key = try ast.addNode(.{ .tag = .identifier_reference, .span = .EMPTY, .data = .{ .string_ref = key_span } });
     var candidate_module = module.*;
     var generated_declarations: []const NodeIndex = &.{};
     var completed_bindings: []@import("binding_scanner.zig").ImportBinding = undefined;
@@ -739,17 +789,26 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
     } else {
         completed_bindings = try a.dupe(@import("binding_scanner.zig").ImportBinding, module.import_bindings);
     }
-    const read_id = imported_id orelse @as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(input.exported));
-    const read_name = editor.symbols.items[@backingInt(read_id)].name;
-    const value_span = read_name;
-    const read = try ast.addNode(.{ .tag = .identifier_reference, .span = value_span, .data = .{ .string_ref = value_span } });
-    const returned = try ast.addNode(.{ .tag = .return_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
-    const body = try ast.addNode(.{ .tag = .block_statement, .span = .EMPTY, .data = .{ .list = try ast.addNodeList(&.{returned}) } });
-    const params = try ast.addNode(.{ .tag = .formal_parameters, .span = .EMPTY, .data = .{ .list = .{ .start = 0, .len = 0 } } });
-    const getter = try ast.addNode(.{ .tag = .method_definition, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(key), @backingInt(params), @backingInt(body), 2, 0, 0 }) } });
-    const getter_scope = try editor.addScope(input.scope, getter, .function, false);
-    try editor.addReference(read, read_id, getter_scope, .{ .read = true }, sem_mod.Reference.NO_STMT, sem_mod.Reference.NO_STMT);
-    const object = try ast.addNode(.{ .tag = .object_expression, .span = .EMPTY, .data = .{ .list = try ast.addNodeList(&.{getter}) } });
+    const getter_outputs = try a.alloc(CompletedGetter, input.export_count);
+    var getter_nodes: [2]NodeIndex = undefined;
+    for (input.exports[0..input.export_count], 0..) |known, i| {
+        const read_id = imported_id orelse @as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(known.exported));
+        const key_span = try ast.addString(known.name);
+        const key = try ast.addNode(.{ .tag = .identifier_reference, .span = .EMPTY, .data = .{ .string_ref = key_span } });
+        const read_name = editor.symbols.items[@backingInt(read_id)].name;
+        const read = try ast.addNode(.{ .tag = .identifier_reference, .span = read_name, .data = .{ .string_ref = read_name } });
+        const returned = try ast.addNode(.{ .tag = .return_statement, .span = .EMPTY, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
+        const body = try ast.addNode(.{ .tag = .block_statement, .span = .EMPTY, .data = .{ .list = try ast.addNodeList(&.{returned}) } });
+        const params = try ast.addNode(.{ .tag = .formal_parameters, .span = .EMPTY, .data = .{ .list = .{ .start = 0, .len = 0 } } });
+        const getter = try ast.addNode(.{ .tag = .method_definition, .span = .EMPTY, .data = .{ .extra = try ast.addExtras(&.{ @backingInt(key), @backingInt(params), @backingInt(body), 2, 0, 0 }) } });
+        const getter_scope = try editor.addScope(input.scope, getter, .function, false);
+        try editor.addReference(read, read_id, getter_scope, .{ .read = true }, sem_mod.Reference.NO_STMT, sem_mod.Reference.NO_STMT);
+        var captured = known;
+        captured.name = try a.dupe(u8, known.name);
+        getter_outputs[i] = .{ .source_export = captured, .key = key, .params = params, .body = body, .getter = getter, .scope = getter_scope, .read = read, .exported = @backingInt(read_id), .map = .empty };
+        getter_nodes[i] = getter;
+    }
+    const object = try ast.addNode(.{ .tag = .object_expression, .span = .EMPTY, .data = .{ .list = try ast.addNodeList(getter_nodes[0..input.export_count]) } });
     ast.has_object_getter = true;
     const holder_name = old_sem.symbols.items[input.holder].name;
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = holder_name, .data = .{ .string_ref = holder_name } });
@@ -859,10 +918,14 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         completed_bindings[index].local_declaration_node = alias.statement;
     }
     const binding_context = contexts[@backingInt(binding)] orelse return error.InvalidSelfNamespaceCoordinates;
-    const read_context = contexts[@backingInt(read)] orelse return error.InvalidSelfNamespaceCoordinates;
     if (binding_context.stmt_idx >= infos.stmts.len or input.holder >= infos.symbol_to_stmt.len or
-        infos.symbol_to_stmt[input.holder] != binding_context.stmt_idx or infos.stmts[binding_context.stmt_idx].node_idx != @backingInt(statement) or
-        read_context.stmt_idx != binding_context.stmt_idx or read_context.scope_stmt_idx != 0) return error.InvalidSelfNamespaceStatements;
+        infos.symbol_to_stmt[input.holder] != binding_context.stmt_idx or infos.stmts[binding_context.stmt_idx].node_idx != @backingInt(statement)) return error.InvalidSelfNamespaceStatements;
+    for (getter_outputs) |*output| {
+        const read_context = contexts[@backingInt(output.read)] orelse return error.InvalidSelfNamespaceCoordinates;
+        if (read_context.stmt_idx != binding_context.stmt_idx or read_context.scope_stmt_idx != 0 or
+            candidate.scope_owner_map.get(@backingInt(output.getter)) != @backingInt(output.scope)) return error.InvalidSelfNamespaceStatements;
+        output.map = candidate.scope_maps[output.scope.toIndex()];
+    }
     for (alias_outputs) |alias| {
         const alias_context = contexts[@backingInt(alias.initializer)] orelse return error.InvalidSelfNamespaceCoordinates;
         const alias_binding_context = contexts[@backingInt(alias.binding)] orelse return error.InvalidSelfNamespaceCoordinates;
@@ -915,7 +978,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
             .symbol_ids = candidate.symbol_ids,
             .symbols = candidate.symbols.items,
         });
-        if (!local.isValid() or local.semanticIndex().? != @backingInt(read_id) or
+        if (!local.isValid() or local.semanticIndex().? != getter_outputs[0].exported or
             !completed_bindings[namespace_count].symbol.eql(target.symbol.toRef())) return error.InvalidNamespaceProviderCallsite;
         recorded_foreign_target = target;
         provider_snapshot = try ProviderSnapshot.capture(a, foreign.?.provider, &provider_candidate.?, foreign.?.exported_name);
@@ -929,10 +992,7 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         .binding = binding,
         .declarator = declarator,
         .statement = statement,
-        .getter = getter,
-        .getter_scope = getter_scope,
-        .read = read,
-        .exported = @backingInt(read_id),
+        .getters = getter_outputs,
         .aliases = completed_aliases,
         .nodes = ast.nodes.items,
         .ids = candidate.symbol_ids,
@@ -950,7 +1010,6 @@ fn assemble(graph: *Graph, module: *Module, input: Source, foreign: ?ForeignInpu
         .boundary = parser_count,
         .maps = candidate.scope_maps,
         .root_map = candidate.scope_maps[input.scope.toIndex()],
-        .getter_map = candidate.scope_maps[getter_scope.toIndex()],
         .cache = cache,
         .foreign_target = recorded_foreign_target,
         .foreign_provider = provider_snapshot,
@@ -1039,16 +1098,96 @@ pub fn validate(graph: *const Graph, module: *const Module) !void {
         @import("runtime_callsite_targets.zig").validateTargetRole(graph, target) catch return error.InvalidSelfNamespaceHolder;
     } else {
         if (plan.aliases.len != 0 or module.import_records.len != 1 or module.import_bindings.len != 1 or record.resolved != module.index or
-            graph.getModule(record.resolved) != module) return error.InvalidSelfNamespaceHolder;
+            graph.getModule(record.resolved) != module or module.export_bindings.len != plan.getters.len) return error.InvalidSelfNamespaceHolder;
+        for (plan.getters) |output| {
+            var matches: usize = 0;
+            for (module.export_bindings) |exported| if (exported.local_symbol_node == output.source_export.binding) {
+                if (!std.mem.eql(u8, exported.exported_name, output.source_export.name) or
+                    !std.mem.eql(u8, exported.local_name, output.source_export.name)) return error.InvalidSelfNamespaceHolder;
+                matches += 1;
+            };
+            if (matches != 1) return error.InvalidSelfNamespaceHolder;
+        }
     }
     const cache = module.transform_cache orelse return error.InvalidSelfNamespaceHolder;
     if (!std.meta.eql(cache, plan.cache)) return error.InvalidSelfNamespaceHolder;
     try validatePayload(plan, ast, sem, module.import_bindings);
 }
 
+fn topStatementPosition(ast: *const Ast, root: NodeIndex, statement: NodeIndex) !u32 {
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or ast.getNode(root).tag != .program) return error.InvalidSelfNamespaceHolder;
+    const list = ast.getNode(root).data.list;
+    if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return error.InvalidSelfNamespaceHolder;
+    var found: ?u32 = null;
+    for (ast.extra_data.items[list.start..][0..list.len], 0..) |raw, i| if (raw == @backingInt(statement)) {
+        if (found != null) return error.InvalidSelfNamespaceHolder;
+        found = @intCast(i);
+    };
+    return found orelse error.InvalidSelfNamespaceHolder;
+}
+
+fn validateGetter(plan: Completed, output: CompletedGetter, ast: *const Ast, sem: *const Semantic, top_statement: u32) !void {
+    if (output.exported >= sem.symbols.items.len or @backingInt(output.read) >= sem.symbol_ids.len or
+        sem.symbol_ids[@backingInt(output.read)] != output.exported or output.scope.toIndex() >= sem.scopes.len or
+        sem.scopes[output.scope.toIndex()].parent != plan.root_scope or sem.scopes[output.scope.toIndex()].kind != .function or
+        !sem.scopes[output.scope.toIndex()].is_strict or sem.scope_owner_map.get(@backingInt(output.getter)) != @backingInt(output.scope) or
+        sem.symbols.items[output.exported].kind != @as(sem_mod.SymbolKind, if (plan.foreign_target == null) .variable_const else .import_binding) or
+        sem.symbols.items[output.exported].scope_id != plan.root_scope or
+        @backingInt(output.key) >= ast.nodes.items.len or @backingInt(output.params) >= ast.nodes.items.len or
+        @backingInt(output.body) >= ast.nodes.items.len or @backingInt(output.getter) >= ast.nodes.items.len or
+        @backingInt(output.read) >= ast.nodes.items.len) return error.InvalidSelfNamespaceHolder;
+    const map = sem.scope_maps[output.scope.toIndex()];
+    if (map.metadata != output.map.metadata or map.count() != 0) return error.InvalidSelfNamespaceHolder;
+    const key = ast.getNode(output.key);
+    const getter = ast.getNode(output.getter);
+    const params = ast.getNode(output.params);
+    const body = ast.getNode(output.body);
+    const read = ast.getNode(output.read);
+    if (key.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(key.data.string_ref), output.source_export.name) or
+        getter.tag != .method_definition or !ast.hasExtra(getter.data.extra, 5) or
+        params.tag != .formal_parameters or params.data.list.len != 0 or body.tag != .block_statement or body.data.list.len != 1 or
+        body.data.list.start >= ast.extra_data.items.len or read.tag != .identifier_reference) return error.InvalidSelfNamespaceHolder;
+    const extras = ast.extra_data.items;
+    const extra = getter.data.extra;
+    if (extras[extra] != @backingInt(output.key) or extras[extra + 1] != @backingInt(output.params) or
+        extras[extra + 2] != @backingInt(output.body) or extras[extra + 3] != 2 or extras[extra + 4] != 0 or extras[extra + 5] != 0)
+        return error.InvalidSelfNamespaceHolder;
+    const returned_raw = extras[body.data.list.start];
+    if (returned_raw >= ast.nodes.items.len or ast.nodes.items[returned_raw].tag != .return_statement or
+        ast.nodes.items[returned_raw].data.unary.operand != output.read) return error.InvalidSelfNamespaceHolder;
+    if (plan.foreign_target) |target| {
+        const provider = plan.foreign_provider orelse return error.InvalidSelfNamespaceHolder;
+        if (plan.getters.len != 1 or output.source_export.exported != @backingInt(target.symbol.inner) or
+            output.source_export.binding != provider.export_anchor or !std.mem.eql(u8, output.source_export.name, provider.exported_name) or
+            output.source_export.declaration_row != null or !output.source_export.statement.isNone()) return error.InvalidSelfNamespaceHolder;
+    } else {
+        const known = output.source_export;
+        if (output.exported != known.exported or @backingInt(known.binding) >= plan.boundary or
+            @backingInt(known.binding) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(known.binding)] != known.exported or
+            ast.getNode(known.binding).tag != .binding_identifier or
+            !std.mem.eql(u8, ast.getText(ast.getNode(known.binding).data.string_ref), known.name)) return error.InvalidSelfNamespaceHolder;
+        const row = known.declaration_row orelse return error.InvalidSelfNamespaceHolder;
+        if (row >= sem.references.len) return error.InvalidSelfNamespaceHolder;
+        const source_row = sem.references[row];
+        const source_statement = try topStatementPosition(ast, plan.root, known.statement);
+        if (@backingInt(source_row.symbol_id) != known.exported or source_row.declaration_node_index != known.binding or
+            !source_row.node_index.isNone() or !std.meta.eql(source_row.flags, sem_mod.ReferenceFlags{ .declare = true }) or
+            source_row.scope_id != plan.root_scope or source_row.stmt_idx != source_statement or source_row.scope_stmt_idx != source_statement)
+            return error.InvalidSelfNamespaceHolder;
+    }
+    var rows: usize = 0;
+    for (sem.references) |reference| if (reference.node_index == output.read) {
+        if (@backingInt(reference.symbol_id) != output.exported or reference.scope_id != output.scope or
+            !std.meta.eql(reference.flags, sem_mod.ReferenceFlags{ .read = true }) or
+            reference.stmt_idx != top_statement or reference.scope_stmt_idx != 0) return error.InvalidSelfNamespaceHolder;
+        rows += 1;
+    };
+    if (rows != 1) return error.InvalidSelfNamespaceHolder;
+}
+
 fn validatePayload(plan: Completed, ast: *const Ast, sem: *const Semantic, bindings: []const @import("binding_scanner.zig").ImportBinding) !void {
-    const expected_export_kind: sem_mod.SymbolKind = if (plan.foreign_target == null) .variable_const else .import_binding;
-    if ((plan.foreign_target == null and plan.aliases.len != 0) or
+    if ((plan.getters.len != 1 and plan.getters.len != 2) or (plan.foreign_target != null and plan.getters.len != 1) or
+        (plan.foreign_target == null and plan.aliases.len != 0) or
         sem.owner_token != plan.owner or ast.transformed_root != plan.root or
         ast.nodes.items.ptr != plan.nodes.ptr or ast.nodes.items.len != plan.nodes.len or
         sem.symbol_ids.ptr != plan.ids.ptr or sem.symbol_ids.len != plan.ids.len or
@@ -1056,28 +1195,43 @@ fn validatePayload(plan: Completed, ast: *const Ast, sem: *const Semantic, bindi
         sem.scope_maps.ptr != plan.maps.ptr or sem.scope_maps.len != plan.maps.len or
         sem.symbols.items.len != plan.expected_symbols.len or sem.references.len != plan.references.len or !ast.has_object_getter or ast.transform_boundary != plan.boundary or
         ast.string_table.items.ptr != plan.strings.ptr or ast.string_table.items.len != plan.strings.len or
-        plan.holder >= sem.symbols.items.len or plan.exported >= sem.symbols.items.len or
+        plan.holder >= sem.symbols.items.len or
         @backingInt(plan.binding) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(plan.binding)] != plan.holder or
-        @backingInt(plan.read) >= sem.symbol_ids.len or sem.symbol_ids[@backingInt(plan.read)] != plan.exported or
         sem.symbols.items[plan.holder].kind != .variable_const or sem.symbols.items[plan.holder].scope_id != plan.root_scope or
-        sem.symbols.items[plan.exported].kind != expected_export_kind or
-        plan.getter_scope.toIndex() >= sem.scopes.len or plan.root_scope.toIndex() >= sem.scopes.len or
-        sem.scopes[plan.getter_scope.toIndex()].parent != plan.root_scope or sem.scopes[plan.getter_scope.toIndex()].kind != .function or
-        !sem.scopes[plan.getter_scope.toIndex()].is_strict or
-        sem.scope_owner_map.count() != 2 or
-        sem.scope_owner_map.get(@backingInt(plan.root)) != @backingInt(plan.root_scope) or
-        sem.scope_owner_map.get(@backingInt(plan.getter)) != @backingInt(plan.getter_scope)) return error.InvalidSelfNamespaceHolder;
+        plan.root_scope.toIndex() >= sem.scopes.len or
+        sem.scope_owner_map.count() != 1 + plan.getters.len or
+        sem.scope_owner_map.get(@backingInt(plan.root)) != @backingInt(plan.root_scope)) return error.InvalidSelfNamespaceHolder;
     if (!std.mem.eql(u8, std.mem.sliceAsBytes(ast.nodes.items), std.mem.sliceAsBytes(plan.expected_nodes)) or
         !std.mem.eql(u32, ast.extra_data.items, plan.expected_extras) or
         !std.mem.eql(u8, ast.source, plan.source_bytes) or
         !std.mem.eql(u8, ast.string_table.items, plan.expected_strings) or
         !std.mem.eql(u32, ast.preserve_lexical_declaration_indices.items, plan.expected_lexical)) return error.InvalidSelfNamespaceHolder;
     const root_map = sem.scope_maps[plan.root_scope.toIndex()];
-    const getter_map = sem.scope_maps[plan.getter_scope.toIndex()];
-    if (root_map.metadata != plan.root_map.metadata or getter_map.metadata != plan.getter_map.metadata or
-        root_map.count() != 2 + plan.aliases.len or getter_map.count() != 0 or
-        root_map.get(ast.getText(sem.symbols.items[plan.holder].name)) != @as(?usize, plan.holder) or
-        root_map.get(ast.getText(sem.symbols.items[plan.exported].name)) != @as(?usize, plan.exported)) return error.InvalidSelfNamespaceHolder;
+    if (root_map.metadata != plan.root_map.metadata or root_map.count() != 1 + plan.getters.len + plan.aliases.len or
+        root_map.get(ast.getText(sem.symbols.items[plan.holder].name)) != @as(?usize, plan.holder)) return error.InvalidSelfNamespaceHolder;
+    const top_statement = try topStatementPosition(ast, plan.root, plan.statement);
+    if (@backingInt(plan.declarator) >= ast.nodes.items.len) return error.InvalidSelfNamespaceHolder;
+    const declarator = ast.getNode(plan.declarator);
+    if (declarator.tag != .variable_declarator or !ast.hasExtra(declarator.data.extra, 2)) return error.InvalidSelfNamespaceHolder;
+    const object_raw = ast.extra_data.items[declarator.data.extra + 2];
+    if (object_raw >= ast.nodes.items.len or ast.nodes.items[object_raw].tag != .object_expression) return error.InvalidSelfNamespaceHolder;
+    const properties = ast.nodes.items[object_raw].data.list;
+    if (properties.len != plan.getters.len or properties.start > ast.extra_data.items.len or properties.len > ast.extra_data.items.len - properties.start)
+        return error.InvalidSelfNamespaceHolder;
+    var previous_source_statement: ?u32 = null;
+    for (plan.getters, 0..) |output, i| {
+        if (ast.extra_data.items[properties.start + i] != @backingInt(output.getter) or
+            output.exported >= sem.symbols.items.len or root_map.get(ast.getText(sem.symbols.items[output.exported].name)) != @as(?usize, output.exported)) return error.InvalidSelfNamespaceHolder;
+        for (plan.getters[0..i]) |previous| if (previous.exported == output.exported or previous.getter == output.getter or
+            previous.scope == output.scope or previous.read == output.read or previous.key == output.key or
+            std.mem.eql(u8, previous.source_export.name, output.source_export.name)) return error.InvalidSelfNamespaceHolder;
+        try validateGetter(plan, output, ast, sem, top_statement);
+        if (plan.foreign_target == null) {
+            const source_statement = try topStatementPosition(ast, plan.root, output.source_export.statement);
+            if (previous_source_statement) |previous| if (source_statement <= previous) return error.InvalidSelfNamespaceHolder;
+            previous_source_statement = source_statement;
+        }
+    }
     for (plan.aliases) |alias| {
         if (alias.holder >= sem.symbols.items.len or alias.holder == plan.holder or
             @backingInt(alias.binding) >= sem.symbol_ids.len or @backingInt(alias.initializer) >= sem.symbol_ids.len or
@@ -1155,6 +1309,6 @@ fn validatePayload(plan: Completed, ast: *const Ast, sem: *const Semantic, bindi
         const callsite = bindings[namespace_count];
         if (callsite.callsite_target == null or !std.meta.eql(callsite.callsite_target.?, target) or
             callsite.kind != .named or callsite.import_record_index != namespace_count or
-            callsite.local_symbol.semanticIndex() != @as(?u32, plan.exported)) return error.InvalidSelfNamespaceHolder;
+            callsite.local_symbol.semanticIndex() != @as(?u32, plan.getters[0].exported)) return error.InvalidSelfNamespaceHolder;
     } else if (bindings.len != 1) return error.InvalidSelfNamespaceHolder;
 }
