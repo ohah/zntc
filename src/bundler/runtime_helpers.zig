@@ -553,14 +553,12 @@ pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++
 /// The provider is outside a pinned source parameter's lexical environment.
 /// Keep this a pure declaration: unused class families must not read Object.
 pub const CLASS_DEFINE_PROPERTY_RUNTIME =
-    \\var __classDefineProperty = function(target, key, descriptor) {
+    \\function __classDefineProperty(target, key, descriptor) {
     \\  return Object.defineProperty(target, key, descriptor);
-    \\};
+    \\}
     \\
 ;
-pub const CLASS_DEFINE_PROPERTY_RUNTIME_MIN = "var " ++ NAMES.CLASS_DEFINE_PROPERTY_MIN ++ "=function(t,k,d){return Object.defineProperty(t,k,d)};";
-pub const CLASS_CORE_RUNTIME = CLASS_CALL_CHECK_RUNTIME ++ CLASS_DEFINE_PROPERTY_RUNTIME;
-pub const CLASS_CORE_RUNTIME_MIN = CLASS_CALL_CHECK_RUNTIME_MIN ++ CLASS_DEFINE_PROPERTY_RUNTIME_MIN;
+pub const CLASS_DEFINE_PROPERTY_RUNTIME_MIN = "function " ++ NAMES.CLASS_DEFINE_PROPERTY_MIN ++ "(t,k,d){return Object.defineProperty(t,k,d)}";
 
 /// __callSuper: super() 호출을 Reflect.construct로 래핑 (SWC _call_super 호환).
 /// 네이티브 ES6 클래스(Error, Map 등)를 extends할 때 .call()이 불가하므로
