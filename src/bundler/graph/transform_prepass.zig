@@ -3655,8 +3655,9 @@ fn isRetainableBoundStaticFieldMemberRead(
 
 /// A computed key inside a static-block super continuation argument may call
 /// an exact-bound identifier or dot-member callee once. Keep its arguments to
-/// source-bound values so optional calls, computed callees, and nested effects
-/// stay on the graph-resync path.
+/// source-bound values or exact-bound non-optional member reads with safe keys.
+/// Optional calls/reads, computed callees, and nested effects stay on the
+/// graph-resync path.
 fn isRetainableStaticBlockSuperArgumentKeyCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3668,7 +3669,7 @@ fn isRetainableStaticBlockSuperArgumentKeyCall(
         call_idx,
         false,
         false,
-        false,
+        true,
         false,
         .none,
         .disallowed,
@@ -13503,6 +13504,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.graph_gate);
     try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.allow_super_set);
+
+    const retained_static_super_computed_root_nested_key_call_member_read_argument = try staticBlockPrepassDecisionForTest(
+        "const key = 'value'; const keyArgument = { get name() { return 'argument'; } }; const keyProvider = { pick(value) { return value; } }; class Base extends Object { static get value() { return { child: { marker: 'child', read(value) { return this.marker + ':' + value; } } }; } } class Counter extends Base { static { this.result = super[key].child.read(keyProvider[keyProvider.pick(keyArgument.name)]); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_computed_root_nested_key_call_member_read_argument.source_candidate);
+    try std.testing.expect(retained_static_super_computed_root_nested_key_call_member_read_argument.graph_gate);
+    try std.testing.expect(retained_static_super_computed_root_nested_key_call_member_read_argument.allow_super_get);
+    try std.testing.expect(!retained_static_super_computed_root_nested_key_call_member_read_argument.allow_super_set);
 
     const rejected_static_super_continuation_invocations = [_][]const u8{
         "super[key]('argument')",
