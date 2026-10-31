@@ -435,11 +435,9 @@ pub fn Methods(comptime Transformer: type) type {
             const role = flags & ~ast_mod.MethodFlags.is_static;
             switch (role) {
                 0, ast_mod.MethodFlags.is_getter, ast_mod.MethodFlags.is_setter => {},
-                ast_mod.MethodFlags.is_async, ast_mod.MethodFlags.is_generator => {
-                    if ((flags & ast_mod.MethodFlags.is_static) == 0) return false;
-                },
-                // Async generators, private/generated accessors, and TS-only
-                // member roles are outside this measured descriptor family.
+                ast_mod.MethodFlags.is_async, ast_mod.MethodFlags.is_generator, ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator => {},
+                // Private/generated accessors and TS-only member roles remain
+                // outside this measured descriptor family.
                 else => return false,
             }
             const key = self.ast.getNode(self.readNodeIdx(source.data.extra, MethodExtra.key));
