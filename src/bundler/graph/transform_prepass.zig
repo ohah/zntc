@@ -5783,9 +5783,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// followed by one accessor or a compatible getter/setter pair. Under a source
 /// Object shadow, distinct simple accessor pairs are admitted independently.
 /// ES5 async class methods are admitted when their state-machine scopes pass
-/// the retained async preflight. Under a source Object shadow, a simple
-/// downleveled sync generator method is admitted only without `super` and with
-/// its exact method owner registered. A derived class method may use `super`
+/// the retained async preflight. A simple downleveled sync generator method
+/// is admitted only without `super` and with its exact method owner registered.
+/// A derived class method may use `super`
 /// only directly in its body, where its exact home-object reference remains in
 /// the class scope.
 /// One explicit constructor with only simple identifier parameters or
@@ -5871,8 +5871,7 @@ fn isSimpleClass(
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
         const is_es5_async_method = allow_es5_async_class_methods and
             (is_es5_async_instance_method or is_es5_async_static_method);
-        const is_es5_generator_method = source_object_shadows_class and
-            allow_es5_generator_class_methods and
+        const is_es5_generator_method = allow_es5_generator_class_methods and
             (flags == ast_mod.MethodFlags.is_generator or
                 flags == (ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_static));
         const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or
@@ -5884,12 +5883,12 @@ fn isSimpleClass(
         // Lowered simple accessors and methods share the explicit-global
         // Object.defineProperty helper. ES5 async methods additionally register
         // their state-machine scopes and references before this graph can be
-        // retained. Generator methods in this source-Object subset must also
-        // register the exact state-machine owner and cannot use `super`.
+        // retained. Generator methods must also register the exact
+        // state-machine owner and cannot use `super`.
         if (source_object_shadows_class and flags != 0 and
             flags != ast_mod.MethodFlags.is_static and !is_plain_accessor and
             !is_es5_async_method and !is_es5_generator_method) return false;
-        if (is_es5_generator_method and methodHasSuperExpression(ast, member)) return false;
+        if (is_es5_generator_method and (!super.isNone() or methodHasSuperExpression(ast, member))) return false;
         if (is_es5_generator_method and
             (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.deco_len or
                 extras[method_extra + ast_mod.MethodExtra.deco_len] != 0)) return false;
@@ -6177,9 +6176,9 @@ fn registerRetainableEs5AsyncClassMethods(
 }
 
 /// A downleveled sync generator class method uses its source method owner for
-/// generated state-machine scopes. Keep only simple methods without `super`;
-/// the method-owner set below lets the exact prepass admit those nodes while
-/// leaving async generators and derived/home-object cases on reanalysis.
+/// generated state-machine scopes. Keep only simple base-less methods without
+/// `super`; the method-owner set below lets the exact prepass admit those nodes
+/// while leaving async generators and derived/home-object cases on reanalysis.
 fn registerRetainableEs5GeneratorClassMethods(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6192,7 +6191,7 @@ fn registerRetainableEs5GeneratorClassMethods(
         ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
     const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]));
     const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]));
-    if (!super_idx.isNone() or body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
         ast.getNode(body_idx).tag != .class_body) return false;
     const members = ast.getNode(body_idx).data.list;
     if (members.start > ast.extra_data.items.len or
@@ -6207,7 +6206,7 @@ fn registerRetainableEs5GeneratorClassMethods(
         const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
         if (flags != ast_mod.MethodFlags.is_generator and
             flags != (ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_static)) continue;
-        if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
+        if (!super_idx.isNone() or ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
             methodHasSuperExpression(ast, member)) return false;
         const owner = semantic.scope_owner_map.get(raw_member_idx) orelse return false;
         if (owner >= semantic.scopes.len or semantic.scopes[owner].kind != .function or
@@ -8263,7 +8262,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             )) return false;
             if (options.unsupported.async_await and options.unsupported.generator and
                 !registerRetainableEs5AsyncClassMethods(ast, class_node, &retained_async_functions)) return false;
-            if (source_object_shadows_class and options.unsupported.generator and
+            if (options.unsupported.generator and
                 !registerRetainableEs5GeneratorClassMethods(
                     ast,
                     semantic,
@@ -14038,7 +14037,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
     )).source_candidate);
 }
 
-test "#6193 retains exact ES5 generator class method owners only under the Object shadow gate" {
+test "#6193 retains exact base-less ES5 sync generator class method owners" {
     const options: TransformOptions = .{
         .strip_types = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -14059,11 +14058,31 @@ test "#6193 retains exact ES5 generator class method owners only under the Objec
     );
     try std.testing.expect(static_method.graph_gate);
 
+    const unshadowed_instance_method = try staticBlockPrepassDecisionForTest(
+        "class Box { *items() { yield Object.name; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(unshadowed_instance_method.graph_gate);
+
+    const unshadowed_static_method = try staticBlockPrepassDecisionForTest(
+        "class Box { static *items() { yield Object.name; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(unshadowed_static_method.graph_gate);
+
     const rejected_sources = [_][]const u8{
         "var Object = {}; class Base { read() {} } class Box extends Base { *items() { yield super.read(); } }",
         "var Object = {}; var key = 'items'; class Box { *[key]() { yield 1; } }",
         "var Object = {}; class Box { async *items() { yield await Promise.resolve(1); } }",
         "var Object = {}; class Box { *items() { eval('0'); yield 1; } }",
+        "class Base {} class Box extends Base { *items() { yield 1; } }",
+        "var key = 'items'; class Box { *[key]() { yield 1; } }",
+        "class Box { async *items() { yield await Promise.resolve(1); } }",
+        "class Box { *items() { eval('0'); yield 1; } }",
     };
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
