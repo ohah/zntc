@@ -26483,6 +26483,30 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expected: '42\n',
       },
       {
+        name: 'duplicate-getter-key',
+        graph: 'reanalyzed',
+        declaration:
+          'class Handler { static get value() { return 41; } static get value() { return 42; } }',
+        read: 'Handler.value',
+        expected: '42\n',
+      },
+      {
+        name: 'accessor-method-key-collision',
+        graph: 'reanalyzed',
+        declaration:
+          'class Handler { static value() { return 42; } static get value() { return 41; } }',
+        read: 'typeof Handler.value',
+        expected: 'number\n',
+      },
+      {
+        name: 'escaped-accessor-key',
+        graph: 'reanalyzed',
+        declaration:
+          'class Handler { static get value() { return 41; } static set val\\u0075e(next) {} }',
+        read: 'Handler.value',
+        expected: '41\n',
+      },
+      {
         name: 'static-block',
         graph: 'reanalyzed',
         declaration: 'class Handler { static { this.value = 42; } }',
@@ -26766,6 +26790,201 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           mutant.status !== 0 || mutant.stdout !== expected,
           mutation.name + ' escaped the runtime oracle',
         ).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 multiple class accessor pairs keep distinct keys under Object shadow', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-accessor-multiple-object-shadow-'));
+    const input = join(dir, 'entry.ts');
+    const fixtures = [
+      {
+        name: 'module-static-nonadjacent-pairs',
+        shadowedReferences: 3,
+        source: [
+          'var api = { marker: "source", alpha: "", beta: "", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+          'var Object = api;',
+          'class Handler {',
+          '  static ping() { return "method"; }',
+          '  static set alpha(value) { Object.alpha = value; }',
+          '  static get beta() { return Object.marker + "-beta"; }',
+          '  static get alpha() { return Object.marker; }',
+          '  static set beta(value) { Object.beta = value; }',
+          '}',
+          'Handler.alpha = "A"; Handler.beta = "B";',
+          'console.log(Handler.alpha, Handler.beta, Object.alpha, Object.beta, Handler.ping());',
+        ].join('\n'),
+        expected: 'source source-beta A B method\n',
+      },
+      {
+        name: 'parameter-instance-nonadjacent-pairs',
+        shadowedReferences: 2,
+        source: [
+          'var api = { marker: "source", gamma: "", delta: "", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+          'function run(Object) {',
+          '  class Handler {',
+          '    get gamma() { return Object.marker; }',
+          '    get delta() { return Object.marker + "-delta"; }',
+          '    set gamma(value) { Object.gamma = value; }',
+          '    set delta(value) { Object.delta = value; }',
+          '  }',
+          '  var instance = new Handler(); instance.gamma = "G"; instance.delta = "D";',
+          '  return [instance.gamma, instance.delta, Object.gamma, Object.delta].join(" ");',
+          '}',
+          'console.log(run(api));',
+        ].join('\n'),
+        expected: 'source source-delta G D\n',
+      },
+      {
+        name: 'parameter-static-and-instance-same-key',
+        shadowedReferences: 2,
+        source: [
+          'var api = { marker: "source", staticSaved: "", instanceSaved: "", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+          'function run(Object) {',
+          '  class Handler {',
+          '    static get value() { return Object.marker + "-static"; }',
+          '    get value() { return Object.marker + "-instance"; }',
+          '    static set value(next) { Object.staticSaved = next; }',
+          '    set value(next) { Object.instanceSaved = next; }',
+          '  }',
+          '  Handler.value = "S"; var instance = new Handler(); instance.value = "I";',
+          '  return [Handler.value, instance.value, Object.staticSaved, Object.instanceSaved].join(" ");',
+          '}',
+          'console.log(run(api));',
+        ].join('\n'),
+        expected: 'source-static source-instance S I\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', flags: [] },
+      { name: 'minified', flags: ['--minify-identifiers'] },
+    ] as const;
+
+    try {
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, fixture.name + ': ' + native.stderr).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+        for (const mode of modes) {
+          const output = join(dir, fixture.name + '-' + mode.name + '.cjs');
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              '--target=es5',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, fixture.name + '/' + mode.name + ': ' + proc.stderr).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, proc.stderr).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected =
+              counter === 'shadowed_external_reference' ? fixture.shadowedReferences : 0;
+            expect(
+              Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+              fixture.name + '/' + mode.name + ': ' + counter + ': ' + report,
+            ).toBe(expected);
+          }
+          expect(report).toMatch(/clean=0(?:\s|$)/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe(native.stdout);
+        }
+      }
+
+      writeFileSync(input, fixtures[0]!.source);
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napi.outputFiles[0]!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(fixtures[0]!.expected);
+
+      const entry = join(dir, 'mutants.ts');
+      const output = join(dir, 'mutants.cjs');
+      writeFileSync(entry, fixtures[0]!.source);
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'mutants.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+      expect(sourceObjectName).toBeDefined();
+      const globalBuiltin = /Object\.defineProperty(?=\s*\()/g;
+      const matches = [...emitted.matchAll(globalBuiltin)];
+      expect(matches).toHaveLength(3);
+      expect(spawnSync('node', [output], { encoding: 'utf8' }).stdout).toBe(fixtures[0]!.expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: local + '.defineProperty' },
+        { name: 'computed-double-quote', expression: local + '["defineProperty"]' },
+        { name: 'computed-single-quote', expression: local + "['defineProperty']" },
+        { name: 'parenthesized-member', expression: '(' + local + ').defineProperty' },
+        { name: 'parenthesized-computed-member', expression: '(' + local + ')["defineProperty"]' },
+        { name: 'comma-expression', expression: '(0, ' + local + '.defineProperty)' },
+        { name: 'bound-local', expression: local + '.defineProperty.bind(' + local + ')' },
+        { name: 'bound-null', expression: local + '.defineProperty.bind(null)' },
+        { name: 'optional-member', expression: local + '?.defineProperty' },
+        { name: 'computed-concatenated-key', expression: local + '["define" + "Property"]' },
+      ];
+      expect(mutations).toHaveLength(10);
+      for (const [callIndex, match] of matches.entries()) {
+        const offset = match.index ?? -1;
+        expect(offset).not.toBe(-1);
+        for (const mutation of mutations) {
+          const mutated =
+            emitted.slice(0, offset) +
+            mutation.expression +
+            emitted.slice(offset + 'Object.defineProperty'.length);
+          const mutantPath = join(dir, callIndex + '-' + mutation.name + '.cjs');
+          writeFileSync(mutantPath, mutated);
+          const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+          expect(syntax.status, callIndex + '/' + mutation.name + ': ' + syntax.stderr).toBe(0);
+          const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+          expect(
+            mutant.status !== 0 || mutant.stdout !== fixtures[0]!.expected,
+            callIndex + '/' + mutation.name + ' escaped the runtime oracle',
+          ).toBe(true);
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
