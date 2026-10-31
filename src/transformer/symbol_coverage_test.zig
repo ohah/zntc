@@ -2351,6 +2351,47 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     );
     try std.testing.expect(report.isClean());
 
+    // A generated origin_scope is live semantic metadata even when the
+    // symbol's storage scope is elsewhere. It must not escape the generated
+    // owner audit merely because no reference or scope-map entry points to it.
+    const origin_only_scope: ScopeId = @fromBackingInt(@intCast(scopes.len));
+    const origin_only_scopes = try allocator.alloc(Scope, scopes.len + 1);
+    @memcpy(origin_only_scopes[0..scopes.len], &scopes);
+    origin_only_scopes[scopes.len] = .{
+        .parent = global_scope,
+        .kind = .block,
+        .is_strict = false,
+    };
+    const origin_only_scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), scope_maps.len + 1);
+    @memcpy(origin_only_scope_maps[0..scope_maps.len], &scope_maps);
+    origin_only_scope_maps[scope_maps.len] = .empty;
+    var origin_only_symbol = symbols[0];
+    origin_only_symbol.origin_scope = origin_only_scope;
+    const origin_only_symbols = [_]Symbol{origin_only_symbol};
+    const origin_only_report = try coverage.checkExactWithScopeBoundary(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &origin_only_symbols,
+        origin_only_scopes,
+        origin_only_scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+        4,
+    );
+    try std.testing.expectEqual(@as(usize, 1), origin_only_report.scope_owner_mismatch);
+    try std.testing.expectEqualStrings(
+        "generated-scope-owner-unreachable",
+        origin_only_report.first_scope_owner_mismatch.?.issue,
+    );
+
     // Source-owned scopes may bridge the generated owner to its emitted AST
     // parent, but the full chain must reach that exact parent.
     var corrupted_scopes = scopes;

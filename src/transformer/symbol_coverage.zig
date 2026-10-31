@@ -3691,7 +3691,13 @@ fn checkExactImpl(
             defer reachable_scope_owners.deinit(allocator);
             var live_scope_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer live_scope_ids.deinit(allocator);
-            for (symbols) |symbol| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.scope_id));
+            for (symbols) |symbol| {
+                try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.scope_id));
+                // origin_scope is semantic provenance used by redeclaration
+                // checks; a generated origin scope is live even when storage,
+                // references, and scope maps point elsewhere.
+                try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.origin_scope));
+            }
             for (references) |reference| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(reference.scope_id));
             for (scope_maps, 0..) |scope_map, scope_index| {
                 if (scope_map.count() > 0) try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intCast(scope_index));
