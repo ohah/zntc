@@ -26436,6 +26436,122 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 sync generator class methods retain the exact graph without Object shadowing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-unshadowed-'));
+    const input = join(dir, 'entry.ts');
+    const fixtures = [
+      {
+        name: 'module-instance',
+        source:
+          'class Box { *items() { yield Object.name; yield "instance"; } } console.log(Array.from(new Box().items()).join(","));',
+        expected: 'Object,instance\n',
+      },
+      {
+        name: 'module-static',
+        source:
+          'class Box { static *items() { yield Object.name; } } console.log(Array.from(Box.items()).join(","));',
+        expected: 'Object\n',
+      },
+      {
+        name: 'function-local-class',
+        source:
+          'function make() { class Box { *items() { yield Object.name; } } return new Box().items(); } console.log(Array.from(make()).join(","));',
+        expected: 'Object\n',
+      },
+      {
+        name: 'var-class-expression',
+        source:
+          'var Box = class { *items() { yield Object.name; } }; console.log(Array.from(new Box().items()).join(","));',
+        expected: 'Object\n',
+      },
+      {
+        name: 'multiple-methods',
+        source:
+          'class Box { *items() { yield Object.name; } static *names() { yield Object.name; } } console.log(Array.from(new Box().items()).concat(Array.from(Box.names())).join(","));',
+        expected: 'Object,Object\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'es5', flags: ['--target=es5'] },
+      { name: 'es5-minify', flags: ['--target=es5', '--minify-identifiers'] },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(5);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      const napiFixture = fixtures[1]!;
+      writeFileSync(input, napiFixture.source);
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(napiFixture.expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 sync generator class Object.defineProperty exposes ten compileable shadow mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-mutants-'));
     const entry = join(dir, 'entry.ts');
