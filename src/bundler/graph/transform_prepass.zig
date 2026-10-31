@@ -6231,7 +6231,7 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
     semantic: *const ModuleSemanticData,
     class_node: ast_mod.Node,
     retained_async_generator_methods: *std.AutoHashMapUnmanaged(u32, void),
-    retained_parameter_length_defaults: *std.AutoHashMapUnmanaged(u32, void),
+    retained_parameter_arguments_defaults: *std.AutoHashMapUnmanaged(u32, void),
 ) bool {
     if (class_node.tag != .class_declaration and class_node.tag != .class_expression) return false;
     const class_extra = class_node.data.extra;
@@ -6270,7 +6270,7 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
             semantic,
             member,
             owner,
-            retained_parameter_length_defaults,
+            retained_parameter_arguments_defaults,
         )) return false;
         retained_async_generator_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
@@ -6282,7 +6282,7 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
     semantic: *const ModuleSemanticData,
     method: ast_mod.Node,
     owner_scope: u32,
-    retained_parameter_length_defaults: *std.AutoHashMapUnmanaged(u32, void),
+    retained_parameter_arguments_defaults: *std.AutoHashMapUnmanaged(u32, void),
 ) bool {
     const method_extra = method.data.extra;
     if (method_extra > ast.extra_data.items.len or
@@ -6324,12 +6324,15 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
         if (@backingInt(default_value) >= ast.nodes.items.len or
             pattern.isNone() or @backingInt(pattern) >= ast.nodes.items.len) return true;
 
-        // The only certificate is one direct, non-optional `arguments.length`
-        // read on a simple identifier parameter. Parentheses and composed
-        // expressions have different roots and therefore fail closed.
+        // Certificates are direct, non-optional member reads on a simple
+        // identifier parameter: `.length` or a computed string/numeric key.
+        // Parentheses and composed expressions have different roots and fail
+        // closed.
         var allowed_reference: ?u32 = null;
         const default = ast.getNode(default_value);
-        if (ast.getNode(pattern).tag == .binding_identifier and default.tag == .static_member_expression) {
+        if (ast.getNode(pattern).tag == .binding_identifier and
+            (default.tag == .static_member_expression or default.tag == .computed_member_expression))
+        {
             const member_extra = default.data.extra;
             if (member_extra <= ast.extra_data.items.len and
                 ast.extra_data.items.len - member_extra >= 3 and
@@ -6337,24 +6340,24 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
             {
                 const object: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[member_extra]));
                 const property: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[member_extra + 1]));
-                if (!object.isNone() and @backingInt(object) < ast.nodes.items.len and
-                    !property.isNone() and @backingInt(property) < ast.nodes.items.len and
-                    ast.getNode(object).tag == .identifier_reference and
-                    ast.getNode(property).tag == .identifier_reference and
-                    std.mem.eql(u8, ast.getText(ast.getNode(property).span), "length"))
-                {
+                if (object.isNone() or @backingInt(object) >= ast.nodes.items.len or
+                    property.isNone() or @backingInt(property) >= ast.nodes.items.len) return true;
+                const property_tag = ast.getNode(property).tag;
+                const property_is_certified = switch (default.tag) {
+                    .static_member_expression => property_tag == .identifier_reference and
+                        std.mem.eql(u8, ast.getText(ast.getNode(property).span), "length"),
+                    .computed_member_expression => property_tag == .string_literal or property_tag == .numeric_literal,
+                    else => false,
+                };
+                if (property_is_certified and ast.getNode(object).tag == .identifier_reference) {
                     const object_raw = @backingInt(object);
                     if (object_raw >= semantic.symbol_ids.len) return true;
-                    if (semantic.symbol_ids[object_raw]) |raw_symbol| {
-                        if (raw_symbol >= semantic.symbols.items.len) return true;
-                        const symbol = semantic.symbols.items[raw_symbol];
-                        if (parameter_scope_is_method_parent and symbol.synthetic_kind == .implicit_arguments and
-                            !symbol.scope_id.isNone() and
-                            @backingInt(symbol.scope_id) == parameter_scope.?)
-                        {
-                            allowed_reference = object_raw;
-                        }
-                    }
+                    const raw_symbol = semantic.symbol_ids[object_raw] orelse return true;
+                    if (raw_symbol >= semantic.symbols.items.len) return true;
+                    const symbol = semantic.symbols.items[raw_symbol];
+                    if (!parameter_scope_is_method_parent or symbol.synthetic_kind != .implicit_arguments or
+                        symbol.scope_id.isNone() or @backingInt(symbol.scope_id) != parameter_scope.?) return true;
+                    allowed_reference = object_raw;
                 }
             }
         }
@@ -6364,9 +6367,19 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
         var owner_arguments_references: usize = 0;
         for (default_nodes) |raw| {
             if (raw >= semantic.symbol_ids.len) return true;
-            const raw_symbol = semantic.symbol_ids[raw] orelse continue;
+            const reference = ast.nodes.items[raw];
+            const raw_symbol = semantic.symbol_ids[raw] orelse {
+                if (reference.tag == .identifier_reference and
+                    std.mem.eql(u8, ast.getText(reference.span), "arguments")) return true;
+                continue;
+            };
             if (raw_symbol >= semantic.symbols.items.len) return true;
             const symbol = semantic.symbols.items[raw_symbol];
+            if (reference.tag == .identifier_reference and
+                std.mem.eql(u8, ast.getText(reference.span), "arguments") and
+                (symbol.synthetic_kind != .implicit_arguments or symbol.scope_id.isNone() or
+                    parameter_scope == null or @backingInt(symbol.scope_id) != parameter_scope.? or
+                    allowed_reference == null or allowed_reference.? != raw)) return true;
             if (symbol.synthetic_kind != .implicit_arguments) continue;
             if (symbol.scope_id.isNone() or parameter_scope == null or
                 @backingInt(symbol.scope_id) != parameter_scope.? or
@@ -6377,7 +6390,7 @@ fn methodHasUnsupportedImplicitArgumentsParameterReferences(
             if (owner_arguments_references != 1) return true;
             if (allowed_references.contains(raw_reference)) return true;
             allowed_references.put(ast.allocator, raw_reference, {}) catch return true;
-            retained_parameter_length_defaults.put(ast.allocator, raw_parameter, {}) catch return true;
+            retained_parameter_arguments_defaults.put(ast.allocator, raw_parameter, {}) catch return true;
         }
     }
     const reachable = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params) catch return true;
@@ -8036,8 +8049,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer retained_async_functions.deinit(ast.allocator);
     var retained_async_generator_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_async_generator_methods.deinit(ast.allocator);
-    var retained_async_generator_parameter_length_defaults: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer retained_async_generator_parameter_length_defaults.deinit(ast.allocator);
+    var retained_async_generator_parameter_arguments_defaults: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_async_generator_parameter_arguments_defaults.deinit(ast.allocator);
     var retained_generator_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_generator_methods.deinit(ast.allocator);
     var found_static_getter_super = false;
@@ -8505,7 +8518,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     semantic,
                     class_node,
                     &retained_async_generator_methods,
-                    &retained_async_generator_parameter_length_defaults,
+                    &retained_async_generator_parameter_arguments_defaults,
                 )) return false;
             if (options.unsupported.generator and
                 !registerRetainableEs5GeneratorClassMethods(
@@ -8578,7 +8591,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_var_destructuring = false;
     var found_lowered_destructuring_assignment = false;
     var found_lowered_parameter_destructuring = false;
-    var found_lowered_async_generator_parameter_length_default = false;
+    var found_lowered_async_generator_parameter_arguments_default = false;
     var found_lowered_array_spread = false;
     var found_lowered_static_block = false;
     var found_lowered_exponentiation = false;
@@ -8692,11 +8705,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (extra + 2 >= ast.extra_data.items.len) return false;
                 const pattern: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
                 const default_value: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + 2]));
-                const lowered_parameter_length_default = options.unsupported.default_params and
-                    retained_async_generator_parameter_length_defaults.contains(raw_idx);
+                const lowered_parameter_arguments_default = options.unsupported.default_params and
+                    retained_async_generator_parameter_arguments_defaults.contains(raw_idx);
                 if (pattern.isNone() or @backingInt(pattern) >= ast.nodes.items.len or
                     (!default_value.isNone() and options.unsupported.default_params and
-                        !lowered_parameter_length_default)) return false;
+                        !lowered_parameter_arguments_default)) return false;
                 const pattern_tag = ast.nodes.items[@backingInt(pattern)].tag;
                 if (pattern_tag != .binding_identifier) {
                     if (pattern_tag != .array_pattern and pattern_tag != .object_pattern) return false;
@@ -8714,8 +8727,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     }
                 }
                 if (!default_value.isNone()) {
-                    if (lowered_parameter_length_default) {
-                        found_lowered_async_generator_parameter_length_default = true;
+                    if (lowered_parameter_arguments_default) {
+                        found_lowered_async_generator_parameter_arguments_default = true;
                     } else {
                         found_native_destructuring = true;
                     }
@@ -8760,8 +8773,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     if (lowered_simple_constructor_default_nodes.contains(raw_idx)) {
                         // The owning retained class already passed its body,
                         // parameter, and scope preflight above.
-                    } else if (retained_async_generator_parameter_length_defaults.contains(raw_idx)) {
-                        found_lowered_async_generator_parameter_length_default = true;
+                    } else if (retained_async_generator_parameter_arguments_defaults.contains(raw_idx)) {
+                        found_lowered_async_generator_parameter_arguments_default = true;
                     } else if (lowered_var_destructuring_nodes.contains(raw_idx)) {
                         found_lowered_var_destructuring = true;
                     } else return false;
@@ -9272,7 +9285,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_using or
         found_lowered_simple_static_class_field or
         found_native_destructuring or
-        found_lowered_async_generator_parameter_length_default or
+        found_lowered_async_generator_parameter_arguments_default or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
@@ -14457,9 +14470,14 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { static async *items(value = arguments.length) { yield value; } }",
         "class Box { async *items(first = arguments.length, second = arguments.length) { yield first + second; } }",
         "class Box { async *items(value = arguments.length) { for await (const ignored of [0]) yield value; } }",
+        "class Box { async *items(value = arguments[0]) { yield value; } }",
+        "class Box { async *items(value = arguments['length']) { yield value; } }",
+        "class Box { async *items(first = arguments[1], second = arguments[2]) { yield first + second; } }",
+        "class Box { static async *items(value = arguments[1]) { yield value; } }",
+        "class Box { async *items(value = arguments[1]) { for await (const ignored of [0]) yield value; } }",
     }) |source| {
-        const parameter_length_method = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
-        try std.testing.expect(parameter_length_method.graph_gate);
+        const parameter_arguments_method = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
+        try std.testing.expect(parameter_arguments_method.graph_gate);
     }
 
     const shadowed_async_generator_await_method = try staticBlockPrepassDecisionForTest(
@@ -14536,10 +14554,15 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { async *items() { eval('0'); yield 1; } }",
         "class Box { @decorator async *items() { yield 1; } }",
         "class Box { async *items(value = arguments) { yield value; } }",
-        "class Box { async *items(value = arguments[0]) { yield value; } }",
-        "class Box { async *items(value = arguments['length']) { yield value; } }",
         "class Box { async *items(value = arguments?.['length']) { yield value; } }",
+        "class Box { async *items(value = arguments?.[0]) { yield value; } }",
         "class Box { async *items(value = arguments?.length) { yield value; } }",
+        "class Box { async *items(index = 0, value = arguments[index]) { yield value; } }",
+        "class Box { async *items(index = 0, value = arguments[(index = 1)]) { yield value; } }",
+        "class Box { async *items(value = arguments[0 + 1]) { yield value; } }",
+        "class Box { async *items(value = arguments['le' + 'ngth']) { yield value; } }",
+        "class Box { async *items(value = arguments[0]++) { yield value; } }",
+        "class Box { async *items(value = (arguments[0] = 1)) { yield value; } }",
         "class Box { async *items(value = arguments.length++) { yield value; } }",
         "class Box { async *items(value = ++arguments.length) { yield value; } }",
         "class Box { async *items(value = (arguments.length = 2)) { yield value; } }",
@@ -14553,6 +14576,7 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { async *items(value = arguments.length) { yield arguments.length; } }",
         "class Box { async *items(value = arguments.length) { const read = () => arguments.length; yield read(); } }",
         "class Box { async *items(arguments, value = arguments.length) { yield value; } }",
+        "class Box { async *items(value = (arguments[0])) { yield value; } }",
         "class Box { async *items() { var nested = async () => { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
         "class Box { async *items() { var nested = async function () { eval('0'); return await Promise.resolve(1); }; yield await nested(); } }",
     };
