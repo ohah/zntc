@@ -13493,6 +13493,17 @@ test "#6193 retains only exact named native-class static-block lowering" {
     try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_member_read_argument.allow_super_get);
     try std.testing.expect(!retained_static_super_computed_root_nested_member_invocation_member_read_argument.allow_super_set);
 
+    const retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument = try staticBlockPrepassDecisionForTest(
+        "const key = 'value'; const keyProvider = { pick() { return 'argument'; }, get argument() { return 'ok'; } }; class Base extends Object { static get value() { return { child: { marker: 'child', read(value) { return this.marker + ':' + value; } } }; } } class Counter extends Base { static { this.result = super[key].child.read(keyProvider[keyProvider.pick()]); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.source_candidate);
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.graph_gate);
+    try std.testing.expect(retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.allow_super_get);
+    try std.testing.expect(!retained_static_super_computed_root_nested_member_invocation_computed_member_read_argument.allow_super_set);
+
     const rejected_static_super_continuation_invocations = [_][]const u8{
         "super[key]('argument')",
         "(super[key])('argument')",
@@ -13527,7 +13538,6 @@ test "#6193 retains only exact named native-class static-block lowering" {
         "keys.continuation?.value",
         "external.continuation",
         "keys[missing]",
-        "keys[keys.pick()]",
         "keys.get().continuation",
         "this.continuation",
         "super[key]",
