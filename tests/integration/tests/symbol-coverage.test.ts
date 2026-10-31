@@ -13443,6 +13443,207 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('retained computed super argument key calls admit exact-bound member-read arguments', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-key-call-member-read-arg-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const expected = 'key,get:true,member-arg:true,pick:true,leaf:true,read:true 42\n';
+    const sourceFor = (argument: string) =>
+      [
+        'const events = [];',
+        "const keyArgument = { get name() { events.push('member-arg:' + (this === keyArgument)); return 'leaf'; }, getName() { events.push('get-name:' + (this === keyArgument)); return 'leaf'; } };",
+        "const keySource = { pick(value = 'leaf') { events.push('pick:' + (this === keySource)); return this === keySource ? value : 'wrong'; }, get leaf() { events.push('leaf:' + (this === keySource)); return 42; }, get alternate() { events.push('alternate:' + (this === keySource)); return 84; } };",
+        "const lookup = { read(value) { events.push('read:' + (this === lookup)); return value; } };",
+        'function makeMemberProvider() { return keyArgument; }',
+        "const keyName = 'name';",
+        "const keyArgs = ['leaf'];",
+        'globalThis.externalArgument = keyArgument;',
+        "globalThis.missingName = 'name';",
+        "class Base extends Object { static get value() { events.push('get:' + (this !== Base)); return { child: lookup }; } }",
+        "class Counter extends Base { static key() { events.push('key'); return 'value'; } static { this.result = super[this.key()].child.read(" +
+          argument +
+          '); } }',
+        "console.log(events.join(','), Counter.result);",
+      ].join('\n');
+    const buildBundle = (source: string, outputPath: string) => {
+      writeFileSync(entry, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          outputPath,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+    };
+    try {
+      const positiveArgument = 'keySource[keySource.pick(keyArgument.name)]';
+      writeFileSync(entry, sourceFor(positiveArgument));
+      const native = spawnSync('node', [entry], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const build = buildBundle(sourceFor(positiveArgument), output);
+      expect(build.status, build.stderr).toBe(0);
+      expect(build.stderr).toContain('semantic_graph=retained');
+      expect(build.stderr).toMatch(/clean=1(?:\s|$)/);
+      const original = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(original.status, original.stderr).toBe(0);
+      expect(original.stdout).toBe(expected);
+
+      const napi = await buildNapi({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es2015',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(expected);
+
+      const rejectedArguments = [
+        { name: 'optional-member-read', argument: 'keySource[keySource.pick(keyArgument?.name)]' },
+        {
+          name: 'optional-computed-member-read',
+          argument: 'keySource[keySource.pick(keyArgument?.[keyName])]',
+        },
+        {
+          name: 'unbound-member-root',
+          argument: 'keySource[keySource.pick(externalArgument.name)]',
+        },
+        {
+          name: 'unbound-computed-member-key',
+          argument: 'keySource[keySource.pick(keyArgument[missingName])]',
+        },
+        {
+          name: 'computed-member-key-call',
+          argument: 'keySource[keySource.pick(keyArgument[keySource.pick()])]',
+        },
+        {
+          name: 'call-result-member-root',
+          argument: 'keySource[keySource.pick(makeMemberProvider().name)]',
+        },
+        {
+          name: 'sequence-member-read',
+          argument: "keySource[keySource.pick((events.push('sequence'), keyArgument.name))]",
+        },
+        {
+          name: 'call-result-argument',
+          argument: 'keySource[keySource.pick(keyArgument.getName())]',
+        },
+        {
+          name: 'spread-key-call-argument',
+          argument: 'keySource[keySource.pick(...keyArgs)]',
+        },
+        { name: 'this-member-root', argument: 'keySource[keySource.pick(this.name)]' },
+      ];
+      expect(rejectedArguments).toHaveLength(10);
+      for (const rejected of rejectedArguments) {
+        const rejectedSource = sourceFor(rejected.argument);
+        writeFileSync(entry, rejectedSource);
+        const nativeRejected = spawnSync('node', [entry], { encoding: 'utf8' });
+        expect(nativeRejected.status, `${rejected.name}: ${nativeRejected.stderr}`).toBe(0);
+        const rejectedOutput = join(dir, `${rejected.name}.cjs`);
+        const rejectedBuild = buildBundle(rejectedSource, rejectedOutput);
+        expect(rejectedBuild.status, `${rejected.name}: ${rejectedBuild.stderr}`).toBe(0);
+        expect(rejectedBuild.stderr, rejected.name).toContain('semantic_graph=reanalyzed');
+        const rejectedActual = spawnSync('node', [rejectedOutput], { encoding: 'utf8' });
+        expect(rejectedActual.status, `${rejected.name}: ${rejectedActual.stderr}`).toBe(0);
+        expect(rejectedActual.stdout, rejected.name).toBe(nativeRejected.stdout);
+      }
+
+      const emitted = readFileSync(output, 'utf8');
+      const getCalls = [...emitted.matchAll(/__superGet\((\w+),\s*([^,]+),\s*(\w+)\)/g)].map(
+        (match) => ({ call: match[0]!, home: match[1]!, receiver: match[3]! }),
+      );
+      expect(getCalls).toHaveLength(1);
+      const getCall = getCalls[0]!;
+      const argumentMatch = emitted.match(/([\w$]+)\[([\w$]+\.pick\(\s*([\w$]+)\.name\s*\))\]/);
+      const superKeyCall = emitted.match(/([\w$]+\.key\(\s*\))/)?.[1];
+      expect(argumentMatch).toBeDefined();
+      expect(superKeyCall).toBeDefined();
+      const memberRead = argumentMatch![0];
+      const keySource = argumentMatch![1]!;
+      const pickCall = argumentMatch![2]!;
+      const keyArgument = argumentMatch![3]!;
+      const memberArgumentRead = `${keyArgument}.name`;
+      const continuationCall = `${getCall.call}.child.read(${memberRead})`;
+      expect(emitted).toContain(continuationCall);
+      const mutations = [
+        {
+          name: 'wrong-super-home-object',
+          from: getCall.call,
+          to: getCall.call.replace(`${getCall.home},`, 'Object,'),
+        },
+        {
+          name: 'wrong-super-getter-receiver',
+          from: getCall.call,
+          to: getCall.call.replace(`, ${getCall.receiver})`, `, ${getCall.home})`),
+        },
+        { name: 'wrong-super-key-call', from: superKeyCall!, to: "'missing'" },
+        {
+          name: 'wrong-member-key-call',
+          from: pickCall,
+          to: `${keySource}.pick('alternate')`,
+        },
+        {
+          name: 'duplicate-member-key-call',
+          from: memberRead,
+          to: `${keySource}[(${pickCall}, ${pickCall})]`,
+        },
+        { name: 'skip-member-key-call', from: memberRead, to: `${keySource}['leaf']` },
+        {
+          name: 'duplicate-member-read',
+          from: memberRead,
+          to: `(${keySource}[${pickCall}], ${keySource}[${pickCall}])`,
+        },
+        { name: 'skip-key-call-member-argument-read', from: memberArgumentRead, to: "'leaf'" },
+        {
+          name: 'key-call-loses-receiver',
+          from: pickCall,
+          to: `(0, ${keySource}.pick)(${memberArgumentRead})`,
+        },
+        {
+          name: 'continuation-call-loses-receiver',
+          from: continuationCall,
+          to: `${getCall.call}.child.read.call(null, ${memberRead})`,
+        },
+      ];
+      for (const mutation of mutations) {
+        expect(mutation.to, mutation.name).not.toBe(mutation.from);
+        const offset = emitted.indexOf(mutation.from);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) + mutation.to + emitted.slice(offset + mutation.from.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          actual.status !== 0 || actual.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+      expect(mutations).toHaveLength(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('retained static-block super postfix updates expose ten compileable output mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-update-mutants-'));
     const entry = join(dir, 'entry.js');
