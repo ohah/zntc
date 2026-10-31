@@ -26284,6 +26284,311 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 sync generator class methods retain exact Object across five shadow scopes and modes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-scope-'));
+    const input = join(dir, 'entry.ts');
+    const shared = [
+      'var api = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+    ].join('\n');
+    const fixtures = [
+      {
+        name: 'module-binding-instance',
+        source: [
+          shared,
+          'var Object = api;',
+          'class Box { *items() { yield 1; yield 2; } }',
+          'console.log(Array.from(new Box().items()).join(","), Object.marker);',
+        ].join('\n'),
+        expected: '1,2 source\n',
+      },
+      {
+        name: 'function-parameter-instance',
+        source: [
+          shared,
+          'function run(Object) {',
+          '  class Box { *items() { yield 3; yield Object.marker; } }',
+          '  return Array.from(new Box().items()).join(",") + " " + Object.marker;',
+          '}',
+          'console.log(run(api));',
+        ].join('\n'),
+        expected: '3,source source\n',
+      },
+      {
+        name: 'function-local-var-instance',
+        source: [
+          shared,
+          'function run() {',
+          '  var Object = api;',
+          '  class Box { *items() { yield Object.marker; yield 4; } }',
+          '  return Array.from(new Box().items()).join(",") + " " + Object.marker;',
+          '}',
+          'console.log(run());',
+        ].join('\n'),
+        expected: 'source,4 source\n',
+      },
+      {
+        name: 'transitive-enclosing-parameter-instance',
+        source: [
+          shared,
+          'function run(Object) {',
+          '  function make() {',
+          '    class Box { *items() { yield Object.marker; yield 5; } }',
+          '    return new Box().items();',
+          '  }',
+          '  return Array.from(make()).join(",") + " " + Object.marker;',
+          '}',
+          'console.log(run(api));',
+        ].join('\n'),
+        expected: 'source,5 source\n',
+      },
+      {
+        name: 'module-binding-static',
+        source: [
+          shared,
+          'var Object = api;',
+          'class Box { static *items() { yield this.marker; yield Object.marker; } }',
+          'Box.marker = "static";',
+          'console.log(Array.from(Box.items()).join(","), Object.marker);',
+        ].join('\n'),
+        expected: 'static,source source\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'es5', flags: ['--target=es5'] },
+      { name: 'es5-minify', flags: ['--target=es5', '--minify-identifiers'] },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(5);
+      expect(modes).toHaveLength(2);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(expected);
+          }
+          expect(report, fixture.name).toMatch(/clean=0(?:\s|$)/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      const representative = fixtures[1]!;
+      writeFileSync(input, representative.source);
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe(representative.expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 sync generator class Object.defineProperty exposes ten compileable shadow mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-mutants-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      entry,
+      [
+        'var Object = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+        'class Box { *items() { yield 1; yield Object.marker.length; } }',
+        'console.log(Array.from(new Box().items()).join(","), Object.marker);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+      const globalBuiltinMatch = emitted.match(/Object\.defineProperty(?=\s*\()/);
+      expect(sourceObjectName).toBeDefined();
+      expect(sourceObjectName).not.toBe('Object');
+      expect(globalBuiltinMatch?.[0]).toBe('Object.defineProperty');
+      const expected = '1,6 source\n';
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: `${local}.defineProperty` },
+        { name: 'computed-double-quote', expression: `${local}["defineProperty"]` },
+        { name: 'computed-single-quote', expression: `${local}['defineProperty']` },
+        { name: 'parenthesized-member', expression: `(${local}).defineProperty` },
+        { name: 'parenthesized-computed-member', expression: `(${local})["defineProperty"]` },
+        { name: 'comma-expression', expression: `(0, ${local}.defineProperty)` },
+        { name: 'bound-local', expression: `${local}.defineProperty.bind(${local})` },
+        { name: 'bound-null', expression: `${local}.defineProperty.bind(null)` },
+        { name: 'optional-member', expression: `${local}?.defineProperty` },
+        { name: 'computed-concatenated-key', expression: `${local}["define" + "Property"]` },
+      ];
+      expect(mutations).toHaveLength(10);
+      const offset = globalBuiltinMatch?.index ?? -1;
+      expect(offset).not.toBe(-1);
+      for (const mutation of mutations) {
+        const mutated =
+          emitted.slice(0, offset) +
+          mutation.expression +
+          emitted.slice(offset + 'Object.defineProperty'.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          mutant.status !== 0 || mutant.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 generator class Object shadows keep ten unsupported shapes on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-fallback-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'output.cjs');
+    const prefix =
+      'var Object = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };';
+    const fixtures = [
+      {
+        name: 'derived-super',
+        source: `${prefix}\nclass Base { read() { return 7; } } class Box extends Base { *items() { yield super.read(); } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'computed-key',
+        source: `${prefix}\nvar key = "items"; class Box { *[key]() { yield 1; } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'escaped-key',
+        source: `${prefix}\nclass Box { *it\\u0065ms() { yield 2; } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'async-generator',
+        source: `${prefix}\nclass Box { async *items() { yield await Promise.resolve(3); } } new Box().items().next().then(function (item) { console.log(item.value, Object.marker); });`,
+      },
+      {
+        name: 'private-generator',
+        source: `${prefix}\nclass Box { *#items() { yield 4; } read() { return this.#items(); } } console.log(Array.from(new Box().read()).join(","), Object.marker);`,
+      },
+      {
+        name: 'instance-field',
+        source: `${prefix}\nclass Box { value = 5; *items() { yield this.value; } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'static-block',
+        source: `${prefix}\nclass Box { static { this.value = 6; } static *items() { yield this.value; } } console.log(Array.from(Box.items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'returned-class-expression',
+        source: `${prefix}\nfunction make() { return class { *items() { yield 7; } }; } console.log(Array.from(new (make())().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'const-class-expression',
+        source: `${prefix}\nconst Box = class { *items() { yield 8; } }; console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+      {
+        name: 'direct-eval-method',
+        source: `${prefix}\nclass Box { *items() { eval("0"); yield 9; } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
+      },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(10);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async class Object.defineProperty lowering exposes ten compileable shadow mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-class-object-shadow-mutants-'));
     const entry = join(dir, 'entry.ts');
