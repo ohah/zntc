@@ -26899,6 +26899,283 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator class await retains exact owner identities across ten cases', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-class-await-'));
+    const input = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'direct',
+        source:
+          'class Box { async *items() { yield await Promise.resolve("direct"); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'direct\n',
+      },
+      {
+        name: 'expression-operand',
+        source:
+          'class Box { async *items() { yield "prefix-" + await Promise.resolve("operand"); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'prefix-operand\n',
+      },
+      {
+        name: 'sequential',
+        source:
+          'class Box { async *items() { var left = await Promise.resolve("left"); var right = await Promise.resolve("right"); yield left + ":" + right; } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'left:right\n',
+      },
+      {
+        name: 'arguments-owner',
+        source:
+          'class Box { async *items() { var left = arguments[0]; var right = await Promise.resolve("after"); yield left + ":" + right; } } new Box().items("argument").next().then(function (step) { console.log(step.value); });',
+        expected: 'argument:after\n',
+      },
+      {
+        name: 'after-yield',
+        source:
+          'class Box { async *items() { yield "first"; yield await Promise.resolve("second"); } } var iterator = new Box().items(); iterator.next().then(function (first) { return iterator.next().then(function (second) { console.log(first.value + ":" + second.value); }); });',
+        expected: 'first:second\n',
+      },
+      {
+        name: 'thenable',
+        source:
+          'class Box { async *items() { yield await { then: function (resolve) { resolve("thenable"); } }; } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'thenable\n',
+      },
+      {
+        name: 'rejection-catch',
+        source:
+          'class Box { async *items() { try { await Promise.reject(new Error("caught")); } catch (error) { yield error.message; } } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'caught\n',
+      },
+      {
+        name: 'receiver',
+        source:
+          'class Box { async *items() { var receiver = { name: "receiver", read: function () { return Promise.resolve(this.name); } }; yield await receiver.read(); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'loop',
+        source:
+          'class Box { async *items() { var value = ""; for (var i = 0; i < 3; i++) value += await Promise.resolve(String(i)); yield value; } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: '012\n',
+      },
+      {
+        name: 'static-and-instance-owners',
+        source:
+          'class Box { async *instance() { yield await Promise.resolve("instance"); } static async *staticItems() { yield await Promise.resolve("static"); } } var iterator = new Box().instance(); iterator.next().then(function (first) { return Box.staticItems().next().then(function (second) { console.log(first.value + ":" + second.value); }); });',
+        expected: 'instance:static\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(10);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator class await owner gate exposes ten compileable value mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-await-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      input,
+      'class Box { async *items() { yield await Promise.resolve("awaited"); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const target = 'Promise.resolve("awaited")';
+      const targetOffset = emitted.indexOf(target);
+      expect(targetOffset).not.toBe(-1);
+      expect(emitted.lastIndexOf(target)).toBe(targetOffset);
+      const expected = 'awaited\n';
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const mutants = [
+        { name: 'undefined', expression: 'void 0' },
+        { name: 'null', expression: 'null' },
+        { name: 'array', expression: '[]' },
+        { name: 'object', expression: '{}' },
+        { name: 'wrong-promise', expression: 'Promise.resolve("wrong")' },
+        { name: 'rejected-promise', expression: 'Promise.reject(new Error("rejected"))' },
+        { name: 'number', expression: 'Promise.resolve(17)' },
+        { name: 'false', expression: 'Promise.resolve(false)' },
+        { name: 'string-object', expression: 'new String("wrong")' },
+        {
+          name: 'thenable',
+          expression: 'Promise.resolve({ then: function (resolve) { resolve("wrong"); } })',
+        },
+      ];
+      expect(mutants).toHaveLength(10);
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, targetOffset) +
+          mutant.expression +
+          emitted.slice(targetOffset + target.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const result = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(result.status !== 0 || result.stdout !== expected, mutant.name).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator await keeps exact nested owners and rejects nested direct eval', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-nested-await-'));
+    const input = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'async-arrow',
+        source:
+          'class Box { async *items() { var nested = async () => await Promise.resolve("arrow"); yield await nested(); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'arrow\n',
+        retained: true,
+      },
+      {
+        name: 'async-function',
+        source:
+          'class Box { async *items() { var nested = async function () { return await Promise.resolve("function"); }; yield await nested(); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'function\n',
+        retained: true,
+      },
+      {
+        name: 'async-arrow-direct-eval',
+        source:
+          'class Box { async *items() { var nested = async () => { eval("0"); return await Promise.resolve("arrow-eval"); }; yield await nested(); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'arrow-eval\n',
+        retained: false,
+      },
+      {
+        name: 'async-function-direct-eval',
+        source:
+          'class Box { async *items() { var nested = async function () { eval("0"); return await Promise.resolve("function-eval"); }; yield await nested(); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'function-eval\n',
+        retained: false,
+      },
+    ] as const;
+
+    try {
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout).toBe(fixture.expected);
+        const output = join(dir, `${fixture.name}.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          fixture.retained ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+        );
+        if (fixture.retained) {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator class Object.defineProperty exposes ten compileable shadow mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-class-object-shadow-mutants-'));
     const entry = join(dir, 'entry.ts');
@@ -27093,7 +27370,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 generator class Object shadows keep ten unsupported shapes on reanalysis', () => {
+  test('ES5 generator class Object shadows retain supported await and reanalyze unsafe shapes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-class-object-shadow-fallback-'));
     const input = join(dir, 'entry.ts');
     const output = join(dir, 'output.cjs');
@@ -27113,7 +27390,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         source: `${prefix}\nclass Box { *it\\u0065ms() { yield 2; } } console.log(Array.from(new Box().items()).join(","), Object.marker);`,
       },
       {
-        name: 'async-generator',
+        name: 'async-generator-await',
         source: `${prefix}\nclass Box { async *items() { yield await Promise.resolve(3); } } new Box().items().next().then(function (item) { console.log(item.value, Object.marker); });`,
       },
       {
@@ -27164,7 +27441,26 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const retained = fixture.name === 'async-generator-await';
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          retained ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+        );
+        if (retained) {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toMatch(/clean=0(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(expected);
+          }
+        }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(native.stdout);
