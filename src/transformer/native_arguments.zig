@@ -10,6 +10,7 @@ pub const ReferenceOrigin = struct {
     owner_scope: ScopeId,
     scope: ScopeId,
     flags: @import("../semantic/symbol.zig").ReferenceFlags = .{ .read = true },
+    source_parameter_engine: bool = false,
     stmt: u32 = std.math.maxInt(u32),
     scope_stmt: u32 = std.math.maxInt(u32),
 };
@@ -178,6 +179,35 @@ pub fn recordReference(self: anytype, node: ast.NodeIndex, id: SymbolId, owner_s
     slot.value_ptr.* = .{ .symbol_id = id, .owner_scope = owner_scope, .scope = use_scope };
 }
 
+/// Track a generated read of an existing parameter-engine identity. Unlike a
+/// produced native engine, this reference does not create a new declaration;
+/// publication only supplies its final statement coordinates.
+pub fn recordParameterReference(self: anytype, node: ast.NodeIndex, id: SymbolId, owner_scope: ScopeId, use_scope: ScopeId) !void {
+    var editor = self.semantic_editor orelse @panic("source parameter arguments reference has no semantic editor");
+    const raw_id = @backingInt(id);
+    if (@backingInt(node) < self.parser_node_count or self.getSymbolIdAt(node) != @as(?u32, raw_id) or
+        raw_id >= editor.symbols.items.len or self.native_arguments_declaration_origins.contains(raw_id))
+        @panic("source parameter arguments reference lost its exact source identity");
+    if (owner_scope.isNone() or use_scope.isNone() or owner_scope == use_scope or
+        owner_scope.toIndex() >= editor.scopes.items.len or use_scope.toIndex() >= editor.scopes.items.len or
+        owner_scope.toIndex() >= editor.scope_maps.items.len or use_scope.toIndex() >= editor.scope_maps.items.len or
+        editor.scopes.items[owner_scope.toIndex()].kind != .function or editor.scopes.items[use_scope.toIndex()].kind != .function or
+        editor.scopes.items[use_scope.toIndex()].parent != owner_scope or
+        editor.scope_maps.items[owner_scope.toIndex()].get("arguments") != raw_id or
+        editor.scope_maps.items[use_scope.toIndex()].get("arguments") != null)
+        @panic("source parameter arguments reference has no exact parameter/body edge");
+    const symbol = editor.symbols.items[raw_id];
+    if (symbol.scope_id != owner_scope or symbol.kind != .parameter or symbol.synthetic_kind != .implicit_arguments)
+        @panic("source parameter arguments reference selected a non-engine symbol");
+    const row = (try editor.referenceForNode(node)) orelse @panic("source parameter arguments reference lost its graph row");
+    if (row.symbol_id != id or row.scope_id != use_scope or
+        !std.meta.eql(row.flags, @as(@import("../semantic/symbol.zig").ReferenceFlags, .{ .read = true })))
+        @panic("source parameter arguments reference changed its creation tuple");
+    const slot = try self.native_arguments_reference_origins.getOrPut(self.allocator, @backingInt(node));
+    if (slot.found_existing) @panic("source parameter arguments reference has duplicate creation origins");
+    slot.value_ptr.* = .{ .symbol_id = id, .owner_scope = owner_scope, .scope = use_scope, .source_parameter_engine = true };
+}
+
 pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Error!?@import("transformer.zig").StatementPublication {
     const origin = self.native_arguments_reference_origins.get(raw) orelse return null;
     if (!validValueAccess(origin.flags)) return error.InvalidNode;
@@ -185,8 +215,16 @@ pub fn publication(self: anytype, raw: u32) @import("../semantic/editor.zig").Er
     const id = @backingInt(origin.symbol_id);
     if (id >= editor.symbols.items.len or editor.symbols.items[id].kind != .parameter or
         editor.symbols.items[id].synthetic_kind != .implicit_arguments) return error.InvalidSymbol;
-    if (editor.symbols.items[id].scope_id != origin.owner_scope or
-        self.native_arguments_declaration_origins.get(id) != origin.owner_scope) return error.InvalidScope;
+    if (editor.symbols.items[id].scope_id != origin.owner_scope) return error.InvalidScope;
+    if (origin.source_parameter_engine) {
+        if (self.native_arguments_declaration_origins.contains(id) or origin.owner_scope.isNone() or origin.scope.isNone() or
+            origin.owner_scope.toIndex() >= editor.scopes.items.len or origin.scope.toIndex() >= editor.scopes.items.len or
+            origin.owner_scope.toIndex() >= editor.scope_maps.items.len or origin.scope.toIndex() >= editor.scope_maps.items.len or
+            editor.scopes.items[origin.owner_scope.toIndex()].kind != .function or editor.scopes.items[origin.scope.toIndex()].kind != .function or
+            editor.scopes.items[origin.scope.toIndex()].parent != origin.owner_scope or
+            editor.scope_maps.items[origin.owner_scope.toIndex()].get("arguments") != id or
+            editor.scope_maps.items[origin.scope.toIndex()].get("arguments") != null) return error.InvalidScope;
+    } else if (self.native_arguments_declaration_origins.get(id) != origin.owner_scope) return error.InvalidScope;
     const row = (try editor.referenceForNode(@fromBackingInt(raw))) orelse return error.ReferenceNotFound;
     if (row.symbol_id != origin.symbol_id or self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, id)) return error.InvalidSymbol;
     if (row.scope_id != origin.scope) return error.InvalidScope;
@@ -223,6 +261,7 @@ pub fn hasAvailableEngineSlot(self: anytype, scope: ScopeId) bool {
 /// an emitted body binding must not shadow the engine being forwarded.
 pub fn hasRetainedParameterEngine(self: anytype, params: ast.NodeIndex, body_scope: ScopeId) bool {
     if (!self.semantic_edit_enabled or self.options.unsupported.default_params or params.isNone() or
+        @backingInt(params) >= self.ast.nodes.items.len or
         self.ast.getNode(params).tag != .formal_parameters) return false;
     const parameter_scope = self.outputOwnedScope(params) orelse return false;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
@@ -234,6 +273,58 @@ pub fn hasRetainedParameterEngine(self: anytype, params: ast.NodeIndex, body_sco
     return hasAvailableEngineSlot(self, parameter_scope);
 }
 
+/// Return true only when an original reference to this engine lies inside the
+/// source formal-list span. Reads from the function body do not prove that a
+/// lowered default initializer needs the parameter environment's identity.
+pub fn parameterEngineAccessInFormals(self: anytype, params: ast.NodeIndex, id: SymbolId) bool {
+    if (!self.semantic_edit_enabled or params.isNone() or @backingInt(params) >= self.ast.nodes.items.len or
+        self.ast.getNode(params).tag != .formal_parameters) return false;
+    const editor = if (self.semantic_editor) |*value| value else return false;
+    const source_params = if (self.scope_owner_origins.get(@backingInt(params))) |origin|
+        @as(ast.NodeIndex, @fromBackingInt(origin))
+    else
+        params;
+    if (@backingInt(source_params) >= self.ast.nodes.items.len or self.ast.getNode(source_params).tag != .formal_parameters) return false;
+    const params_list = self.ast.getNode(source_params).data.list;
+    for (editor.references.items) |row| {
+        if (row.symbol_id != id or row.flags.declare or row.node_index.isNone() or
+            @backingInt(row.node_index) >= self.parser_node_count) continue;
+        const reference_span = self.ast.getNode(row.node_index).span;
+        for (0..params_list.len) |offset| {
+            const parameter = self.ast.getNode(self.ast.readExtraNode(params_list.start, @intCast(offset)));
+            if (reference_span.start >= parameter.span.start and reference_span.end <= parameter.span.end) return true;
+        }
+    }
+    return false;
+}
+
+/// Reuse the source implicit arguments identity when a downlevel parameter
+/// initializer is emitted in its function body. The source parameter scope is
+/// the exact lexical owner, and the body must not introduce its own binding.
+pub fn existingParameterEngine(self: anytype, params: ast.NodeIndex, body_scope: ScopeId) ?SymbolId {
+    if (!self.semantic_edit_enabled or params.isNone() or @backingInt(params) >= self.ast.nodes.items.len or
+        self.ast.getNode(params).tag != .formal_parameters) return null;
+    const parameter_scope = self.outputOwnedScope(params) orelse return null;
+    const editor = if (self.semantic_editor) |*value| value else return null;
+    if (parameter_scope.isNone() or body_scope.isNone() or parameter_scope == body_scope or
+        parameter_scope.toIndex() >= editor.scopes.items.len or body_scope.toIndex() >= editor.scopes.items.len or
+        parameter_scope.toIndex() >= editor.scope_maps.items.len or body_scope.toIndex() >= editor.scope_maps.items.len or
+        editor.scopes.items[parameter_scope.toIndex()].kind != .function or editor.scopes.items[body_scope.toIndex()].kind != .function or
+        editor.scopes.items[body_scope.toIndex()].parent != parameter_scope or
+        editor.scope_maps.items[body_scope.toIndex()].get("arguments") != null) return null;
+    const id = editor.scope_maps.items[parameter_scope.toIndex()].get("arguments") orelse return null;
+    if (id >= editor.symbols.items.len) return null;
+    const selected = editor.symbols.items[id];
+    if (selected.scope_id != parameter_scope or selected.kind != .parameter or selected.synthetic_kind != .implicit_arguments or
+        self.native_arguments_declaration_origins.contains(@intCast(id)) or
+        !parameterEngineAccessInFormals(self, params, @fromBackingInt(@as(u32, @intCast(id))))) return null;
+    for (editor.symbols.items, 0..) |symbol, other| {
+        if (other != id and symbol.synthetic_kind == .implicit_arguments and
+            (symbol.scope_id == parameter_scope or symbol.scope_id == body_scope)) return null;
+    }
+    return @fromBackingInt(@as(u32, @intCast(id)));
+}
+
 pub fn record(self: anytype, id: SymbolId, scope: ScopeId) !void {
     const slot = try self.native_arguments_declaration_origins.getOrPut(self.allocator, @backingInt(id));
     if (slot.found_existing and slot.value_ptr.* != scope)
@@ -242,7 +333,8 @@ pub fn record(self: anytype, id: SymbolId, scope: ScopeId) !void {
 }
 
 pub fn publish(self: anytype, root: ast.NodeIndex) !void {
-    if (!self.semantic_edit_enabled or self.native_arguments_declaration_origins.count() == 0) return;
+    if (!self.semantic_edit_enabled or
+        (self.native_arguments_declaration_origins.count() == 0 and self.native_arguments_reference_origins.count() == 0)) return;
     const editor = &self.semantic_editor.?;
     const coordinates = @import("../semantic/statement_coordinates.zig").collect(self.allocator, self.ast, root) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -299,13 +391,28 @@ pub fn publish(self: anytype, root: ast.NodeIndex) !void {
         const origin = entry.value_ptr;
         const row = (editor.referenceForNode(@fromBackingInt(raw)) catch @panic("native arguments reference is ambiguous")) orelse
             @panic("native arguments reference lost its creation row");
-        if (!validValueAccess(origin.flags) or self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
+        if (origin.source_parameter_engine) {
+            _ = (publication(self, raw) catch @panic("source parameter arguments reference lost its publication tuple")) orelse
+                @panic("source parameter arguments reference has no publication record");
+        } else if (!validValueAccess(origin.flags) or self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
             row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or
             self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(origin.symbol_id)) or
             !std.meta.eql(row.flags, origin.flags))
+        {
             @panic("native arguments reference changed its creation tuple");
+        }
         origin.stmt = context.stmt_idx;
         origin.scope_stmt = context.scope_stmt_idx;
+        if (origin.source_parameter_engine) {
+            var found = false;
+            for (editor.references.items) |*reference| {
+                if (@backingInt(reference.node_index) != raw) continue;
+                reference.stmt_idx = context.stmt_idx;
+                reference.scope_stmt_idx = context.scope_stmt_idx;
+                found = true;
+            }
+            if (!found) @panic("source parameter arguments reference has no row to publish");
+        }
     }
     var declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer declarations.deinit(self.allocator);
