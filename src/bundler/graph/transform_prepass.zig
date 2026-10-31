@@ -4671,6 +4671,7 @@ fn isSafeConstructorDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     declaration: ast_mod.Node,
+    allow_direct_super_property_initializer: bool,
 ) bool {
     if (!isRetainableSameVarScopeLexicalDeclaration(ast, semantic, declaration)) return false;
     const extras = ast.extra_data.items;
@@ -4691,8 +4692,11 @@ fn isSafeConstructorDirectLexicalDeclaration(
         const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
         const type_annotation: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
         const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+        const safe_initializer = isSafeConstructorValue(ast, semantic, initializer) or
+            (allow_direct_super_property_initializer and
+                isSafePostSuperPropertyRead(ast, semantic, initializer));
         if (!type_annotation.isNone() or initializer.isNone() or
-            !isSafeConstructorValue(ast, semantic, initializer) or
+            !safe_initializer or
             !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
 
         const binding_raw = @backingInt(binding);
@@ -4708,6 +4712,35 @@ fn isSafeConstructorDirectLexicalDeclaration(
         }
     }
     return true;
+}
+
+/// A derived constructor lexical declaration may use one direct, non-computed
+/// `super.property` initializer after the leading `super()` call. Keep this
+/// separate from ordinary safe values because the class lowerer records the
+/// generated home-object read in the retained semantic graph.
+fn isSafePostSuperDirectLexicalDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, false)) return true;
+    if (declaration.tag != .variable_declaration) return false;
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len != 1 or declarators_start >= extras.len or
+        extras[declarators_start] >= ast.nodes.items.len) return false;
+    const declarator = ast.nodes.items[extras[declarators_start]];
+    if (declarator.tag != .variable_declarator) return false;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+    const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+    if (initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len or
+        ast.getNode(initializer).tag != .static_member_expression or
+        !isRetainableDirectSuperPropertyAccess(ast, initializer, false)) return false;
+    return isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, true);
 }
 
 fn isSafeConstructorForEachHead(
@@ -5152,7 +5185,7 @@ fn isSafeConstructorRootBodyStatement(
     if (statement.tag == .variable_declaration) {
         const kind = ast.variableDeclarationKind(statement);
         if (kind == .let or kind == .@"const")
-            return isSafeConstructorDirectLexicalDeclaration(ast, semantic, statement);
+            return isSafeConstructorDirectLexicalDeclaration(ast, semantic, statement, false);
     }
     return isSafeConstructorBodyStatement(ast, semantic, statement_idx);
 }
@@ -5894,7 +5927,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     semantic,
                     ast.getNode(following_statement),
                 )) continue;
-                if (!completion_seen and isSafeConstructorDirectLexicalDeclaration(
+                if (!completion_seen and isSafePostSuperDirectLexicalDeclaration(
                     ast,
                     semantic,
                     ast.getNode(following_statement),
@@ -22861,6 +22894,8 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base {} class Read extends Base { constructor() { let local = 1; super(); this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); let local = input; this.value = local; } }", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); const first = input; const second = first + 1; this.value = second; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); const value = super.current; this.value = value; } }", .expected = true },
         .{ .source = "class Base {} var Read = class Local extends Base { constructor(input) { super(); let value = input; this.value = value; } };", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = local; this.value = local; } }", .expected = false },
@@ -22869,6 +22904,16 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base {} class Read extends Base { constructor() { super(local); let local = 1; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); { let local = 1; this.value = local; } } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let { local } = { local: 1 }; this.value = local; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 1; this.value = value + other; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input]; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input?.name]; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current(); this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current + 1; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = input ? super.current : 0; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); { let value = super.current; this.value = value; } } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 2; this.value = other; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = other; let other = 2; } }", .expected = false },
+        .{ .source = "class Base { constructor(value) {} get current() { return 1; } } class Read extends Base { constructor() { super(value); let value = super.current; this.value = value; } }", .expected = false },
         .{ .source = "class Read { read({ input }) { const local = input; return local; } }", .expected = true },
         .{ .source = "class Read { async read() { let local = 1; return local; } }", .expected = false },
         .{ .source = "class Read { *read() { let local = 1; yield local; } }", .expected = false },
