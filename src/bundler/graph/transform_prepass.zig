@@ -2497,6 +2497,103 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     return found_super;
 }
 
+/// Object async-generator super lowering can preserve one synchronous lexical
+/// arrow under the exact method home owner. Keep nested arrows, async arrows,
+/// ordinary functions, nested methods, and parameter initializers on the
+/// reanalysis path until each has its own owner proof.
+fn methodSuperUsesOnlyDirectBodyOrSingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    if (method.tag != .method_definition) return false;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.params]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body]));
+    if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
+        body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
+
+    const params_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params_idx) catch return false;
+    defer ast.allocator.free(params_nodes);
+    for (params_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .super_expression) return false;
+    }
+
+    const Work = struct { node: ast_mod.NodeIndex, arrow_depth: usize = 0, super_allowed: bool = true };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+    defer seen.deinit(ast.allocator);
+    stack.append(ast.allocator, .{ .node = body_idx }) catch return false;
+    var found_super = false;
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @backingInt(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @backingInt(work.node);
+        const work_state = work.arrow_depth * 2 + @intFromBool(work.super_allowed);
+        if (seen.get(raw_idx)) |previous_state| {
+            if (previous_state != work_state) return false;
+            continue;
+        }
+        seen.put(ast.allocator, raw_idx, work_state) catch return false;
+        const node = ast.nodes.items[raw_idx];
+        var arrow_depth = work.arrow_depth;
+        var super_allowed = work.super_allowed;
+        switch (node.tag) {
+            .arrow_function_expression => {
+                arrow_depth += 1;
+                const arrow_extra = node.data.extra;
+                if (arrow_extra > ast.extra_data.items.len or
+                    ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.params or
+                    ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
+                const arrow_params: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+                    ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.params],
+                ));
+                if (!arrow_params.isNone()) {
+                    if (@backingInt(arrow_params) >= ast.nodes.items.len) return false;
+                    const arrow_params_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                        ast.allocator,
+                        ast,
+                        arrow_params,
+                    ) catch return false;
+                    var arrow_params_have_super = false;
+                    for (arrow_params_nodes) |parameter_raw_idx| {
+                        if (parameter_raw_idx >= ast.nodes.items.len or
+                            ast.nodes.items[parameter_raw_idx].tag == .super_expression)
+                        {
+                            arrow_params_have_super = true;
+                            break;
+                        }
+                    }
+                    ast.allocator.free(arrow_params_nodes);
+                    if (arrow_params_have_super) return false;
+                }
+                const flags = ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.flags];
+                if (arrow_depth > 1 or (flags & ast_mod.ArrowFlags.is_async) != 0) super_allowed = false;
+            },
+            .function_declaration,
+            .function_expression,
+            .function,
+            .method_definition,
+            .class_declaration,
+            .class_expression,
+            => super_allowed = false,
+            else => {},
+        }
+        if (node.tag == .super_expression) {
+            if (!super_allowed) return false;
+            found_super = true;
+            continue;
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) stack.append(ast.allocator, .{
+                .node = child,
+                .arrow_depth = arrow_depth,
+                .super_allowed = super_allowed,
+            }) catch return false;
+        }
+    }
+    return found_super;
+}
+
 // First static accessor family: one public identifier-key getter, whose
 // direct body only reads super. Existing producers own its G/home/global roles.
 fn isRetainableStaticGetterSuper(ast: *const ast_mod.Ast, semantic: *const @import("../module.zig").ModuleSemanticData, object: ast_mod.Node, member_idx: u32) bool {
@@ -6280,8 +6377,9 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
 /// Keep base-less async-generator methods on object literals only when each
 /// lowered method has an exact source function owner and the same narrow
 /// implicit-arguments parameter certificate used for class methods. Direct
-/// method-body `super` uses also need that exact home-object owner; computed
-/// names and nested `super` uses retain the full semantic reanalysis fallback.
+/// method-body `super` uses and one synchronous lexical-arrow capture also need
+/// that exact home-object owner; computed names and other nested `super` uses
+/// retain the full semantic reanalysis fallback.
 fn registerRetainableEs5AsyncGeneratorObjectMethods(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6305,7 +6403,7 @@ fn registerRetainableEs5AsyncGeneratorObjectMethods(
         if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key) return false;
         const has_super = methodHasSuperExpression(ast, method);
-        if (has_super and !methodSuperUsesOnlyDirectMethodBody(ast, method)) return false;
+        if (has_super and !methodSuperUsesOnlyDirectBodyOrSingleSyncArrow(ast, method)) return false;
         const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(
             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
         ));
@@ -14668,6 +14766,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
         "var values = { async *items() { yield arguments[0]; } };",
         "var outer = { values: { async *items(value = arguments[1]) { yield value; } } };",
         "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { yield super.read(); } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { var read = () => super.read(); yield read(); } };",
     };
     for (retained_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
@@ -14677,7 +14776,11 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
     const rejected_sources = [_][]const u8{
         "var values = { async *[key]() { yield 1; } };",
         "var values = { async *['items']() { yield 1; } };",
-        "var values = { async *items() { const read = () => super.read(); yield read(); } };",
+        "var values = { async *items() { const read = () => () => super.read(); yield read()(); } };",
+        "var values = { async *items() { const read = async () => super.read(); yield await read(); } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { const read = () => super.read(); yield read(); } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items(value = super.read()) { yield value; } };",
+        "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { const read = (value = super.read()) => value; yield read(); } };",
         "var values = { async *items() { eval('0'); yield 1; } };",
         "var values = { async *items(value = arguments?.[1]) { yield value; } };",
         "var values = { async *items(index = 0, value = arguments[index]) { yield value; } };",
@@ -14690,7 +14793,7 @@ test "#6193 retains exact base-less ES5 async generator object method owners" {
         "var values = { async *items(value = (arguments[1])) { yield value; } };",
         "var values = { async *items() { const nested = () => eval('0'); yield 1; } };",
     };
-    try std.testing.expectEqual(@as(usize, 14), rejected_sources.len);
+    try std.testing.expectEqual(@as(usize, 18), rejected_sources.len);
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
         try std.testing.expect(!decision.graph_gate);
