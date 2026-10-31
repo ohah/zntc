@@ -6258,21 +6258,31 @@ fn registerRetainableEs5AsyncGeneratorClassMethods(
         const owner = semantic.scope_owner_map.get(raw_member_idx) orelse return false;
         if (owner >= semantic.scopes.len or semantic.scopes[owner].kind != .function or
             semantic.scopes[owner].blocksMangling()) return false;
-        // The ES5 async-generator transform moves the method body under a
-        // generated generator function. An implicit `arguments` reference
-        // still has runtime-correct values, but its source binding owner no
-        // longer matches the emitted function owner. Keep that source method
-        // on semantic reanalysis until the transform can transfer this exact
-        // implicit binding.
-        if (scopeHasImplicitArgumentsReferences(semantic, owner)) return false;
+        // The async-generator state-machine wrapper now creates an exact
+        // implicit arguments engine for body captures. Parameter initializers
+        // remain on reanalysis because they execute in the outer environment.
+        if (methodHasImplicitArgumentsParameterReferences(ast, semantic, member, owner)) return false;
         retained_async_generator_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
 }
 
-fn scopeHasImplicitArgumentsReferences(semantic: *const ModuleSemanticData, owner_scope: u32) bool {
-    for (semantic.references) |reference| {
-        const raw_symbol = @backingInt(reference.symbol_id);
+fn methodHasImplicitArgumentsParameterReferences(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    method: ast_mod.Node,
+    owner_scope: u32,
+) bool {
+    const method_extra = method.data.extra;
+    if (method_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.params) return true;
+    const params: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[method_extra + ast_mod.MethodExtra.params]));
+    if (params.isNone() or @backingInt(params) >= ast.nodes.items.len) return true;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params) catch return true;
+    defer ast.allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= semantic.symbol_ids.len) return true;
+        const raw_symbol = semantic.symbol_ids[raw] orelse continue;
         if (raw_symbol >= semantic.symbols.items.len) return true;
         const symbol = semantic.symbols.items[raw_symbol];
         if (symbol.synthetic_kind != .implicit_arguments) continue;
@@ -14259,8 +14269,7 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         "class Box { async *#items() { yield 1; } read() { return this.#items(); } }",
         "class Box { async *items() { eval('0'); yield 1; } }",
         "class Box { @decorator async *items() { yield 1; } }",
-        "class Box { async *items() { yield arguments[0]; } }",
-        "class Box { async *items() { var read = () => arguments[0]; yield read(); } }",
+        "class Box { async *items(value = arguments) { yield value; } }",
     };
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);

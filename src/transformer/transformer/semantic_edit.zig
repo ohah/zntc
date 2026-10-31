@@ -3212,6 +3212,17 @@ pub fn makeNativeArgumentsRef(self: *Transformer, owner_scope: ScopeId, use_scop
         const name = try self.ast.addString("arguments");
         return self.ast.addNode(.{ .tag = .identifier_reference, .span = span, .data = .{ .string_ref = name } });
     }
+    const selected = try ensureNativeArgumentsSymbol(self, owner_scope, span);
+    const reference = try self.makeSyntheticRefForSymbol(selected, use_scope, .{ .read = true });
+    try @import("../native_arguments.zig").recordReference(self, reference, selected, owner_scope, use_scope);
+    return reference;
+}
+
+/// Create the implicit arguments engine for a generated ordinary function
+/// without adding a reference node. Some body captures must rebind existing
+/// source references to this exact output owner instead of emitting a throwaway
+/// read just to materialize the binding.
+fn ensureNativeArgumentsSymbol(self: *Transformer, owner_scope: ScopeId, span: Span) Transformer.Error!SymbolId {
     const editor = try editorFor(self);
     if (owner_scope.isNone() or owner_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[owner_scope.toIndex()].kind != .function)
@@ -3245,9 +3256,7 @@ pub fn makeNativeArgumentsRef(self: *Transformer, owner_scope: ScopeId, use_scop
     }
     editor.ensureDeclarationAtNode(selected.?, owner_scope, .none) catch |err| return editError(err);
     try @import("../native_arguments.zig").record(self, selected.?, owner_scope);
-    const reference = try self.makeSyntheticRefForSymbol(selected.?, use_scope, .{ .read = true });
-    try @import("../native_arguments.zig").recordReference(self, reference, selected.?, owner_scope, use_scope);
-    return reference;
+    return selected.?;
 }
 
 /// Capture initializers consume the exact source edge carried by their frame.
@@ -3269,6 +3278,13 @@ pub fn makeCapturedArgumentsInit(self: *Transformer) Transformer.Error!NodeIndex
         }
     }
     const id = source_id orelse return helpers.makeGlobalRef(self, "arguments");
+    if (self.in_async_generator_body) {
+        // The async-generator lowering creates a new inner generator function
+        // and invokes it with the method's argument list. Its state-machine
+        // wrapper owns this `arguments` read at runtime; bind it to that exact
+        // generated function scope rather than the original method engine.
+        return self.makeNativeArgumentsRef(self.capture_scope, self.capture_scope, self.ast.getNode(origin).span);
+    }
     const initializer = try self.makeUserRefNamedAtScope("arguments", origin, self.capture_scope);
     if (self.getSymbolIdAt(initializer) != id) std.debug.panic("captured arguments read lost its source binding", .{});
     return initializer;
