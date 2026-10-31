@@ -27023,6 +27023,269 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator computed arguments defaults retain exact identities and graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-parameter-arguments-index-'));
+    const input = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'numeric-index-for-await',
+        source:
+          'class Box { async *items(value = arguments[1]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'extra:item\n',
+      },
+      {
+        name: 'computed-string-index',
+        source:
+          'class Box { async *items(value = arguments["1"]) { yield value; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'extra\n',
+      },
+      {
+        name: 'computed-length-key',
+        source:
+          'class Box { async *items(value = arguments["length"]) { yield value; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '2\n',
+      },
+      {
+        name: 'strict-callee-access-still-throws',
+        source:
+          'class Box { async *items(value = arguments["callee"]) { yield value; } } try { new Box().items(undefined, "extra"); console.log("no-throw"); } catch (error) { console.log(error.name); }',
+        expected: 'TypeError\n',
+      },
+      {
+        name: 'missing-index',
+        source:
+          'class Box { async *items(value = arguments[0]) { yield String(value); } } new Box().items().next().then(function (step) { console.log(step.value); });',
+        expected: 'undefined\n',
+      },
+      {
+        name: 'out-of-range-index',
+        source:
+          'class Box { async *items(value = arguments[4]) { yield String(value); } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'undefined\n',
+      },
+      {
+        name: 'multiple-index-defaults',
+        source:
+          'class Box { async *items(first = arguments[1], second = arguments[2]) { yield String(first) + ":" + String(second); } } new Box().items(undefined, undefined, "tail").next().then(function (step) { console.log(step.value); });',
+        expected: 'undefined:tail\n',
+      },
+      {
+        name: 'static-method-index',
+        source:
+          'class Box { static async *items(value = arguments[1]) { yield value; } } Box.items(undefined, "static").next().then(function (step) { console.log(step.value); });',
+        expected: 'static\n',
+      },
+      {
+        name: 'explicit-value-bypasses-default',
+        source:
+          'class Box { async *items(value = arguments[1]) { yield value; } } new Box().items("explicit", "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'explicit\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(9);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      const fallbackFixtures = [
+        {
+          name: 'dynamic-index',
+          source:
+            'class Box { async *items(index, value = arguments[index]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } } new Box().items(2, undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra:item\n',
+        },
+        {
+          name: 'composed-index',
+          source:
+            'class Box { async *items(value = arguments[0 + 1]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra:item\n',
+        },
+        {
+          name: 'effectful-index-key',
+          source:
+            'let count = 0; function nextIndex() { count++; return 1; } class Box { async *items(value = arguments[nextIndex()]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item + ":" + count; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra:item:1\n',
+        },
+        {
+          name: 'optional-index',
+          source:
+            'class Box { async *items(value = arguments?.[1]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra:item\n',
+        },
+        {
+          name: 'object-identity-fallback',
+          source:
+            'const marker = { n: 1 }; class Box { async *items(value = arguments[1], marker) { yield String(value === marker); } } new Box().items(undefined, marker).next().then(function (step) { console.log(step.value); });',
+          expected: 'true\n',
+        },
+      ] as const;
+      expect(fallbackFixtures).toHaveLength(5);
+      for (const fixture of fallbackFixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        const output = join(dir, `${fixture.name}-reanalysis.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${fixture.name}`).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator indexed argument default rejects six compileable value mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-argument-index-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const source =
+      'class Box { async *items(value = arguments[1]) { yield String(value); } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });';
+    writeFileSync(input, source);
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('extra\n');
+
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+
+      const emitted = readFileSync(output, 'utf8');
+      const assignment = emitted.match(
+        /(\w+\s*=\s*\w+\s*===\s*void 0 \? )arguments\[1\](\s*:\s*\w+;)/,
+      );
+      expect(assignment).toBeDefined();
+      const expressionOffset = (assignment?.index ?? -1) + (assignment?.[1].length ?? 0);
+      expect(expressionOffset).toBeGreaterThanOrEqual(0);
+      const mutants = [
+        { name: 'first-argument', expression: 'arguments[0]' },
+        { name: 'argument-count', expression: 'arguments.length' },
+        { name: 'third-argument', expression: 'arguments[2]' },
+        { name: 'undefined', expression: 'void 0' },
+        { name: 'null', expression: 'null' },
+        { name: 'string', expression: '"mutant"' },
+      ];
+      expect(mutants).toHaveLength(6);
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, expressionOffset) +
+          mutant.expression +
+          emitted.slice(expressionOffset + 'arguments[1]'.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${mutant.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, mutant.name).not.toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator captured arguments exposes ten compileable owner mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-arguments-mutants-'));
     const input = join(dir, 'entry.js');
