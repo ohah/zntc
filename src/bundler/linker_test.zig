@@ -7911,11 +7911,26 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     defer linker.deinit();
     try linker.link();
     try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
-    var metadata = try linker.buildMetadata(index.toU32(), true);
+    var metadata = try linker.buildMetadataForAst(transformed, index.toU32(), true, null, .esm, true);
     defer metadata.deinit();
     const raw = object_raw.?;
     try std.testing.expect(raw < metadata.symbol_ids.len);
     if (metadata.symbol_ids[raw] != null) authority_errors += 1;
+    const canonical = linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid)) orelse return error.MissingObjectShadowCanonicalName;
+    try std.testing.expect(!std.mem.eql(u8, canonical, transformed.getText(transformed.nodes.items[source_binding].data.string_ref)));
+    try std.testing.expectEqualStrings(canonical, metadata.renames.get(current_source_sid) orelse return error.MissingObjectShadowMetadataName);
+    if (nested) try std.testing.expect(linker.moduleHasNestedShadow(index.toU32()));
+    // Render these exact nodes separately: generated global and known source
+    // binding must consume different names from the same AST and metadata.
+    const Codegen = @import("../codegen/codegen.zig").Codegen;
+    var global_codegen = Codegen.initWithOptions(a, transformed, .{ .linking_metadata = &metadata });
+    defer global_codegen.deinit();
+    const global_text = try global_codegen.generate(@fromBackingInt(raw));
+    try std.testing.expectEqualStrings("Object", std.mem.trim(u8, global_text, " \r\n\t"));
+    var binding_codegen = Codegen.initWithOptions(a, transformed, .{ .linking_metadata = &metadata });
+    defer binding_codegen.deinit();
+    const binding_text = try binding_codegen.generate(@fromBackingInt(source_binding));
+    try std.testing.expectEqualStrings(canonical, std.mem.trim(u8, binding_text, " \r\n\t"));
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
     defer a.free(native.stdout);
     defer a.free(native.stderr);
