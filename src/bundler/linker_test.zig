@@ -8797,6 +8797,10 @@ test "generated class Object globals pinned descriptor families preserve eight n
         .{ .name = "method-descriptor-flags", .source = "function run(Object){class C{value(){return 7}}var d=globalThis.Object.getOwnPropertyDescriptor(C.prototype,'value');return[new C().value(),d.enumerable,d.configurable,d.writable,eval('Object'),Object]}console.log(JSON.stringify(run(17)));", .expected = "[7,false,true,true,17,17]\n" },
         .{ .name = "accessor-descriptor-flags", .source = "function run(Object){class C{get value(){return this.n||0}set value(v){this.n=v}}var c=new C;c.value=7;var d=globalThis.Object.getOwnPropertyDescriptor(C.prototype,'value');return[c.value,d.enumerable,d.configurable,typeof d.get,typeof d.set,eval('Object'),Object]}console.log(JSON.stringify(run(17)));", .expected = "[7,false,true,\"function\",\"function\",17,17]\n" },
         .{ .name = "static-get-set", .source = "function run(Object){class C{static get value(){return this.n||0}static set value(v){this.n=v}}C.value=7;return[C.value,eval('Object'),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "static-async-generator", .source = "async function run(Object){class C{static async *value(){yield 7}}return[(await C.value().next()).value,eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));" },
+        .{ .name = "instance-async", .source = "async function run(Object){class C{async value(){return 7}}return[await new C().value(),eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));" },
+        .{ .name = "instance-generator", .source = "function run(Object){class C{*value(){yield 7}}return[new C().value().next().value,eval('Object'),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "instance-async-generator", .source = "async function run(Object){class C{async *value(){yield 7}}return[(await new C().value().next()).value,eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));" },
     };
     var runtime_failures: usize = 0;
     var missing_providers: usize = 0;
@@ -8825,6 +8829,17 @@ test "generated class Object globals pinned descriptor families preserve eight n
         const sem = &module.semantic.?;
         const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, ast, ast.transformed_root.?);
         defer a.free(reachable);
+        for (ast.nodes.items) |source_class_body| {
+            if (source_class_body.tag != .class_body) continue;
+            const list = source_class_body.data.list;
+            try std.testing.expect(list.start <= ast.extra_data.items.len and list.len <= ast.extra_data.items.len - list.start);
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |member_raw| {
+                const source_member = ast.nodes.items[member_raw];
+                if (source_member.tag != .method_definition) continue;
+                const flags = ast.readExtra(source_member.data.extra, @import("../parser/ast.zig").MethodExtra.flags);
+                std.debug.print("PINNED_FAMILY_SOURCE_MEMBER name={s} node={d} flags={d} owner={any}\n", .{ case.name, member_raw, flags, sem.scope_owner_map.get(member_raw) });
+            }
+        }
         var source_parameter: ?u32 = null;
         var source_owner: ?u32 = null;
         for (reachable) |raw| {
@@ -8907,9 +8922,11 @@ test "generated class Object globals pinned descriptor families preserve eight n
             }
             helper_imports += 1;
         }
-        try std.testing.expectEqual(@as(usize, 1), helper_imports);
-        try std.testing.expectEqual(@as(usize, 1), providers);
-        try std.testing.expect(helper_calls > 0);
+        if (providers > 0) {
+            try std.testing.expectEqual(@as(usize, 1), helper_imports);
+            try std.testing.expectEqual(@as(usize, 1), providers);
+            try std.testing.expect(helper_calls > 0);
+        }
         var descriptor_calls: usize = 0;
         for (reachable) |raw| {
             const node = ast.nodes.items[raw];
@@ -8931,7 +8948,7 @@ test "generated class Object globals pinned descriptor families preserve eight n
             std.debug.print("PINNED_FAMILY_DESCRIPTOR name={s} receiver={d} receiverSID={any} parameterNode={d} parameterSID={d} parameterScope={d} useScope={d} providers={d}\n", .{ case.name, receiver, sem.symbol_ids[receiver], parameter_node, parameter_sid, parameter_scope, use_scope, providers });
             descriptor_calls += 1;
         }
-        try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
+        if (providers > 0) try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
         const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
         defer output.deinit(a);
         try writeFile(tmp.dir, "output.cjs", output.output);
@@ -8949,12 +8966,9 @@ test "generated class Object globals pinned descriptor families preserve eight n
     try std.testing.expectEqual(@as(usize, 0), missing_providers);
 }
 
-test "generated class Object globals keep unmeasured async generator and constructor roles outside the family" {
+test "generated class Object globals keep constructor roles outside the family" {
     const a = std.testing.allocator;
     const sources = [_][]const u8{
-        "function run(Object){class C{static async *value(){yield 7}}return[C,eval('Object'),Object]}run(17);",
-        "function run(Object){class C{async value(){return 7}}return[C,eval('Object'),Object]}run(17);",
-        "function run(Object){class C{*value(){yield 7}}return[C,eval('Object'),Object]}run(17);",
         "function run(Object){class C{constructor(){this.n=7}}return[new C().n,eval('Object'),Object]}run(17);",
     };
     for (sources, 0..) |source, index| {
