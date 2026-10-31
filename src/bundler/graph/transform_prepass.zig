@@ -21677,7 +21677,9 @@ test "computed accessor super authority source admission keeps nested and Object
         .{ .source = "var object={get['value'](){return (()=>super.value)()}};", .admitted = false },
         .{ .source = "var object={get['value'](){return (async()=>super.value)()}};", .admitted = false },
         .{ .source = "var object={get['value'](){return class extends super.value{}}};", .admitted = false },
-        .{ .source = "var Object=globalThis.Object;var object={get['value'](){return super.value}};", .admitted = false },
+        // Exact generated-global shadow handling supports source Object bindings.
+        .{ .source = "var Object=globalThis.Object;var object={get['value'](){return super.value}};", .admitted = true },
+        .{ .source = "var Object=17;var object={get['value'](){return super.value}};", .admitted = true },
     };
     for (controls) |control| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -21976,7 +21978,9 @@ test "static getter super source admission preserves narrow syntax and owner bou
         .{ .text = "var object={set value(v){super.value=v}};", .admitted = false },
         .{ .text = "var object={get value(){return super.value=1}};", .admitted = false },
         .{ .text = "var object={get value(){return ++super.value}};", .admitted = false },
-        .{ .text = "var Object=globalThis.Object;var object={get value(){return super.value}};", .admitted = false },
+        // Keep source admission distinct from final global-name deconfliction.
+        .{ .text = "var Object=globalThis.Object;var object={get value(){return super.value}};", .admitted = true },
+        .{ .text = "var Object=17;var object={get value(){return super.value}};", .admitted = true },
         .{ .text = "var object={get value(){eval('value');return super.value}};", .admitted = false },
         .{ .text = "var object={get value(){return super.value},extra:1};", .admitted = false },
         .{ .text = "var object={get [name](){return super.value}};", .admitted = true },
@@ -21991,7 +21995,7 @@ test "static getter super source admission preserves narrow syntax and owner bou
         if (!control.admitted) rejected += 1;
         try std.testing.expectEqual(control.admitted, computedAccessorSuperSourceAdmissionForTest(&f));
     }
-    try std.testing.expectEqual(@as(usize, 10), rejected);
+    try std.testing.expectEqual(@as(usize, 9), rejected);
 }
 
 test "static getter super source admission rejects wrong actual getter Scope kind and restores" {
