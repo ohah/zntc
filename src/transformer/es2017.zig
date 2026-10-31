@@ -1114,6 +1114,8 @@ test "async generator erased parameter engines preserve the source arguments Sym
         "async function*f(value=arguments.length,...rest){yield value+':'+rest.length+':'+arguments.length}(async()=>{const out=[];for await(const step of f(void 0,4,5))out.push(step);console.log(out.join(','))})();",
         "async function*f(value=arguments.length,...[head,tail]){yield value+':'+head+':'+tail}(async()=>console.log((await f(void 0,4,5).next()).value))();",
         "async function*f(arguments=3){yield arguments}(async()=>console.log((await f().next()).value))();",
+        "var proto={read:function(){return this.label}};var object={__proto__:proto,label:'receiver',async *items(value=arguments[1]){yield super.read()+':'+value+':'+arguments.length}};object.items(undefined,'extra').next().then(function(step){console.log(step.value)});",
+        "class Base{read(){return this.label}}class Box extends Base{constructor(){super();this.label='receiver'}async *items(value=arguments[1]){yield super.read()+':'+value+':'+arguments.length}}new Box().items(undefined,'extra').next().then(function(step){console.log(step.value)});",
     };
     for (sources, 0..) |source, index| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1136,7 +1138,8 @@ test "async generator erased parameter engines preserve the source arguments Sym
                 try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
                 try std.testing.expectEqualStrings(native.stdout, actual.stdout);
             }
-            if (index >= 10 and index < 17) try checkKeptParameterEngineBirth(a, source, target, true, 1, true);
+            if ((index >= 10 and index < 17) or index == 18 or index == 19)
+                try checkKeptParameterEngineBirth(a, source, target, true, 1, true);
         }
     }
 }

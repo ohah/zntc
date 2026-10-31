@@ -27815,6 +27815,75 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator object super preserves ten exact arguments owner mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-super-arguments-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const source =
+      'var prototype = { read: function () { return this.label; } }; var values = { label: "receiver", async *items(value = arguments[1]) { yield super.read() + ":" + value; } }; Object.setPrototypeOf(values, prototype); values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });';
+    writeFileSync(input, source);
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('receiver:extra\n');
+
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const graphMode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+      );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const report = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+      );
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+
+      const emitted = readFileSync(output, 'utf8');
+      const defaultArgument = emitted.match(/\?\s*arguments\[1\]/);
+      expect(defaultArgument).toBeDefined();
+      const carrierOffset =
+        (defaultArgument?.index ?? -1) + (defaultArgument?.[0].lastIndexOf('arguments[1]') ?? -1);
+      expect(carrierOffset).toBeGreaterThanOrEqual(0);
+      const mutants = Array.from({ length: 10 }, (_, index) => ({
+        name: `default-argument-${index}`,
+        expression: `"mutant-${index}"`,
+      }));
+      expect(mutants).toHaveLength(10);
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, carrierOffset) +
+          mutant.expression +
+          emitted.slice(carrierOffset + 'arguments[1]'.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${mutant.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, mutant.name).not.toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator captured arguments exposes ten compileable owner mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-arguments-mutants-'));
     const input = join(dir, 'entry.js');
