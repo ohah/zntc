@@ -6171,7 +6171,7 @@ test "self namespace AST holder retains the exact import declaration identity" {
     try std.testing.expectEqualDeep(source_rows, source_sem.references);
     try std.testing.expect(source_sem.owner_token == .unassigned);
     try std.testing.expectEqual(@as(usize, 2), output.scopes.len);
-    try std.testing.expect(output.scopes[plan.getter_scope.toIndex()].parent == plan.root_scope);
+    try std.testing.expect(output.scopes[plan.getters[0].scope.toIndex()].parent == plan.root_scope);
     // Same-graph calls consume the output proof; no second holder is created.
     try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
     var linker = Linker.init(a, &graph, .esm);
@@ -6184,7 +6184,7 @@ test "self namespace AST holder retains the exact import declaration identity" {
     defer metadata.deinit();
     try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
     try std.testing.expect(metadata.cjs_import_preamble == null or metadata.cjs_import_preamble.?.len == 0);
-    std.debug.print("self namespace completed sourceSID={d} outputbinding={d} getterScope={d} exportedSID={d} rawholders=0\n", .{ sid, @backingInt(plan.binding), @backingInt(plan.getter_scope), plan.exported });
+    std.debug.print("self namespace completed sourceSID={d} outputbinding={d} getterScope={d} exportedSID={d} rawholders=0\n", .{ sid, @backingInt(plan.binding), @backingInt(plan.getters[0].scope), plan.getters[0].exported });
 }
 
 test "foreign namespace AST holder preserves the importer binding for a provider scalar export" {
@@ -6385,7 +6385,7 @@ test "foreign namespace alias proof rejects eleven poisoned graph links and rest
             .alias_binding => aliases[attack_alias_index].binding = plan.binding,
             .alias_declarator => aliases[attack_alias_index].declarator = plan.declarator,
             .alias_statement => aliases[attack_alias_index].statement = plan.statement,
-            .alias_initializer => aliases[attack_alias_index].initializer = plan.read,
+            .alias_initializer => aliases[attack_alias_index].initializer = plan.getters[0].read,
             .alias_binding_id => ids[@backingInt(saved_alias.binding)] = plan.holder,
             .alias_initializer_id => ids[@backingInt(saved_alias.initializer)] = saved_alias.holder,
             .alias_local_node => bindings[attack_binding_index].local_symbol_node = plan.binding,
@@ -6941,7 +6941,7 @@ fn checkSelfNamespaceCorruption(attack: SelfNamespaceCorruption) !void {
     const saved_nodes = ast.nodes;
     const saved_owner = sem.owner_token;
     const saved_id = sem.symbol_ids[@backingInt(plan.binding)];
-    const saved_scope = sem.scopes[plan.getter_scope.toIndex()];
+    const saved_scope = sem.scopes[plan.getters[0].scope.toIndex()];
     const saved_strings = ast.string_table.items;
     const saved_byte = saved_strings[0];
     const saved_lexical = ast.preserve_lexical_declaration_indices.items;
@@ -6951,7 +6951,7 @@ fn checkSelfNamespaceCorruption(attack: SelfNamespaceCorruption) !void {
     const name = ast.getText(sem.symbols.items[plan.holder].name);
     const saved_cache = module.transform_cache.?;
     var read_row: ?usize = null;
-    for (sem.references, 0..) |reference, raw| if (reference.node_index == plan.read) {
+    for (sem.references, 0..) |reference, raw| if (reference.node_index == plan.getters[0].read) {
         read_row = raw;
     };
     const read_index = read_row orelse return error.MissingSelfGetterReference;
@@ -6964,13 +6964,13 @@ fn checkSelfNamespaceCorruption(attack: SelfNamespaceCorruption) !void {
             sem.owner_token = foreign.captureOwnerToken();
         },
         .foreign_backing => ast.nodes.items = try module.parse_arena.?.allocator().dupe(@import("../parser/ast.zig").Node, ast.nodes.items),
-        .holder_id => @constCast(sem.symbol_ids)[@backingInt(plan.binding)] = plan.exported,
-        .getter_parent => @constCast(sem.scopes)[plan.getter_scope.toIndex()].parent = plan.getter_scope,
-        .getter_strict => @constCast(sem.scopes)[plan.getter_scope.toIndex()].is_strict = false,
+        .holder_id => @constCast(sem.symbol_ids)[@backingInt(plan.binding)] = plan.getters[0].exported,
+        .getter_parent => @constCast(sem.scopes)[plan.getters[0].scope.toIndex()].parent = plan.getters[0].scope,
+        .getter_strict => @constCast(sem.scopes)[plan.getters[0].scope.toIndex()].is_strict = false,
         .read_scope => @constCast(sem.references)[read_index].scope_id = plan.root_scope,
         .string_table => ast.string_table.items[0] = 'x',
         .lexical_marker => ast.preserve_lexical_declaration_indices.clearRetainingCapacity(),
-        .root_name => try @constCast(sem.scope_maps)[plan.root_scope.toIndex()].put(module.parse_arena.?.allocator(), name, plan.exported),
+        .root_name => try @constCast(sem.scope_maps)[plan.root_scope.toIndex()].put(module.parse_arena.?.allocator(), name, plan.getters[0].exported),
         .cache_demand => module.transform_cache.?.runtime_helpers.keep_names = true,
         .statement_kind => ast.extra_data.items[statement_extra] = @backingInt(@import("../parser/ast.zig").VariableDeclarationKind.@"var"),
         .statement_coordinates => @constCast(sem.references)[read_index].scope_stmt_idx += 1,
@@ -7001,7 +7001,7 @@ fn checkSelfNamespaceCorruption(attack: SelfNamespaceCorruption) !void {
         .foreign_owner => sem.owner_token = saved_owner,
         .foreign_backing => ast.nodes = saved_nodes,
         .holder_id => @constCast(sem.symbol_ids)[@backingInt(plan.binding)] = saved_id,
-        .getter_parent, .getter_strict => @constCast(sem.scopes)[plan.getter_scope.toIndex()] = saved_scope,
+        .getter_parent, .getter_strict => @constCast(sem.scopes)[plan.getters[0].scope.toIndex()] = saved_scope,
         .read_scope, .statement_coordinates => @constCast(sem.references)[read_index] = saved_reference,
         .string_table => ast.string_table.items[0] = saved_byte,
         .lexical_marker => {
@@ -7037,10 +7037,14 @@ test "self namespace AST holder rejects altered output authority before metadata
 }
 
 fn selfNamespaceAllocationFailure(offset: usize) !bool {
+    return selfNamespaceAllocationFailureForSource(offset, "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';");
+}
+
+fn selfNamespaceAllocationFailureForSource(offset: usize, source: []const u8) !bool {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "self.mjs", "export const value=7;console.log(Reflect.get(ns,'value'));import*as ns from'./self.mjs';");
+    try writeFile(tmp.dir, "self.mjs", source);
     const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
     defer a.free(entry);
     var failing = std.testing.FailingAllocator.init(a, .{});
@@ -8322,7 +8326,7 @@ test "generated class Object globals standalone helper aliases preserve raw and 
 }
 
 // The observable pair distinguishes a swapped export SID from the native sum.
-test "self namespace two scalar exports preserve distinct getter identities RED" {
+test "self namespace two scalar exports preserve distinct getter identities" {
     const a = std.testing.allocator;
     const ast_mod = @import("../parser/ast.zig");
     const NodeIndex = ast_mod.NodeIndex;
@@ -8383,13 +8387,25 @@ test "self namespace two scalar exports preserve distinct getter identities RED"
     try std.testing.expectEqual(ast_mod.Node.Tag.object_expression, ast.getNode(object).tag);
     const properties = ast.getNode(object).data.list;
     try std.testing.expectEqual(@as(u32, 2), properties.len);
+    const output_root = ast.transformed_root.?;
+    const root_scope = sem.scope_owner_map.get(@backingInt(output_root)) orelse return error.MissingActualRootScope;
+    var scratch = std.heap.ArenaAllocator.init(a);
+    defer scratch.deinit();
+    const coordinates = try @import("../semantic/statement_coordinates.zig").collect(scratch.allocator(), ast, output_root);
+    const holder_context = coordinates[@backingInt(holder_binding)].?;
     var getter_scopes: [2]u32 = undefined;
     for (exported, 0..) |sid, i| {
         const getter_raw = ast.extra_data.items[properties.start + i];
         const getter = ast.nodes.items[getter_raw];
         try std.testing.expectEqual(ast_mod.Node.Tag.method_definition, getter.tag);
+        try std.testing.expectEqual(@as(u32, 2), ast.extra_data.items[getter.data.extra + 3]);
+        const key = ast.nodes.items[ast.extra_data.items[getter.data.extra]];
+        try std.testing.expectEqualStrings(module.export_bindings[i].exported_name, ast.getText(key.data.string_ref));
         const getter_scope = sem.scope_owner_map.get(getter_raw) orelse return error.MissingActualGetterScope;
         getter_scopes[i] = getter_scope;
+        try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(root_scope)), sem.scopes[getter_scope].parent);
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, sem.scopes[getter_scope].kind);
+        try std.testing.expect(sem.scopes[getter_scope].is_strict);
         const body: NodeIndex = @fromBackingInt(ast.extra_data.items[getter.data.extra + 2]);
         const statements = ast.getNode(body).data.list;
         try std.testing.expectEqual(@as(u32, 1), statements.len);
@@ -8397,12 +8413,17 @@ test "self namespace two scalar exports preserve distinct getter identities RED"
         try std.testing.expectEqual(ast_mod.Node.Tag.return_statement, returned.tag);
         const read = returned.data.unary.operand;
         try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(read)]);
+        const read_context = coordinates[@backingInt(read)].?;
+        try std.testing.expectEqual(holder_context.stmt_idx, read_context.stmt_idx);
+        try std.testing.expectEqual(@as(u32, 0), read_context.scope_stmt_idx);
         var rows: usize = 0;
         for (sem.references) |reference| if (reference.node_index == read) {
             rows += 1;
             try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
             try std.testing.expectEqual(getter_scope, @backingInt(reference.scope_id));
             try std.testing.expect(std.meta.eql(reference.flags, semantic_symbol.ReferenceFlags{ .read = true }));
+            try std.testing.expectEqual(read_context.stmt_idx, reference.stmt_idx);
+            try std.testing.expectEqual(read_context.scope_stmt_idx, reference.scope_stmt_idx);
         };
         try std.testing.expectEqual(@as(usize, 1), rows);
     }
@@ -8414,12 +8435,349 @@ test "self namespace two scalar exports preserve distinct getter identities RED"
     linker.populateImportSymbols();
     const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &.{ .format = .esm }, &linker, null);
     defer output.deinit(a);
-    try writeFile(tmp.dir, "output.cjs", output.output);
-    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+    try writeFile(tmp.dir, "output.mjs", output.output);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.mjs");
     defer a.free(output_path);
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
+    std.debug.print("SELF_TWO_RUNTIME term={any} stdout={s} stderr={s}\nSELF_TWO_EMITTED\n{s}\n", .{ actual.term, actual.stdout, actual.stderr, output.output });
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+const self_two_pair_source = "export const a=3;export const b=7;import*as ns from './self.mjs';console.log(JSON.stringify([Reflect.get(ns,'a'),Reflect.get(ns,'b')]));";
+
+const SelfTwoGraph = struct {
+    graph: *ModuleGraph,
+    cache: *resolve_cache_mod.ResolveCache,
+    entry: []const u8,
+    index: @import("types.zig").ModuleIndex,
+
+    fn init(a: std.mem.Allocator, tmp: *std.testing.TmpDir, source: []const u8) !SelfTwoGraph {
+        try writeFile(tmp.dir, "self.mjs", source);
+        const entry = try @import("test_helpers.zig").absPath(tmp, "self.mjs");
+        errdefer a.free(entry);
+        const cache = try a.create(resolve_cache_mod.ResolveCache);
+        errdefer a.destroy(cache);
+        cache.* = resolve_cache_mod.ResolveCache.init(a, .{});
+        errdefer cache.deinit();
+        const graph = try a.create(ModuleGraph);
+        errdefer a.destroy(graph);
+        graph.* = ModuleGraph.init(a, cache);
+        errdefer graph.deinit();
+        try graph.build(std.testing.io, &.{entry});
+        return .{ .graph = graph, .cache = cache, .entry = entry, .index = graph.path_to_module.get(entry).? };
+    }
+    fn deinit(self: SelfTwoGraph, a: std.mem.Allocator) void {
+        self.graph.deinit();
+        a.destroy(self.graph);
+        self.cache.deinit();
+        a.destroy(self.cache);
+        a.free(self.entry);
+    }
+};
+
+test "self namespace two exports preserve source order under metadata permutation" {
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |permute| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const source = "export const b=7;export const a=3;import*as ns from './self.mjs';console.log(JSON.stringify([Reflect.get(ns,'a'),Reflect.get(ns,'b')]));";
+        const fixture = try SelfTwoGraph.init(a, &tmp, source);
+        defer fixture.deinit(a);
+        const module = fixture.graph.moduleAtMut(fixture.index).?;
+        if (permute) std.mem.swap(@import("binding_scanner.zig").ExportBinding, &@constCast(module.export_bindings)[0], &@constCast(module.export_bindings)[1]);
+        try @import("self_namespace_ast.zig").lower(fixture.graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try @import("self_namespace_ast.zig").validate(fixture.graph, module);
+        const plan = fixture.graph.self_namespace_holders.get(fixture.index.toU32()).?;
+        try std.testing.expectEqual(@as(usize, 2), plan.getters.len);
+        try std.testing.expectEqualStrings("b", plan.getters[0].source_export.name);
+        try std.testing.expectEqualStrings("a", plan.getters[1].source_export.name);
+        const ast = &module.ast.?;
+        const sem = &module.semantic.?;
+        for (plan.getters) |output| {
+            try std.testing.expectEqualStrings(output.source_export.name, ast.getText(ast.getNode(output.key).data.string_ref));
+            try std.testing.expectEqual(@as(?u32, output.source_export.exported), sem.symbol_ids[@backingInt(output.read)]);
+            try std.testing.expectEqual(@as(?u32, output.source_export.exported), sem.symbol_ids[@backingInt(output.source_export.binding)]);
+        }
+        var linker = Linker.init(a, fixture.graph, .esm);
+        defer linker.deinit();
+        try linker.link();
+        try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+        linker.populateImportSymbols();
+        var metadata = try linker.buildMetadataForAst(ast, fixture.index.toU32(), true, null, .esm, true);
+        defer metadata.deinit();
+        try std.testing.expectEqual(@as(usize, 0), metadata.ns_inline_objects.entries.len);
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, fixture.graph, &.{ .format = .esm }, &linker, null);
+        defer output.deinit(a);
+        try writeFile(tmp.dir, "output.mjs", output.output);
+        const path = try @import("test_helpers.zig").absPath(&tmp, "output.mjs");
+        defer a.free(path);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", path } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expectEqualStrings("[3,7]\n", actual.stdout);
+    }
+}
+
+test "self namespace two exports reject incomplete key witnesses and nonliteral sources" {
+    const cases = [_]SelfNamespaceCase{
+        .{ .name = "same-key-twice", .source = "export const a=3;export const b=7;console.log(Reflect.get(ns,'a'),Reflect.get(ns,'a'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "unknown-key", .source = "export const a=3;export const b=7;console.log(Reflect.get(ns,'a'),Reflect.get(ns,'c'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "extra-read", .source = "export const a=3;export const b=7;console.log(Reflect.get(ns,'a'),Reflect.get(ns,'b'),Reflect.get(ns,'a'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "read-before-second", .source = "export const a=3;console.log(Reflect.get(ns,'a'));export const b=7;console.log(Reflect.get(ns,'b'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "export-alias", .source = "const a=3;export{a as b};export const c=7;console.log(Reflect.get(ns,'b'),Reflect.get(ns,'c'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "expression-init", .source = "export const a=1+2;export const b=7;console.log(Reflect.get(ns,'a'),Reflect.get(ns,'b'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "reflect-receiver", .source = "export const a=3;export const b=7;console.log(Reflect.get(ns,'a',{}),Reflect.get(ns,'b'));import*as ns from './self.mjs';", .selected = false },
+        .{ .name = "third-export", .source = "export const a=3;export const b=7;export const c=9;console.log(Reflect.get(ns,'a'),Reflect.get(ns,'b'));import*as ns from './self.mjs';", .selected = false },
+    };
+    for (cases) |case| try checkSelfNamespaceSelection(case);
+}
+
+const SelfTwoProfile = enum { format, scope_hoist, identifiers, syntax, split, preserve, dev, target, plugin, define };
+fn selfTwoProfile(graph: *ModuleGraph, attack: SelfTwoProfile, enabled: bool) @import("self_namespace_ast.zig").Options {
+    var options: @import("self_namespace_ast.zig").Options = .{ .format = .esm, .scope_hoist = true, .minify_syntax = false };
+    switch (attack) {
+        .format => if (enabled) {
+            options.format = .cjs;
+        },
+        .scope_hoist => options.scope_hoist = !enabled,
+        .identifiers => graph.minify_identifiers = enabled,
+        .syntax => {
+            options.minify_syntax = enabled;
+            graph.transform_options_base.minify_syntax = enabled;
+        },
+        .split => graph.code_splitting = enabled,
+        .preserve => graph.preserve_modules = enabled,
+        .dev => graph.dev_mode = enabled,
+        .target => graph.transform_options_base.unsupported = if (enabled) @import("../transformer/compat.zig").fromESTarget(.es5) else .{},
+        .plugin => graph.plugins = if (enabled) &.{.{ .name = "self-two-negative" }} else &.{},
+        .define => graph.defines = if (enabled) &.{.{ .key = "flag", .value = "true" }} else &.{},
+    }
+    return options;
+}
+
+test "self namespace two exports reject ten profiles before and after publication and restore" {
+    const a = std.testing.allocator;
+    inline for (std.meta.tags(SelfTwoProfile)) |attack| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const fixture = try SelfTwoGraph.init(a, &tmp, self_two_pair_source);
+        defer fixture.deinit(a);
+        const module = fixture.graph.moduleAtMut(fixture.index).?;
+        const before_nodes = module.ast.?.nodes.items.ptr;
+        const before_ids = module.semantic.?.symbol_ids.ptr;
+        const rejected = selfTwoProfile(fixture.graph, attack, true);
+        try @import("self_namespace_ast.zig").lower(fixture.graph, rejected);
+        try std.testing.expectEqual(@as(usize, 0), fixture.graph.self_namespace_holders.count());
+        try std.testing.expect(module.ast.?.nodes.items.ptr == before_nodes and module.semantic.?.symbol_ids.ptr == before_ids);
+        const normal = selfTwoProfile(fixture.graph, attack, false);
+        try @import("self_namespace_ast.zig").lower(fixture.graph, normal);
+        try @import("self_namespace_ast.zig").validate(fixture.graph, module);
+        const stale = selfTwoProfile(fixture.graph, attack, true);
+        try std.testing.expectError(error.InvalidSelfNamespaceProfile, @import("self_namespace_ast.zig").lower(fixture.graph, stale));
+        _ = selfTwoProfile(fixture.graph, attack, false);
+        try @import("self_namespace_ast.zig").validate(fixture.graph, module);
+    }
+}
+
+const SelfTwoSourceAttack = enum { metadata_key_swap, shared_sid, shared_anchor, shared_declaration_row };
+test "self namespace two exports reject corrupted source carriers and restore" {
+    const a = std.testing.allocator;
+    inline for (std.meta.tags(SelfTwoSourceAttack)) |attack| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const fixture = try SelfTwoGraph.init(a, &tmp, self_two_pair_source);
+        defer fixture.deinit(a);
+        const module = fixture.graph.moduleAtMut(fixture.index).?;
+        const sem = &module.semantic.?;
+        const imports = try a.dupe(@import("binding_scanner.zig").ExportBinding, module.export_bindings);
+        defer a.free(imports);
+        const ids = try a.dupe(?u32, sem.symbol_ids);
+        defer a.free(ids);
+        const rows = try a.dupe(semantic_symbol.Reference, sem.references);
+        defer a.free(rows);
+        const first = module.export_bindings[0].local_symbol_node.?;
+        const second = module.export_bindings[1].local_symbol_node.?;
+        const second_id = sem.symbol_ids[@backingInt(second)].?;
+        const old_nodes = module.ast.?.nodes.items.ptr;
+        switch (attack) {
+            .metadata_key_swap => std.mem.swap([]const u8, &module.export_bindings[0].exported_name, &module.export_bindings[1].exported_name),
+            .shared_sid => @constCast(sem.symbol_ids)[@backingInt(second)] = sem.symbol_ids[@backingInt(first)],
+            .shared_anchor => module.export_bindings[1].local_symbol_node = first,
+            .shared_declaration_row => for (@constCast(sem.references)) |*row| {
+                if (row.flags.declare and @backingInt(row.symbol_id) == second_id) row.declaration_node_index = first;
+            },
+        }
+        try @import("self_namespace_ast.zig").lower(fixture.graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try std.testing.expectEqual(@as(usize, 0), fixture.graph.self_namespace_holders.count());
+        try std.testing.expect(module.ast.?.nodes.items.ptr == old_nodes);
+        @memcpy(module.export_bindings, imports);
+        @memcpy(@constCast(sem.symbol_ids), ids);
+        @memcpy(@constCast(sem.references), rows);
+        try @import("self_namespace_ast.zig").lower(fixture.graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try @import("self_namespace_ast.zig").validate(fixture.graph, module);
+    }
+}
+
+test "self namespace two exports reject paired output identity and scope swaps and restore" {
+    const a = std.testing.allocator;
+    for ([_]bool{ false, true }) |scope_attack| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const fixture = try SelfTwoGraph.init(a, &tmp, self_two_pair_source);
+        defer fixture.deinit(a);
+        const module = fixture.graph.moduleAtMut(fixture.index).?;
+        const lowering = @import("self_namespace_ast.zig");
+        try lowering.lower(fixture.graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        const plan = fixture.graph.self_namespace_holders.get(fixture.index.toU32()).?;
+        const sem = &module.semantic.?;
+        const original_ids = sem.symbol_ids;
+        const original_references = sem.references;
+        const original_owners = sem.scope_owner_map;
+        const bad_ids = try a.dupe(?u32, original_ids);
+        defer a.free(bad_ids);
+        const bad_refs = try a.dupe(semantic_symbol.Reference, original_references);
+        defer a.free(bad_refs);
+        const bad_getters = try a.dupe(lowering.CompletedGetter, plan.getters);
+        defer a.free(bad_getters);
+        var bad_owners = try original_owners.clone(a);
+        defer bad_owners.deinit(a);
+        var bad_plan = plan;
+        if (scope_attack) {
+            try bad_owners.put(a, @backingInt(plan.getters[0].getter), @backingInt(plan.getters[1].scope));
+            try bad_owners.put(a, @backingInt(plan.getters[1].getter), @backingInt(plan.getters[0].scope));
+            sem.scope_owner_map = bad_owners;
+            for (bad_refs) |*row| {
+                if (row.node_index == plan.getters[0].read) row.scope_id = plan.getters[1].scope;
+                if (row.node_index == plan.getters[1].read) row.scope_id = plan.getters[0].scope;
+            }
+        } else {
+            std.mem.swap(u32, &bad_getters[0].exported, &bad_getters[1].exported);
+            bad_ids[@backingInt(plan.getters[0].read)] = bad_getters[0].exported;
+            bad_ids[@backingInt(plan.getters[1].read)] = bad_getters[1].exported;
+            for (bad_refs) |*row| {
+                if (row.node_index == plan.getters[0].read) row.symbol_id = @fromBackingInt(bad_getters[0].exported);
+                if (row.node_index == plan.getters[1].read) row.symbol_id = @fromBackingInt(bad_getters[1].exported);
+            }
+            sem.symbol_ids = bad_ids;
+            bad_plan.ids = bad_ids;
+            bad_plan.expected_ids = bad_ids;
+            bad_plan.getters = bad_getters;
+        }
+        // The original source-export relation remains immutable even when a
+        // mirrored output snapshot has been corrupted along with the rows.
+        sem.references = bad_refs;
+        bad_plan.references = bad_refs;
+        fixture.graph.self_namespace_holders.putAssumeCapacity(fixture.index.toU32(), bad_plan);
+        const rejection = lowering.validate(fixture.graph, module);
+        sem.symbol_ids = original_ids;
+        sem.references = original_references;
+        sem.scope_owner_map = original_owners;
+        fixture.graph.self_namespace_holders.putAssumeCapacity(fixture.index.toU32(), plan);
+        try std.testing.expectError(error.InvalidSelfNamespaceHolder, rejection);
+        try lowering.validate(fixture.graph, module);
+    }
+}
+
+test "self namespace two exports allocation failures preserve the source and retry" {
+    var failures: usize = 0;
+    var success = false;
+    for (0..192) |offset| {
+        if (try selfNamespaceAllocationFailureForSource(offset, self_two_pair_source)) {
+            success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(success and failures > 0);
+    std.debug.print("self-two-cold OOM failures={d} retry=true\n", .{failures});
+}
+
+fn selfTwoWarmAllocationFailure(offset: usize) !bool {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.mjs", self_two_pair_source);
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "self.mjs");
+    defer a.free(entry);
+    const cache_path = try @import("test_helpers.zig").absPath(&tmp, "cache");
+    defer a.free(cache_path);
+    var disk = try @import("disk_module_store.zig").DiskModuleStore.init(a, cache_path);
+    defer disk.deinit();
+    var resolve = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer resolve.deinit();
+    var cold = ModuleGraph.init(a, &resolve);
+    defer cold.deinit();
+    cold.disk_cache = &disk;
+    cold.disk_load_enabled = true;
+    cold.disk_options_hash = 17;
+    cold.disk_compiler_build_id = 31;
+    try cold.build(std.testing.io, &.{entry});
+    var failing = std.testing.FailingAllocator.init(a, .{});
+    var warm = ModuleGraph.init(failing.allocator(), &resolve);
+    defer warm.deinit();
+    warm.disk_cache = &disk;
+    warm.disk_load_enabled = true;
+    warm.disk_options_hash = 17;
+    warm.disk_compiler_build_id = 31;
+    try warm.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 1), warm.disk_load_hits.load(.monotonic));
+    const index = warm.path_to_module.get(entry).?;
+    const module = warm.moduleAtMut(index).?;
+    try std.testing.expectEqual(@as(usize, 3), module.semantic.?.symbols.items.len);
+    const receipt = module.self_namespace_source_receipt orelse return error.MissingActualSelfTwoReceipt;
+    const old_ast = module.ast.?;
+    const old_sem = module.semantic.?;
+    const old_bindings = module.import_bindings;
+    const old_source = module.source;
+    const rows = try a.dupe(semantic_symbol.Reference, old_sem.references);
+    defer a.free(rows);
+    const ids = try a.dupe(?u32, old_sem.symbol_ids);
+    defer a.free(ids);
+    failing.resize_fail_index = failing.resize_index;
+    failing.fail_index = failing.alloc_index + offset;
+    const lowering = @import("self_namespace_ast.zig");
+    if (lowering.lower(&warm, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false })) |_| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try lowering.validate(&warm, module);
+        try std.testing.expectEqual(@as(usize, 2), warm.self_namespace_holders.get(index.toU32()).?.getters.len);
+        try std.testing.expect(module.self_namespace_source_receipt == null);
+        return true;
+    } else |err| {
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expect(module.self_namespace_source_receipt == receipt);
+        try std.testing.expect(module.ast.?.nodes.items.ptr == old_ast.nodes.items.ptr and module.ast.?.extra_data.items.ptr == old_ast.extra_data.items.ptr);
+        try std.testing.expect(module.semantic.?.symbol_ids.ptr == old_sem.symbol_ids.ptr and module.semantic.?.scopes.ptr == old_sem.scopes.ptr);
+        try std.testing.expect(module.semantic.?.scope_maps.ptr == old_sem.scope_maps.ptr and module.source.ptr == old_source.ptr);
+        try std.testing.expectEqual(old_sem.owner_token, module.semantic.?.owner_token);
+        try std.testing.expectEqualDeep(rows, module.semantic.?.references);
+        try std.testing.expectEqualDeep(ids, module.semantic.?.symbol_ids);
+        try std.testing.expect(module.import_bindings.ptr == old_bindings.ptr and module.import_bindings[0].local_role == .import_binding);
+        try std.testing.expect(module.transform_cache == null and warm.self_namespace_holders.count() == 0);
+        try lowering.lower(&warm, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+        try lowering.validate(&warm, module);
+        try std.testing.expectEqual(@as(usize, 2), warm.self_namespace_holders.get(index.toU32()).?.getters.len);
+        try std.testing.expect(module.self_namespace_source_receipt == null);
+        return false;
+    }
+}
+
+test "self namespace two exports real disk receipt allocation failures preserve and retry" {
+    var failures: usize = 0;
+    var success = false;
+    for (0..192) |offset| {
+        if (try selfTwoWarmAllocationFailure(offset)) {
+            success = true;
+            break;
+        }
+        failures += 1;
+    }
+    try std.testing.expect(success and failures > 0);
+    std.debug.print("self-two-warm actualReceiptSymbols=3 OOM failures={d} retry=true\n", .{failures});
 }
