@@ -30451,6 +30451,82 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('downlevel class descriptor globals preserve user Object bindings through the public API', () => {
+    // The same ten inputs are also exercised by the external hostile matrix.
+    const sources = [
+      'var Object=17;class C{get value(){return 7}}console.log(new C().value);\n',
+      'function run(Object){class C{get value(){return 7}}return new C().value}console.log(run(17));\n',
+      'function run(Obj\\u0065ct){class C{get value(){return 7}}return new C().value}console.log(run(17));\n',
+      '{let Object=17;class C{static get value(){return 7}}console.log(C.value)}\n',
+      'function run(Object){class C{value(){return 7}}return new C().value()}console.log(run(17));\n',
+      'function run(Object){class C{get value(){return this.n||0}set value(v){this.n=v}}var c=new C;c.value=7;return c.value}console.log(run(17));\n',
+      'function run(Object){class C{static value=7}return C.value}console.log(run(17));\n',
+      'function run(Object){class C{value=7;read(){return this.value}}return new C().read()}console.log(run(17));\n',
+      'function run(Object){class B{get value(){return 6}}class C extends B{get value(){return super.value+1}}return new C().value}console.log(run(17));\n',
+      'class C{get value(){return 7}}console.log(new C().value);\n',
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-object-global-'));
+    const entry = join(dir, 'entry-class-object.js');
+    const oracle = join(dir, 'native.cjs');
+    const output = join(dir, 'output.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const source of sources) {
+        writeFileSync(entry, source);
+        writeFileSync(oracle, source);
+        const native = spawnSync('node', [oracle], { encoding: 'utf8' });
+        expect(native.status, native.stderr).toBe(0);
+        expect(native.stdout).toBe('7\n');
+        for (const mode of ['plain', 'identifiers', 'full']) {
+          for (const coverage of [false, true]) {
+            // Capture occurs at addon load: use a fresh child for each setting.
+            const env = { ...process.env };
+            delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+            delete env.ZNTC_DEBUG_SYNTHETIC_COVERAGE;
+            if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+            const runner = [
+              `import { build } from ${JSON.stringify(coreEntry)};`,
+              `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers: mode !== 'plain', minifySyntax: mode === 'full', minifyWhitespace: mode === 'full', diskCache: false, write: false })});`,
+              'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+              'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+            ].join('\n');
+            const proc = spawnSync('bun', ['-e', runner], {
+              cwd: join(import.meta.dir, '../../..'),
+              env,
+              encoding: 'utf8',
+            });
+            expect(proc.status, proc.stderr).toBe(0);
+            const reports = (proc.stderr ?? '')
+              .split(/\r?\n/)
+              .filter(
+                (line) =>
+                  (line.startsWith('zntc: symbol-identity-prepass ') ||
+                    line.startsWith('zntc: symbol-identity ')) &&
+                  line.includes(entry + ': '),
+              );
+            if (coverage) {
+              expect(reports.length, proc.stderr).toBeGreaterThan(0);
+              for (const report of reports) {
+                expect(exactSchemaProblems(report), report).toEqual([]);
+                expect(report).toMatch(/clean=1(?:\s|$)/);
+              }
+            } else {
+              expect(reports).toHaveLength(0);
+            }
+            const outputs = JSON.parse(proc.stdout) as string[];
+            expect(outputs).toHaveLength(1);
+            writeFileSync(output, outputs[0]);
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(native.stdout);
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('escaped private fields preserve StringValues and helper reservations through the public API', () => {
     const cases = [
       {

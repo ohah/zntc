@@ -7803,9 +7803,13 @@ test "foreign namespace provider source proof rejects reserved declaration flag 
 }
 
 // Exercise the production prepass separately from its initial source analyzer.
-test "generated Object descriptor reference keeps external authority through graph metadata RED" {
+fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     const a = std.testing.allocator;
-    const source = "let calls=0;class C{static value(){return 10}}var Object=function(){calls++};console.log(C.value(),calls);";
+    const source = if (nested)
+        "function run(Object){class C{static value(){return 10}}return[C.value(),Object]}console.log(JSON.stringify(run(17)));"
+    else
+        "let calls=0;class C{static value(){return 10}}var Object=function(){calls++};console.log(C.value(),calls);";
+    const expected = if (nested) "[10,17]\n" else "10 0\n";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.mjs", source);
@@ -7821,27 +7825,59 @@ test "generated Object descriptor reference keeps external authority through gra
     const ast = &module.ast.?;
     const initial_root = ast.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
     const statements = ast.getNode(initial_root).data.list;
-    // The third source statement is the actual user variable declaration.
-    const declaration = ast.nodes.items[ast.extra_data.items[statements.start + 2]];
-    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.variable_declaration, declaration.tag);
-    const declarator_raw = ast.extra_data.items[ast.extra_data.items[declaration.data.extra + 1]];
-    const declarator = ast.nodes.items[declarator_raw];
-    const source_binding = ast.extra_data.items[declarator.data.extra];
+    // Select the known source binding from its actual declaration edge.
+    const source_binding = if (nested) blk: {
+        const function_raw = ast.extra_data.items[statements.start];
+        const function = ast.nodes.items[function_raw];
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_declaration, function.tag);
+        const params = ast.functionParamsList(function);
+        try std.testing.expectEqual(@as(u32, 1), params.len);
+        const parameter_raw = ast.extra_data.items[params.start];
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.binding_identifier, ast.nodes.items[parameter_raw].tag);
+        break :blk parameter_raw;
+    } else blk: {
+        const declaration = ast.nodes.items[ast.extra_data.items[statements.start + 2]];
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.variable_declaration, declaration.tag);
+        const declarator = ast.nodes.items[ast.extra_data.items[ast.extra_data.items[declaration.data.extra + 1]]];
+        break :blk ast.extra_data.items[declarator.data.extra];
+    };
+    try std.testing.expect(source_binding < module.semantic.?.symbol_ids.len);
     const initial_sid = module.semantic.?.symbol_ids[source_binding] orelse return error.MissingSourceObjectBinding;
+    const binding_kind: semantic_symbol.SymbolKind = if (nested) .parameter else .variable_var;
+    try std.testing.expect(initial_sid < module.semantic.?.symbols.items.len);
+    try std.testing.expectEqual(binding_kind, module.semantic.?.symbols.items[initial_sid].kind);
+    const source_owner_raw = if (nested) ast.extra_data.items[statements.start] else @backingInt(initial_root);
+    const initial_owner_scope = module.semantic.?.scope_owner_map.get(source_owner_raw) orelse return error.MissingSourceObjectOwner;
+    const initial_root_scope = module.semantic.?.scope_owner_map.get(@backingInt(initial_root)) orelse return error.MissingSourceRootOwner;
+    try std.testing.expectEqual(initial_owner_scope, @backingInt(module.semantic.?.symbols.items[initial_sid].scope_id));
+    try std.testing.expect(initial_owner_scope < module.semantic.?.scopes.len);
+    try std.testing.expectEqual(if (nested) .function else .module, module.semantic.?.scopes[initial_owner_scope].kind);
+    try std.testing.expectEqual(if (nested) @as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(initial_root_scope)) else .none, module.semantic.?.scopes[initial_owner_scope].parent);
     const initial_nodes = ast.nodes.items.len;
-    std.debug.print("OBJECT_SOURCE binding={d} initialSID={d} nodes={d}\n", .{ source_binding, initial_sid, initial_nodes });
     graph.transform_options_base.unsupported = TransformOptions.compat.fromESTarget(.es5);
     graph.runTransformerPrePass(module, module.parse_arena.?.allocator());
     const transformed = &module.ast.?;
     const sem = &module.semantic.?;
+    try std.testing.expect(source_binding < sem.symbol_ids.len);
     const current_source_sid = sem.symbol_ids[source_binding] orelse return error.MissingOutputSourceObjectBinding;
+    try std.testing.expect(current_source_sid < sem.symbols.items.len);
+    try std.testing.expectEqual(binding_kind, sem.symbols.items[current_source_sid].kind);
     const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, transformed, transformed.transformed_root.?);
     defer a.free(reachable);
     var descriptor_count: usize = 0;
     var authority_errors: usize = 0;
     var object_raw: ?u32 = null;
+    var output_source_owner: ?u32 = if (nested) null else @backingInt(transformed.transformed_root.?);
     for (reachable) |raw| {
         const call = transformed.nodes.items[raw];
+        if (nested and call.tag == .function_declaration) {
+            const params = transformed.functionParamsList(call);
+            if (params.len == 1) {
+                const parameter_raw = transformed.extra_data.items[params.start];
+                if (parameter_raw == source_binding and transformed.nodes.items[parameter_raw].tag == .binding_identifier)
+                    output_source_owner = raw;
+            }
+        }
         if (call.tag != .call_expression or raw < initial_nodes) continue;
         const callee_raw = transformed.extra_data.items[call.data.extra];
         const callee = transformed.nodes.items[callee_raw];
@@ -7860,13 +7896,17 @@ test "generated Object descriptor reference keeps external authority through gra
             if (known == receiver_raw) marked = true;
         };
         if (id != null or !marked) authority_errors += 1;
-        std.debug.print("OBJECT_OUTPUT call={d} ref={d} SID={any} marker={} sourceBinding={d} outputSourceSID={d}\n", .{ raw, receiver_raw, id, marked, source_binding, current_source_sid });
         for (sem.references) |reference| {
-            if (@backingInt(reference.node_index) == receiver_raw)
-                std.debug.print("OBJECT_ROW SID={d} scope={d} stmt={d} flags={any}\n", .{ @backingInt(reference.symbol_id), @backingInt(reference.scope_id), reference.stmt_idx, reference.flags });
+            if (@backingInt(reference.node_index) == receiver_raw) authority_errors += 1;
         }
     }
     try std.testing.expectEqual(@as(usize, 1), descriptor_count);
+    const output_owner_scope = sem.scope_owner_map.get(output_source_owner orelse return error.MissingOutputObjectOwner) orelse return error.MissingOutputObjectScope;
+    const output_root_scope = sem.scope_owner_map.get(@backingInt(transformed.transformed_root.?)) orelse return error.MissingOutputRootScope;
+    try std.testing.expectEqual(output_owner_scope, @backingInt(sem.symbols.items[current_source_sid].scope_id));
+    try std.testing.expect(output_owner_scope < sem.scopes.len);
+    try std.testing.expectEqual(if (nested) .function else .module, sem.scopes[output_owner_scope].kind);
+    try std.testing.expectEqual(if (nested) @as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(output_root_scope)) else .none, sem.scopes[output_owner_scope].parent);
     var linker = Linker.init(a, &graph, .esm);
     defer linker.deinit();
     try linker.link();
@@ -7875,13 +7915,12 @@ test "generated Object descriptor reference keeps external authority through gra
     defer metadata.deinit();
     const raw = object_raw.?;
     try std.testing.expect(raw < metadata.symbol_ids.len);
-    std.debug.print("OBJECT_METADATA ref={d} SID={any} sourceSID={d}\n", .{ raw, metadata.symbol_ids[raw], current_source_sid });
     if (metadata.symbol_ids[raw] != null) authority_errors += 1;
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
     defer a.free(native.stdout);
     defer a.free(native.stderr);
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
-    try std.testing.expectEqualStrings("10 0\n", native.stdout);
+    try std.testing.expectEqualStrings(expected, native.stdout);
     // Build the runtime graph with downlevel options from the start, so helper
     // imports emitted by the prepass are discovered by the real graph builder.
     var runtime_graph = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
@@ -7900,9 +7939,18 @@ test "generated Object descriptor reference keeps external authority through gra
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
-    std.debug.print("OBJECT_RUNTIME term={any} stdout={s} stderr={s}\nOBJECT_CODE\n{s}\n", .{ actual.term, actual.stdout, actual.stderr, output.output });
+    if (actual.term != .exited or actual.term.exited != 0)
+        std.debug.print("generated Object runtime failed: {s}\n{s}\n", .{ actual.stderr, output.output });
     // External/null authority is checked independently of runtime output.
     try std.testing.expectEqual(@as(usize, 0), authority_errors);
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
+
+test "generated class Object globals keep root binding authority through graph metadata" {
+    try checkGeneratedClassObjectAuthority(false);
+}
+
+test "generated class Object globals keep parameter authority through graph metadata" {
+    try checkGeneratedClassObjectAuthority(true);
 }
