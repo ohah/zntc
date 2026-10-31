@@ -5838,7 +5838,7 @@ fn isSimpleClass(
     if (body_node.tag != .class_body) return false;
     const members = body_node.data.list;
     if (members.len == 0) return true;
-    if (source_object_shadows_class) return false;
+    if (source_object_shadows_class and !super.isNone()) return false;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
 
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
@@ -5849,6 +5849,9 @@ fn isSimpleClass(
         const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_member_idx));
         if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
+        // Plain lowered methods use exact explicit-global Object refs. Keep
+        // field/accessor helper producers and extends helpers on reanalysis.
+        if (source_object_shadows_class and member.tag != .method_definition) return false;
         if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
@@ -5857,6 +5860,8 @@ fn isSimpleClass(
         if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
+        if (source_object_shadows_class and
+            flags != 0 and flags != ast_mod.MethodFlags.is_static) return false;
         const is_es5_async_instance_method = flags == ast_mod.MethodFlags.is_async;
         const is_es5_async_static_method = flags ==
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
