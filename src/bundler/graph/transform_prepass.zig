@@ -7723,6 +7723,32 @@ fn awaitBelongsToRetainableAsyncFunction(
     return false;
 }
 
+fn forAwaitBelongsToRetainableAsyncGeneratorMethod(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    retained_async_generator_methods: *const std.AutoHashMapUnmanaged(u32, void),
+    for_await_node: u32,
+) bool {
+    var current = parents.get(for_await_node) orelse return false;
+    var hops: usize = 0;
+    while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (current >= ast.nodes.items.len) return false;
+        switch (ast.nodes.items[current].tag) {
+            .method_definition => return retained_async_generator_methods.contains(current),
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .class_declaration,
+            .class_expression,
+            .program,
+            => return false,
+            else => current = parents.get(current) orelse return false,
+        }
+    }
+    return false;
+}
+
 /// Return true when a using declaration is owned by a function that will be
 /// rewritten into an async/generator state machine for this target. A target
 /// may downlevel those features even when the using declaration belongs to a
@@ -7874,6 +7900,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_for_in_heads.deinit(ast.allocator);
     var lowered_for_of_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_for_of_heads.deinit(ast.allocator);
+    var lowered_for_await_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_for_await_heads.deinit(ast.allocator);
+    var retained_async_generator_for_await_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_async_generator_for_await_nodes.deinit(ast.allocator);
     var lowered_classic_for_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_classic_for_heads.deinit(ast.allocator);
     var source_parent_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -8367,6 +8397,39 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
+    // ES5 async-generator methods lower their `for await` loops in place
+    // before state-machine generation. That rewrite preserves the loop head's
+    // exact binding and iteration scope only for a registered method owner.
+    // Record those owners before the declaration walk so lexical loop heads
+    // do not broaden the ordinary block-scoping allowlist.
+    if (options.unsupported.needsForAwaitOfDownlevel() and
+        (options.unsupported.async_await or options.unsupported.generator))
+    {
+        for (reachable_nodes) |raw_idx| {
+            const node = ast.nodes.items[raw_idx];
+            if (node.tag != .for_await_of_statement) continue;
+            if (!source_parent_map_ready) {
+                if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                source_parent_map_ready = true;
+            }
+            if (!forAwaitBelongsToRetainableAsyncGeneratorMethod(
+                ast,
+                &source_parent_map,
+                &retained_async_generator_methods,
+                @intCast(raw_idx),
+            )) return false;
+            retained_async_generator_for_await_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            const head = node.data.ternary.a;
+            if (head.isNone() or @backingInt(head) >= ast.nodes.items.len) return false;
+            const head_node = ast.nodes.items[@backingInt(head)];
+            if (head_node.tag == .variable_declaration and
+                ast.variableDeclarationKind(head_node) != .@"var")
+            {
+                lowered_for_await_heads.put(ast.allocator, @backingInt(head), {}) catch return false;
+            }
+        }
+    }
+
     var found_arrow = false;
     var found_native_await = false;
     var found_native_generator = false;
@@ -8477,6 +8540,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.block_scoping and kind != .@"var" and !retained_using_declaration and
                     !lowered_for_in_heads.contains(raw_idx) and
                     !lowered_for_of_heads.contains(raw_idx) and
+                    !lowered_for_await_heads.contains(raw_idx) and
                     !lowered_classic_for_heads.contains(raw_idx)) return false;
             },
             .variable_declarator => {
@@ -8810,9 +8874,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // The ES2017 path lowers only the loop. Keep async/await
                     // native so rewriteForAwait's generated temps, catch
                     // binding, and moved iteration scope stay in one edited
-                    // semantic graph. Older targets also lower the enclosing
-                    // async function and must use the full reanalysis path.
-                    if (options.unsupported.async_await or options.unsupported.generator) return false;
+                    // semantic graph. On older targets, the in-place lowering
+                    // also supports an exact retained ES5 async-generator
+                    // method owner; other async/generator owners still need
+                    // the full reanalysis path.
+                    if (options.unsupported.async_await or options.unsupported.generator) {
+                        if (!retained_async_generator_for_await_nodes.contains(raw_idx)) return false;
+                    }
                     found_lowered_for_await = true;
                 } else {
                     found_native_for_await = true;
@@ -14252,6 +14320,30 @@ test "#6193 retains exact base-less ES5 sync and async generator class method ow
         .none,
     );
     try std.testing.expect(shadowed_async_generator_await_method.graph_gate);
+
+    const async_generator_for_await_method = try staticBlockPrepassDecisionForTest(
+        "class Box { async *items() { for await (const value of [Promise.resolve(1)]) yield value; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(async_generator_for_await_method.graph_gate);
+
+    const static_async_generator_for_await_method = try staticBlockPrepassDecisionForTest(
+        "class Box { static async *items() { outer: for await (const value of [1, 2]) { if (value === 1) continue outer; yield value; } } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(static_async_generator_for_await_method.graph_gate);
+
+    const nested_async_function_for_await = try staticBlockPrepassDecisionForTest(
+        "class Box { async *items() { const nested = async () => { for await (const value of [1]) return value; }; yield 1; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(!nested_async_function_for_await.graph_gate);
 
     const nested_function_arguments = try staticBlockPrepassDecisionForTest(
         "class Box { async *items() { var read = function () { return arguments[0]; }; yield read('nested'); } }",
