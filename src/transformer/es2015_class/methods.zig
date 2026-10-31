@@ -439,8 +439,6 @@ pub fn Methods(comptime Transformer: type) type {
             if (self.parser_node_count == 0) return false;
             const root = self.scope_owner_map.get(self.parser_node_count - 1) orelse return false;
             if (root >= scopes.len or root >= maps.len or maps[root].contains("Object")) return false;
-            const source_ast = self.semantic_source_ast orelse self.ast;
-            if (sourceRootHasDynamicEnvironment(source_ast, @fromBackingInt(self.parser_node_count - 1), 0)) return false;
             var scope = use_scope;
             if (scope.isNone()) {
                 // The non-editing path has no generated IIFE scope yet. Its
@@ -457,8 +455,13 @@ pub fn Methods(comptime Transformer: type) type {
                 if (hops >= scopes.len or raw >= scopes.len or raw >= maps.len) return false;
                 if (maps[raw].get("Object")) |id| {
                     if (id >= symbols.len) return false;
-                    return raw != root and scopes[raw].kind == .function and scopes[raw].subtree_has_direct_eval and !scopes[raw].subtree_has_with and
+                    const pinned_parameter = raw != root and scopes[raw].kind == .function and scopes[raw].subtree_has_direct_eval and !scopes[raw].subtree_has_with and
                         symbols[id].kind == .parameter and symbols[id].scope_id == scope;
+                    if (!pinned_parameter) return false;
+                    // Ordinary static methods need no whole-source dynamic
+                    // environment scan; only an otherwise eligible use does.
+                    const source_ast = self.semantic_source_ast orelse self.ast;
+                    return !sourceRootHasDynamicEnvironment(source_ast, @fromBackingInt(self.parser_node_count - 1), 0);
                 }
                 scope = scopes[raw].parent;
             }
