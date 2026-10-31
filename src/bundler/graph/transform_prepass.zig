@@ -5812,6 +5812,7 @@ fn isSimpleClass(
     source_object_shadows_class: bool,
     allow_es5_async_arrow_super: bool,
     allow_es5_async_class_methods: bool,
+    allow_es5_async_generator_class_methods: bool,
     allow_es5_generator_class_methods: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
@@ -5871,25 +5872,28 @@ fn isSimpleClass(
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
         const is_es5_async_method = allow_es5_async_class_methods and
             (is_es5_async_instance_method or is_es5_async_static_method);
+        const is_es5_async_generator_method = allow_es5_async_generator_class_methods and
+            (flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator) or
+                flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_static));
         const is_es5_generator_method = allow_es5_generator_class_methods and
             (flags == ast_mod.MethodFlags.is_generator or
                 flags == (ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_static));
         const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or
-            is_es5_async_method or is_es5_generator_method;
+            is_es5_async_method or is_es5_async_generator_method or is_es5_generator_method;
         const is_plain_accessor = flags == ast_mod.MethodFlags.is_getter or
             flags == ast_mod.MethodFlags.is_setter or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
         // Lowered simple accessors and methods share the explicit-global
-        // Object.defineProperty helper. ES5 async methods additionally register
-        // their state-machine scopes and references before this graph can be
-        // retained. Generator methods must also register the exact
-        // state-machine owner and cannot use `super`.
+        // Object.defineProperty helper. ES5 async and generator methods must
+        // also register their exact state-machine owners before this graph can
+        // be retained; generator methods cannot use `super`.
         if (source_object_shadows_class and flags != 0 and
             flags != ast_mod.MethodFlags.is_static and !is_plain_accessor and
-            !is_es5_async_method and !is_es5_generator_method) return false;
-        if (is_es5_generator_method and (!super.isNone() or methodHasSuperExpression(ast, member))) return false;
-        if (is_es5_generator_method and
+            !is_es5_async_method and !is_es5_async_generator_method and !is_es5_generator_method) return false;
+        if ((is_es5_generator_method or is_es5_async_generator_method) and
+            (!super.isNone() or methodHasSuperExpression(ast, member))) return false;
+        if ((is_es5_generator_method or is_es5_async_generator_method) and
             (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.deco_len or
                 extras[method_extra + ast_mod.MethodExtra.deco_len] != 0)) return false;
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
@@ -6116,6 +6120,7 @@ fn isRetainableGraphClass(
     source_object_shadows_class: bool,
     allow_es5_async_arrow_super: bool,
     allow_es5_async_class_methods: bool,
+    allow_es5_async_generator_class_methods: bool,
     allow_es5_generator_class_methods: bool,
 ) bool {
     const raw: u32 = @intCast(raw_node);
@@ -6133,6 +6138,7 @@ fn isRetainableGraphClass(
         source_object_shadows_class,
         allow_es5_async_arrow_super,
         allow_es5_async_class_methods,
+        allow_es5_async_generator_class_methods,
         allow_es5_generator_class_methods,
     );
 }
@@ -6177,8 +6183,8 @@ fn registerRetainableEs5AsyncClassMethods(
 
 /// A downleveled sync generator class method uses its source method owner for
 /// generated state-machine scopes. Keep only simple base-less methods without
-/// `super`; the method-owner set below lets the exact prepass admit those nodes
-/// while leaving async generators and derived/home-object cases on reanalysis.
+/// `super`; async generators use a separate stricter owner set, while derived
+/// and home-object cases remain on reanalysis.
 fn registerRetainableEs5GeneratorClassMethods(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -6214,6 +6220,66 @@ fn registerRetainableEs5GeneratorClassMethods(
         retained_generator_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
+}
+
+/// A downleveled async-generator class method shares the source method's
+/// function scope with its generated async/generator state machine. Admit only
+/// base-less, undecorated methods without `super`, dynamic name lookup, or an
+/// implicit `arguments` binding that moves under the generated inner function.
+fn registerRetainableEs5AsyncGeneratorClassMethods(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    class_node: ast_mod.Node,
+    retained_async_generator_methods: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (class_node.tag != .class_declaration and class_node.tag != .class_expression) return false;
+    const class_extra = class_node.data.extra;
+    if (class_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
+    const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
+        ast.getNode(body_idx).tag != .class_body) return false;
+    const members = ast.getNode(body_idx).data.list;
+    if (members.start > ast.extra_data.items.len or
+        members.len > ast.extra_data.items.len - members.start) return false;
+    for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member_idx| {
+        if (raw_member_idx >= ast.nodes.items.len) return false;
+        const member = ast.nodes.items[raw_member_idx];
+        if (member.tag != .method_definition) continue;
+        const method_extra = member.data.extra;
+        if (method_extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.deco_len) return false;
+        const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+        if (flags != (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator) and
+            flags != (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_static)) continue;
+        if (!super_idx.isNone() or ast.extra_data.items[method_extra + ast_mod.MethodExtra.deco_len] != 0 or
+            methodHasSuperExpression(ast, member)) return false;
+        const owner = semantic.scope_owner_map.get(raw_member_idx) orelse return false;
+        if (owner >= semantic.scopes.len or semantic.scopes[owner].kind != .function or
+            semantic.scopes[owner].blocksMangling()) return false;
+        // The ES5 async-generator transform moves the method body under a
+        // generated generator function. An implicit `arguments` reference
+        // still has runtime-correct values, but its source binding owner no
+        // longer matches the emitted function owner. Keep that source method
+        // on semantic reanalysis until the transform can transfer this exact
+        // implicit binding.
+        if (scopeHasImplicitArgumentsReferences(semantic, owner)) return false;
+        retained_async_generator_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
+    }
+    return true;
+}
+
+fn scopeHasImplicitArgumentsReferences(semantic: *const ModuleSemanticData, owner_scope: u32) bool {
+    for (semantic.references) |reference| {
+        const raw_symbol = @backingInt(reference.symbol_id);
+        if (raw_symbol >= semantic.symbols.items.len) return true;
+        const symbol = semantic.symbols.items[raw_symbol];
+        if (symbol.synthetic_kind != .implicit_arguments) continue;
+        if (symbol.scope_id.isNone()) return true;
+        if (@backingInt(symbol.scope_id) == owner_scope) return true;
+    }
+    return false;
 }
 
 // Downlevel class methods keep direct-body `super` accesses tied to their
@@ -7803,6 +7869,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var source_parent_map_ready = false;
     var retained_async_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_async_functions.deinit(ast.allocator);
+    var retained_async_generator_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_async_generator_methods.deinit(ast.allocator);
     var retained_generator_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_generator_methods.deinit(ast.allocator);
     var found_static_getter_super = false;
@@ -8194,6 +8262,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (source_binds_object) break;
     }
     var found_lowered_async_function = false;
+    var found_lowered_async_generator = false;
 
     // Default-parameter lowering replaces only these literal assignment
     // patterns with exact reads/writes of the same parameter SymbolId. Admit
@@ -8252,6 +8321,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 source_object_shadows_class,
                 options.unsupported.async_await and options.unsupported.generator,
                 options.unsupported.async_await and options.unsupported.generator,
+                options.unsupported.async_generator and options.unsupported.async_await and options.unsupported.generator,
                 options.unsupported.generator,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
@@ -8262,6 +8332,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
             )) return false;
             if (options.unsupported.async_await and options.unsupported.generator and
                 !registerRetainableEs5AsyncClassMethods(ast, class_node, &retained_async_functions)) return false;
+            if (options.unsupported.async_generator and options.unsupported.async_await and options.unsupported.generator and
+                !registerRetainableEs5AsyncGeneratorClassMethods(
+                    ast,
+                    semantic,
+                    class_node,
+                    &retained_async_generator_methods,
+                )) return false;
             if (options.unsupported.generator and
                 !registerRetainableEs5GeneratorClassMethods(
                     ast,
@@ -8824,14 +8901,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const flags = ast.extra_data.items[flags_at];
                 const is_async = (flags & ast_mod.MethodFlags.is_async) != 0;
                 const is_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
-                if ((is_async and is_generator and options.unsupported.async_generator) or
-                    (is_async and options.unsupported.async_await and
-                        !retained_async_functions.contains(raw_idx))) return false;
+                const retained_async_generator = retained_async_generator_methods.contains(raw_idx);
+                if (is_async and is_generator and options.unsupported.async_generator and
+                    !retained_async_generator) return false;
+                if (is_async and options.unsupported.async_await and
+                    !retained_async_functions.contains(raw_idx) and !retained_async_generator) return false;
                 if (is_generator and options.unsupported.generator) {
-                    if (!retained_generator_methods.contains(raw_idx) or is_async) return false;
-                    found_lowered_generator = true;
+                    if (is_async) {
+                        if (!retained_async_generator) return false;
+                        found_lowered_async_generator = true;
+                    } else {
+                        if (!retained_generator_methods.contains(raw_idx)) return false;
+                        found_lowered_generator = true;
+                    }
                 }
-                if (is_async and is_generator) found_native_async_generator = true;
+                if (is_async and is_generator and !options.unsupported.async_generator)
+                    found_native_async_generator = true;
                 if (is_async and options.unsupported.async_await) found_lowered_async_function = true;
                 const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                 if (options.unsupported.object_extensions and !is_accessor) {
@@ -8958,6 +9043,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     }
     const safe_graph_with_other_syntax = found_static_getter_super or found_arrow or found_native_await or found_native_generator or found_native_async_generator or
         found_lowered_generator or
+        found_lowered_async_generator or
         found_lowered_async_function or
         found_lowered_static_block or
         found_native_tagged_template or found_lowered_tagged_template or
@@ -9083,12 +9169,18 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_stage3_decorator_helpers: bool,
     allow_legacy_decorator_helpers: bool,
     allow_async_helper: bool,
+    allow_async_generator_helpers: bool,
     allow_using_helper: bool,
     allow_tracked_super_get: bool,
     allow_tracked_super_set: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
+    if (allow_async_generator_helpers) {
+        other_helpers.async_generator = false;
+        other_helpers.await_helper = false;
+        other_helpers.yield_star = false;
+    }
     if (allow_using_helper) other_helpers.using_ctx = false;
     if (allow_derived_class_helpers) {
         other_helpers.extends = false;
@@ -9135,21 +9227,59 @@ fn runtimeHelpersSafeForRetainedGraph(
 test "retained legacy decorators admit their tracked metadata helper" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const helpers: RuntimeHelpers = .{ .legacy_decorator = true, .metadata = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false, false));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false, false, false));
     const metadata_only: RuntimeHelpers = .{ .metadata = true };
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false, false, false));
     const using_helpers: RuntimeHelpers = .{ .using_ctx = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, true, false, false));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, true, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false, false));
 }
 
 test "retained static-block super reads admit only the tracked get helper" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const get_helper: RuntimeHelpers = .{ .super_get = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(get_helper, false, false, false, false, false, true, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(get_helper, false, false, false, false, false, false, true, false));
     const set_helper: RuntimeHelpers = .{ .super_set = true };
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(set_helper, false, false, false, false, false, true, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(set_helper, false, false, false, false, false, false, true, false));
+}
+
+test "retained async generator methods admit only their runtime helper family" {
+    const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
+    const helpers: RuntimeHelpers = .{ .async_generator = true, .await_helper = true, .yield_star = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
+        helpers,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
+        helpers,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
+        .{ .async_generator = true, .await_helper = true, .class_private_field_set = true },
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+    ));
 }
 
 test "retained private method declarations and calls admit only their helpers" {
@@ -9158,6 +9288,7 @@ test "retained private method declarations and calls admit only their helpers" {
     const get_only: RuntimeHelpers = .{ .class_private_method_get = true };
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
         init_only,
+        false,
         false,
         false,
         false,
@@ -9175,6 +9306,7 @@ test "retained private method declarations and calls admit only their helpers" {
         false,
         false,
         false,
+        false,
     ));
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
         .{ .class_private_method_init = true, .class_private_method_get = true },
@@ -9185,9 +9317,11 @@ test "retained private method declarations and calls admit only their helpers" {
         false,
         false,
         false,
+        false,
     ));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
         .{ .class_private_method_get = true, .class_private_field_set = true },
+        false,
         false,
         false,
         false,
@@ -14037,7 +14171,7 @@ test "#6193 retains only exact named native-class static-block lowering" {
     )).source_candidate);
 }
 
-test "#6193 retains exact base-less ES5 sync generator class method owners" {
+test "#6193 retains exact base-less ES5 sync and async generator class method owners" {
     const options: TransformOptions = .{
         .strip_types = true,
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -14074,6 +14208,42 @@ test "#6193 retains exact base-less ES5 sync generator class method owners" {
     );
     try std.testing.expect(unshadowed_static_method.graph_gate);
 
+    const async_generator_method = try staticBlockPrepassDecisionForTest(
+        "class Box { async *items() { yield Object.name; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(async_generator_method.graph_gate);
+
+    const static_async_generator_method = try staticBlockPrepassDecisionForTest(
+        "class Box { static async *items() { yield Object.name; } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(static_async_generator_method.graph_gate);
+
+    const nested_function_arguments = try staticBlockPrepassDecisionForTest(
+        "class Box { async *items() { var read = function () { return arguments[0]; }; yield read('nested'); } }",
+        ".js",
+        options,
+        .none,
+    );
+    try std.testing.expect(nested_function_arguments.graph_gate);
+
+    for ([_]TransformOptions.compat.ESTarget{ .es2015, .es2017 }) |target| {
+        var partial_async_generator_downlevel = options;
+        partial_async_generator_downlevel.unsupported = TransformOptions.compat.fromESTarget(target);
+        const decision = try staticBlockPrepassDecisionForTest(
+            "class Box { async *items() { yield 1; } }",
+            ".js",
+            partial_async_generator_downlevel,
+            .none,
+        );
+        try std.testing.expect(!decision.graph_gate);
+    }
+
     const rejected_sources = [_][]const u8{
         "var Object = {}; class Base { read() {} } class Box extends Base { *items() { yield super.read(); } }",
         "var Object = {}; var key = 'items'; class Box { *[key]() { yield 1; } }",
@@ -14083,6 +14253,14 @@ test "#6193 retains exact base-less ES5 sync generator class method owners" {
         "var key = 'items'; class Box { *[key]() { yield 1; } }",
         "class Box { async *items() { yield await Promise.resolve(1); } }",
         "class Box { *items() { eval('0'); yield 1; } }",
+        "class Base {} class Box extends Base { async *items() { yield 1; } }",
+        "var key = 'items'; class Box { async *[key]() { yield 1; } }",
+        "class Box { async *it\\u0065ms() { yield 1; } }",
+        "class Box { async *#items() { yield 1; } read() { return this.#items(); } }",
+        "class Box { async *items() { eval('0'); yield 1; } }",
+        "class Box { @decorator async *items() { yield 1; } }",
+        "class Box { async *items() { yield arguments[0]; } }",
+        "class Box { async *items() { var read = () => arguments[0]; yield read(); } }",
     };
     for (rejected_sources) |source| {
         const decision = try staticBlockPrepassDecisionForTest(source, ".js", options, .none);
@@ -15538,12 +15716,20 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // iterator/destructuring/spread subsets preserve the edited semantic
     // graph. JSX, decorators, and syntax lowering may add synthetic helper
     // imports, so refresh module graph metadata without replacing that graph.
+    // Downleveled ES5 async-generator methods add exact references to these
+    // virtual helper imports. The helper module has its own semantic graph;
+    // only admit this family after the source preflight and before the final
+    // exact-graph audit.
+    const allow_async_generator_helpers = can_keep_semantic_graph and
+        opts.unsupported.async_generator and opts.unsupported.async_await and
+        opts.unsupported.generator and transformer.runtime_helpers.async_generator;
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
         retained_helper_demands,
         allow_derived_class_helpers,
         allow_stage3_decorator_helpers,
         allow_legacy_decorator_helpers,
         allow_async_helper,
+        allow_async_generator_helpers,
         can_keep_semantic_graph and transformer.runtime_helpers.using_ctx,
         allow_tracked_super_get,
         allow_tracked_super_set,
