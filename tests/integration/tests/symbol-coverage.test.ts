@@ -16319,6 +16319,204 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('object spread keeps ten unrelated Object-shadow helper shapes on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-spread-object-shadow-fallback-matrix-'));
+    const entry = join(dir, 'entry.js');
+    const cases = [
+      {
+        name: 'instance-getter',
+        body: [
+          'class C { get value() { return 7; } }',
+          'console.log(copied.value, new C().value);',
+        ],
+      },
+      {
+        name: 'instance-setter',
+        body: [
+          'class C { set value(next) { this.saved = next; } read() { return this.saved; } }',
+          'var instance = new C(); instance.value = 7;',
+          'console.log(copied.value, instance.read());',
+        ],
+      },
+      {
+        name: 'static-getter',
+        body: [
+          'class C { static get value() { return 7; } }',
+          'console.log(copied.value, C.value);',
+        ],
+      },
+      {
+        name: 'static-field',
+        body: ['class C { static value = 7; }', 'console.log(copied.value, C.value);'],
+      },
+      {
+        name: 'instance-field',
+        body: [
+          'class C { value = 7; read() { return this.value; } }',
+          'console.log(copied.value, new C().read());',
+        ],
+      },
+      {
+        name: 'static-block',
+        body: ['class C { static { this.value = 7; } }', 'console.log(copied.value, C.value);'],
+      },
+      {
+        name: 'private-field',
+        body: [
+          'class C { #value = 7; read() { return this.#value; } }',
+          'console.log(copied.value, new C().read());',
+        ],
+      },
+      {
+        name: 'computed-object-getter',
+        body: [
+          'var key = "value";',
+          'var descriptor = { get [key]() { return 7; } };',
+          'console.log(copied.value, descriptor.value);',
+        ],
+      },
+      {
+        name: 'computed-object-accessor-pair',
+        body: [
+          'var key = "value"; var saved = 0;',
+          'var descriptor = { get [key]() { return saved; }, set [key](next) { saved = next; } };',
+          'descriptor.value = 7; console.log(copied.value, descriptor.value);',
+        ],
+      },
+      {
+        name: 'object-method-super',
+        body: [
+          'var base = { get value() { return 7; } };',
+          'var derived = { __proto__: base, read() { return super.value; } };',
+          'console.log(copied.value, derived.read());',
+        ],
+      },
+    ] as const;
+    const prelude = [
+      'var Object = { assign: function () { throw new Error("source Object.assign was observed"); }, defineProperty: function () { throw new Error("source Object.defineProperty was observed"); } };',
+      'var source = { value: 42 };',
+      'var copied = { ...source };',
+    ];
+
+    try {
+      expect(cases).toHaveLength(10);
+      for (const fixture of cases) {
+        writeFileSync(entry, [...prelude, ...fixture.body].join('\n'));
+        const native = spawnSync('node', [entry], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+
+        const output = join(dir, `${fixture.name}.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('object spread generated Object.assign exposes ten compileable shadow mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-spread-object-shadow-mutants-'));
+    const output = join(dir, 'output.cjs');
+    const sourcePath = join(dir, 'entry.js');
+    writeFileSync(
+      sourcePath,
+      [
+        'var Object = { assign: function () { throw new Error("source Object.assign was observed"); } };',
+        'var source = { value: 42 };',
+        'var copied = { ...source };',
+        'console.log(copied.value);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=es2017',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const expected = '42\n';
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/var ([\w$]+) = \{\s*assign:/)?.[1];
+      const globalAssignCall = emitted.match(/Object\.assign\(\{\},\s*source\)/)?.[0];
+      expect(sourceObjectName).toBeDefined();
+      expect(globalAssignCall).toBeDefined();
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: `${local}.assign({}, source)` },
+        { name: 'computed-double-quote', expression: `${local}["assign"]({}, source)` },
+        { name: 'computed-single-quote', expression: `${local}['assign']({}, source)` },
+        { name: 'call-method', expression: `${local}.assign.call(${local}, {}, source)` },
+        { name: 'apply-method', expression: `${local}.assign.apply(${local}, [{}, source])` },
+        { name: 'bind-method', expression: `${local}.assign.bind(${local})({}, source)` },
+        { name: 'comma-call', expression: `(0, ${local}.assign)({}, source)` },
+        { name: 'parenthesized-receiver', expression: `(${local}).assign({}, source)` },
+        { name: 'optional-call', expression: `${local}?.assign?.({}, source)` },
+        {
+          name: 'reflect-apply',
+          expression: `Reflect.apply(${local}.assign, ${local}, [{}, source])`,
+        },
+      ];
+      expect(mutations).toHaveLength(10);
+      for (const mutation of mutations) {
+        const offset = emitted.indexOf(globalAssignCall!);
+        expect(offset, mutation.name).not.toBe(-1);
+        const mutated =
+          emitted.slice(0, offset) +
+          mutation.expression +
+          emitted.slice(offset + globalAssignCall!.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          mutant.status !== 0 || mutant.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('object spread retains the graph when Object is bound only in an unrelated function', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-object-spread-unrelated-object-symbol-'));
     const output = join(dir, 'out.cjs');
