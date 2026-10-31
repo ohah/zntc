@@ -2191,7 +2191,7 @@ fn isRetainableTopLevelExportedDeclarationWithSemantic(
         .variable_declaration => hasOnlySimpleExportedVarBindings(ast, declaration) and
             (ast.variableDeclarationKind(declaration) == .@"var" or
                 (semantic != null and
-                    isRetainableProgramScopeLexicalDeclaration(ast, semantic.?, declaration))),
+                    isRetainableSameVarScopeLexicalDeclaration(ast, semantic.?, declaration))),
         .function_declaration => blk: {
             const function_extra = declaration.data.extra;
             if (function_extra > ast.extra_data.items.len or
@@ -2894,13 +2894,50 @@ fn isBoundSourceIdentifierBinding(
     return hasValidSourceSymbol(ast, semantic, node_idx, .binding_identifier);
 }
 
-/// A program-scope `let`/`const` becomes `var` under block-scoping lowering,
-/// but its binding already belongs to the emitted module/global var scope.
-/// Keep this graph only for simple, exact source bindings in that same scope;
-/// Nested blocks, function bodies, patterns, and class-static scopes still need
+fn isRetainableSynchronousFunctionScope(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    scope_index: u32,
+) bool {
+    var owner_raw: ?u32 = null;
+    var owners = semantic.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.value_ptr.* != scope_index) continue;
+        if (owner_raw != null) return false;
+        owner_raw = entry.key_ptr.*;
+    }
+    const raw = owner_raw orelse return false;
+    if (raw >= ast.nodes.items.len) return false;
+    const owner = ast.nodes.items[raw];
+    return switch (owner.tag) {
+        .function_declaration, .function_expression, .function => blk: {
+            const extra: usize = owner.data.extra;
+            const flags_slot: usize = ast_mod.FunctionExtra.flags;
+            if (extra >= ast.extra_data.items.len or
+                ast.extra_data.items.len - extra <= flags_slot) break :blk false;
+            const flags = ast.extra_data.items[extra + flags_slot];
+            break :blk (flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) == 0;
+        },
+        .arrow_function_expression => blk: {
+            const extra: usize = owner.data.extra;
+            const flags_slot: usize = ast_mod.ArrowExtra.flags;
+            if (extra >= ast.extra_data.items.len or
+                ast.extra_data.items.len - extra <= flags_slot) break :blk false;
+            break :blk (ast.extra_data.items[extra + flags_slot] & ast_mod.ArrowFlags.is_async) == 0;
+        },
+        // Methods may be replaced by class/object lowerers; admit them only
+        // through their own owner-specific retained-graph contracts.
+        else => false,
+    };
+}
+
+/// A direct module/global/function-body `let`/`const` becomes `var` under
+/// block-scoping lowering, but its binding already belongs to that emitted
+/// var scope. Keep this graph only for simple, exact source bindings in the
+/// same scope; nested blocks, patterns, and class-static scopes still need
 /// their independently audited scope-move paths. Loop heads have separate
 /// retained contracts and are not admitted by this predicate.
-fn isRetainableProgramScopeLexicalDeclaration(
+fn isRetainableSameVarScopeLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     declaration: ast_mod.Node,
@@ -2930,7 +2967,9 @@ fn isRetainableProgramScopeLexicalDeclaration(
             @backingInt(symbol.scope_id) >= semantic.scope_maps.len) return false;
         const scope_index = @backingInt(symbol.scope_id);
         const scope_kind = semantic.scopes[scope_index].kind;
-        if (scope_kind != .module and scope_kind != .global) return false;
+        if (scope_kind != .module and scope_kind != .global and scope_kind != .function) return false;
+        if (scope_kind == .function and
+            !isRetainableSynchronousFunctionScope(ast, semantic, scope_index)) return false;
         // The source spelling must still resolve to this exact row in the
         // owning scope map. Escaped/aliased spellings conservatively fall back.
         const source_name = ast.getText(symbol.name);
@@ -8834,7 +8873,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_lowered_optional_catch_binding = false;
-    var found_lowered_program_scope_lexical = false;
+    var found_lowered_same_var_scope_lexical = false;
     var found_lowered_new_target = false;
     var found_safe_template_literal = false;
     var found_lowered_optional_chaining = false;
@@ -8890,9 +8929,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
-                const retained_program_scope_lexical = options.unsupported.block_scoping and
+                const retained_same_var_scope_lexical = options.unsupported.block_scoping and
                     kind != .@"var" and
-                    isRetainableProgramScopeLexicalDeclaration(ast, semantic, node);
+                    isRetainableSameVarScopeLexicalDeclaration(ast, semantic, node);
                 var retained_using_declaration = false;
                 if (options.unsupported.using and kind.isUsing()) {
                     // Synchronous using declarations directly owned by a
@@ -8920,8 +8959,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     !lowered_for_of_heads.contains(raw_idx) and
                     !lowered_for_await_heads.contains(raw_idx) and
                     !lowered_classic_for_heads.contains(raw_idx) and
-                    !retained_program_scope_lexical) return false;
-                if (retained_program_scope_lexical) found_lowered_program_scope_lexical = true;
+                    !retained_same_var_scope_lexical) return false;
+                if (retained_same_var_scope_lexical) found_lowered_same_var_scope_lexical = true;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -9518,7 +9557,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_generator or
         found_lowered_async_generator or
         found_lowered_async_function or
-        found_lowered_program_scope_lexical or
+        found_lowered_same_var_scope_lexical or
         found_lowered_static_block or
         found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
@@ -22710,7 +22749,7 @@ test "ES5 Flow retains ten static getter super graph variants" {
     try std.testing.expect(graph.findModuleByPath(entry).?.transform_cache != null);
 }
 
-test "ES5 program-scope lexical declarations alone admit the retained graph" {
+test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
     const Cases = struct {
         source: []const u8,
         expected: bool,
@@ -22720,8 +22759,13 @@ test "ES5 program-scope lexical declarations alone admit the retained graph" {
         .{ .source = "const first = 1, second = 2;", .expected = true },
         .{ .source = "export let value = 1;", .expected = true },
         .{ .source = "export const first = 1, second = 2;", .expected = true },
+        .{ .source = "function read() { let value = 1; return value; }", .expected = true },
+        .{ .source = "const read = () => { const value = 2; return value; };", .expected = true },
+        .{ .source = "async function read() { let value = 3; return value; }", .expected = false },
+        .{ .source = "function* read() { let value = 4; yield value; }", .expected = false },
+        .{ .source = "var values = { async *read() { const value = 5; yield value; } };", .expected = false },
         .{ .source = "{ let value = 1; }", .expected = false },
-        .{ .source = "function read() { const value = 1; return value; }", .expected = false },
+        .{ .source = "function read() { { const value = 1; return value; } }", .expected = false },
         .{ .source = "for (let value = 0; value < 1; value++) {}", .expected = true },
         .{ .source = "class Read { static { let value = 1; } }", .expected = false },
         .{ .source = "let { value } = { value: 1 };", .expected = false },
@@ -22746,7 +22790,7 @@ test "ES5 program-scope lexical declarations alone admit the retained graph" {
             null,
         );
         if (retained != case.expected) {
-            std.debug.print("program lexical gate mismatch source={s} retained={any}\n", .{ case.source, retained });
+            std.debug.print("same-var-scope lexical gate mismatch source={s} retained={any}\n", .{ case.source, retained });
             for (fixture.semantic.symbols.items, 0..) |symbol, symbol_index| {
                 const scope_index = @backingInt(symbol.scope_id);
                 std.debug.print("  symbol={d} name={s} kind={s} scope={d}:{s} map={any}\n", .{

@@ -42654,9 +42654,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
   }, 600_000);
 });
 
-describe('ES5 program-scope lexical declarations retain the bundler graph (#6193)', () => {
-  test('top-level let/const keep exact graph identities and reject ten reference mutants', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-program-lexical-retained-'));
+describe('ES5 same-var-scope lexical declarations retain the bundler graph (#6193)', () => {
+  test('module and function-body let/const keep exact identities and reject reference mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-retained-'));
     const input = join(dir, 'entry.mjs');
     const nativeInput = join(dir, 'oracle.mjs');
     const output = join(dir, 'output.cjs');
@@ -42665,15 +42665,34 @@ describe('ES5 program-scope lexical declarations retain the bundler graph (#6193
     const exportedNative = join(dir, 'exported-oracle.mjs');
     const exportedOutput = join(dir, 'exported.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `value${index}`);
-    const expected =
-      Array.from({ length: 10 }, (_, index) => (index === 0 ? 110 : index + 10)).join(' ') +
-      ' true\n';
+    const functionNames = Array.from({ length: 10 }, (_, index) => `local${index}`);
+    const moduleExpected = Array.from({ length: 10 }, (_, index) =>
+      index === 0 ? 110 : index + 10,
+    ).join(' ');
+    const functionExpected =
+      Array.from({ length: 10 }, (_, index) => (index === 0 ? 200 : index + 100)).join(' ') +
+      ' 200';
+    const expected = `${moduleExpected} ${functionExpected} 16 true\n`;
     const source = [
       ...names.map(
         (name, index) => `${index % 2 === 0 ? 'let' : 'const'} ${name} = ${index + 10};`,
       ),
       'value0 += 100;',
-      `console.log(${names.join(', ')}, /./s.test("\\n"));`,
+      'function readFunctionScope() {',
+      ...functionNames.map(
+        (name, index) => `${index === 0 ? 'let' : 'const'} ${name} = ${index + 100};`,
+      ),
+      'local0 += 100;',
+      `const readCaptured = () => ${functionNames[0]};`,
+      `return [${functionNames.join(', ')}, readCaptured()].join(' ');`,
+      '}',
+      'const readArrowScope = () => {',
+      'let arrowValue = 7;',
+      'const arrowFixed = 8;',
+      'arrowValue += 1;',
+      'return arrowValue + arrowFixed;',
+      '};',
+      `console.log(${names.join(', ')}, readFunctionScope(), readArrowScope(), /./s.test("\\n"));`,
     ].join('\n');
     try {
       writeFileSync(input, source);
@@ -42784,13 +42803,36 @@ describe('ES5 program-scope lexical declarations retain the bundler graph (#6193
         expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, `${name} -> ${replacement}`).not.toBe(expected);
       }
+
+      const returnStart = emitted.lastIndexOf('return [');
+      expect(returnStart).toBeGreaterThanOrEqual(0);
+      const returnListStart = returnStart + 'return ['.length;
+      const returnListEnd = emitted.indexOf(']', returnListStart);
+      expect(returnListEnd).toBeGreaterThan(returnListStart);
+      const returnList = emitted.slice(returnListStart, returnListEnd);
+      for (let index = 0; index < functionNames.length; index += 1) {
+        const name = functionNames[index];
+        const replacement = functionNames[(index + 1) % functionNames.length];
+        const token = new RegExp(`\\b${name}\\b`);
+        expect(returnList.match(token), name).toHaveLength(1);
+        const mutatedList = returnList.replace(token, replacement);
+        const mutated =
+          emitted.slice(0, returnListStart) + mutatedList + emitted.slice(returnListEnd);
+        const mutantPath = join(dir, `function-reference-${index}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${name} -> ${replacement}`).not.toBe(expected);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
 
-  test('ten nested or non-program lexical scopes continue to use semantic reanalysis', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-program-lexical-reanalysis-'));
+  test('twelve nested or non-var lexical scopes continue to use semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-reanalysis-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const fixtures = [
@@ -42816,14 +42858,20 @@ describe('ES5 program-scope lexical declarations retain the bundler graph (#6193
         stdout: '5\n',
       },
       {
-        name: 'function-scope',
-        source: 'function read() { let value = 6; return value; } console.log(read());',
-        stdout: '6\n',
+        name: 'nested-function-block-scope',
+        source: 'function read() { { let value = 11; return value; } } console.log(read());',
+        stdout: '11\n',
       },
       {
-        name: 'arrow-function-scope',
-        source: 'const read = () => { let value = 7; return value; }; console.log(read());',
-        stdout: '7\n',
+        name: 'function-loop-body-scope',
+        source:
+          'function read() { for (let i = 0; i < 1; i++) { let value = 12; console.log(value); } } read();',
+        stdout: '12\n',
+      },
+      {
+        name: 'function-try-body-scope',
+        source: 'function read() { try { let value = 13; console.log(value); } catch {} } read();',
+        stdout: '13\n',
       },
       {
         name: 'captured-block-scope',
@@ -42839,6 +42887,12 @@ describe('ES5 program-scope lexical declarations retain the bundler graph (#6193
         name: 'class-static-scope',
         source: 'class Read { static { let value = 10; console.log(value); } }',
         stdout: '10\n',
+      },
+      {
+        name: 'async-generator-method-owner',
+        source:
+          "var prototype = { read() { return 'base'; } }; var values = { __proto__: prototype, async *items() { const read = () => super.read(); yield read(); } }; values.items().next().then((result) => console.log(result.value));",
+        stdout: 'base\n',
       },
     ] as const;
     try {
