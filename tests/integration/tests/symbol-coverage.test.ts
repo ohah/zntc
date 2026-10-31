@@ -37050,6 +37050,132 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('production and exact audit emit identical code for generated global shadows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-symbol-audit-production-parity-'));
+    const input = join(dir, 'entry.js');
+    writeFileSync(
+      input,
+      [
+        "const Object$1 = 'occupied';",
+        'function unrelated(Object) { return Object.marker; }',
+        'function make(Object) {',
+        "  class Shadowed { static value() { return 'ok'; } }",
+        '  return Shadowed;',
+        '}',
+        'const O\\u0062ject = {',
+        "  defineProperty() { throw new Error('source Object was called'); },",
+        '  marker: 42,',
+        '};',
+        'const result = make({',
+        "  defineProperty() { throw new Error('parameter Object was called'); },",
+        '});',
+        'console.log(result.value(), Object.marker, unrelated({ marker: 7 }), Object$1);',
+      ].join('\n'),
+    );
+
+    const expected = runNode([input]);
+    expect(expected.status, expected.stderr).toBe(0);
+    expect(expected.stdout).toBe('ok 42 7 occupied\n');
+
+    const modes = [
+      { name: 'default', minifyIdentifiers: false, extraArgs: [] },
+      { name: 'syntax-minified', minifyIdentifiers: false, extraArgs: ['--minify-syntax'] },
+      { name: 'identifier-minified', minifyIdentifiers: true, extraArgs: [] },
+    ] as const;
+    const debugReportPrefixes = [
+      'zntc: symbol-identity ',
+      'zntc: symbol-source-scope-owner ',
+      'zntc: symbol-coverage ',
+      'zntc: synthetic-coverage ',
+      'zntc: symbol-identity-post-minify ',
+    ];
+
+    try {
+      for (const mode of modes) {
+        const label = `${mode.name} es5`;
+        const audited = runCoverage(input, TARGETS[0], dir, mode.minifyIdentifiers, [
+          '--format=cjs',
+          ...mode.extraArgs,
+        ]);
+        expect(audited.exitCode, `${label} audit: ${audited.stderr}`).toBe(0);
+        // Both pre-codegen checks retain their real finding: the generated
+        // free `Object` has no local SymbolId and shares a spelling with a
+        // source binding. The final output checks below prove codegen separates
+        // that binding name before execution.
+        expect(
+          transformIdentityAuditProblems(audited.stderr),
+          `${label} audit: ${audited.stderr}`,
+        ).toEqual([
+          'shadowed_external_reference=1, expected 0',
+          'clean=0, expected 1',
+          'missing=1, expected 0',
+        ]);
+        const coverage = audited.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-coverage '));
+        expect(coverage, `${label} coverage report`).toMatch(/missing=1 wrong=0(?:\s|$)/);
+        expect(
+          audited.stderr.match(/  missing Object\(identifier_reference\) x1/g) ?? [],
+        ).toHaveLength(1);
+        expect(
+          audited.stderr.match(/zntc: symbol-shadowed-external node=\d+ name=Object/g) ?? [],
+          `${label} explicit generated external`,
+        ).toHaveLength(1);
+        const exact = audited.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(
+          exactIdentityObservationProblems(exact ?? ''),
+          `${label} exact report: ${exact ?? 'missing'}`,
+        ).toEqual([]);
+        if (mode.minifyIdentifiers) {
+          // The final semantic audit also runs before codegen applies output
+          // names, so the explicit free global remains paired with this one
+          // expected shadow counter. The emitted output assertions below are
+          // the authority for the final name resolution.
+          expect(postMinifyAuditProblems(audited.stderr), `${label} post-minify`).toEqual([
+            'shadowed_external_reference=1, expected 0',
+            'clean=0, expected 1',
+          ]);
+        }
+
+        const auditedOutput = readFileSync(join(dir, 'out.js'), 'utf8');
+        expect(auditedOutput, `${label} generated builtin`).toContain('Object.defineProperty');
+        expect(auditedOutput, `${label} generated builtin must stay external`).not.toMatch(
+          /Object\$\d+\.defineProperty/,
+        );
+        if (!mode.minifyIdentifiers) {
+          expect(auditedOutput, `${label} shadowed source binding`).toContain('Object$2');
+        }
+        const plainOutput = join(dir, `${mode.name}.plain.js`);
+        const plain = runPlainTranspile(input, TARGETS[0], plainOutput, mode.minifyIdentifiers, [
+          '--format=cjs',
+          ...mode.extraArgs,
+        ]);
+        expect(plain.exitCode, `${label} production: ${plain.stderr}`).toBe(0);
+        for (const prefix of debugReportPrefixes) {
+          expect(plain.stderr, `${label} production unexpectedly emitted ${prefix}`).not.toContain(
+            prefix,
+          );
+        }
+        const productionOutput = readFileSync(plainOutput, 'utf8');
+        expect(productionOutput, `${label} audit/production output parity`).toBe(auditedOutput);
+
+        for (const [path, layer] of [
+          [join(dir, 'out.js'), 'audit'],
+          [plainOutput, 'production'],
+        ] as const) {
+          const actual = runNode([path]);
+          expect(actual.status, `${label} ${layer}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${label} ${layer} runtime`).toBe(expected.stdout);
+          expect(actual.stderr, `${label} ${layer} runtime`).toBe('');
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('모든 target의 minify 출력에서 전체 oracle 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
     try {
