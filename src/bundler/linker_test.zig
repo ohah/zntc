@@ -8922,11 +8922,9 @@ test "generated class Object globals pinned descriptor families preserve eight n
             }
             helper_imports += 1;
         }
-        if (providers > 0) {
-            try std.testing.expectEqual(@as(usize, 1), helper_imports);
-            try std.testing.expectEqual(@as(usize, 1), providers);
-            try std.testing.expect(helper_calls > 0);
-        }
+        try std.testing.expectEqual(@as(usize, 1), helper_imports);
+        try std.testing.expectEqual(@as(usize, 1), providers);
+        try std.testing.expect(helper_calls > 0);
         var descriptor_calls: usize = 0;
         for (reachable) |raw| {
             const node = ast.nodes.items[raw];
@@ -8948,7 +8946,7 @@ test "generated class Object globals pinned descriptor families preserve eight n
             std.debug.print("PINNED_FAMILY_DESCRIPTOR name={s} receiver={d} receiverSID={any} parameterNode={d} parameterSID={d} parameterScope={d} useScope={d} providers={d}\n", .{ case.name, receiver, sem.symbol_ids[receiver], parameter_node, parameter_sid, parameter_scope, use_scope, providers });
             descriptor_calls += 1;
         }
-        if (providers > 0) try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
+        try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
         const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
         defer output.deinit(a);
         try writeFile(tmp.dir, "output.cjs", output.output);
@@ -8966,16 +8964,20 @@ test "generated class Object globals pinned descriptor families preserve eight n
     try std.testing.expectEqual(@as(usize, 0), missing_providers);
 }
 
-test "generated class Object globals keep constructor roles outside the family" {
+test "generated class Object globals keep constructor private autoaccessor and TS-only roles outside the family" {
     const a = std.testing.allocator;
     const sources = [_][]const u8{
         "function run(Object){class C{constructor(){this.n=7}}return[new C().n,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{#value(){return 7}}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{accessor value=7}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){abstract class C{abstract value():number}return[C,eval('Object'),Object]}run(17);",
+        "function run(Object){class C{declare value:number}return[C,eval('Object'),Object]}run(17);",
     };
     for (sources, 0..) |source, index| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
-        try writeFile(tmp.dir, "entry.mjs", source);
-        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+        try writeFile(tmp.dir, "entry.ts", source);
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.ts", .{
             .unsupported = TransformOptions.compat.fromESTarget(.es5),
         }, false);
         defer result.cache.deinit();

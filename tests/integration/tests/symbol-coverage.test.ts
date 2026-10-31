@@ -34134,6 +34134,154 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('pinned Object method and accessor descriptor families preserve callable flags and helper scope', () => {
+    const cases = [
+      {
+        name: 'instance-method',
+        source:
+          'function run(Object){class C{value(){return 7}};return[new C().value(),eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'static-getter',
+        source:
+          'function run(Object){class C{static get value(){return 7}};return[C.value,eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'instance-getter',
+        source:
+          'function run(Object){class C{get value(){return 7}};return[new C().value,eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'get-set',
+        source:
+          'function run(Object){class C{get value(){return this.n||0}set value(v){this.n=v}}var c=new C;c.value=7;return[c.value,eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'computed-static',
+        source:
+          'function run(Object){class C{static [\'value\'](){return 7}};return[C.value(),eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'string-key',
+        source:
+          'function run(Object){class C{static \'value\'(){return 7}};return[C.value(),eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'async-static',
+        source:
+          'async function run(Object){class C{static async value(){return 7}};return[await C.value(),eval("Object"),Object]}run(17).then(v=>console.log(JSON.stringify(v)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'generator-static',
+        source:
+          'function run(Object){class C{static *value(){yield 7}};return[C.value().next().value,eval("Object"),Object]}console.log(JSON.stringify(run(17)));',
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'static-async-generator',
+        source:
+          "async function run(Object){class C{static async *value(){yield 7}}return[(await C.value().next()).value,eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));",
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'instance-async',
+        source:
+          "async function run(Object){class C{async value(){return 7}}return[await new C().value(),eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));",
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'instance-generator',
+        source:
+          "function run(Object){class C{*value(){yield 7}}return[new C().value().next().value,eval('Object'),Object]}console.log(JSON.stringify(run(17)));",
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'instance-async-generator',
+        source:
+          "async function run(Object){class C{async *value(){yield 7}}return[(await new C().value().next()).value,eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));",
+        expected: '[7,17,17]\n',
+      },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-pinned-descriptor-families-'));
+    const entry = join(dir, 'entry.cjs');
+    const oracle = join(dir, 'native.cjs');
+    const output = join(dir, 'output.cjs');
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const item of cases) {
+        writeFileSync(entry, item.source);
+        writeFileSync(oracle, item.source);
+        const native = spawnSync('node', [oracle], { encoding: 'utf8' });
+        expect(native.status, item.name + native.stderr).toBe(0);
+        expect(native.stdout).toBe(item.expected);
+        for (const mode of ['plain', 'identifiers', 'full']) {
+          const flags =
+            mode === 'plain'
+              ? []
+              : mode === 'identifiers'
+                ? ['--minify-identifiers']
+                : ['--minify-identifiers', '--minify-syntax', '--minify-whitespace'];
+          const cli = spawnSync(
+            ZNTC_BIN,
+            [entry, '--target=es5', '--format=cjs', ...flags, '-o', output],
+            { encoding: 'utf8' },
+          );
+          expect(cli.status, item.name + cli.stderr).toBe(0);
+          const cliRuntime = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(cliRuntime.status, item.name + cliRuntime.stderr).toBe(0);
+          expect(cliRuntime.stdout).toBe(native.stdout);
+          for (const coverage of [false, true]) {
+            const env = { ...process.env };
+            delete env.ZNTC_DEBUG_SYMBOL_COVERAGE;
+            delete env.ZNTC_DEBUG_SYNTHETIC_COVERAGE;
+            if (coverage) env.ZNTC_DEBUG_SYMBOL_COVERAGE = '1';
+            const runner = [
+              `import { build } from ${JSON.stringify(coreEntry)};`,
+              `const result = await build(${JSON.stringify({ entryPoints: [entry], platform: 'node', format: 'cjs', target: 'es5', minifyIdentifiers: mode !== 'plain', minifySyntax: mode === 'full', minifyWhitespace: mode === 'full', diskCache: false, write: false })});`,
+              'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+              'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+            ].join('\n');
+            const built = spawnSync('bun', ['-e', runner], {
+              cwd: join(import.meta.dir, '../../..'),
+              env,
+              encoding: 'utf8',
+            });
+            expect(built.status, item.name + built.stderr).toBe(0);
+            const reports = (built.stderr ?? '')
+              .split(/\r?\n/)
+              .filter(
+                (line) =>
+                  (line.startsWith('zntc: symbol-identity-prepass ') ||
+                    line.startsWith('zntc: symbol-identity ')) &&
+                  line.includes(entry + ': '),
+              );
+            if (coverage) {
+              expect(reports.length, item.name + built.stderr).toBeGreaterThan(0);
+              for (const report of reports) expect(exactSchemaProblems(report), report).toEqual([]);
+            } else {
+              expect(reports).toHaveLength(0);
+            }
+            const outputs = JSON.parse(built.stdout) as string[];
+            expect(outputs).toHaveLength(1);
+            writeFileSync(output, outputs[0]);
+            const actual = spawnSync('node', [output], { encoding: 'utf8' });
+            expect(actual.status, item.name + actual.stderr).toBe(0);
+            expect(actual.stdout).toBe(native.stdout);
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test('pinned direct eval class descriptors preserve intrinsic calls and static helper observations', () => {
     const cases = [
       {
