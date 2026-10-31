@@ -27621,6 +27621,72 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expected: 'receiver:captured\n',
       },
       {
+        name: 'three-level-lexical-arrow-captures-outer-and-middle-parameters',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (outer) => (middle) => (inner) => super.read() + ":" + outer + ":" + middle + ":" + inner; yield read("outer")("middle")("inner"); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:outer:middle:inner\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-without-captures',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super.read(); yield read()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-captures-outer-parameter',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (outer) => () => () => super.read() + ":" + outer; yield read("outer")()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:outer\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-captures-middle-parameter',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => (middle) => () => super.read() + ":" + middle; yield read()("middle")(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:middle\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-innermost-parameter',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => (inner) => super.read() + ":" + inner; yield read()()("inner"); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:inner\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-mixed-with-direct-super',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super.read(); yield super.read() + ":" + read()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:receiver\n',
+      },
+      {
+        name: 'sibling-three-level-lexical-arrow-super-chains',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var first = (value) => () => () => super.read() + ":" + value; var second = (value) => () => () => super.read() + ":" + value; yield first("one")()() + ":" + second("two")()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:one:receiver:two\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-captures-block-var',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { { var captured = "block"; var read = () => () => () => super.read() + ":" + captured; yield read()()(); } } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:block\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-computed-super-key',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super["read"](); yield read()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-bound-computed-super-key',
+        source:
+          'var key = "read"; var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super[key](); yield read()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'three-level-lexical-arrow-captures-method-arguments',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super.read() + ":" + arguments[0]; yield read()()(); } }; values.items("method-arg").next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:method-arg\n',
+      },
+      {
         name: 'two-lexical-arrow-reads',
         source:
           'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var first = () => super.read(); var second = () => super.read(); yield first() + ":" + second(); } }; values.items().next().then(function (step) { console.log(step.value); });',
@@ -27724,7 +27790,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     ] as const;
 
     try {
-      expect(fixtures).toHaveLength(21);
+      expect(fixtures).toHaveLength(32);
       for (const fixture of fixtures) {
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
@@ -27987,7 +28053,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async generator object nested lexical-arrow super receiver rejects ten compileable mutants', () => {
+  test('ES5 async generator object three-level lexical-arrow super receiver rejects ten compileable mutants', () => {
     const dir = mkdtempSync(
       join(tmpdir(), 'zntc-object-async-generator-nested-arrow-super-mutants-'),
     );
@@ -27995,13 +28061,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const output = join(dir, 'output.cjs');
     writeFileSync(
       input,
-      'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => super.read(); yield read()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+      'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (outer) => (middle) => (inner) => super.read() + ":" + outer + ":" + middle + ":" + inner; yield read("outer")("middle")("inner"); } }; values.items().next().then(function (step) { console.log(step.value); });',
     );
 
     try {
       const native = spawnSync('node', [input], { encoding: 'utf8' });
       expect(native.status, native.stderr).toBe(0);
-      expect(native.stdout).toBe('receiver\n');
+      expect(native.stdout).toBe('receiver:outer:middle:inner\n');
 
       const proc = spawnSync(
         ZNTC_BIN,
@@ -28056,7 +28122,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async generator object unsupported super-owner shapes stay on reanalysis', () => {
+  test('ES5 async generator object unsupported graph shapes stay on reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-super-owner-reanalysis-'));
     const input = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
@@ -28067,9 +28133,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (value = super.read()) => value; yield read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
       },
       {
-        name: 'third-sync-arrow-level',
+        name: 'fourth-sync-arrow-level',
         source:
-          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => super.read(); yield read()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => () => super.read(); yield read()()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+      },
+      {
+        name: 'block-scoped-capture',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { { let captured = "block"; var read = () => () => () => super.read() + ":" + captured; yield read()()(); } } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:block\n',
       },
     ] as const;
 
@@ -28078,7 +28150,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
         expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
-        expect(native.stdout, fixture.name).toBe('receiver\n');
+        expect(native.stdout, fixture.name).toBe(fixture.expected ?? 'receiver\n');
 
         const proc = spawnSync(
           ZNTC_BIN,
