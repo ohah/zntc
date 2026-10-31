@@ -7803,13 +7803,15 @@ test "foreign namespace provider source proof rejects reserved declaration flag 
 }
 
 // Exercise the production prepass separately from its initial source analyzer.
-fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
+fn checkGeneratedClassObjectAuthority(comptime nested: bool, comptime dynamic: bool) !void {
     const a = std.testing.allocator;
-    const source = if (nested)
+    const source = if (dynamic)
+        "function run(Object){class C{static value(){return 7}}return[C.value(),Object,eval(\"Object\")]}console.log(JSON.stringify(run(17)));"
+    else if (nested)
         "function run(Object){class C{static value(){return 10}}return[C.value(),Object]}console.log(JSON.stringify(run(17)));"
     else
         "let calls=0;class C{static value(){return 10}}var Object=function(){calls++};console.log(C.value(),calls);";
-    const expected = if (nested) "[10,17]\n" else "10 0\n";
+    const expected = if (dynamic) "[7,17,17]\n" else if (nested) "[10,17]\n" else "10 0\n";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.mjs", source);
@@ -7853,6 +7855,17 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     try std.testing.expect(initial_owner_scope < module.semantic.?.scopes.len);
     try std.testing.expectEqual(if (nested) .function else .module, module.semantic.?.scopes[initial_owner_scope].kind);
     try std.testing.expectEqual(if (nested) @as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(initial_root_scope)) else .none, module.semantic.?.scopes[initial_owner_scope].parent);
+    const explicit_source_read: ?u32 = if (dynamic) blk: {
+        const function = ast.nodes.items[source_owner_raw];
+        const body = ast.nodes.items[ast.extra_data.items[function.data.extra + 2]];
+        const ret = ast.nodes.items[ast.extra_data.items[body.data.list.start + 1]];
+        try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.return_statement, ret.tag);
+        const array = ast.getNode(ret.data.unary.operand);
+        const read = ast.extra_data.items[array.data.list.start + 1];
+        try std.testing.expectEqual(@as(?u32, initial_sid), module.semantic.?.symbol_ids[read]);
+        try std.testing.expect(module.semantic.?.scopes[initial_owner_scope].blocksMangling());
+        break :blk read;
+    } else null;
     const initial_nodes = ast.nodes.items.len;
     graph.transform_options_base.unsupported = TransformOptions.compat.fromESTarget(.es5);
     graph.runTransformerPrePass(module, module.parse_arena.?.allocator());
@@ -7916,10 +7929,48 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     const raw = object_raw.?;
     try std.testing.expect(raw < metadata.symbol_ids.len);
     if (metadata.symbol_ids[raw] != null) authority_errors += 1;
-    const canonical = linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid)) orelse return error.MissingObjectShadowCanonicalName;
-    try std.testing.expect(!std.mem.eql(u8, canonical, transformed.getText(transformed.nodes.items[source_binding].data.string_ref)));
-    try std.testing.expectEqualStrings(canonical, metadata.renames.get(current_source_sid) orelse return error.MissingObjectShadowMetadataName);
-    if (nested) try std.testing.expect(linker.moduleHasNestedShadow(index.toU32()));
+    const canonical = if (dynamic) blk: {
+        if (linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid))) |selected|
+            try std.testing.expectEqualStrings("Object", selected);
+        if (metadata.renames.get(current_source_sid)) |selected|
+            try std.testing.expectEqualStrings("Object", selected);
+        try std.testing.expectEqualStrings("Object", transformed.getText(transformed.nodes.items[source_binding].data.string_ref));
+        const read = explicit_source_read.?;
+        try std.testing.expect(read < sem.symbol_ids.len);
+        try std.testing.expectEqual(@as(?u32, current_source_sid), sem.symbol_ids[read]);
+        try std.testing.expect(sem.scopes[output_owner_scope].blocksMangling());
+        var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        defer parents.deinit(a);
+        for (reachable) |parent| {
+            var children = @import("../parser/ast_walk.zig").children(transformed, transformed.nodes.items[parent]);
+            while (children.next()) |child| if (!child.isNone()) {
+                try parents.put(a, @backingInt(child), parent);
+            };
+        }
+        var cursor = raw;
+        var hops: usize = 0;
+        const use_scope = while (hops < transformed.nodes.items.len) : (hops += 1) {
+            if (sem.scope_owner_map.get(cursor)) |scope| break scope;
+            cursor = parents.get(cursor) orelse return error.MissingDescriptorParent;
+        } else return error.CyclicDescriptorParents;
+        try std.testing.expect(use_scope < sem.scopes.len);
+        var ancestor = use_scope;
+        var scope_hops: usize = 0;
+        while (ancestor != output_owner_scope) : (scope_hops += 1) {
+            try std.testing.expect(scope_hops < sem.scopes.len);
+            const parent = sem.scopes[ancestor].parent;
+            try std.testing.expect(!parent.isNone());
+            ancestor = @backingInt(parent);
+        }
+        std.debug.print("PINNED_OBJECT binding={d} initialSID={d} currentSID={d} explicitRead={d} external={d} physicalNull={} useScope={d} pinnedScope={d} dynamic={}\n", .{ source_binding, initial_sid, current_source_sid, read, raw, metadata.symbol_ids[raw] == null, use_scope, output_owner_scope, sem.scopes[output_owner_scope].blocksMangling() });
+        break :blk "Object";
+    } else blk: {
+        const selected = linker.rename_table.get(bundler_symbol.SymbolID.make(index, current_source_sid)) orelse return error.MissingObjectShadowCanonicalName;
+        try std.testing.expect(!std.mem.eql(u8, selected, transformed.getText(transformed.nodes.items[source_binding].data.string_ref)));
+        try std.testing.expectEqualStrings(selected, metadata.renames.get(current_source_sid) orelse return error.MissingObjectShadowMetadataName);
+        if (nested) try std.testing.expect(linker.moduleHasNestedShadow(index.toU32()));
+        break :blk selected;
+    };
     // Render these exact nodes separately: generated global and known source
     // binding must consume different names from the same AST and metadata.
     const Codegen = @import("../codegen/codegen.zig").Codegen;
@@ -7963,9 +8014,13 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
 }
 
 test "generated class Object globals keep root binding authority through graph metadata" {
-    try checkGeneratedClassObjectAuthority(false);
+    try checkGeneratedClassObjectAuthority(false, false);
 }
 
 test "generated class Object globals keep parameter authority through graph metadata" {
-    try checkGeneratedClassObjectAuthority(true);
+    try checkGeneratedClassObjectAuthority(true, false);
+}
+
+test "generated class Object globals keep pinned direct eval source identity RED" {
+    try checkGeneratedClassObjectAuthority(true, true);
 }
