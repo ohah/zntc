@@ -8320,3 +8320,106 @@ test "generated class Object globals standalone helper aliases preserve raw and 
         }
     }
 }
+
+// The observable pair distinguishes a swapped export SID from the native sum.
+test "self namespace two scalar exports preserve distinct getter identities RED" {
+    const a = std.testing.allocator;
+    const ast_mod = @import("../parser/ast.zig");
+    const NodeIndex = ast_mod.NodeIndex;
+    const source = "export const a=3;export const b=7;import*as ns from './entry.mjs';console.log(JSON.stringify([Reflect.get(ns,'a'),Reflect.get(ns,'b')]));";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", source);
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expectEqualStrings("[3,7]\n", native.stdout);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    const index = graph.path_to_module.get(entry).?;
+    const module = graph.moduleAtMut(index).?;
+    try std.testing.expectEqual(@as(usize, 1), module.import_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), module.export_bindings.len);
+    const source_anchor = module.import_bindings[0].local_symbol_node orelse return error.MissingSelfImportAnchor;
+    const source_raw = @backingInt(source_anchor);
+    try std.testing.expect(source_raw < module.semantic.?.symbol_ids.len);
+    const holder = module.semantic.?.symbol_ids[source_raw] orelse return error.MissingSelfImportIdentity;
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, module.semantic.?.symbols.items[holder].kind);
+    var exported: [2]u32 = undefined;
+    var export_nodes: [2]NodeIndex = undefined;
+    for (module.export_bindings, 0..) |binding, i| {
+        const node = binding.local_symbol_node orelse return error.MissingSelfExportAnchor;
+        export_nodes[i] = node;
+        try std.testing.expect(@backingInt(node) < module.semantic.?.symbol_ids.len);
+        exported[i] = module.semantic.?.symbol_ids[@backingInt(node)] orelse return error.MissingSelfExportIdentity;
+        try std.testing.expectEqual(semantic_symbol.SymbolKind.variable_const, module.semantic.?.symbols.items[exported[i]].kind);
+        try std.testing.expect(exported[i] != holder);
+    }
+    try std.testing.expect(exported[0] != exported[1]);
+    std.debug.print("SELF_TWO_SOURCE holder={d} anchor={d} exportSIDs={d},{d} native=[3,7]\n", .{ holder, source_raw, exported[0], exported[1] });
+    try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
+    const sem = &module.semantic.?;
+    std.debug.print("SELF_TWO_OUTPUT kind={s} plan={} scopes={d}\n", .{ @tagName(sem.symbols.items[holder].kind), graph.self_namespace_holders.contains(index.toU32()), sem.scopes.len });
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.variable_const, sem.symbols.items[holder].kind);
+    try std.testing.expect(graph.self_namespace_holders.contains(index.toU32()));
+    for (export_nodes, exported) |node, sid| try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(node)]);
+    const holder_binding = module.import_bindings[0].local_symbol_node orelse return error.MissingHolderBinding;
+    try std.testing.expectEqual(@as(?u32, holder), sem.symbol_ids[@backingInt(holder_binding)]);
+    const statement = module.import_bindings[0].local_declaration_node orelse return error.MissingHolderStatement;
+    const ast = &module.ast.?;
+    const decl = ast.getNode(statement);
+    try std.testing.expectEqual(ast_mod.Node.Tag.variable_declaration, decl.tag);
+    const statement_extra = decl.data.extra;
+    try std.testing.expectEqual(@as(u32, 1), ast.extra_data.items[statement_extra + 2]);
+    const declarator = ast.nodes.items[ast.extra_data.items[ast.extra_data.items[statement_extra + 1]]];
+    const object: NodeIndex = @fromBackingInt(ast.extra_data.items[declarator.data.extra + 2]);
+    try std.testing.expectEqual(ast_mod.Node.Tag.object_expression, ast.getNode(object).tag);
+    const properties = ast.getNode(object).data.list;
+    try std.testing.expectEqual(@as(u32, 2), properties.len);
+    var getter_scopes: [2]u32 = undefined;
+    for (exported, 0..) |sid, i| {
+        const getter_raw = ast.extra_data.items[properties.start + i];
+        const getter = ast.nodes.items[getter_raw];
+        try std.testing.expectEqual(ast_mod.Node.Tag.method_definition, getter.tag);
+        const getter_scope = sem.scope_owner_map.get(getter_raw) orelse return error.MissingActualGetterScope;
+        getter_scopes[i] = getter_scope;
+        const body: NodeIndex = @fromBackingInt(ast.extra_data.items[getter.data.extra + 2]);
+        const statements = ast.getNode(body).data.list;
+        try std.testing.expectEqual(@as(u32, 1), statements.len);
+        const returned = ast.nodes.items[ast.extra_data.items[statements.start]];
+        try std.testing.expectEqual(ast_mod.Node.Tag.return_statement, returned.tag);
+        const read = returned.data.unary.operand;
+        try std.testing.expectEqual(@as(?u32, sid), sem.symbol_ids[@backingInt(read)]);
+        var rows: usize = 0;
+        for (sem.references) |reference| if (reference.node_index == read) {
+            rows += 1;
+            try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(getter_scope, @backingInt(reference.scope_id));
+            try std.testing.expect(std.meta.eql(reference.flags, semantic_symbol.ReferenceFlags{ .read = true }));
+        };
+        try std.testing.expectEqual(@as(usize, 1), rows);
+    }
+    try std.testing.expect(getter_scopes[0] != getter_scopes[1]);
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    linker.populateImportSymbols();
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, &graph, &.{ .format = .esm }, &linker, null);
+    defer output.deinit(a);
+    try writeFile(tmp.dir, "output.cjs", output.output);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+    defer a.free(output_path);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
