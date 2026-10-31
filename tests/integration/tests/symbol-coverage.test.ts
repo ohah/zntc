@@ -26040,6 +26040,322 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async class methods retain exact Object across ten source shadow shapes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-class-object-shadow-scope-'));
+    const input = join(dir, 'entry.ts');
+    const shared = [
+      'var api = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+    ].join('\n');
+    const instanceClass =
+      'class Handler { async read() { await Promise.resolve(); return 42 + Object.marker.length; } }';
+    const staticClass =
+      'class Handler { static async read() { await Promise.resolve(); return 42 + Object.marker.length; } }';
+    const observeInstance =
+      'new Handler().read().then(function (value) { console.log(value, Object.marker); });';
+    const fixtures = [
+      {
+        name: 'module-var',
+        source: [shared, 'var Object = api;', instanceClass, observeInstance].join('\n'),
+      },
+      {
+        name: 'module-var-class-expression',
+        source: [
+          shared,
+          'var Object = api;',
+          'var Handler = class { async read() { await Promise.resolve(); return 42 + Object.marker.length; } };',
+          observeInstance,
+        ].join('\n'),
+      },
+      {
+        name: 'function-parameter',
+        source: [
+          shared,
+          'function run(Object) {',
+          `  ${instanceClass}`,
+          `  ${observeInstance}`,
+          '}',
+          'run(api);',
+        ].join('\n'),
+      },
+      {
+        name: 'function-local-var',
+        source: [
+          shared,
+          'function run() {',
+          '  var Object = api;',
+          `  ${instanceClass}`,
+          `  ${observeInstance}`,
+          '}',
+          'run();',
+        ].join('\n'),
+      },
+      {
+        name: 'enclosing-parameter',
+        source: [
+          shared,
+          'function run(Object) {',
+          '  function make() {',
+          `    ${instanceClass}`,
+          '    return new Handler().read();',
+          '  }',
+          '  make().then(function (value) { console.log(value, Object.marker); });',
+          '}',
+          'run(api);',
+        ].join('\n'),
+      },
+      {
+        name: 'enclosing-local-var',
+        source: [
+          shared,
+          'function run() {',
+          '  var Object = api;',
+          '  function make() {',
+          `    ${instanceClass}`,
+          '    return new Handler().read();',
+          '  }',
+          '  make().then(function (value) { console.log(value, Object.marker); });',
+          '}',
+          'run();',
+        ].join('\n'),
+      },
+      {
+        name: 'iife-parameter',
+        source: [
+          shared,
+          '(function (Object) {',
+          `  ${instanceClass}`,
+          `  ${observeInstance}`,
+          '})(api);',
+        ].join('\n'),
+      },
+      {
+        name: 'static-async-parameter',
+        source: [
+          shared,
+          'function run(Object) {',
+          `  ${staticClass}`,
+          '  Handler.read().then(function (value) { console.log(value, Object.marker); });',
+          '}',
+          'run(api);',
+        ].join('\n'),
+      },
+      {
+        name: 'class-expression-parameter',
+        source: [
+          shared,
+          'function run(Object) {',
+          `  var Handler = class { async read() { await Promise.resolve(); return 42 + Object.marker.length; } };`,
+          '  new Handler().read().then(function (value) { console.log(value, Object.marker); });',
+          '}',
+          'run(api);',
+        ].join('\n'),
+      },
+      {
+        name: 'three-level-enclosing-var',
+        source: [
+          shared,
+          'function outer() {',
+          '  var Object = api;',
+          '  function middle() {',
+          '    function make() {',
+          `      ${instanceClass}`,
+          '      return new Handler().read();',
+          '    }',
+          '    make().then(function (value) { console.log(value, Object.marker); });',
+          '  }',
+          '  middle();',
+          '}',
+          'outer();',
+        ].join('\n'),
+      },
+    ] as const;
+    const modes = [
+      { name: 'es5', flags: ['--target=es5'] },
+      { name: 'es5-minify', flags: ['--target=es5', '--minify-identifiers'] },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(10);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe('48 source\n');
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(expected);
+          }
+          expect(report, fixture.name).toMatch(/clean=0(?:\s|$)/);
+
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const emitted = readFileSync(output, 'utf8');
+          expect(emitted).toContain('Object.defineProperty');
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      // Lexical declarations require the independent ES5 block-scoping edit;
+      // they remain outside this async-method-only retained slice.
+      for (const declaration of ['const', 'let'] as const) {
+        const source = [
+          shared,
+          `${declaration} Object = api;`,
+          instanceClass,
+          observeInstance,
+        ].join('\n');
+        writeFileSync(input, source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${declaration} baseline: ${native.stderr}`).toBe(0);
+        const output = join(dir, `${declaration}-fallback.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${declaration} fallback: ${proc.stderr}`).toBe(0);
+        expect(proc.stderr).toContain('semantic_graph=reanalyzed');
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${declaration} fallback: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe(native.stdout);
+      }
+
+      const moduleFixture = fixtures[0]!;
+      writeFileSync(input, moduleFixture.source);
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe('48 source\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async class Object.defineProperty lowering exposes ten compileable shadow mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-class-object-shadow-mutants-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      entry,
+      [
+        'var Object = { marker: "source", defineProperty: function () { throw new Error("source Object.defineProperty was called"); } };',
+        'class Handler { async read() { await Promise.resolve(); return 42 + Object.marker.length; } }',
+        'new Handler().read().then(function (value) { console.log(value, Object.marker); });',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+      const globalBuiltinMatch = emitted.match(/Object\.defineProperty(?=\s*\()/);
+      expect(sourceObjectName).toBeDefined();
+      expect(sourceObjectName).not.toBe('Object');
+      expect(globalBuiltinMatch?.[0]).toBe('Object.defineProperty');
+      const expected = '48 source\n';
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: `${local}.defineProperty` },
+        { name: 'computed-double-quote', expression: `${local}["defineProperty"]` },
+        { name: 'computed-single-quote', expression: `${local}['defineProperty']` },
+        { name: 'parenthesized-member', expression: `(${local}).defineProperty` },
+        { name: 'parenthesized-computed-member', expression: `(${local})["defineProperty"]` },
+        { name: 'comma-expression', expression: `(0, ${local}.defineProperty)` },
+        { name: 'bound-local', expression: `${local}.defineProperty.bind(${local})` },
+        { name: 'bound-null', expression: `${local}.defineProperty.bind(null)` },
+        { name: 'optional-member', expression: `${local}?.defineProperty` },
+        { name: 'computed-concatenated-key', expression: `${local}["define" + "Property"]` },
+      ];
+      expect(mutations).toHaveLength(10);
+      const offset = globalBuiltinMatch?.index ?? -1;
+      expect(offset).not.toBe(-1);
+      for (const mutation of mutations) {
+        const mutated =
+          emitted.slice(0, offset) +
+          mutation.expression +
+          emitted.slice(offset + 'Object.defineProperty'.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          mutant.status !== 0 || mutant.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('class Object.defineProperty lowering exposes ten compileable shadow mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-class-method-object-shadow-mutants-'));
     const entry = join(dir, 'entry.ts');
