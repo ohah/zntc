@@ -1231,10 +1231,10 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         graph: 'reanalyzed' as const,
       },
       {
-        name: 'runtime attributes without an inline type specifier remain conservative',
+        name: 'erased declaration type import preserves an attributed runtime import graph',
         file: 'runtime-attributes-without-inline-type.ts',
         expected: '2',
-        graph: 'reanalyzed' as const,
+        graph: 'retained' as const,
       },
       {
         name: 'declaration-level type import beside a default runtime import',
