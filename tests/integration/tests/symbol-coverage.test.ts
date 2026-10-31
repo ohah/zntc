@@ -27597,6 +27597,30 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expected: 'receiver\n',
       },
       {
+        name: 'lexical-arrow-read',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => super.read(); yield read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'lexical-arrow-read-in-block',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { { var read = () => super.read(); yield read(); } } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver\n',
+      },
+      {
+        name: 'two-lexical-arrow-reads',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var first = () => super.read(); var second = () => super.read(); yield first() + ":" + second(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:receiver\n',
+      },
+      {
+        name: 'lexical-arrow-argument-default',
+        source:
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (value = arguments[1]) => super.read() + ":" + value; yield read(); } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'receiver:extra\n',
+      },
+      {
         name: 'computed-literal-read',
         source:
           'var prototype = { read: function () { return this.label; } }; var values = { label: "receiver", async *items() { yield super["read"](); } }; Object.setPrototypeOf(values, prototype); values.items().next().then(function (step) { console.log(step.value); });',
@@ -27688,7 +27712,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     ] as const;
 
     try {
-      expect(fixtures).toHaveLength(15);
+      expect(fixtures).toHaveLength(19);
       for (const fixture of fixtures) {
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
@@ -27879,6 +27903,122 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(actual.status, `${mutant.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, mutant.name).not.toBe(native.stdout);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator object lexical-arrow super receiver rejects ten compileable mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-arrow-super-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      input,
+      'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => super.read(); yield read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+    );
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('receiver\n');
+
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+
+      const emitted = readFileSync(output, 'utf8');
+      const superRead = emitted.match(/Object\.getPrototypeOf\(\w+\)\.read\.call\(([\w$]+)\)/);
+      expect(superRead).toBeDefined();
+      const receiver = superRead?.[1] ?? '';
+      expect(receiver).not.toBe('');
+      const receiverOffset =
+        (superRead?.index ?? -1) + (superRead?.[0].lastIndexOf(receiver) ?? -1);
+      expect(receiverOffset).toBeGreaterThanOrEqual(0);
+      const mutants = Array.from({ length: 10 }, (_, index) => ({
+        name: `receiver-${index}`,
+        expression: `({ label: "mutant-${index}" })`,
+      }));
+      expect(mutants).toHaveLength(10);
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, receiverOffset) +
+          mutant.expression +
+          emitted.slice(receiverOffset + receiver.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${mutant.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, mutant.name).not.toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator object arrow-parameter super stays on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-arrow-parameter-super-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      input,
+      'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (value = super.read()) => value; yield read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+    );
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('receiver\n');
+
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const graphMode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+      );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const report = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+      );
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
