@@ -8782,7 +8782,7 @@ test "self namespace two exports real disk receipt allocation failures preserve 
     std.debug.print("self-two-warm actualReceiptSymbols=3 OOM failures={d} retry=true\n", .{failures});
 }
 
-test "generated class Object globals pinned descriptor families preserve eight native families and descriptor invariants" {
+test "generated class Object globals preserve pinned callable families and descriptor invariants" {
     const a = std.testing.allocator;
     const cases = [_]struct { name: []const u8, source: []const u8, expected: []const u8 = "[7,17,17]\n" }{
         .{ .name = "instance-method", .source = "function run(Object){class C{value(){return 7}};return[new C().value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
@@ -8925,11 +8925,9 @@ test "generated class Object globals pinned descriptor families preserve eight n
             }
             helper_imports += 1;
         }
-        if (providers > 0) {
-            try std.testing.expectEqual(@as(usize, 1), helper_imports);
-            try std.testing.expectEqual(@as(usize, 1), providers);
-            try std.testing.expect(helper_calls > 0);
-        }
+        try std.testing.expectEqual(@as(usize, 1), helper_imports);
+        try std.testing.expectEqual(@as(usize, 1), providers);
+        try std.testing.expect(helper_calls > 0);
         var descriptor_calls: usize = 0;
         for (reachable) |raw| {
             const node = ast.nodes.items[raw];
@@ -8951,7 +8949,7 @@ test "generated class Object globals pinned descriptor families preserve eight n
             std.debug.print("PINNED_FAMILY_DESCRIPTOR name={s} receiver={d} receiverSID={any} parameterNode={d} parameterSID={d} parameterScope={d} useScope={d} providers={d}\n", .{ case.name, receiver, sem.symbol_ids[receiver], parameter_node, parameter_sid, parameter_scope, use_scope, providers });
             descriptor_calls += 1;
         }
-        if (providers > 0) try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
+        try std.testing.expectEqual(@as(usize, 0), descriptor_calls);
         const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
         defer output.deinit(a);
         try writeFile(tmp.dir, "output.cjs", output.output);

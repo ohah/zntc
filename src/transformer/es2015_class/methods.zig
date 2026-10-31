@@ -442,7 +442,7 @@ pub fn Methods(comptime Transformer: type) type {
             }
             const key = self.ast.getNode(self.readNodeIdx(source.data.extra, MethodExtra.key));
             switch (key.tag) {
-                .identifier_reference, .binding_identifier, .string_literal, .computed_property_key => {},
+                .identifier_reference, .binding_identifier, .string_literal, .numeric_literal, .computed_property_key => {},
                 else => return false,
             }
             if ((flags & ast_mod.MethodFlags.is_static) == 0 and role == 0 and
