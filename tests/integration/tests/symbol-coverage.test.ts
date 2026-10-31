@@ -12549,7 +12549,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   test('retained static-block super reads expose ten compileable output mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-static-super-get-mutants-'));
@@ -16077,7 +16077,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2017 object spread identity keeps generated Object.assign global from source shadowing', () => {
+  test('ES2017 object spread retains the graph under a generated Object.assign shadow', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-object-spread-symbol-prepass-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -16108,7 +16108,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
-      expect(proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(proc.stderr).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42\n');
@@ -16126,6 +16126,194 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
       expect(report).toMatch(/shadowed_external_reference=1(?:\s|$)/);
       expect(report).toMatch(/clean=0(?:\s|$)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('object spread keeps generated Object external to parameter scopes across targets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-spread-parameter-shadow-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'var Object$1 = "occupied-one";',
+        'var source = { value: 42 };',
+        'function copy(Object) {',
+        '  var result = { ...source };',
+        '  return result.value + " " + Object.marker;',
+        '}',
+        'console.log(copy({ marker: "parameter", assign: function () { throw new Error("parameter Object.assign was observed"); } }));',
+        'console.log(Object$1);',
+      ].join('\n'),
+    );
+    const modes = [
+      { name: 'es5', target: '--target=es5', minify: false },
+      { name: 'es5-minify', target: '--target=es5', minify: true },
+      { name: 'es2017', target: '--target=es2017', minify: false },
+      { name: 'es2017-minify', target: '--target=es2017', minify: true },
+    ] as const;
+
+    try {
+      for (const mode of modes) {
+        const args = [
+          '--bundle',
+          'entry.mjs',
+          mode.target,
+          '--platform=node',
+          '--format=cjs',
+          ...(mode.minify ? ['--minify-identifiers'] : []),
+          '-o',
+          output,
+        ];
+        const proc = spawnSync(ZNTC_BIN, args, {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, mode.name + ': ' + proc.stderr).toBe(0);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(graphMode, mode.name + ': ' + proc.stderr).toContain('semantic_graph=retained');
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, mode.name + ': ' + proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS.filter(
+          (name) => name !== 'shadowed_external_reference',
+        )) {
+          expect(
+            Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+            mode.name + ': ' + report,
+          ).toBe(0);
+        }
+        expect(report, mode.name).toMatch(/shadowed_external_reference=1(?:\s|$)/);
+        expect(report, mode.name).toMatch(/clean=0(?:\s|$)/);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, mode.name + ': ' + actual.stderr).toBe(0);
+        expect(actual.stdout, mode.name).toBe('42 parameter\noccupied-one\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('JSX spread keeps generated Object.assign external under a source shadow', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-jsx-spread-object-shadow-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      [
+        'var React = { createElement: function (_tag, props) { return props.value + " " + props.marker + " " + props.names; } };',
+        'var Object = { marker: "source", assign: function () { throw new Error("source Object.assign was observed"); } };',
+        'var Object$1 = "one";',
+        'var Object$2 = "two";',
+        'var source = { value: 42 };',
+        'console.log(<div {...source} marker={Object.marker} names={Object$1 + Object$2} />);',
+      ].join('\n'),
+    );
+    const modes = [
+      { name: 'es5', target: '--target=es5', minify: false },
+      { name: 'es5-minify', target: '--target=es5', minify: true },
+      { name: 'es2017', target: '--target=es2017', minify: false },
+      { name: 'es2017-minify', target: '--target=es2017', minify: true },
+    ] as const;
+
+    try {
+      for (const mode of modes) {
+        const args = [
+          '--bundle',
+          'entry.tsx',
+          mode.target,
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=React.createElement',
+          ...(mode.minify ? ['--minify-identifiers'] : []),
+          '-o',
+          output,
+        ];
+        const proc = spawnSync(ZNTC_BIN, args, {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, mode.name + ': ' + proc.stderr).toBe(0);
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+          );
+        expect(graphMode, mode.name + ': ' + proc.stderr).toContain('semantic_graph=retained');
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+          );
+        expect(report, mode.name + ': ' + proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS.filter(
+          (name) => name !== 'shadowed_external_reference',
+        )) {
+          expect(
+            Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1),
+            mode.name + ': ' + report,
+          ).toBe(0);
+        }
+        expect(report, mode.name).toMatch(/shadowed_external_reference=1(?:\s|$)/);
+        expect(report, mode.name).toMatch(/clean=0(?:\s|$)/);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, mode.name + ': ' + actual.stderr).toBe(0);
+        expect(actual.stdout, mode.name).toBe('42 source onetwo\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('object spread does not retain across a class descriptor Object shadow', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-spread-class-object-shadow-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.js'),
+      [
+        'var Object = { assign: function () { throw new Error("source Object.assign was observed"); }, defineProperty: function () { throw new Error("source Object.defineProperty was observed"); } };',
+        'var source = { value: 42 };',
+        'var copied = { ...source };',
+        'class C { get value() { return 7; } }',
+        'console.log(copied.value, new C().value);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const graphMode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 7\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -25364,9 +25552,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(spreadOutput.stdout).toBe('1 2\n');
       }
 
-      // A source Object binding conflicts with the generated external
-      // Object.assign reference. Keep reanalysis and require that exact,
-      // intentional conflict to be the only non-zero invariant.
+      // The generated Object.assign reference remains an explicit global and
+      // reserves its spelling in the retained module graph. Keep the exact
+      // lexical collision observation without forcing semantic reanalysis.
       writeFileSync(
         input,
         [
@@ -25396,7 +25584,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const shadowedObject = run('--target=es2017');
       expect(shadowedObject.status, shadowedObject.stderr).toBe(0);
       expect(mode(shadowedObject.stderr ?? ''), shadowedObject.stderr).toContain(
-        'semantic_graph=reanalyzed',
+        'semantic_graph=retained',
       );
       expectShadowedObjectReport(shadowedObject.stderr ?? '', 'shadowed Object');
       const shadowedObjectOutput = spawnSync('node', [output], { encoding: 'utf8' });
@@ -26662,8 +26850,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expectedOutput: '["div",{"value":42}]\n',
       },
       {
-        mode: 'classic-spread-attribute-same-scope-object-shadow-fallback',
-        graph: 'reanalyzed',
+        mode: 'classic-spread-attribute-same-scope-object-shadow-retained',
+        graph: 'retained',
         args: ['--jsx=classic', '--jsx-factory=h'],
         source: [
           'function h(tag, props) { return [tag, props]; }',
@@ -26726,7 +26914,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           );
         expect(report, `${fixture.mode}: ${proc.stderr}`).toBeDefined();
         const hasExpectedShadowedExternal =
-          fixture.mode === 'classic-spread-attribute-same-scope-object-shadow-fallback';
+          fixture.mode === 'classic-spread-attribute-same-scope-object-shadow-retained';
         for (const counter of EXACT_ZERO_COUNTERS) {
           const expected =
             hasExpectedShadowedExternal && counter === 'shadowed_external_reference' ? 1 : 0;
