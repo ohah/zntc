@@ -26708,7 +26708,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async generator class implicit arguments reanalyzes while nested function arguments retain', () => {
+  test('ES5 async generator class body arguments retain exact identities while nested function arguments retain', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-class-implicit-arguments-'));
     const input = join(dir, 'entry.js');
     const fixtures = [
@@ -26724,44 +26724,175 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'class Box { async *items() { var read = () => arguments[0]; yield read(); } } new Box().items("arrow").next().then(function (step) { console.log(step.value); });',
         expected: 'arrow\n',
       },
+      {
+        name: 'length',
+        source:
+          'class Box { async *items() { yield arguments.length; } } new Box().items("a", "b").next().then(function (step) { console.log(step.value); });',
+        expected: '2\n',
+      },
+      {
+        name: 'mutation',
+        source:
+          'class Box { async *items() { arguments[0] = "changed"; yield arguments[0]; } } new Box().items("initial").next().then(function (step) { console.log(step.value); });',
+        expected: 'changed\n',
+      },
+      {
+        name: 'captured-object',
+        source:
+          'class Box { async *items() { var captured = arguments; yield captured[0] + ":" + captured.length; } } new Box().items("capture").next().then(function (step) { console.log(step.value); });',
+        expected: 'capture:1\n',
+      },
+      {
+        name: 'multiple-arrows',
+        source:
+          'class Box { async *items() { var readValue = () => arguments[0]; var readLength = () => arguments.length; yield readValue() + ":" + readLength(); } } new Box().items("many", "args").next().then(function (step) { console.log(step.value); });',
+        expected: 'many:2\n',
+      },
+      {
+        name: 'arrow-after-yield',
+        source:
+          'class Box { async *items() { var read = () => arguments[0]; yield "first"; yield read(); } } var iterator = new Box().items("late"); iterator.next().then(function (first) { return iterator.next().then(function (second) { console.log(first.value, second.value); }); });',
+        expected: 'first late\n',
+      },
+      {
+        name: 'static',
+        source:
+          'class Box { static async *items() { yield arguments[0]; } } Box.items("static").next().then(function (step) { console.log(step.value); });',
+        expected: 'static\n',
+      },
+      {
+        name: 'distinct-method-owners',
+        source:
+          'class Box { async *instance() { yield arguments[0]; } static async *staticItems() { yield arguments[0]; } } var iterator = new Box().instance("instance"); iterator.next().then(function (first) { return Box.staticItems("static").next().then(function (second) { console.log(first.value + ":" + second.value); }); });',
+        expected: 'instance:static\n',
+      },
+      {
+        name: 'anonymous-class',
+        source:
+          'var Box = class { async *items() { yield arguments[0]; } }; new Box().items("anonymous").next().then(function (step) { console.log(step.value); });',
+        expected: 'anonymous\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
     ] as const;
 
     try {
+      expect(fixtures).toHaveLength(10);
       for (const fixture of fixtures) {
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
         expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
         expect(native.stdout, fixture.name).toBe(fixture.expected);
 
-        const output = join(dir, `${fixture.name}.cjs`);
-        const proc = spawnSync(
-          ZNTC_BIN,
-          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
-          {
-            cwd: dir,
-            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-            encoding: 'utf8',
-          },
-        );
-        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
-        const graphMode = (proc.stderr ?? '')
-          .split(/\r?\n/)
-          .find(
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const graphMode = lines.find(
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
-        const report = (proc.stderr ?? '')
-          .split(/\r?\n/)
-          .find(
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
           );
-        expect(report, `${fixture.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
 
-        const actual = spawnSync('node', [output], { encoding: 'utf8' });
-        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
-        expect(actual.stdout, fixture.name).toBe(native.stdout);
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator captured arguments exposes ten compileable owner mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-arguments-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      input,
+      'class Box { async *items() { yield arguments.length + ":" + arguments[0]; } } new Box().items("capture").next().then(function (step) { console.log(step.value); });',
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const emitted = readFileSync(output, 'utf8');
+      const capture = emitted.match(/var\s+(_arguments\w*)\s*=\s*arguments\s*;/);
+      expect(capture).toBeDefined();
+      const captureOffset = capture?.index ?? -1;
+      expect(captureOffset).not.toBe(-1);
+      const expected = '1:capture\n';
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const mutants = [
+        { name: 'undefined', expression: 'void 0' },
+        { name: 'null', expression: 'null' },
+        { name: 'array', expression: '[]' },
+        { name: 'object', expression: '{}' },
+        { name: 'argument-value', expression: 'arguments[0]' },
+        { name: 'argument-length', expression: 'arguments.length' },
+        { name: 'this-value', expression: 'this' },
+        { name: 'promise', expression: 'Promise.resolve(1)' },
+        { name: 'string-object', expression: 'new String("wrong")' },
+        { name: 'null-prototype', expression: 'Object.create(null)' },
+      ];
+      expect(mutants).toHaveLength(10);
+      const argumentOffset = captureOffset + capture![0].lastIndexOf('arguments');
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, argumentOffset) +
+          mutant.expression +
+          emitted.slice(argumentOffset + 'arguments'.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const result = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(result.status !== 0 || result.stdout !== expected, mutant.name).toBe(true);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
