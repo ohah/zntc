@@ -27286,6 +27286,306 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator object methods retain exact argument identities and graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-arguments-'));
+    const input = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'indexed-default',
+        source:
+          'var values = { async *items(value = arguments[1]) { yield value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'extra\n',
+      },
+      {
+        name: 'for-await-indexed-default',
+        source:
+          'var values = { async *items(value = arguments[1]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'extra:item\n',
+      },
+      {
+        name: 'body-arguments-capture',
+        source:
+          'var values = { async *items() { yield arguments[1]; } }; values.items(undefined, "body").next().then(function (step) { console.log(step.value); });',
+        expected: 'body\n',
+      },
+      {
+        name: 'object-receiver',
+        source:
+          'var values = { label: "box", async *items(value = arguments[1]) { yield this.label + ":" + value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'box:extra\n',
+      },
+      {
+        name: 'computed-string-index',
+        source:
+          'var values = { async *items(value = arguments["1"]) { yield value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'extra\n',
+      },
+      {
+        name: 'computed-length-key',
+        source:
+          'var values = { async *items(value = arguments["length"]) { yield value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+        expected: '2\n',
+      },
+      {
+        name: 'multiple-index-defaults',
+        source:
+          'var values = { async *items(first = arguments[1], second = arguments[2]) { yield String(first) + ":" + String(second); } }; values.items(undefined, undefined, "tail").next().then(function (step) { console.log(step.value); });',
+        expected: 'undefined:tail\n',
+      },
+      {
+        name: 'explicit-value-bypasses-default',
+        source:
+          'var values = { async *items(value = arguments[1]) { yield value; } }; values.items("explicit", "extra").next().then(function (step) { console.log(step.value); });',
+        expected: 'explicit\n',
+      },
+      {
+        name: 'nested-object-owner',
+        source:
+          'var outer = { values: { async *items(value = arguments[1]) { yield value; } } }; outer.values.items(undefined, "nested").next().then(function (step) { console.log(step.value); });',
+        expected: 'nested\n',
+      },
+      {
+        name: 'missing-index',
+        source:
+          'var values = { async *items(value = arguments[0]) { yield String(value); } }; values.items().next().then(function (step) { console.log(step.value); });',
+        expected: 'undefined\n',
+      },
+    ] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(10);
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+
+      const fallbackFixtures = [
+        {
+          name: 'computed-method-key',
+          source:
+            'var key = "items"; var values = { async *[key]() { yield 1; } }; values.items().next().then(function (step) { console.log(step.value); });',
+          expected: '1\n',
+        },
+        {
+          name: 'computed-literal-method-key',
+          source:
+            'var values = { async *["items"]() { yield 1; } }; values.items().next().then(function (step) { console.log(step.value); });',
+          expected: '1\n',
+        },
+        {
+          name: 'nested-direct-eval',
+          source:
+            'var values = { async *items() { var nested = function () { eval("0"); return "nested"; }; yield nested(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+          expected: 'nested\n',
+        },
+        {
+          name: 'direct-eval',
+          source:
+            'var values = { async *items() { eval("0"); yield 1; } }; values.items().next().then(function (step) { console.log(step.value); });',
+          expected: '1\n',
+        },
+        {
+          name: 'dynamic-default-index',
+          source:
+            'var values = { async *items(index, value = arguments[index]) { yield value; } }; values.items(2, undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra\n',
+        },
+        {
+          name: 'effectful-default-key',
+          source:
+            'var count = 0; function nextIndex() { count++; return 1; } var values = { async *items(value = arguments[nextIndex()]) { yield String(value) + ":" + count; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra:1\n',
+        },
+        {
+          name: 'composed-default-key',
+          source:
+            'var values = { async *items(value = arguments[0 + 1]) { yield value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra\n',
+        },
+        {
+          name: 'optional-default-key',
+          source:
+            'var values = { async *items(value = arguments?.[1]) { yield value; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: 'extra\n',
+        },
+        {
+          name: 'whole-arguments-default',
+          source:
+            'var values = { async *items(value = arguments) { yield value.length; } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
+          expected: '2\n',
+        },
+        {
+          name: 'destructured-default',
+          source:
+            'var values = { async *items({ value } = { value: "default" }) { yield value; } }; values.items().next().then(function (step) { console.log(step.value); });',
+          expected: 'default\n',
+        },
+      ] as const;
+      expect(fallbackFixtures).toHaveLength(10);
+      for (const fixture of fallbackFixtures) {
+        writeFileSync(input, fixture.source);
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.expected);
+
+        const output = join(dir, `${fixture.name}-reanalysis.cjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async generator object method rejects ten compileable argument value mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-argument-mutants-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    const source =
+      'var values = { async *items(value = arguments[1]) { yield String(value); } }; values.items(undefined, "extra").next().then(function (step) { console.log(step.value); });';
+    writeFileSync(input, source);
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('extra\n');
+
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      const emitted = readFileSync(output, 'utf8');
+      const assignment = emitted.match(/\? arguments\[1\] : arguments\[0\]/);
+      expect(assignment).toBeDefined();
+      const expressionOffset =
+        (assignment?.index ?? -1) + (assignment?.[0].indexOf('arguments[1]') ?? -1);
+      expect(expressionOffset).toBeGreaterThanOrEqual(0);
+      const mutants = [
+        { name: 'first-argument', expression: 'arguments[0]' },
+        { name: 'third-argument', expression: 'arguments[2]' },
+        { name: 'argument-count', expression: 'arguments.length' },
+        { name: 'undefined', expression: 'void 0' },
+        { name: 'null', expression: 'null' },
+        { name: 'empty-string', expression: '""' },
+        { name: 'string', expression: '"mutant"' },
+        { name: 'receiver', expression: 'this' },
+        { name: 'array', expression: '[]' },
+        { name: 'promise', expression: 'Promise.resolve(1)' },
+      ];
+      expect(mutants).toHaveLength(10);
+      for (const mutant of mutants) {
+        const mutated =
+          emitted.slice(0, expressionOffset) +
+          mutant.expression +
+          emitted.slice(expressionOffset + 'arguments[1]'.length);
+        const mutantPath = join(dir, `${mutant.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutant.name}: ${syntax.stderr}`).toBe(0);
+        const actual = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(actual.status, `${mutant.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, mutant.name).not.toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator captured arguments exposes ten compileable owner mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-arguments-mutants-'));
     const input = join(dir, 'entry.js');
