@@ -5873,10 +5873,12 @@ fn isSimpleClass(
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
         // Lowered simple accessors and methods share the explicit-global
-        // Object.defineProperty helper. Keep async methods and other flags on
-        // reanalysis when a source Object binding shadows the class scope.
+        // Object.defineProperty helper. ES5 async methods additionally register
+        // their state-machine scopes and references before this graph can be
+        // retained, so they may share the same source-Object shadow handling.
         if (source_object_shadows_class and flags != 0 and
-            flags != ast_mod.MethodFlags.is_static and !is_plain_accessor) return false;
+            flags != ast_mod.MethodFlags.is_static and !is_plain_accessor and
+            !is_es5_async_method) return false;
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
