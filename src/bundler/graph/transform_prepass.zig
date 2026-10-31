@@ -14831,7 +14831,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             has_lowered_object_spread,
             has_lowered_exponentiation,
             safe_builtin_worklet,
-            downlevel_static_public_class_field_scan orelse (opts.unsupported.class or opts.unsupported.class_field),
+            opts.unsupported.class or opts.unsupported.class_field or (downlevel_static_public_class_field_scan orelse false),
         );
 
     if (module.semantic) |*sem| {
