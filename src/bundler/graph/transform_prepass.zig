@@ -8490,9 +8490,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         .data_property => found_computed_object_data_key = true,
                         .method => found_computed_object_method_key = true,
                         .accessor => {
-                            // Accessor lowering emits an explicit global Object.defineProperty call.
-                            // A source binding named Object would shadow that generated global.
-                            if (source_binds_object) return false;
+                            // The accessor producer records the generated Object builtin read as
+                            // an exact explicit global. Linker shadow resolution renames only a
+                            // source Object binding visible at that reference's output scope.
                             found_computed_object_accessor_key = true;
                         },
                         .static_class_field => found_lowered_simple_static_class_field = true,

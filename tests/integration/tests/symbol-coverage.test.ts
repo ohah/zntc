@@ -16368,19 +16368,19 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ],
       },
       {
-        name: 'computed-object-getter',
+        name: 'computed-class-getter',
         body: [
           'var key = "value";',
-          'var descriptor = { get [key]() { return 7; } };',
-          'console.log(copied.value, descriptor.value);',
+          'class C { get [key]() { return 7; } }',
+          'console.log(copied.value, new C().value);',
         ],
       },
       {
-        name: 'computed-object-accessor-pair',
+        name: 'computed-class-method',
         body: [
-          'var key = "value"; var saved = 0;',
-          'var descriptor = { get [key]() { return saved; }, set [key](next) { saved = next; } };',
-          'descriptor.value = 7; console.log(copied.value, descriptor.value);',
+          'var key = "value";',
+          'class C { [key]() { return 7; } }',
+          'console.log(copied.value, new C().value());',
         ],
       },
       {
@@ -26657,7 +26657,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 computed object accessors with shadowed Object keep reanalysis', () => {
+  test('ES5 computed object accessors with shadowed Object retain the exact external builtin', async () => {
     const dir = mkdtempSync(
       join(tmpdir(), 'zntc-bundle-computed-object-accessor-shadowed-object-'),
     );
@@ -26700,7 +26700,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, downlevel.stderr).toContain('semantic_graph=retained');
       const report = (downlevel.stderr ?? '')
         .split(/\r?\n/)
         .find(
@@ -26717,6 +26717,257 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42 1 true\n');
+
+      const napi = await buildNapi({
+        entryPoints: [input],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        minifyIdentifiers: true,
+        write: false,
+      });
+      expect(napi.errors).toEqual([]);
+      const napiOutput = napi.outputFiles[0];
+      expect(napiOutput).toBeDefined();
+      const napiPath = join(dir, 'napi-output.cjs');
+      writeFileSync(napiPath, napiOutput!.text);
+      const napiActual = spawnSync('node', [napiPath], { encoding: 'utf8' });
+      expect(napiActual.status, napiActual.stderr).toBe(0);
+      expect(napiActual.stdout).toBe('42 1 true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('computed object accessors retain Object.defineProperty across ten shadow modes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-accessor-object-shadow-matrix-'));
+    const entry = join(dir, 'entry.js');
+    const fixtures = [
+      {
+        name: 'module-shadow',
+        shadowed: true,
+        source: [
+          'var Object = { defineProperty: function () { throw new Error("shadowed Object.defineProperty"); }, marker: "module" };',
+          'var keyCalls = 0;',
+          'function getKey() { keyCalls++; return "value"; }',
+          'var descriptor = { get [getKey()]() { return 42; } };',
+          'console.log(descriptor.value, keyCalls, Object.marker);',
+        ].join('\n'),
+      },
+      {
+        name: 'function-parameter-shadow',
+        shadowed: true,
+        source: [
+          'var keyCalls = 0;',
+          'function build(Object) {',
+          '  function getKey() { keyCalls++; return "value"; }',
+          '  var descriptor = { get [getKey()]() { return 42; } };',
+          '  return descriptor.value + " " + keyCalls + " " + Object.marker;',
+          '}',
+          'console.log(build({ defineProperty: function () { throw new Error("shadowed Object.defineProperty"); }, marker: "parameter" }));',
+        ].join('\n'),
+      },
+      {
+        name: 'unrelated-function-shadow',
+        shadowed: false,
+        source: [
+          'function shadow(Object) { return Object.marker; }',
+          'var keyCalls = 0;',
+          'function getKey() { keyCalls++; return "value"; }',
+          'var descriptor = { get [getKey()]() { return 42; } };',
+          'console.log(descriptor.value, keyCalls, shadow({ marker: "nested" }));',
+        ].join('\n'),
+      },
+      {
+        name: 'module-accessor-pair',
+        shadowed: true,
+        source: [
+          'var Object = { defineProperty: function () { throw new Error("shadowed Object.defineProperty"); }, marker: "pair" };',
+          'var keyCalls = 0;',
+          'var saved = 0;',
+          'function getKey() { keyCalls++; return "value"; }',
+          'var descriptor = { get [getKey()]() { return saved; }, set [getKey()](next) { saved = next; } };',
+          'descriptor.value = 42;',
+          'console.log(descriptor.value, keyCalls, Object.marker);',
+        ].join('\n'),
+      },
+      {
+        name: 'parameter-accessor-pair',
+        shadowed: true,
+        source: [
+          'var keyCalls = 0;',
+          'function build(Object) {',
+          '  var saved = 0;',
+          '  function getKey() { keyCalls++; return "value"; }',
+          '  var descriptor = { get [getKey()]() { return saved; }, set [getKey()](next) { saved = next; } };',
+          '  descriptor.value = 42;',
+          '  return descriptor.value + " " + keyCalls + " " + Object.marker;',
+          '}',
+          'console.log(build({ defineProperty: function () { throw new Error("shadowed Object.defineProperty"); }, marker: "pair-parameter" }));',
+        ].join('\n'),
+      },
+    ] as const;
+    const modes = [
+      { name: 'es5', flags: ['--target=es5'] },
+      { name: 'es5-minify', flags: ['--target=es5', '--minify-identifiers'] },
+    ] as const;
+
+    try {
+      expect(fixtures).toHaveLength(5);
+      expect(modes).toHaveLength(2);
+      for (const fixture of fixtures) {
+        writeFileSync(entry, fixture.source);
+        const native = spawnSync('node', [entry], { encoding: 'utf8' });
+        expect(native.status, fixture.name + ': ' + native.stderr).toBe(0);
+        for (const mode of modes) {
+          const output = join(dir, `${fixture.name}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const graphMode = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+            );
+          expect(graphMode, `${fixture.name}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+            );
+          expect(report, `${fixture.name}/${mode.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS.filter(
+            (name) => name !== 'shadowed_external_reference',
+          )) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}/${mode.name}: ${report}`,
+            ).toBe(0);
+          }
+          const shadowCount = Number(report?.match(/shadowed_external_reference=(\d+)/)?.[1] ?? -1);
+          if (fixture.shadowed) {
+            expect(shadowCount, `${fixture.name}/${mode.name}: ${report}`).toBeGreaterThan(0);
+          } else {
+            expect(shadowCount, `${fixture.name}/${mode.name}: ${report}`).toBe(0);
+          }
+          expect(report).toMatch(fixture.shadowed ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/);
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('computed object accessor Object.defineProperty exposes ten compileable shadow mutants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-accessor-object-mutants-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'output.cjs');
+    writeFileSync(
+      entry,
+      [
+        'var Object = { defineProperty: function () { throw new Error("shadowed Object.defineProperty"); }, marker: "source" };',
+        'var keyCalls = 0;',
+        'function getKey() { keyCalls++; return "value"; }',
+        'var descriptor = { get [getKey()]() { return 42; } };',
+        'console.log(descriptor.value, keyCalls, Object.marker);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', 'entry.js', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS.filter(
+        (name) => name !== 'shadowed_external_reference',
+      )) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(Number(report?.match(/shadowed_external_reference=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(
+        0,
+      );
+      expect(report).toMatch(/clean=0(?:\s|$)/);
+
+      const expected = '42 1 source\n';
+      const emitted = readFileSync(output, 'utf8');
+      const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+      const globalBuiltinMatch = emitted.match(/Object\.defineProperty(?=\s*\()/);
+      const globalBuiltin = globalBuiltinMatch?.[0];
+      expect(sourceObjectName).toBeDefined();
+      expect(sourceObjectName).not.toBe('Object');
+      expect(globalBuiltin).toBe('Object.defineProperty');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+
+      const local = sourceObjectName!;
+      const mutations = [
+        { name: 'direct-member', expression: `${local}.defineProperty` },
+        { name: 'computed-double-quote', expression: `${local}["defineProperty"]` },
+        { name: 'computed-single-quote', expression: `${local}['defineProperty']` },
+        { name: 'parenthesized-member', expression: `(${local}).defineProperty` },
+        { name: 'parenthesized-computed-member', expression: `(${local})["defineProperty"]` },
+        { name: 'comma-expression', expression: `(0, ${local}.defineProperty)` },
+        { name: 'bound-local', expression: `${local}.defineProperty.bind(${local})` },
+        { name: 'bound-null', expression: `${local}.defineProperty.bind(null)` },
+        { name: 'optional-member', expression: `${local}?.defineProperty` },
+        { name: 'computed-concatenated-key', expression: `${local}["define" + "Property"]` },
+      ];
+      expect(mutations).toHaveLength(10);
+      const offset = globalBuiltinMatch?.index ?? -1;
+      expect(offset).not.toBe(-1);
+      for (const mutation of mutations) {
+        const mutated =
+          emitted.slice(0, offset) +
+          mutation.expression +
+          emitted.slice(offset + globalBuiltin!.length);
+        const mutantPath = join(dir, `${mutation.name}.cjs`);
+        writeFileSync(mutantPath, mutated);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `${mutation.name}: ${syntax.stderr}`).toBe(0);
+        const mutant = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(
+          mutant.status !== 0 || mutant.stdout !== expected,
+          `${mutation.name} escaped the runtime oracle`,
+        ).toBe(true);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
