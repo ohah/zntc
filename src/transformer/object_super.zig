@@ -876,7 +876,30 @@ fn bindWrappedHomeParameter(
                 else
                     false;
                 if (!visible) {
-                    try self.reparentGeneratedScope(owned_scope, wrapper_scope);
+                    var reparent_scope = owned_scope;
+                    const params_offset: ?u32 = switch (node.tag) {
+                        .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.params,
+                        .method_definition => ast_mod.MethodExtra.params,
+                        .arrow_function_expression => ast_mod.ArrowExtra.params,
+                        else => null,
+                    };
+                    if (params_offset) |offset| {
+                        const params = self.ast.readExtraNode(node.data.extra, offset);
+                        if (self.outputOwnedScope(params)) |parameter_scope| {
+                            const editor = self.semantic_editor orelse unreachable;
+                            if (parameter_scope != owned_scope and owned_scope.toIndex() < editor.scopes.items.len and
+                                parameter_scope.toIndex() < editor.scopes.items.len and
+                                editor.scopes.items[owned_scope.toIndex()].parent == parameter_scope)
+                            {
+                                // Keep the function's parameter environment
+                                // between the wrapper and its body. Moving the
+                                // method and formal scopes independently would
+                                // make them siblings and break default reads.
+                                reparent_scope = parameter_scope;
+                            }
+                        }
+                    }
+                    try self.reparentGeneratedScope(reparent_scope, wrapper_scope);
                 }
             }
         }

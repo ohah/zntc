@@ -392,18 +392,11 @@ pub fn publish(self: anytype, root: ast.NodeIndex) !void {
         const row = (editor.referenceForNode(@fromBackingInt(raw)) catch @panic("native arguments reference is ambiguous")) orelse
             @panic("native arguments reference lost its creation row");
         if (origin.source_parameter_engine) {
-            _ = (publication(self, raw) catch @panic("source parameter arguments reference lost its publication tuple")) orelse
-                @panic("source parameter arguments reference has no publication record");
-        } else if (!validValueAccess(origin.flags) or self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
-            row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or
-            self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(origin.symbol_id)) or
-            !std.meta.eql(row.flags, origin.flags))
-        {
-            @panic("native arguments reference changed its creation tuple");
-        }
-        origin.stmt = context.stmt_idx;
-        origin.scope_stmt = context.scope_stmt_idx;
-        if (origin.source_parameter_engine) {
+            if (!validValueAccess(origin.flags) or row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or
+                self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(origin.symbol_id)) or
+                !std.meta.eql(row.flags, origin.flags)) @panic("source parameter arguments reference changed its creation tuple");
+            origin.stmt = context.stmt_idx;
+            origin.scope_stmt = context.scope_stmt_idx;
             var found = false;
             for (editor.references.items) |*reference| {
                 if (@backingInt(reference.node_index) != raw) continue;
@@ -412,7 +405,17 @@ pub fn publish(self: anytype, root: ast.NodeIndex) !void {
                 found = true;
             }
             if (!found) @panic("source parameter arguments reference has no row to publish");
+            _ = (publication(self, raw) catch @panic("source parameter arguments reference lost its publication tuple")) orelse
+                @panic("source parameter arguments reference has no publication record");
+            continue;
         }
+        if (!validValueAccess(origin.flags) or self.native_arguments_declaration_origins.get(@backingInt(origin.symbol_id)) != origin.owner_scope or
+            row.symbol_id != origin.symbol_id or row.scope_id != origin.scope or
+            self.getSymbolIdAt(@fromBackingInt(raw)) != @as(?u32, @backingInt(origin.symbol_id)) or
+            !std.meta.eql(row.flags, origin.flags))
+            @panic("native arguments reference changed its creation tuple");
+        origin.stmt = context.stmt_idx;
+        origin.scope_stmt = context.scope_stmt_idx;
     }
     var declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer declarations.deinit(self.allocator);
