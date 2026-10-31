@@ -4662,11 +4662,11 @@ fn isSafeConstructorVarDeclaration(
 }
 
 /// A direct constructor `let`/`const` already belongs to its emitted function
-/// scope. Keep only initialized simple bindings with exact source rows, safe
-/// initializers, and no reads before the complete declaration statement. Base
-/// constructors may use this at the body root; derived constructors may use it
-/// only in the linear sequence after a proven leading `super()` call. Nested
-/// blocks keep their separate scope contract.
+/// scope. Keep simple bindings with exact source rows, safe initializers (or an
+/// uninitialized `let`), and no reads before the complete declaration
+/// statement. Base constructors may use this at the body root; derived
+/// constructors may use it only in the linear sequence after a proven leading
+/// `super()` call. Nested blocks keep their separate scope contract.
 fn isSafeConstructorDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4692,11 +4692,13 @@ fn isSafeConstructorDirectLexicalDeclaration(
         const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
         const type_annotation: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
         const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
-        const safe_initializer = isSafeConstructorValue(ast, semantic, initializer) or
-            (allow_direct_super_property_initializer and
-                isSafePostSuperPropertyRead(ast, semantic, initializer));
-        if (!type_annotation.isNone() or initializer.isNone() or
-            !safe_initializer or
+        const safe_initializer = if (initializer.isNone())
+            declaration_kind == .let
+        else
+            isSafeConstructorValue(ast, semantic, initializer) or
+                (allow_direct_super_property_initializer and
+                    isSafePostSuperPropertyRead(ast, semantic, initializer));
+        if (!type_annotation.isNone() or !safe_initializer or
             !isBoundSourceIdentifierBinding(ast, semantic, binding)) return false;
 
         const binding_raw = @backingInt(binding);
@@ -22882,7 +22884,10 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Read { static read() { let local = 1; return local; } }", .expected = true },
         .{ .source = "class Read { constructor() { let local = 1; this.value = local; } }", .expected = true },
         .{ .source = "class Read { constructor() { const local = 1; this.value = local; } }", .expected = true },
-        .{ .source = "class Read { constructor() { let local; this.value = local; } }", .expected = false },
+        .{ .source = "class Read { constructor() { let local; this.value = local; } }", .expected = true },
+        .{ .source = "class Read { constructor() { let local; local = 1; this.value = local; } }", .expected = true },
+        .{ .source = "class Read { constructor() { let first, second; first = 1; second = first + 1; this.value = second; } }", .expected = true },
+        .{ .source = "class Read { constructor() { this.value = local; let local; } }", .expected = false },
         .{ .source = "class Read { constructor(input) { let local = input; this.value = local; } }", .expected = true },
         .{ .source = "var Holder = class Local { constructor(input) { let value = input; this.value = value; } };", .expected = true },
         .{ .source = "class Read { constructor() { let first = 1; let second = first + 1; this.value = second; } }", .expected = true },
@@ -22894,14 +22899,17 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base {} class Read extends Base { constructor() { let local = 1; super(); this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); let local = input; this.value = local; } }", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); const first = input; const second = first + 1; this.value = second; } }", .expected = true },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; local = 1; this.value = local; } }", .expected = true },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); const value = super.current; this.value = value; } }", .expected = true },
         .{ .source = "class Base {} var Read = class Local extends Base { constructor(input) { super(); let value = input; this.value = value; } };", .expected = true },
-        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = true },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = local; this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = later; let later = 1; this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); this.value = local; let local = 1; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(local); let local = 1; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(local); let local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); { let local = 1; this.value = local; } } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { super(); let { local } = { local: 1 }; this.value = local; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 1; this.value = value + other; } }", .expected = false },
@@ -23001,4 +23009,35 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         null,
     );
     try std.testing.expect(!malformed_retained);
+}
+
+test "ES5 uninitialized constructor lets retain the production semantic graph" {
+    const helpers = @import("../test_helpers.zig");
+    const sources = [_][]const u8{
+        "class Read { constructor() { let local; local = 1; this.value = local; } } console.log(new Read().value);",
+        "function Base() {} class Read extends Base { constructor() { super(); let local; this.value = local; } } console.log(new Read().value);",
+    };
+    for (sources) |source| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try helpers.writeFile(tmp.dir, "entry.js", source);
+        const entry = try helpers.absPath(&tmp, "entry.js");
+        defer std.testing.allocator.free(entry);
+        var cache = @import("../resolve_cache.zig").ResolveCache.init(std.testing.allocator, .{ .platform = .node });
+        defer cache.deinit();
+        var graph = @import("../graph.zig").ModuleGraph.init(std.testing.allocator, &cache);
+        defer graph.deinit();
+        graph.transform_options_base.unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5);
+        profile.resetForTest();
+        defer profile.resetForTest();
+        profile.setIoForTest(std.testing.io);
+        profile.addFromCsv("graph.discover.pm.semantic,graph.resync.semantic");
+        try graph.build(std.testing.io, &.{entry});
+        const module = graph.findModuleByPath(entry) orelse return error.MissingRetainedConstructorModule;
+        const semantic = module.semantic orelse return error.MissingRetainedConstructorSemantic;
+        try std.testing.expect(semantic.symbols.items.len > 0);
+        try std.testing.expect(module.transform_cache != null);
+        try std.testing.expect(profile.count(.graph_discover_pm_semantic) > 0);
+        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+    }
 }
