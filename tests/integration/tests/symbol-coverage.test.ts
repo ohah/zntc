@@ -34208,6 +34208,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           "async function run(Object){class C{async *value(){yield 7}}return[(await new C().value().next()).value,eval('Object'),Object]}run(17).then(v=>console.log(JSON.stringify(v)));",
         expected: '[7,17,17]\n',
       },
+      {
+        name: 'numeric-static-method',
+        source:
+          "function run(Object){class C{static 1(){return 7}}return[C[1](),eval('Object'),Object]}console.log(JSON.stringify(run(17)));",
+        expected: '[7,17,17]\n',
+      },
+      {
+        name: 'numeric-instance-getter',
+        source:
+          "function run(Object){class C{get 1(){return 7}}return[new C()[1],eval('Object'),Object]}console.log(JSON.stringify(run(17)));",
+        expected: '[7,17,17]\n',
+      },
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-pinned-descriptor-families-'));
     const entry = join(dir, 'entry.cjs');
