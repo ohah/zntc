@@ -162,8 +162,8 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "class-call-check",
-        .helpers = &.{"__classCallCheck"},
-        .body = .{ .plain = rt.CLASS_CALL_CHECK_RUNTIME, .min = rt.CLASS_CALL_CHECK_RUNTIME_MIN },
+        .helpers = &.{ "__classCallCheck", "__classDefineProperty" },
+        .body = .{ .plain = rt.CLASS_CORE_RUNTIME, .min = rt.CLASS_CORE_RUNTIME_MIN },
     },
     .{
         .short = "call-super",

@@ -881,6 +881,8 @@ pub const Transformer = struct {
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
     runtime_helpers: RuntimeHelpers = .{},
+    /// A real pinned class-descriptor callsite requires this standalone helper.
+    class_define_property_used: bool = false,
 
     /// ES2025 inline modifier 다운레벨(#4210) 중, 못 내려 출력에 보존된 modifier
     /// 그룹을 만났는가. transform 후 transpile/prepass 가 이 값으로 loud 진단을

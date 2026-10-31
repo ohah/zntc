@@ -24,7 +24,7 @@ pub const RuntimeHelpers = packed struct(u32) {
     class_private_method_init: bool = false,
     /// __classPrivateMethodGet: private method access with brand check
     class_private_method_get: bool = false,
-    /// __classCallCheck: class를 new 없이 호출 방지 (ES2015 스펙)
+    /// Class runtime family: __classCallCheck and demand-only __classDefineProperty.
     class_call_check: bool = false,
     /// __callSuper: Reflect.construct 기반 super() 호출 (네이티브 클래스 extends 지원)
     call_super: bool = false,

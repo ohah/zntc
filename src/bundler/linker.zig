@@ -1899,7 +1899,13 @@ pub const Linker = struct {
         base: []const u8,
         cross_chunk_export_name: ?[]const u8,
     ) ![]const u8 {
-        return self.calculateGraphWideRuntimeHelperNameImpl(symbol_id, base, cross_chunk_export_name, false);
+        // Only this new class helper requires static direct-eval name hygiene.
+        // Compare the already selected provider SID with its real export edge;
+        // do not broaden every helper's allocation policy.
+        const owner = self.getModule(@backingInt(symbol_id.module)) orelse return error.BundlerRuntimeHelperOwnerMissing;
+        const class_descriptor = std.mem.eql(u8, owner.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-call-check") and
+            owner.findLocalExportSemanticIndex("__classDefineProperty") == @as(?u32, @backingInt(symbol_id.inner));
+        return self.calculateGraphWideRuntimeHelperNameImpl(symbol_id, base, cross_chunk_export_name, class_descriptor);
     }
 
     fn calculateGraphWideRuntimeHelperNameImpl(
@@ -3019,6 +3025,43 @@ pub const Linker = struct {
 
         // 4. 주입된 래퍼 참조(require_x())가 소비자의 스코프 바인딩에 가려지는 것 방지 (#4533).
         try self.resolveWrapperConsumerShadows(&name_to_owners, null);
+        try self.preparePinnedClassDescriptorHelperNames();
+    }
+
+    /// A new descriptor helper must stay absent from statically named eval
+    /// observations even when no source binding collides with its spelling.
+    fn preparePinnedClassDescriptorHelperNames(self: *Linker) !void {
+        var seen: std.AutoHashMapUnmanaged(bundler_symbol.SymbolID, void) = .empty;
+        defer seen.deinit(self.allocator);
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |importer| {
+            const sem = importer.semantic orelse continue;
+            for (importer.import_bindings) |binding| {
+                if (!binding.is_helper or !std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
+                const ast = if (importer.ast) |*value| value else return error.BundlerRuntimeHelperIdentityMissing;
+                const actual_local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = importer.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
+                const local = actual_local.semanticIndex() orelse return error.BundlerRuntimeHelperIdentityMissing;
+                if (!actual_local.eql(binding.local_symbol)) return error.BundlerRuntimeHelperIdentityMissing;
+                var used = false;
+                for (sem.references) |reference| if (@backingInt(reference.symbol_id) == local and reference.isValueUse()) {
+                    used = true;
+                    break;
+                };
+                if (!used) continue;
+                const resolved = self.getResolvedBinding(importer.index.toU32(), binding.local_span) orelse return error.BundlerRuntimeHelperIdentityMissing;
+                const provider = self.getModule(resolved.canonical.module_index.toU32()) orelse return error.BundlerRuntimeHelperOwnerMissing;
+                if (!std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-call-check") or
+                    !std.mem.eql(u8, resolved.canonical.export_name, "__classDefineProperty")) return error.BundlerRuntimeHelperIdentityMissing;
+                const inner = provider.findLocalExportSemanticIndex(resolved.canonical.export_name) orelse return error.BundlerRuntimeHelperIdentityMissing;
+                const identity = bundler_symbol.SymbolID.make(provider.index, inner);
+                const entry = try seen.getOrPut(self.allocator, identity);
+                if (entry.found_existing) continue;
+                entry.value_ptr.* = {};
+                const base = provider.symbolName(@fromBackingInt(inner)) orelse return error.BundlerRuntimeHelperIdentityMissing;
+                const selected = try self.calculateGraphWideRuntimeHelperNameImpl(identity, base, resolved.canonical.export_name, true);
+                self.allocator.free(selected);
+            }
+        }
     }
 
     /// A preserved JSX import can be written with an uppercase local alias while
@@ -6915,6 +6958,7 @@ pub const Linker = struct {
         // 이 per-chunk 경로만 타므로 여기서도 불러야 한다(전역 computeRenames 는 안 탄다). 소비자
         // 바인딩을 리네임하는 방식이라 그 소비자가 이 청크에 있어야 반영된다 → module_indices 대상.
         try self.resolveWrapperConsumerShadows(&name_to_owners, module_indices);
+        try self.preparePinnedClassDescriptorHelperNames();
 
         // 2.5 #4101 cross-chunk 전역 네이밍 override — 이 청크가 export 하는 cross-chunk 심볼을
         // 전역 이름으로 고정. calculateRenames 의 per-chunk deconflict 순서(exec_index)가 전역

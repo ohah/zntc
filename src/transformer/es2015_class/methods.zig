@@ -408,6 +408,63 @@ pub fn Methods(comptime Transformer: type) type {
             });
         }
 
+        fn sourceRootHasDynamicEnvironment(ast: *const ast_mod.Ast, index: NodeIndex, depth: usize) bool {
+            if (index.isNone() or @backingInt(index) >= ast.nodes.items.len or depth > 256) return true;
+            const node = ast.getNode(index);
+            switch (node.tag) {
+                .function_declaration, .function_expression, .function, .arrow_function_expression, .static_block => return false,
+                // A method's computed key is evaluated by the surrounding
+                // environment even though its parameters/body are not.
+                .method_definition => return sourceRootHasDynamicEnvironment(ast, ast.readExtraNode(node.data.extra, MethodExtra.key), depth + 1),
+                .with_statement => return true,
+                else => {},
+            }
+            if (@import("../static_class_capture.zig").isDirectEvalCall(.{ .ast = ast }, node)) return true;
+            var children = @import("../../parser/ast_walk.zig").children(ast, node);
+            while (children.next()) |child| if (!child.isNone() and sourceRootHasDynamicEnvironment(ast, child, depth + 1)) return true;
+            return false;
+        }
+
+        /// A non-root parameter pinned by direct eval cannot be renamed. Only
+        /// use the class runtime's outer provider when its Object is unshadowed.
+        fn needsPinnedClassDescriptorHelper(self: *Transformer, info: MethodInfo, use_scope: ScopeId) bool {
+            if (!info.is_static or info.source_member_idx.isNone()) return false;
+            const source = self.ast.getNode(info.source_member_idx);
+            if (source.tag != .method_definition or self.readU32(source.data.extra, MethodExtra.flags) != ast_mod.MethodFlags.is_static) return false;
+            const key = self.ast.getNode(self.readNodeIdx(source.data.extra, MethodExtra.key));
+            if (key.tag != .identifier_reference and key.tag != .binding_identifier) return false;
+            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+            const maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+            const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+            if (self.parser_node_count == 0) return false;
+            const root = self.scope_owner_map.get(self.parser_node_count - 1) orelse return false;
+            if (root >= scopes.len or root >= maps.len or maps[root].contains("Object")) return false;
+            const source_ast = self.semantic_source_ast orelse self.ast;
+            if (sourceRootHasDynamicEnvironment(source_ast, @fromBackingInt(self.parser_node_count - 1), 0)) return false;
+            var scope = use_scope;
+            if (scope.isNone()) {
+                // The non-editing path has no generated IIFE scope yet. Its
+                // actual source method owner gives the class-definition scope.
+                const method_scope = self.scope_owner_map.get(@backingInt(info.source_member_idx)) orelse return false;
+                if (method_scope >= scopes.len or scopes[method_scope].kind != .function) return false;
+                const class_scope = scopes[method_scope].parent;
+                if (class_scope.isNone() or @backingInt(class_scope) >= scopes.len or scopes[@backingInt(class_scope)].kind != .class_body) return false;
+                scope = scopes[@backingInt(class_scope)].parent;
+            }
+            var hops: usize = 0;
+            while (!scope.isNone()) : (hops += 1) {
+                const raw = @backingInt(scope);
+                if (hops >= scopes.len or raw >= scopes.len or raw >= maps.len) return false;
+                if (maps[raw].get("Object")) |id| {
+                    if (id >= symbols.len) return false;
+                    return raw != root and scopes[raw].kind == .function and scopes[raw].subtree_has_direct_eval and !scopes[raw].subtree_has_with and
+                        symbols[id].kind == .parameter and symbols[id].scope_id == scope;
+                }
+                scope = scopes[raw].parent;
+            }
+            return false;
+        }
+
         /// method → Object.defineProperty(ClassName.prototype, "method", { configurable: true, writable: true, value: function() {} })
         /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span, reference_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
@@ -433,7 +490,17 @@ pub fn Methods(comptime Transformer: type) type {
             const obj_str_span = try self.ast.addString("Object");
             const dp_str_span = try self.ast.addString("defineProperty");
             const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
-            const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_arg, desc_obj, span);
+            const call = if (needsPinnedClassDescriptorHelper(self, info, reference_scope)) blk: {
+                self.runtime_helpers.class_call_check = true;
+                self.class_define_property_used = true;
+                const helper_ref = ref: {
+                    const previous = self.current_scope;
+                    if (!reference_scope.isNone()) self.current_scope = reference_scope;
+                    defer self.current_scope = previous;
+                    break :ref try es_helpers.makeRuntimeHelperRef(self, "__classDefineProperty");
+                };
+                break :blk try es_helpers.makeCallExpr(self, helper_ref, &.{ target, key_arg, desc_obj }, span);
+            } else try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_arg, desc_obj, span);
             return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = info.member_span,
