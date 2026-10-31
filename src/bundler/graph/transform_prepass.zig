@@ -5850,9 +5850,9 @@ fn isSimpleClass(
         if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
         if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
-        // Plain methods and the static-field subset above use exact
-        // explicit-global Object refs. Keep other field/accessor producers
-        // and extends helpers on reanalysis.
+        // Plain methods, simple accessors, and the static-field subset above
+        // use exact explicit-global Object refs. Keep unsupported field/
+        // accessor producers and extends helpers on reanalysis.
         if (source_object_shadows_class and member.tag != .method_definition) return false;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
@@ -5861,8 +5861,6 @@ fn isSimpleClass(
         if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
-        if (source_object_shadows_class and
-            flags != 0 and flags != ast_mod.MethodFlags.is_static) return false;
         const is_es5_async_instance_method = flags == ast_mod.MethodFlags.is_async;
         const is_es5_async_static_method = flags ==
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
@@ -5873,6 +5871,11 @@ fn isSimpleClass(
             flags == ast_mod.MethodFlags.is_setter or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+        // Lowered simple accessors and methods share the explicit-global
+        // Object.defineProperty helper. Keep async methods and other flags on
+        // reanalysis when a source Object binding shadows the class scope.
+        if (source_object_shadows_class and flags != 0 and
+            flags != ast_mod.MethodFlags.is_static and !is_plain_accessor) return false;
         if (key.tag != .identifier_reference or (!is_plain_method and !is_plain_accessor)) return false;
         const key_text = ast.getText(key.span);
         if (std.mem.eql(u8, key_text, "constructor")) {
