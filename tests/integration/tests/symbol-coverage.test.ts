@@ -27853,6 +27853,86 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async generator object retains synchronous lexical-arrow super at ten nesting depths', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-arrow-depths-'));
+    const input = join(dir, 'entry.js');
+    const depths = [4, 5, 6, 7, 8, 9, 10, 12, 14, 16] as const;
+    const modes = [
+      { name: 'plain', minifyIdentifiers: false },
+      { name: 'minified', minifyIdentifiers: true },
+    ] as const;
+
+    try {
+      expect(depths).toHaveLength(10);
+      for (const depth of depths) {
+        const parameters = Array.from({ length: depth }, (_, index) => `capture${index}`);
+        const values = parameters.map((_, index) => `value${index}`);
+        const arrow =
+          parameters.map((parameter) => `(${parameter}) => `).join('') +
+          `super.read()${parameters.map((parameter) => ` + ":" + ${parameter}`).join('')}`;
+        const call = `read${values.map((value) => `(${JSON.stringify(value)})`).join('')}`;
+        const expected = `receiver${values.map((value) => `:${value}`).join('')}\n`;
+        const source = [
+          'var prototype = { read: function () { return this.label; } };',
+          `var values = { __proto__: prototype, label: "receiver", async *items() { var read = ${arrow}; yield ${call}; } };`,
+          'values.items().next().then(function (step) { console.log(step.value); });',
+        ].join('\n');
+        writeFileSync(input, source);
+
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, `depth ${depth}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, `depth ${depth}`).toBe(expected);
+
+        for (const mode of modes) {
+          const output = join(dir, `depth-${depth}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.js',
+              '--target=es5',
+              ...(mode.minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `depth ${depth}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').replaceAll('\0', '\n').split(/\r?\n/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+          );
+          expect(graphMode, `depth ${depth}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+          expect(report, `depth ${depth}/${mode.name}: ${proc.stderr}`).toMatch(/clean=1(?:\s|$)/);
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `depth ${depth}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `depth ${depth}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `depth ${depth}/${mode.name}`).toBe(native.stdout);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async generator object super home receiver rejects ten compileable mutants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-object-async-generator-super-mutants-'));
     const input = join(dir, 'entry.js');
@@ -28053,21 +28133,33 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async generator object three-level lexical-arrow super receiver rejects ten compileable mutants', () => {
+  test('ES5 async generator object deep lexical-arrow super receiver rejects ten compileable mutants', () => {
     const dir = mkdtempSync(
       join(tmpdir(), 'zntc-object-async-generator-nested-arrow-super-mutants-'),
     );
     const input = join(dir, 'entry.js');
     const output = join(dir, 'output.cjs');
+    const depth = 16;
+    const parameters = Array.from({ length: depth }, (_, index) => `capture${index}`);
+    const values = parameters.map((_, index) => `value${index}`);
+    const arrow =
+      parameters.map((parameter) => `(${parameter}) => `).join('') +
+      `super.read()${parameters.map((parameter) => ` + ":" + ${parameter}`).join('')}`;
+    const call = `read${values.map((value) => `(${JSON.stringify(value)})`).join('')}`;
+    const expected = `receiver${values.map((value) => `:${value}`).join('')}\n`;
     writeFileSync(
       input,
-      'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (outer) => (middle) => (inner) => super.read() + ":" + outer + ":" + middle + ":" + inner; yield read("outer")("middle")("inner"); } }; values.items().next().then(function (step) { console.log(step.value); });',
+      [
+        'var prototype = { read: function () { return this.label; } };',
+        `var values = { __proto__: prototype, label: "receiver", async *items() { var read = ${arrow}; yield ${call}; } };`,
+        'values.items().next().then(function (step) { console.log(step.value); });',
+      ].join('\n'),
     );
 
     try {
       const native = spawnSync('node', [input], { encoding: 'utf8' });
       expect(native.status, native.stderr).toBe(0);
-      expect(native.stdout).toBe('receiver:outer:middle:inner\n');
+      expect(native.stdout).toBe(expected);
 
       const proc = spawnSync(
         ZNTC_BIN,
@@ -28133,9 +28225,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = (value = super.read()) => value; yield read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
       },
       {
-        name: 'fourth-sync-arrow-level',
+        name: 'async-arrow-super',
         source:
-          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = () => () => () => () => super.read(); yield read()()()(); } }; values.items().next().then(function (step) { console.log(step.value); });',
+          'var prototype = { read: function () { return this.label; } }; var values = { __proto__: prototype, label: "receiver", async *items() { var read = async () => { await Promise.resolve(); return super.read(); }; yield await read(); } }; values.items().next().then(function (step) { console.log(step.value); });',
       },
       {
         name: 'block-scoped-capture',
