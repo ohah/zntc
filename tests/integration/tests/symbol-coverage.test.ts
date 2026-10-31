@@ -33842,6 +33842,12 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           "var __classDefineProperty=17;var Object=17;class C{}console.log(JSON.stringify([new C() instanceof C,eval('Object'),eval('__classDefineProperty'),__classDefineProperty]));",
         expected: '[true,17,17,17]\n',
       },
+      {
+        name: 'unused-helper-static-eval',
+        source:
+          "class C{}console.log(JSON.stringify([new C() instanceof C,eval('typeof __classDefineProperty'),eval('typeof $cDp')]));",
+        expected: '[true,"undefined","undefined"]\n',
+      },
     ];
     const dir = mkdtempSync(join(tmpdir(), 'zntc-pinned-class-descriptor-'));
     const entry = join(dir, 'entry.cjs');

@@ -8100,6 +8100,7 @@ fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
             try std.testing.expectEqual(binding.local_symbol.semanticIndex().?, local_sid);
             try std.testing.expect(binding.import_record_index < runtime_entry.import_records.len);
             const provider = result.graph.getModule(runtime_entry.import_records[binding.import_record_index].resolved) orelse return error.MissingDescriptorProvider;
+            try std.testing.expectEqualStrings(@import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property", provider.path);
             const exported = provider.findExportBinding("__classDefineProperty") orelse return error.MissingDescriptorExport;
             const provider_binding = exported.local_symbol_node orelse return error.MissingDescriptorExportAnchor;
             const provider_ast = &provider.ast.?;
@@ -8112,12 +8113,11 @@ fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
             try std.testing.expect(provider_binding_raw < provider_sem.symbol_ids.len);
             const provider_sid = provider_sem.symbol_ids[provider_binding_raw] orelse return error.MissingProviderExportSid;
             var external_reads: usize = 0;
-            for (provider_ast.nodes.items) |node| {
-                if (node.tag != .variable_declarator) continue;
+            for (provider_ast.nodes.items, 0..) |node, function_raw| {
+                if (node.tag != .function_declaration) continue;
                 const declaration_name = provider_ast.extra_data.items[node.data.extra];
                 if (declaration_name >= provider_sem.symbol_ids.len or provider_sem.symbol_ids[declaration_name] != @as(?u32, provider_sid)) continue;
-                const function_raw = provider_ast.extra_data.items[node.data.extra + 2];
-                const provider_function = provider_ast.nodes.items[function_raw];
+                const provider_function = node;
                 const provider_body = provider_ast.nodes.items[provider_ast.extra_data.items[provider_function.data.extra + 2]];
                 const provider_ret = provider_ast.nodes.items[provider_ast.extra_data.items[provider_body.data.list.start]];
                 const provider_call = provider_ast.getNode(provider_ret.data.unary.operand);
@@ -8125,7 +8125,7 @@ fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
                 const provider_object = provider_ast.extra_data.items[provider_member.data.extra];
                 try std.testing.expect(provider_object < provider_sem.symbol_ids.len);
                 try std.testing.expectEqual(@as(?u32, null), provider_sem.symbol_ids[provider_object]);
-                const function_scope = provider_sem.scope_owner_map.get(function_raw) orelse return error.MissingProviderFunctionScope;
+                const function_scope = provider_sem.scope_owner_map.get(@intCast(function_raw)) orelse return error.MissingProviderFunctionScope;
                 try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(root_scope)), provider_sem.scopes[function_scope].parent);
                 external_reads += 1;
             }
@@ -8202,5 +8202,91 @@ test "generated class Object globals keep root eval and with outside the pinned 
             }
         }
         try std.testing.expectEqual(@as(usize, 0), calls);
+    }
+}
+
+test "generated class Object globals omit the unused descriptor import and provider body" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "class C{value(){return 7}}console.log(new C().value());");
+    var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, false);
+    defer result.cache.deinit();
+    defer result.destroyGraph();
+    defer result.linker.deinit();
+    const module = result.graph.getModule(findModuleIdx(result.graph, "entry.mjs").?).?;
+    var class_check_imports: usize = 0;
+    var descriptor_imports: usize = 0;
+    for (module.import_bindings) |binding| {
+        if (!binding.is_helper) continue;
+        if (std.mem.eql(u8, binding.imported_name, "__classCallCheck")) class_check_imports += 1;
+        if (std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) descriptor_imports += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), class_check_imports);
+    try std.testing.expectEqual(@as(usize, 0), descriptor_imports);
+    var provider_count: usize = 0;
+    var modules = result.graph.modulesIterator();
+    while (modules.next()) |provider| {
+        if (std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property")) provider_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), provider_count);
+    var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, result.graph, &result.linker);
+    defer shaker.deinit();
+    const entry_path = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry_path);
+    try shaker.analyze(&.{entry_path});
+    result.linker.tree_shaker_active = true;
+    try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    result.linker.populateImportSymbols();
+    for ([_]bool{ false, true }) |tree_shaking| {
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, if (tree_shaking) &shaker else null);
+        defer output.deinit(a);
+        try std.testing.expect(std.mem.indexOf(u8, output.output, "__classDefineProperty") == null);
+        // Only the actual user method descriptor remains, not an unused provider.
+        var descriptors = std.mem.splitSequence(u8, output.output, "Object.defineProperty(");
+        var count: usize = 0;
+        while (descriptors.next()) |_| count += 1;
+        try std.testing.expectEqual(@as(usize, 2), count);
+    }
+}
+
+test "generated class Object globals keep unused raw and short helper names absent from static eval" {
+    const a = std.testing.allocator;
+    const source = "class C{}console.log(JSON.stringify([new C() instanceof C,eval('typeof __classDefineProperty'),eval('typeof $cDp')]));";
+    for ([_]bool{ false, true }) |minify_whitespace| {
+        for ([_]bool{ false, true }) |tree_shaking| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try writeFile(tmp.dir, "entry.mjs", source);
+            var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+                .unsupported = TransformOptions.compat.fromESTarget(.es5),
+                .minify_whitespace = minify_whitespace,
+            }, false);
+            defer result.cache.deinit();
+            defer result.destroyGraph();
+            defer result.linker.deinit();
+            var shaker = try @import("tree_shaker.zig").TreeShaker.init(a, result.graph, &result.linker);
+            defer shaker.deinit();
+            const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+            defer a.free(entry);
+            if (tree_shaking) {
+                try shaker.analyze(&.{entry});
+                result.linker.tree_shaker_active = true;
+            }
+            try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+            result.linker.populateImportSymbols();
+            const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm, .minify_whitespace = minify_whitespace }, &result.linker, if (tree_shaking) &shaker else null);
+            defer output.deinit(a);
+            try writeFile(tmp.dir, "output.cjs", output.output);
+            const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+            defer a.free(output_path);
+            const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+            defer a.free(actual.stdout);
+            defer a.free(actual.stderr);
+            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expectEqualStrings("[true,\"undefined\",\"undefined\"]\n", actual.stdout);
+        }
     }
 }

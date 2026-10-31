@@ -162,8 +162,13 @@ const MODULES = [_]HelperModule{
     },
     .{
         .short = "class-call-check",
-        .helpers = &.{ "__classCallCheck", "__classDefineProperty" },
-        .body = .{ .plain = rt.CLASS_CORE_RUNTIME, .min = rt.CLASS_CORE_RUNTIME_MIN },
+        .helpers = &.{"__classCallCheck"},
+        .body = .{ .plain = rt.CLASS_CALL_CHECK_RUNTIME, .min = rt.CLASS_CALL_CHECK_RUNTIME_MIN },
+    },
+    .{
+        .short = "class-define-property",
+        .helpers = &.{"__classDefineProperty"},
+        .body = .{ .plain = rt.CLASS_DEFINE_PROPERTY_RUNTIME, .min = rt.CLASS_DEFINE_PROPERTY_RUNTIME_MIN },
     },
     .{
         .short = "call-super",

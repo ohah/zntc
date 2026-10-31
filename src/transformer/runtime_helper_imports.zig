@@ -88,7 +88,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .keep_names, .bases = &.{"__name"} },
     .{ .bit = .class_private_method_init, .bases = &.{"__classPrivateMethodInit"} },
     .{ .bit = .class_private_method_get, .bases = &.{"__classPrivateMethodGet"} },
-    .{ .bit = .class_call_check, .bases = &.{ "__classCallCheck", "__classDefineProperty" } },
+    .{ .bit = .class_call_check, .bases = &.{"__classCallCheck"} },
     .{ .bit = .call_super, .bases = &.{"__callSuper"} },
     .{ .bit = .super_get, .bases = &.{"__superGet"} },
     .{ .bit = .super_set, .bases = &.{"__superSet"} },
@@ -169,6 +169,9 @@ pub fn appendHelperImports(
         if (@field(helpers, @tagName(def.bit))) {
             try emitOne(self, def.bases, span, out);
         }
+    }
+    if (helpers.class_call_check and self.class_define_property_used) {
+        try emitOne(self, &.{"__classDefineProperty"}, span, out);
     }
 }
 
@@ -323,6 +326,15 @@ test "BIT_DEFS 의 같은 비트 안 모든 base 가 동일 module short 로 매
                 const s = helper_modules.moduleShortFor(base).?;
                 try std.testing.expectEqualStrings(first_short, s);
             }
+        }
+    }
+}
+
+test "generated class Object globals keep classCallCheck as a singleton runtime bit" {
+    inline for (BIT_DEFS) |def| {
+        if (def.bit == .class_call_check) {
+            try std.testing.expectEqual(@as(usize, 1), def.bases.len);
+            try std.testing.expectEqualStrings("__classCallCheck", def.bases[0]);
         }
     }
 }

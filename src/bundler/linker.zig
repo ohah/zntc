@@ -1903,7 +1903,7 @@ pub const Linker = struct {
         // Compare the already selected provider SID with its real export edge;
         // do not broaden every helper's allocation policy.
         const owner = self.getModule(@backingInt(symbol_id.module)) orelse return error.BundlerRuntimeHelperOwnerMissing;
-        const class_descriptor = std.mem.eql(u8, owner.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-call-check") and
+        const class_descriptor = std.mem.eql(u8, owner.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property") and
             owner.findLocalExportSemanticIndex("__classDefineProperty") == @as(?u32, @backingInt(symbol_id.inner));
         return self.calculateGraphWideRuntimeHelperNameImpl(symbol_id, base, cross_chunk_export_name, class_descriptor);
     }
@@ -3031,36 +3031,22 @@ pub const Linker = struct {
     /// A new descriptor helper must stay absent from statically named eval
     /// observations even when no source binding collides with its spelling.
     fn preparePinnedClassDescriptorHelperNames(self: *Linker) !void {
-        var seen: std.AutoHashMapUnmanaged(bundler_symbol.SymbolID, void) = .empty;
-        defer seen.deinit(self.allocator);
         var modules = self.graph.modulesIterator();
-        while (modules.next()) |importer| {
-            const sem = importer.semantic orelse continue;
-            for (importer.import_bindings) |binding| {
-                if (!binding.is_helper or !std.mem.eql(u8, binding.imported_name, "__classDefineProperty")) continue;
-                const ast = if (importer.ast) |*value| value else return error.BundlerRuntimeHelperIdentityMissing;
-                const actual_local = @import("binding_scanner.zig").resolveImportLocalSymbol(binding, .{ .module_index = importer.index, .ast = ast, .symbol_ids = sem.symbol_ids, .symbols = sem.symbols.items });
-                const local = actual_local.semanticIndex() orelse return error.BundlerRuntimeHelperIdentityMissing;
-                if (!actual_local.eql(binding.local_symbol)) return error.BundlerRuntimeHelperIdentityMissing;
-                var used = false;
-                for (sem.references) |reference| if (@backingInt(reference.symbol_id) == local and reference.isValueUse()) {
-                    used = true;
-                    break;
-                };
-                if (!used) continue;
-                const resolved = self.getResolvedBinding(importer.index.toU32(), binding.local_span) orelse return error.BundlerRuntimeHelperIdentityMissing;
-                const provider = self.getModule(resolved.canonical.module_index.toU32()) orelse return error.BundlerRuntimeHelperOwnerMissing;
-                if (!std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-call-check") or
-                    !std.mem.eql(u8, resolved.canonical.export_name, "__classDefineProperty")) return error.BundlerRuntimeHelperIdentityMissing;
-                const inner = provider.findLocalExportSemanticIndex(resolved.canonical.export_name) orelse return error.BundlerRuntimeHelperIdentityMissing;
-                const identity = bundler_symbol.SymbolID.make(provider.index, inner);
-                const entry = try seen.getOrPut(self.allocator, identity);
-                if (entry.found_existing) continue;
-                entry.value_ptr.* = {};
-                const base = provider.symbolName(@fromBackingInt(inner)) orelse return error.BundlerRuntimeHelperIdentityMissing;
-                const selected = try self.calculateGraphWideRuntimeHelperNameImpl(identity, base, resolved.canonical.export_name, true);
-                self.allocator.free(selected);
-            }
+        while (modules.next()) |provider| {
+            if (!std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property")) continue;
+            const exported = provider.findExportBinding("__classDefineProperty") orelse return error.BundlerRuntimeHelperIdentityMissing;
+            const anchor = exported.local_symbol_node orelse return error.BundlerRuntimeHelperIdentityMissing;
+            const sem = provider.semantic orelse return error.BundlerRuntimeHelperIdentityMissing;
+            const raw = @backingInt(anchor);
+            if (raw >= sem.symbol_ids.len) return error.BundlerRuntimeHelperIdentityMissing;
+            const inner = sem.symbol_ids[raw] orelse return error.BundlerRuntimeHelperIdentityMissing;
+            if (inner >= sem.symbols.items.len or provider.findLocalExportSemanticIndex("__classDefineProperty") != @as(?u32, inner)) return error.BundlerRuntimeHelperIdentityMissing;
+            const identity = bundler_symbol.SymbolID.make(provider.index, inner);
+            const base = provider.symbolName(@fromBackingInt(inner)) orelse return error.BundlerRuntimeHelperIdentityMissing;
+            // TSoff can emit an unused provider declaration. Its actual export
+            // identity still must not become visible to statically named eval.
+            const selected = try self.calculateGraphWideRuntimeHelperNameImpl(identity, base, "__classDefineProperty", true);
+            self.allocator.free(selected);
         }
     }
 
