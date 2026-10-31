@@ -2883,7 +2883,7 @@ fn reserveGeneratedExternalNames(
     ast: *const Ast,
     root: ast_mod.NodeIndex,
     symbol_ids: []const ?u32,
-    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: []const u32,
 ) !void {
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
     defer allocator.free(reachable);
@@ -2891,9 +2891,7 @@ fn reserveGeneratedExternalNames(
     defer reachable_set.deinit(allocator);
     for (reachable) |raw| try reachable_set.put(allocator, raw, {});
 
-    var it = explicit_global_nodes.keyIterator();
-    while (it.next()) |key| {
-        const raw = key.*;
+    for (explicit_global_nodes) |raw| {
         if (!reachable_set.contains(raw) or raw >= ast.nodes.items.len) continue;
         if (raw < symbol_ids.len and symbol_ids[raw] != null) continue;
         const node = ast.nodes.items[raw];
@@ -2908,6 +2906,156 @@ fn reserveGeneratedExternalNames(
             if (decoded.ptr != name.ptr) try reserved.put(allocator, decoded, {});
         }
     }
+}
+
+/// Without identifier mangling there is no Mangler reservation pass to keep a
+/// transform-created global out of a same-named lexical binding. Rename only
+/// the exact source bindings visible from each marked output reference, and
+/// expose those names to codegen by SymbolId. This is the standalone equivalent
+/// of the bundler's explicit-global shadow resolution; the semantic graph and
+/// its SymbolIds remain untouched.
+fn reserveStandaloneExplicitGlobalShadows(
+    allocator: std.mem.Allocator,
+    transformer: *Transformer,
+    root: ast_mod.NodeIndex,
+    explicit_global_nodes: []const u32,
+    output_names: *std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    if (explicit_global_nodes.len == 0 or root.isNone() or
+        transformer.scopes.len == 0 or transformer.scope_maps.len == 0) return;
+
+    const ParentFrame = struct { node: ast_mod.NodeIndex, parent: ?u32 };
+    var stack: std.ArrayList(ParentFrame) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, .{ .node = root, .parent = null });
+    var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer parents.deinit(allocator);
+    var ambiguous: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer ambiguous.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(allocator);
+    while (stack.pop()) |frame| {
+        if (frame.node.isNone() or @backingInt(frame.node) >= transformer.ast.nodes.items.len) continue;
+        const raw = @backingInt(frame.node);
+        if (visited.contains(raw)) {
+            if (frame.parent) |parent| {
+                if (parents.get(raw)) |first_parent| {
+                    if (first_parent != parent) try ambiguous.put(allocator, raw, {});
+                }
+            }
+            continue;
+        }
+        try visited.put(allocator, raw, {});
+        if (frame.parent) |parent| try parents.put(allocator, raw, parent);
+        var children = ast_walk.children(transformer.ast, transformer.ast.getNode(frame.node));
+        while (children.next()) |child| {
+            if (!child.isNone()) try stack.append(allocator, .{ .node = child, .parent = raw });
+        }
+    }
+
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(allocator);
+    for (transformer.symbols) |symbol| {
+        try reserveStandaloneOutputName(allocator, &reserved, transformer.ast.getText(symbol.name));
+        try reserveStandaloneOutputName(allocator, &reserved, symbol.synthetic_name);
+        try reserveStandaloneOutputName(allocator, &reserved, symbol.output_name_hint);
+    }
+    if (transformer.unresolved_references) |unresolved| {
+        var names = unresolved.keyIterator();
+        while (names.next()) |name| try reserveStandaloneOutputName(allocator, &reserved, name.*);
+    }
+    var taken = transformer.synthetic_taken.keyIterator();
+    while (taken.next()) |name| try reserveStandaloneOutputName(allocator, &reserved, name.*);
+    if (transformer.block_rename_map) |*renames| {
+        var names = renames.valueIterator();
+        while (names.next()) |name| try reserveStandaloneOutputName(allocator, &reserved, name.*);
+    }
+    var existing_overrides = output_names.iterator();
+    while (existing_overrides.next()) |entry| try reserveStandaloneOutputName(allocator, &reserved, entry.value_ptr.*);
+    for (explicit_global_nodes) |raw| {
+        if (!visited.contains(raw) or raw >= transformer.ast.nodes.items.len) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (raw < transformer.symbol_ids.items.len and transformer.symbol_ids.items[raw] != null) continue;
+        try reserveStandaloneOutputName(allocator, &reserved, transformer.ast.getText(node.data.string_ref));
+    }
+
+    var renamed_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer renamed_symbols.deinit(allocator);
+    for (explicit_global_nodes) |raw| {
+        if (!visited.contains(raw) or raw >= transformer.ast.nodes.items.len) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (raw < transformer.symbol_ids.items.len and transformer.symbol_ids.items[raw] != null) continue;
+        const decoded = try Scanner.decodeIdentifierEscapesAlloc(allocator, transformer.ast.getText(node.data.string_ref));
+        if (decoded.len == 0) continue;
+
+        var use_scope: ?u32 = null;
+        var node_cursor: ?u32 = raw;
+        var node_hops: usize = 0;
+        while (node_cursor) |current| : (node_hops += 1) {
+            if (node_hops > transformer.ast.nodes.items.len) return error.TransformError;
+            if (ambiguous.contains(current)) break;
+            if (transformer.scope_owner_map.get(current)) |scope| {
+                use_scope = scope;
+                break;
+            }
+            node_cursor = parents.get(current);
+        }
+        var scope = use_scope orelse continue;
+
+        // Match the bundler's dynamic-scope boundary: a dynamic scope at the
+        // root disables these local spelling overrides; a nearer dynamic
+        // scope stops the walk before changing bindings at or above it.
+        if (transformer.scopes[0].blocksMangling()) continue;
+
+        var scope_hops_again: usize = 0;
+        while (true) : (scope_hops_again += 1) {
+            if (scope >= transformer.scopes.len or scope_hops_again >= transformer.scopes.len)
+                return error.TransformError;
+            const scope_index: usize = @intCast(scope);
+            const current_scope = transformer.scopes[scope_index];
+            if (scope_index < transformer.scope_maps.len) {
+                if (transformer.scope_maps[scope_index].get(decoded)) |symbol_index| {
+                    if (symbol_index >= transformer.symbols.len) return error.TransformError;
+                    if (current_scope.blocksMangling()) break;
+                    const symbol_id = try @import("semantic/native_name_affinity.zig").representative(
+                        transformer.symbols,
+                        @fromBackingInt(@as(u32, @intCast(symbol_index))),
+                    );
+                    const output_symbol = @backingInt(symbol_id);
+                    const selected_name = output_names.get(output_symbol) orelse
+                        transformer.ast.getText(transformer.symbols[output_symbol].name);
+                    if (Scanner.identifierValueEquals(selected_name, decoded) and !renamed_symbols.contains(output_symbol)) {
+                        var suffix: u32 = 1;
+                        while (true) : (suffix += 1) {
+                            const candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ decoded, suffix });
+                            if (reserved.contains(candidate)) continue;
+                            try reserveStandaloneOutputName(allocator, &reserved, candidate);
+                            try output_names.put(allocator, output_symbol, candidate);
+                            try renamed_symbols.put(allocator, output_symbol, {});
+                            break;
+                        }
+                    }
+                }
+            }
+            if (current_scope.blocksMangling()) break;
+            const parent_scope = transformer.scopes[scope].parent;
+            if (parent_scope.isNone()) break;
+            scope = parent_scope.toIndex();
+        }
+    }
+}
+
+fn reserveStandaloneOutputName(
+    allocator: std.mem.Allocator,
+    reserved: *std.StringHashMapUnmanaged(void),
+    name: []const u8,
+) !void {
+    if (name.len == 0) return;
+    try reserved.put(allocator, name, {});
+    const decoded = try Scanner.decodeIdentifierEscapesAlloc(allocator, name);
+    if (decoded.ptr != name.ptr) try reserved.put(allocator, decoded, {});
 }
 
 /// Runtime helper preambles are emitted as text, so the mangler cannot see the
@@ -3924,6 +4072,11 @@ fn transpileWithCallbackInternal(
         transformer.semantic_edit_enabled = true;
         transformer.detach_erased_const_enum_external_reads = needsLocalConstEnumExternalNodeProof(options, &parser);
         transformer.unresolved_references = &analyzer.unresolved_references;
+        // Standalone codegen and its optional post-transform mangler must keep
+        // transform-created globals free even when debug coverage is disabled.
+        // The producer already marks these exact nodes; retain that sidecar so
+        // codegen can deconflict only the source bindings visible from them.
+        transformer.record_explicit_global_references = true;
     } else if (binding_lite_storage) |*binding_lite| {
         transformer.binding_lite = binding_lite;
     }
@@ -4142,6 +4295,7 @@ fn transpileWithCallbackInternal(
     // 상태 기계·`_loop` 은 변수를 다른 함수로 옮기고 새 이름을 만든다. native JS
     // script 는 visitor 가 AST 노드를 복제하더라도 어휘 그래프가 그대로이므로
     // 편집된 변환 의미 정보를 쓴다. AST 길이만으로 이 조건을 판정할 수 없다.
+    const explicit_global_ref_nodes = try transformer.ownedExplicitGlobalRefNodes(arena_alloc);
     var post_analyzer_storage: ?SemanticAnalyzer = null;
     var mangle_analyzer: ?*SemanticAnalyzer = null;
     var mangle_uses_transform_semantic = false;
@@ -4161,6 +4315,10 @@ fn transpileWithCallbackInternal(
             const post = &post_analyzer_storage.?;
             post.is_strict_mode = parser.is_strict_mode;
             post.is_module = parser.is_module;
+            // Reanalysis must keep transform-created free globals free. Without
+            // this producer sidecar, a generated `Object` can bind to a source
+            // lexical declaration introduced by lowering.
+            post.explicit_global_ref_nodes = explicit_global_ref_nodes;
             // 타입은 이미 지워졌다. 낮춘 코드의 분석 에러(낮추기가 만든 형태)는 이름 짓기와 무관하다.
             post.analyze() catch return error.SemanticError;
             mangle_analyzer = post;
@@ -4194,16 +4352,18 @@ fn transpileWithCallbackInternal(
                     keep.set(@backingInt(helper));
                 }
             }
-            if (mangle_uses_transform_semantic) {
-                reserveGeneratedExternalNames(
-                    arena_alloc,
-                    &reserved,
-                    transformer.ast,
-                    root,
-                    transformer.symbol_ids.items,
-                    &transformer.explicit_global_reference_nodes,
-                ) catch return error.OutOfMemory;
-            }
+            const external_symbol_ids = if (mangle_uses_transform_semantic)
+                transformer.symbol_ids.items
+            else
+                post.symbol_ids.items;
+            reserveGeneratedExternalNames(
+                arena_alloc,
+                &reserved,
+                transformer.ast,
+                root,
+                external_symbol_ids,
+                explicit_global_ref_nodes,
+            ) catch return error.OutOfMemory;
             for (post.symbol_ids.items, 0..) |maybe_post_sym, node_i| {
                 const post_sym = maybe_post_sym orelse continue;
                 if (node_i >= transformer.symbol_ids.items.len) continue;
@@ -4368,6 +4528,15 @@ fn transpileWithCallbackInternal(
                 try codegen_symbol_name_overrides_storage.put(arena_alloc, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
+    }
+    if (mangle_metadata == null and analyzer_storage != null) {
+        reserveStandaloneExplicitGlobalShadows(
+            arena_alloc,
+            &transformer,
+            root,
+            explicit_global_ref_nodes,
+            &codegen_symbol_name_overrides_storage,
+        ) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.TransformError;
     }
     const codegen_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
         if (codegen_symbol_name_overrides_storage.count() > 0) &codegen_symbol_name_overrides_storage else null;
