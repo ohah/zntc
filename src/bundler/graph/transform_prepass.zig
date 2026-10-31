@@ -5780,9 +5780,10 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 
 /// A downleveled class preserves its graph when it has no base or a simple
 /// bound identifier base, and contains supported plain methods, optionally
-/// followed by one accessor or a compatible getter/setter pair. ES5 async
-/// class methods are admitted when their state-machine scopes pass the retained
-/// async preflight. A derived class method may use `super` only directly in its
+/// followed by one accessor or a compatible getter/setter pair. Under a source
+/// Object shadow, distinct simple accessor pairs are admitted independently.
+/// ES5 async class methods are admitted when their state-machine scopes pass
+/// the retained async preflight. A derived class method may use `super` only directly in its
 /// body, where its exact home-object reference remains in the class scope.
 /// One explicit constructor with only simple identifier parameters or
 /// identifier parameters with literal defaults may accompany those members
@@ -5845,7 +5846,7 @@ fn isSimpleClass(
     var accessor_count: usize = 0;
     var accessors_started = false;
     var has_empty_explicit_constructor = false;
-    for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
+    for (extras[members.start .. members.start + members.len], 0..) |raw_member_idx, member_offset| {
         const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_member_idx));
         if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
@@ -5886,18 +5887,50 @@ fn isSimpleClass(
         }
         if (is_plain_accessor) {
             accessors_started = true;
-            if (accessor_pair) |previous| {
-                const same_staticness =
-                    (previous.flags & ast_mod.MethodFlags.is_static) ==
-                    (flags & ast_mod.MethodFlags.is_static);
-                const previous_is_getter = (previous.flags & ast_mod.MethodFlags.is_getter) != 0;
+            if (source_object_shadows_class) {
+                const current_is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                 const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
-                if (!same_staticness or previous_is_getter == current_is_getter or
-                    !std.mem.eql(u8, previous.key_text, key_text)) return false;
+                var found_pair = false;
+                for (extras[members.start .. members.start + member_offset]) |raw_previous_idx| {
+                    const previous_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_previous_idx));
+                    if (previous_idx.isNone() or @backingInt(previous_idx) >= ast.nodes.items.len) return false;
+                    const previous = ast.getNode(previous_idx);
+                    if (previous.tag != .method_definition) continue;
+                    const previous_extra = previous.data.extra;
+                    if (previous_extra > extras.len or
+                        extras.len - previous_extra <= ast_mod.MethodExtra.flags) return false;
+                    const previous_flags = extras[previous_extra + ast_mod.MethodExtra.flags];
+                    const previous_is_accessor = previous_flags == ast_mod.MethodFlags.is_getter or
+                        previous_flags == ast_mod.MethodFlags.is_setter or
+                        previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
+                        previous_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+                    if (!previous_is_accessor or
+                        ((previous_flags & ast_mod.MethodFlags.is_static) != 0) != current_is_static) continue;
+                    const previous_key_idx: ast_mod.NodeIndex = @fromBackingInt(
+                        @intCast(extras[previous_extra + ast_mod.MethodExtra.key]),
+                    );
+                    if (previous_key_idx.isNone() or @backingInt(previous_key_idx) >= ast.nodes.items.len) return false;
+                    const previous_key = ast.getNode(previous_key_idx);
+                    if (previous_key.tag != .identifier_reference or
+                        !std.mem.eql(u8, ast.getText(previous_key.span), key_text)) continue;
+                    if (found_pair or
+                        ((previous_flags & ast_mod.MethodFlags.is_getter) != 0) == current_is_getter) return false;
+                    found_pair = true;
+                }
             } else {
-                accessor_pair = .{ .flags = flags, .key_text = key_text };
+                if (accessor_pair) |previous| {
+                    const same_staticness =
+                        (previous.flags & ast_mod.MethodFlags.is_static) ==
+                        (flags & ast_mod.MethodFlags.is_static);
+                    const previous_is_getter = (previous.flags & ast_mod.MethodFlags.is_getter) != 0;
+                    const current_is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
+                    if (!same_staticness or previous_is_getter == current_is_getter or
+                        !std.mem.eql(u8, previous.key_text, key_text)) return false;
+                } else {
+                    accessor_pair = .{ .flags = flags, .key_text = key_text };
+                }
+                accessor_count += 1;
             }
-            accessor_count += 1;
         } else if (accessors_started) {
             // Class lowering emits every ordinary method before its accessor
             // descriptors. Keep source order observable on the retained path.
@@ -5928,8 +5961,56 @@ fn isSimpleClass(
                 !retains_async_class_method_sync_arrow_super and
                 !retains_async_class_method_arrow_super and !retains_sync_class_method_super)) return false;
     }
-    if (accessor_count > 2) return false;
-    if (accessor_pair) |accessor| {
+    if (source_object_shadows_class) {
+        for (extras[members.start .. members.start + members.len]) |raw_accessor_idx| {
+            const accessor_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_accessor_idx));
+            if (accessor_idx.isNone() or @backingInt(accessor_idx) >= ast.nodes.items.len) return false;
+            const accessor = ast.getNode(accessor_idx);
+            if (accessor.tag != .method_definition) continue;
+            const accessor_extra = accessor.data.extra;
+            if (accessor_extra > extras.len or
+                extras.len - accessor_extra <= ast_mod.MethodExtra.flags) return false;
+            const accessor_flags = extras[accessor_extra + ast_mod.MethodExtra.flags];
+            const is_plain_accessor = accessor_flags == ast_mod.MethodFlags.is_getter or
+                accessor_flags == ast_mod.MethodFlags.is_setter or
+                accessor_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
+                accessor_flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_setter);
+            if (!is_plain_accessor) continue;
+            const accessor_key_idx: ast_mod.NodeIndex = @fromBackingInt(
+                @intCast(extras[accessor_extra + ast_mod.MethodExtra.key]),
+            );
+            if (accessor_key_idx.isNone() or @backingInt(accessor_key_idx) >= ast.nodes.items.len) return false;
+            const accessor_key = ast.getNode(accessor_key_idx);
+            if (accessor_key.tag != .identifier_reference) return false;
+            const accessor_is_static = (accessor_flags & ast_mod.MethodFlags.is_static) != 0;
+            const accessor_key_text = ast.getText(accessor_key.span);
+            for (extras[members.start .. members.start + members.len]) |raw_candidate_idx| {
+                const candidate_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_candidate_idx));
+                if (candidate_idx.isNone() or @backingInt(candidate_idx) >= ast.nodes.items.len) return false;
+                const candidate = ast.getNode(candidate_idx);
+                if (candidate.tag != .method_definition) continue;
+                const candidate_extra = candidate.data.extra;
+                if (candidate_extra > extras.len or
+                    extras.len - candidate_extra <= ast_mod.MethodExtra.flags) return false;
+                const candidate_flags = extras[candidate_extra + ast_mod.MethodExtra.flags];
+                const is_plain_method = candidate_flags == 0 or candidate_flags == ast_mod.MethodFlags.is_static or
+                    (allow_es5_async_class_methods and
+                        (candidate_flags == ast_mod.MethodFlags.is_async or
+                            candidate_flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static)));
+                if (!is_plain_method or
+                    ((candidate_flags & ast_mod.MethodFlags.is_static) != 0) != accessor_is_static) continue;
+                const candidate_key_idx: ast_mod.NodeIndex = @fromBackingInt(
+                    @intCast(extras[candidate_extra + ast_mod.MethodExtra.key]),
+                );
+                if (candidate_key_idx.isNone() or @backingInt(candidate_key_idx) >= ast.nodes.items.len) return false;
+                const candidate_key = ast.getNode(candidate_key_idx);
+                if (candidate_key.tag == .identifier_reference and
+                    std.mem.eql(u8, accessor_key_text, ast.getText(candidate_key.span))) return false;
+            }
+        }
+    } else if (accessor_count > 2) {
+        return false;
+    } else if (accessor_pair) |accessor| {
         // A method with the same key would replace or be replaced by the
         // accessor descriptor. Keep that duplicate-definition order on resync.
         const accessor_is_static = (accessor.flags & ast_mod.MethodFlags.is_static) != 0;
