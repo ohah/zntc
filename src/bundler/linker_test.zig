@@ -8781,3 +8781,114 @@ test "self namespace two exports real disk receipt allocation failures preserve 
     try std.testing.expect(success and failures > 0);
     std.debug.print("self-two-warm actualReceiptSymbols=3 OOM failures={d} retry=true\n", .{failures});
 }
+
+test "generated class Object globals pinned descriptor families preserve eight native outcomes" {
+    const a = std.testing.allocator;
+    const cases = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "instance-method", .source = "function run(Object){class C{value(){return 7}};return[new C().value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "static-getter", .source = "function run(Object){class C{static get value(){return 7}};return[C.value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "instance-getter", .source = "function run(Object){class C{get value(){return 7}};return[new C().value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "get-set", .source = "function run(Object){class C{get value(){return this.n||0}set value(v){this.n=v}}var c=new C;c.value=7;return[c.value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "computed-static", .source = "function run(Object){class C{static ['value'](){return 7}};return[C.value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "string-key", .source = "function run(Object){class C{static 'value'(){return 7}};return[C.value(),eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+        .{ .name = "async-static", .source = "async function run(Object){class C{static async value(){return 7}};return[await C.value(),eval(\"Object\"),Object]}run(17).then(v=>console.log(JSON.stringify(v)));" },
+        .{ .name = "generator-static", .source = "function run(Object){class C{static *value(){yield 7}};return[C.value().next().value,eval(\"Object\"),Object]}console.log(JSON.stringify(run(17)));" },
+    };
+    var runtime_failures: usize = 0;
+    var missing_providers: usize = 0;
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "native.cjs", case.source);
+        const native_path = try @import("test_helpers.zig").absPath(&tmp, "native.cjs");
+        defer a.free(native_path);
+        const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", native_path } });
+        defer a.free(native.stdout);
+        defer a.free(native.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+        try std.testing.expectEqualStrings("[7,17,17]\n", native.stdout);
+        try writeFile(tmp.dir, "entry.mjs", case.source);
+        var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        }, false);
+        defer result.cache.deinit();
+        defer result.destroyGraph();
+        defer result.linker.deinit();
+        try result.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+        result.linker.populateImportSymbols();
+        const module = result.graph.getModule(findModuleIdx(result.graph, "entry.mjs").?).?;
+        const ast = &module.ast.?;
+        const sem = &module.semantic.?;
+        const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, ast, ast.transformed_root.?);
+        defer a.free(reachable);
+        var source_parameter: ?u32 = null;
+        var source_owner: ?u32 = null;
+        for (reachable) |raw| {
+            const node = ast.nodes.items[raw];
+            if (node.tag != .function_declaration) continue;
+            const params = ast.functionParamsList(node);
+            if (params.len != 1) continue;
+            const binding = ast.extra_data.items[params.start];
+            if (ast.nodes.items[binding].tag != .binding_identifier) continue;
+            try std.testing.expect(source_parameter == null);
+            source_parameter = binding;
+            source_owner = raw;
+        }
+        const parameter_node = source_parameter orelse return error.MissingFamilyParameter;
+        try std.testing.expect(parameter_node < sem.symbol_ids.len);
+        const parameter_sid = sem.symbol_ids[parameter_node] orelse return error.MissingFamilyParameterSid;
+        try std.testing.expect(parameter_sid < sem.symbols.items.len);
+        try std.testing.expectEqual(semantic_symbol.SymbolKind.parameter, sem.symbols.items[parameter_sid].kind);
+        const parameter_scope = sem.scope_owner_map.get(source_owner.?) orelse return error.MissingFamilyFunctionScope;
+        try std.testing.expectEqual(parameter_scope, @backingInt(sem.symbols.items[parameter_sid].scope_id));
+        var providers: usize = 0;
+        var modules = result.graph.modulesIterator();
+        while (modules.next()) |provider| {
+            if (std.mem.eql(u8, provider.path, @import("../runtime_helper_modules.zig").ID_PREFIX ++ "class-define-property")) providers += 1;
+        }
+        if (providers == 0) missing_providers += 1;
+        var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        defer parents.deinit(a);
+        for (reachable) |raw| {
+            var children = @import("../parser/ast_walk.zig").children(ast, ast.nodes.items[raw]);
+            while (children.next()) |child| if (!child.isNone()) {
+                try parents.put(a, @backingInt(child), raw);
+            };
+        }
+        var descriptor_calls: usize = 0;
+        for (reachable) |raw| {
+            const node = ast.nodes.items[raw];
+            if (node.tag != .call_expression or ast.extra_data.items[node.data.extra + 2] != 3) continue;
+            const callee_raw = ast.extra_data.items[node.data.extra];
+            const callee = ast.nodes.items[callee_raw];
+            if (callee.tag != .static_member_expression) continue;
+            const key_raw = ast.extra_data.items[callee.data.extra + 1];
+            const property = ast.nodes.items[key_raw];
+            if (property.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(property.data.string_ref), "defineProperty")) continue;
+            const receiver = ast.extra_data.items[callee.data.extra];
+            try std.testing.expect(receiver < sem.symbol_ids.len);
+            var cursor = receiver;
+            var hops: usize = 0;
+            const use_scope = while (hops < ast.nodes.items.len) : (hops += 1) {
+                if (sem.scope_owner_map.get(cursor)) |scope| break scope;
+                cursor = parents.get(cursor) orelse return error.MissingFamilyReceiverParent;
+            } else return error.CyclicFamilyReceiverParent;
+            std.debug.print("PINNED_FAMILY_DESCRIPTOR name={s} receiver={d} receiverSID={any} parameterNode={d} parameterSID={d} parameterScope={d} useScope={d} providers={d}\n", .{ case.name, receiver, sem.symbol_ids[receiver], parameter_node, parameter_sid, parameter_scope, use_scope, providers });
+            descriptor_calls += 1;
+        }
+        const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, result.graph, &.{ .format = .esm }, &result.linker, null);
+        defer output.deinit(a);
+        try writeFile(tmp.dir, "output.cjs", output.output);
+        const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+        defer a.free(output_path);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+        defer a.free(actual.stdout);
+        defer a.free(actual.stderr);
+        const matches = actual.term == .exited and actual.term.exited == 0 and std.mem.eql(u8, actual.stdout, native.stdout);
+        if (!matches) runtime_failures += 1;
+        std.debug.print("PINNED_FAMILY_RUNTIME name={s} native={s} actual={s} term={any} descriptorCalls={d} providers={d} matches={any}\n{s}\n", .{ case.name, native.stdout, actual.stdout, actual.term, descriptor_calls, providers, matches, actual.stderr });
+    }
+    std.debug.print("PINNED_FAMILY_TOTAL sources={d} runtimeFailures={d} missingProviders={d}\n", .{ cases.len, runtime_failures, missing_providers });
+    try std.testing.expectEqual(@as(usize, 0), runtime_failures);
+    try std.testing.expectEqual(@as(usize, 0), missing_providers);
+}
