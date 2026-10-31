@@ -4435,6 +4435,99 @@ fn countsFor(source: []const u8, target: TransformOptions.compat.ESTarget) !Coun
     return .{ .missing = report.missing.items.len, .wrong = report.wrong.items.len };
 }
 
+test "symbol coverage excludes only explicitly external generated references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, "let Object = 1; Object;");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    const symbol_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    var object_reference: ?u32 = null;
+    var object_binding: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .binding_identifier) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "Object")) continue;
+        switch (node.tag) {
+            .identifier_reference => object_reference = @intCast(raw),
+            .binding_identifier => object_binding = @intCast(raw),
+            else => unreachable,
+        }
+    }
+    const reference_raw = object_reference orelse return error.MissingObjectReference;
+    const binding_raw = object_binding orelse return error.MissingObjectBinding;
+    symbol_ids[reference_raw] = null;
+
+    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try explicit_globals.put(allocator, reference_raw, {});
+    const classified = try coverage.checkWithExplicitGlobalReferences(
+        allocator,
+        &parser.ast,
+        root,
+        0,
+        symbol_ids,
+        analyzer.symbols.items,
+        null,
+        &explicit_globals,
+    );
+    try std.testing.expect(classified.new_user_idents > 0);
+    try std.testing.expectEqual(@as(usize, 0), classified.missing.items.len);
+    try std.testing.expectEqual(@as(usize, 0), classified.wrong.items.len);
+
+    // An unmarked generated reference with the same spelling is still a
+    // missing user SymbolId; this metadata is the only reason it is excluded.
+    const unclassified = try coverage.check(
+        allocator,
+        &parser.ast,
+        root,
+        0,
+        symbol_ids,
+        analyzer.symbols.items,
+        null,
+    );
+    try std.testing.expectEqual(@as(usize, 1), unclassified.missing.items.len);
+    try std.testing.expectEqual(
+        classified.new_user_idents + 1,
+        unclassified.new_user_idents,
+    );
+
+    // A marker must not hide a reference that carries an invalid SymbolId.
+    const invalid_ids = try allocator.dupe(?u32, symbol_ids);
+    invalid_ids[reference_raw] = std.math.maxInt(u32);
+    const invalid = try coverage.checkWithExplicitGlobalReferences(
+        allocator,
+        &parser.ast,
+        root,
+        0,
+        invalid_ids,
+        analyzer.symbols.items,
+        null,
+        &explicit_globals,
+    );
+    try std.testing.expectEqual(@as(usize, 1), invalid.wrong.items.len);
+
+    // Forged external evidence on a binding cannot hide its missing SymbolId.
+    const invalid_binding_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    invalid_binding_ids[binding_raw] = null;
+    var forged_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try forged_globals.put(allocator, binding_raw, {});
+    const forged_binding = try coverage.checkWithExplicitGlobalReferences(
+        allocator,
+        &parser.ast,
+        root,
+        0,
+        invalid_binding_ids,
+        analyzer.symbols.items,
+        null,
+        &forged_globals,
+    );
+    try std.testing.expectEqual(@as(usize, 1), forged_binding.missing.items.len);
+}
+
 test "#4762 es5 기본값 매개변수 검사의 참조는 매개변수 심볼을 가진다" {
     try std.testing.expectEqual(@as(usize, 0), try missingSymbols(
         \\export function f(alpha, opts = { k: 2 }) { return alpha + opts.k; }

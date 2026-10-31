@@ -66,6 +66,8 @@ const Ctx = struct {
     symbol_ids: []const ?u32,
     /// 합성 생성 함수가 만든 노드 — 사용자 이름을 빌려 써도 사용자 식별자가 아니다.
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    /// 변환기가 전역으로 만든 참조 — 선언된 사용자 심볼을 요구하지 않는다.
+    explicit_global_references: ?*const std.AutoHashMapUnmanaged(u32, void),
     names: *const std.StringHashMapUnmanaged(void),
     symbols: []const Symbol,
     report: *Report,
@@ -157,6 +159,13 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             };
         }
     }
+    if (sym == null) {
+        if (ctx.explicit_global_references) |references| {
+            const is_reference = node.tag == .identifier_reference or
+                node.tag == .assignment_target_identifier;
+            if (is_reference and references.contains(i)) return .descend;
+        }
+    }
     if (!ctx.names.contains(baseName(name))) return .descend;
     ctx.report.new_user_idents += 1;
     if (sym == null) ctx.report.missing.append(ctx.allocator, .{ .name = name, .tag = node.tag }) catch {
@@ -174,6 +183,45 @@ pub fn check(
     symbols: []const Symbol,
     synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
 ) std.mem.Allocator.Error!Report {
+    return checkImpl(allocator, ast, root, parser_node_count, symbol_ids, symbols, synthetic, null);
+}
+
+/// The exact symbol-coverage gate must not classify explicitly marked generated
+/// globals as missing user bindings merely because their spelling matches a
+/// source symbol. Exact identity auditing still reports same-spelled lexical
+/// shadows so their output-name resolution remains a separate checked fact.
+pub fn checkWithExplicitGlobalReferences(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_references: *const std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!Report {
+    return checkImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        synthetic,
+        explicit_global_references,
+    );
+}
+
+fn checkImpl(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    synthetic: ?*const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_references: ?*const std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!Report {
     var names: std.StringHashMapUnmanaged(void) = .empty;
     defer names.deinit(allocator);
     for (symbols) |*sym| try names.put(allocator, baseName(exactSymbolName(ast, sym)), {});
@@ -186,6 +234,7 @@ pub fn check(
         .parser_node_count = parser_node_count,
         .symbol_ids = symbol_ids,
         .synthetic = synthetic,
+        .explicit_global_references = explicit_global_references,
         .names = &names,
         .symbols = symbols,
         .report = &report,

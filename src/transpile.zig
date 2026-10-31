@@ -4198,7 +4198,16 @@ fn transpileWithCallbackInternal(
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
+            var report = coverage.checkWithExplicitGlobalReferences(
+                arena_alloc,
+                transformer.ast,
+                root,
+                transformer.parser_node_count,
+                transformer.symbol_ids.items,
+                analyzer.symbols.items,
+                if (transformer.synthetic_idents) |*s| s else null,
+                &transformer.explicit_global_reference_nodes,
+            ) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
             const exact = coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
                 arena_alloc,
