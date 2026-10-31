@@ -7801,3 +7801,108 @@ test "foreign namespace provider source proof preserves selected declaration uni
 test "foreign namespace provider source proof rejects reserved declaration flag bits" {
     try checkForeignProviderDeclarationProof(5);
 }
+
+// Exercise the production prepass separately from its initial source analyzer.
+test "generated Object descriptor reference keeps external authority through graph metadata RED" {
+    const a = std.testing.allocator;
+    const source = "let calls=0;class C{static value(){return 10}}var Object=function(){calls++};console.log(C.value(),calls);";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", source);
+    const entry = try @import("test_helpers.zig").absPath(&tmp, "entry.mjs");
+    defer a.free(entry);
+    var cache = resolve_cache_mod.ResolveCache.init(a, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(a, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+    const index = graph.path_to_module.get(entry).?;
+    const module = graph.moduleAtMut(index).?;
+    const ast = &module.ast.?;
+    const initial_root = ast.transformed_root orelse @as(@import("../parser/ast.zig").NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)));
+    const statements = ast.getNode(initial_root).data.list;
+    // The third source statement is the actual user variable declaration.
+    const declaration = ast.nodes.items[ast.extra_data.items[statements.start + 2]];
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.variable_declaration, declaration.tag);
+    const declarator_raw = ast.extra_data.items[ast.extra_data.items[declaration.data.extra + 1]];
+    const declarator = ast.nodes.items[declarator_raw];
+    const source_binding = ast.extra_data.items[declarator.data.extra];
+    const initial_sid = module.semantic.?.symbol_ids[source_binding] orelse return error.MissingSourceObjectBinding;
+    const initial_nodes = ast.nodes.items.len;
+    std.debug.print("OBJECT_SOURCE binding={d} initialSID={d} nodes={d}\n", .{ source_binding, initial_sid, initial_nodes });
+    graph.transform_options_base.unsupported = TransformOptions.compat.fromESTarget(.es5);
+    graph.runTransformerPrePass(module, module.parse_arena.?.allocator());
+    const transformed = &module.ast.?;
+    const sem = &module.semantic.?;
+    const current_source_sid = sem.symbol_ids[source_binding] orelse return error.MissingOutputSourceObjectBinding;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(a, transformed, transformed.transformed_root.?);
+    defer a.free(reachable);
+    var descriptor_count: usize = 0;
+    var authority_errors: usize = 0;
+    var object_raw: ?u32 = null;
+    for (reachable) |raw| {
+        const call = transformed.nodes.items[raw];
+        if (call.tag != .call_expression or raw < initial_nodes) continue;
+        const callee_raw = transformed.extra_data.items[call.data.extra];
+        const callee = transformed.nodes.items[callee_raw];
+        if (callee.tag != .static_member_expression) continue;
+        const property_raw = transformed.extra_data.items[callee.data.extra + 1];
+        const property = transformed.nodes.items[property_raw];
+        // This is a property-role check on the actual call edge, never a SID lookup.
+        if (!std.mem.eql(u8, transformed.getText(property.data.string_ref), "defineProperty")) continue;
+        const receiver_raw = transformed.extra_data.items[callee.data.extra];
+        object_raw = receiver_raw;
+        descriptor_count += 1;
+        try std.testing.expect(receiver_raw < sem.symbol_ids.len);
+        const id = sem.symbol_ids[receiver_raw];
+        var marked = false;
+        if (module.transform_cache) |tc| for (tc.explicit_global_ref_nodes) |known| {
+            if (known == receiver_raw) marked = true;
+        };
+        if (id != null or !marked) authority_errors += 1;
+        std.debug.print("OBJECT_OUTPUT call={d} ref={d} SID={any} marker={} sourceBinding={d} outputSourceSID={d}\n", .{ raw, receiver_raw, id, marked, source_binding, current_source_sid });
+        for (sem.references) |reference| {
+            if (@backingInt(reference.node_index) == receiver_raw)
+                std.debug.print("OBJECT_ROW SID={d} scope={d} stmt={d} flags={any}\n", .{ @backingInt(reference.symbol_id), @backingInt(reference.scope_id), reference.stmt_idx, reference.flags });
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), descriptor_count);
+    var linker = Linker.init(a, &graph, .esm);
+    defer linker.deinit();
+    try linker.link();
+    try linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    var metadata = try linker.buildMetadata(index.toU32(), true);
+    defer metadata.deinit();
+    const raw = object_raw.?;
+    try std.testing.expect(raw < metadata.symbol_ids.len);
+    std.debug.print("OBJECT_METADATA ref={d} SID={any} sourceSID={d}\n", .{ raw, metadata.symbol_ids[raw], current_source_sid });
+    if (metadata.symbol_ids[raw] != null) authority_errors += 1;
+    const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
+    defer a.free(native.stdout);
+    defer a.free(native.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expectEqualStrings("10 0\n", native.stdout);
+    // Build the runtime graph with downlevel options from the start, so helper
+    // imports emitted by the prepass are discovered by the real graph builder.
+    var runtime_graph = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, false);
+    defer runtime_graph.cache.deinit();
+    defer runtime_graph.destroyGraph();
+    defer runtime_graph.linker.deinit();
+    try runtime_graph.linker.finalize(.{ .compute_renames = true, .compute_mangling = false });
+    runtime_graph.linker.populateImportSymbols();
+    const output = try @import("emitter.zig").emitWithTreeShaking(std.testing.io, a, runtime_graph.graph, &.{ .format = .esm }, &runtime_graph.linker, null);
+    defer output.deinit(a);
+    try writeFile(tmp.dir, "output.cjs", output.output);
+    const output_path = try @import("test_helpers.zig").absPath(&tmp, "output.cjs");
+    defer a.free(output_path);
+    const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
+    defer a.free(actual.stdout);
+    defer a.free(actual.stderr);
+    std.debug.print("OBJECT_RUNTIME term={any} stdout={s} stderr={s}\nOBJECT_CODE\n{s}\n", .{ actual.term, actual.stdout, actual.stderr, output.output });
+    // External/null authority is checked independently of runtime output.
+    try std.testing.expectEqual(@as(usize, 0), authority_errors);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+}
