@@ -40587,16 +40587,58 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2\n',
       },
       {
-        name: 'constructor let local stays on reanalysis',
+        name: 'constructor let local retains its exact function scope binding',
         source:
           'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
+        graph: 'retained',
+        output: '6\n',
+      },
+      {
+        name: 'constructor const local retains its exact function scope binding',
+        source:
+          'class ConstantLocal { constructor() { const value = 6; this.value = value; } } console.log(new ConstantLocal().value);',
+        graph: 'retained',
+        output: '6\n',
+      },
+      {
+        name: 'constructor uninitialized lexical local stays on reanalysis',
+        source:
+          'class UninitializedLexicalLocal { constructor() { let value; this.value = value; } } console.log(new UninitializedLexicalLocal().value);',
+        graph: 'reanalyzed',
+        output: 'undefined\n',
+      },
+      {
+        name: 'constructor direct lexical declarations retain earlier local reads',
+        source:
+          'class EarlierLocal { constructor(input) { let first = input; const second = first + 1; this.value = second; } } console.log(new EarlierLocal(6).value);',
+        graph: 'retained',
+        output: '7\n',
+      },
+      {
+        name: 'named class expression constructor retains its direct lexical local',
+        source:
+          'var Holder = class Local { constructor(input) { let value = input; this.value = value; } }; console.log(Holder.name, new Holder(6).value);',
+        graph: 'retained',
+        output: 'Local 6\n',
+      },
+      {
+        name: 'constructor nested block lexical local stays on reanalysis',
+        source:
+          'class NestedLexicalLocal { constructor() { { let value = 6; this.value = value; } } } console.log(new NestedLexicalLocal().value);',
         graph: 'reanalyzed',
         output: '6\n',
       },
       {
-        name: 'constructor const local stays on reanalysis',
+        name: 'constructor lexical destructuring local stays on reanalysis',
         source:
-          'class ConstantLocal { constructor() { const value = 6; this.value = value; } } console.log(new ConstantLocal().value);',
+          'class PatternLexicalLocal { constructor() { const { value } = { value: 6 }; this.value = value; } } console.log(new PatternLexicalLocal().value);',
+        graph: 'reanalyzed',
+        output: '6\n',
+      },
+      {
+        name: 'derived constructor direct lexical local stays on reanalysis',
+        source:
+          'class Base {} class DerivedLocal extends Base { constructor() { let value = 6; super(); this.value = value; } } console.log(new DerivedLocal().value);',
         graph: 'reanalyzed',
         output: '6\n',
       },
@@ -42938,6 +42980,75 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
+  test('base-class constructor direct lexical locals retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-constructor-var-scope-lexical-retained-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'output.cjs');
+    const names = Array.from({ length: 10 }, (_, index) => `constructorValue${index}`);
+    const declarations = names
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = ${index + 10};`)
+      .join('\n');
+    const expected = `${names.map((_, index) => (index === 0 ? 110 : index + 10)).join(' ')}\n`;
+    const valueExpression = names.join(" + ' ' + ");
+    const source = `class ConstructorReader { constructor() {\n${declarations}\nconstructorValue0 += 100;\nthis.values = ${valueExpression};\n} }\nconsole.log(new ConstructorReader().values);`;
+    try {
+      writeFileSync(input, source);
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expected);
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const mode = (bundled.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(mode, bundled.stderr).toContain('semantic_graph=retained');
+      const report = (bundled.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, bundled.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const emitted = readFileSync(output, 'utf8');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+      const assignmentStart = emitted.lastIndexOf('this.values = ');
+      expect(assignmentStart).toBeGreaterThanOrEqual(0);
+      const valuesStart = assignmentStart + 'this.values = '.length;
+      const valuesEnd = emitted.indexOf(';', valuesStart);
+      expect(valuesEnd).toBeGreaterThan(valuesStart);
+      const valueList = emitted.slice(valuesStart, valuesEnd);
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index];
+        const replacement = names[(index + 1) % names.length];
+        const token = new RegExp(`\\b${name}\\b`);
+        expect(valueList.match(token), name).toHaveLength(1);
+        const mutatedList = valueList.replace(token, replacement);
+        const mutant = emitted.slice(0, valuesStart) + mutatedList + emitted.slice(valuesEnd);
+        const mutantPath = join(dir, `constructor-reference-${index}.cjs`);
+        writeFileSync(mutantPath, mutant);
+        const syntax = spawnSync('node', ['--check', mutantPath], { encoding: 'utf8' });
+        expect(syntax.status, `reference ${index}: ${syntax.stderr}`).toBe(0);
+        const result = spawnSync('node', [mutantPath], { encoding: 'utf8' });
+        expect(result.status, `reference ${index}: ${result.stderr}`).toBe(0);
+        expect(result.stdout, `reference ${index}: ${name} -> ${replacement}`).not.toBe(expected);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('nested, patterned, and unsupported method scopes continue to use semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-reanalysis-'));
     const input = join(dir, 'entry.mjs');
@@ -43008,10 +43119,10 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
         stdout: '15\n',
       },
       {
-        name: 'constructor-local-binding',
+        name: 'constructor-uninitialized-lexical-local',
         source:
-          'class Read { constructor() { let value = 20; this.value = value; } } console.log(new Read().value);',
-        stdout: '20\n',
+          'class Read { constructor() { let value; this.value = value; } } console.log(new Read().value);',
+        stdout: 'undefined\n',
       },
       {
         name: 'async-method',
