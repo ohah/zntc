@@ -4661,11 +4661,12 @@ fn isSafeConstructorVarDeclaration(
     return true;
 }
 
-/// A direct base-class constructor `let`/`const` already belongs to the
-/// constructor's emitted function scope. Keep only initialized simple bindings
-/// with exact source rows, safe initializers, and no reads before the complete
-/// declaration statement; derived constructors and nested blocks use separate
-/// scope/`super` contracts and do not call this predicate.
+/// A direct constructor `let`/`const` already belongs to its emitted function
+/// scope. Keep only initialized simple bindings with exact source rows, safe
+/// initializers, and no reads before the complete declaration statement. Base
+/// constructors may use this at the body root; derived constructors may use it
+/// only in the linear sequence after a proven leading `super()` call. Nested
+/// blocks keep their separate scope contract.
 fn isSafeConstructorDirectLexicalDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -5543,8 +5544,9 @@ fn isSafePostSuperInitializerValue(
 
 /// A single simple `var` initializer may read one direct `super` property
 /// or a bounded binary expression containing those reads after the derived
-/// receiver has been initialized. Keep compound declarations and lexical
-/// bindings on reanalysis so their scope edits remain independently audited.
+/// receiver has been initialized. Keep compound `var` declarations on
+/// reanalysis; direct lexical declarations use a separate exact same-var-scope
+/// proof.
 fn isSafePostSuperVarDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -5888,6 +5890,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
                 const following_statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement_idx));
                 if (!completion_seen and isSafePostSuperVarDeclaration(
+                    ast,
+                    semantic,
+                    ast.getNode(following_statement),
+                )) continue;
+                if (!completion_seen and isSafeConstructorDirectLexicalDeclaration(
                     ast,
                     semantic,
                     ast.getNode(following_statement),
@@ -22852,6 +22859,16 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Read { constructor() { { let local = 1; this.value = local; } } }", .expected = false },
         .{ .source = "class Read { constructor() { let { local } = { local: 1 }; this.value = local; } }", .expected = false },
         .{ .source = "class Base {} class Read extends Base { constructor() { let local = 1; super(); this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); let local = input; this.value = local; } }", .expected = true },
+        .{ .source = "class Base {} class Read extends Base { constructor(input) { super(); const first = input; const second = first + 1; this.value = second; } }", .expected = true },
+        .{ .source = "class Base {} var Read = class Local extends Base { constructor(input) { super(); let value = input; this.value = value; } };", .expected = true },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local; this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = local; this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let local = later; let later = 1; this.value = local; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); this.value = local; let local = 1; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(local); let local = 1; } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); { let local = 1; this.value = local; } } }", .expected = false },
+        .{ .source = "class Base {} class Read extends Base { constructor() { super(); let { local } = { local: 1 }; this.value = local; } }", .expected = false },
         .{ .source = "class Read { read({ input }) { const local = input; return local; } }", .expected = true },
         .{ .source = "class Read { async read() { let local = 1; return local; } }", .expected = false },
         .{ .source = "class Read { *read() { let local = 1; yield local; } }", .expected = false },
