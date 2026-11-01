@@ -627,26 +627,68 @@ test "linker: default re-export bridge has a producer SymbolId and module owner 
     const barrel_index = findModuleIdx(r.graph, "barrel.mjs") orelse return error.TestUnexpectedResult;
     const barrel = r.graph.getModule(barrel_index) orelse return error.TestUnexpectedResult;
     const sem = barrel.semantic orelse return error.NoSemantic;
-    var bridge_ref: bundler_symbol.SymbolRef = .invalid;
-    for (barrel.export_bindings) |eb| {
-        if (eb.kind == .re_export and std.mem.eql(u8, eb.exported_name, "default") and eb.hasSyntheticDefault(sem.symbols.items)) {
-            bridge_ref = eb.symbol;
-            break;
-        }
-    }
-    if (!bridge_ref.isValid()) return error.MissingDefaultExportBridge;
+    const reexport = barrel.findExportBinding("default") orelse return error.MissingDefaultExportBridge;
+    try std.testing.expect(reexport.kind == .re_export and reexport.symbol == .alias);
+    try std.testing.expectEqual(@as(?u32, null), barrel.exportBindingSemanticIndex(reexport.*));
+    const canonical = r.linker.resolveExportChain(barrel_index, "default", 0) orelse return error.MissingDefaultProvider;
+    const provider = r.graph.getModule(canonical.module_index) orelse return error.MissingDefaultProvider;
+    const binding = provider.findExportBinding(canonical.export_name) orelse return error.MissingDefaultProvider;
+    const provider_sid = provider.exportBindingSemanticIndex(binding.*) orelse return error.MissingDefaultProviderSID;
+    try std.testing.expect(provider.index != barrel.index);
+    try std.testing.expect(binding.hasSyntheticDefault(provider.semanticSymbols()));
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.default_export, provider.semantic.?.symbols.items[provider_sid].synthetic_kind.?);
 
-    const bridge_id = bundler_symbol.SymbolID.fromRef(bridge_ref) orelse return error.MissingDefaultExportBridgeSymbolId;
-    const bridge = sem.symbols.items[@backingInt(bridge_id.inner)];
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.default_export, bridge.synthetic_kind.?);
-    try std.testing.expect(!bridge.scope_id.isNone());
-    try std.testing.expectEqual(@as(u32, 0), bridge.scope_id.toIndex());
-
+    // The barrel owns the source `_default`; its namespace is a separate real
+    // output declaration, with a registered output owner rather than ScopeId 0.
     const source_index = sem.scope_maps[0].get("_default") orelse return error.MissingSourceDefaultBinding;
     const source_ref = bundler_symbol.SymbolRef.makeSemantic(barrel_index, source_index);
-    try std.testing.expect(bridge_id != bundler_symbol.SymbolID.fromRef(source_ref).?);
-    try std.testing.expectEqualStrings("_default$1", r.linker.getCanonicalByRef(bridge_ref) orelse return error.MissingBridgeCanonicalName);
-    try std.testing.expectEqualStrings("_default$2", r.linker.getCanonicalByRef(source_ref) orelse return error.MissingSourceCanonicalName);
+    try std.testing.expect(!bundler_symbol.SymbolRef.eql(source_ref, binding.symbol));
+    const source_symbol_count = sem.symbols.items.len;
+    const source_symbol_backing = sem.symbols.items.ptr;
+    _ = try r.linker.ensureSharedNsVar(barrel_index);
+    try std.testing.expectEqual(source_symbol_count, barrel.semantic.?.symbols.items.len);
+    try std.testing.expect(source_symbol_backing == barrel.semantic.?.symbols.items.ptr);
+    const output_ref = r.linker.sharedNamespaceOutputRef(barrel_index) orelse return error.MissingNamespaceOutputOwner;
+    try std.testing.expect(output_ref.module == barrel.index);
+    try std.testing.expect(output_ref.owner == barrel.codegen_output_owner);
+    try std.testing.expect(barrel.codegen_output_domain.?.validNamespace());
+    _ = try r.linker.ensureSharedNsVar(provider.index);
+    const other_ref = r.linker.sharedNamespaceOutputRef(provider.index).?;
+    try std.testing.expect(output_ref.owner != other_ref.owner);
+    try std.testing.expect(!std.meta.eql(output_ref, other_ref));
+    try std.testing.expect(try r.linker.assignSharedNamespaceGlobalName(output_ref, "_default$bridge"));
+    try std.testing.expectEqualStrings("_default$bridge", r.linker.sharedNamespaceEmittedName(output_ref).?);
+    var foreign = output_ref;
+    foreign.owner = other_ref.owner;
+    try std.testing.expectEqual(@as(?[]const u8, null), r.linker.sharedNamespaceEmittedName(foreign));
+
+    // Preserve the original collision fixture and exercise actual writer output
+    // in both name modes, then inspect the same namespace's live properties.
+    const helpers = @import("test_helpers.zig");
+    try writeFile(tmp.dir, "probe.mjs", "import * as ns from './barrel.mjs'; const d=Object.getOwnPropertyDescriptor(ns,'default'); console.log(JSON.stringify([ns.default,ns._default,d.enumerable,typeof d.get==='function'||d.value===42]));");
+    for ([_][]const u8{ "entry.mjs", "probe.mjs" }, 0..) |entry, i| {
+        const input = try helpers.absPath(&tmp, entry);
+        defer std.testing.allocator.free(input);
+        const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", input } });
+        defer std.testing.allocator.free(native.stdout);
+        defer std.testing.allocator.free(native.stderr);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
+        try std.testing.expectEqualStrings(if (i == 0) "42 source\n" else "[42,\"source\",true,true]\n", native.stdout);
+        for ([_]bool{ false, true }) |minify| {
+            var bundled = try helpers.bundleEntry(std.testing.allocator, &tmp, entry, .{ .platform = .node, .minify_identifiers = minify });
+            defer bundled.deinit();
+            try std.testing.expect(!bundled.result.hasErrors());
+            try writeFile(tmp.dir, "actual.cjs", bundled.code());
+            const output = try helpers.absPath(&tmp, "actual.cjs");
+            defer std.testing.allocator.free(output);
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            if (actual.term != .exited or actual.term.exited != 0) std.debug.print("default bridge runtime min={any}: {s}\n{s}\n", .{ minify, actual.stderr, bundled.code() });
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+            try std.testing.expectEqualStrings(native.stdout, actual.stdout);
+        }
+    }
 }
 
 test "reuse: default facade SymbolId participates in the top-level fingerprint" {
@@ -8022,7 +8064,7 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", source } });
     defer a.free(native.stdout);
     defer a.free(native.stderr);
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expectEqualStrings(expected, native.stdout);
     // Build the runtime graph with downlevel options from the start, so helper
     // imports emitted by the prepass are discovered by the real graph builder.
@@ -8046,7 +8088,7 @@ fn checkGeneratedClassObjectAuthority(comptime nested: bool) !void {
         std.debug.print("generated Object runtime failed: {s}\n{s}\n", .{ actual.stderr, output.output });
     // External/null authority is checked independently of runtime output.
     try std.testing.expectEqual(@as(usize, 0), authority_errors);
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
@@ -8235,13 +8277,13 @@ fn checkPinnedClassDescriptorAuthority(comptime static_probe: bool) !void {
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", native_path } });
     defer a.free(native.stdout);
     defer a.free(native.stderr);
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expectEqualStrings(expected, native.stdout);
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
     if (actual.term != .exited or actual.term.exited != 0) std.debug.print("pinned helper runtime: {s}\n{s}\n", .{ actual.stderr, output.output });
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
@@ -8374,7 +8416,7 @@ test "generated class Object globals keep unused raw and short helper names abse
             const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
             defer a.free(actual.stdout);
             defer a.free(actual.stderr);
-            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
             try std.testing.expectEqualStrings("[true,\"undefined\",\"undefined\"]\n", actual.stdout);
         }
     }
@@ -8403,7 +8445,7 @@ test "generated class Object globals standalone helper aliases preserve raw and 
             const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", output_path } });
             defer a.free(actual.stdout);
             defer a.free(actual.stderr);
-            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
             try std.testing.expectEqualStrings("[7,17,\"undefined\",\"undefined\"]\n", actual.stdout);
         }
     }
@@ -8423,7 +8465,7 @@ test "self namespace two scalar exports preserve distinct getter identities" {
     const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", entry } });
     defer a.free(native.stdout);
     defer a.free(native.stderr);
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
     try std.testing.expectEqualStrings("[3,7]\n", native.stdout);
     var cache = resolve_cache_mod.ResolveCache.init(a, .{});
     defer cache.deinit();
@@ -8526,7 +8568,7 @@ test "self namespace two scalar exports preserve distinct getter identities" {
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
     std.debug.print("SELF_TWO_RUNTIME term={any} stdout={s} stderr={s}\nSELF_TWO_EMITTED\n{s}\n", .{ actual.term, actual.stdout, actual.stderr, output.output });
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(native.stdout, actual.stdout);
 }
 
@@ -8601,7 +8643,7 @@ test "self namespace two exports preserve source order under metadata permutatio
         const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", path } });
         defer a.free(actual.stdout);
         defer a.free(actual.stderr);
-        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings("[3,7]\n", actual.stdout);
     }
 }
@@ -8899,7 +8941,7 @@ test "generated class Object globals preserve pinned callable families and descr
         const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", native_path } });
         defer a.free(native.stdout);
         defer a.free(native.stderr);
-        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
         try std.testing.expectEqualStrings(case.expected, native.stdout);
         try writeFile(tmp.dir, "entry.mjs", case.source);
         var result = try buildAndLinkWithTransformOptions(a, &tmp, "entry.mjs", .{
@@ -9193,7 +9235,7 @@ fn expectCjsExportEqualsWrapper(minify: bool, format: types.Format) !void {
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
     if (actual.term != .exited or actual.term.exited != 0) std.debug.print("CJS_EXPORT_RUNTIME {s}\n{s}\n", .{ actual.stderr, output.output });
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings("local-module|local-exports|42\n", actual.stdout);
 }
 
@@ -9250,7 +9292,7 @@ test "retained imported provider declarations survive statement shaking with ide
         defer a.free(actual.stdout);
         defer a.free(actual.stderr);
         if (actual.term != .exited or actual.term.exited != 0) std.debug.print("PROVIDER_CODE {s}\nERROR {s}\n", .{ output.output, actual.stderr });
-        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings(case.expected, actual.stdout);
     };
 }
@@ -9270,7 +9312,7 @@ test "initial bundler analysis owns dynamic external lookup witnesses through lo
         const native = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", native_source } });
         defer a.free(native.stdout);
         defer a.free(native.stderr);
-        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, native.term);
+        try std.testing.expect(native.term == .exited and native.term.exited == 0);
         try std.testing.expectEqualStrings("7\n", native.stdout);
         for ([_]@import("../transformer/compat.zig").ESTarget{ .esnext, .es5 }) |target| {
             var tmp = std.testing.tmpDir(.{});
@@ -9303,7 +9345,7 @@ test "initial bundler analysis owns dynamic external lookup witnesses through lo
             defer a.free(actual.stdout);
             defer a.free(actual.stderr);
             if (actual.term != .exited or actual.term.exited != 0) std.debug.print("INITIAL_WITNESS {s}\n{s}\n", .{ actual.stderr, output.output });
-            try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+            try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
             try std.testing.expectEqualStrings(native.stdout, actual.stdout);
         }
     }
@@ -9328,7 +9370,7 @@ test "initial JSON module analysis keeps its source scope history" {
     const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", output.output } });
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings("7\n", actual.stdout);
 }
 
@@ -9393,7 +9435,7 @@ fn checkWorkletOwnerPublicCase(source: []const u8, observer: []const u8, expecte
     defer a.free(actual.stdout);
     defer a.free(actual.stderr);
     if (actual.term != .exited or actual.term.exited != 0) std.debug.print("WORKLET_NODE {s}\n", .{actual.stderr});
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+    try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
     try std.testing.expectEqualStrings(expected, actual.stdout);
 }
 
@@ -9433,7 +9475,7 @@ test "generic Stage 3 globals retain producer identity without diagnostic state"
         defer a.free(actual.stdout);
         defer a.free(actual.stderr);
         if (actual.term != .exited or actual.term.exited != 0) std.debug.print("STAGE3_GLOBALS {s}\n{s}\n", .{ actual.stderr, output.output });
-        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, actual.term);
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
         try std.testing.expectEqualStrings("1 undefined\n", actual.stdout);
     }
 }

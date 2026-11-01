@@ -5558,12 +5558,18 @@ test "PM barrel import target normalized reexport preserves source record provid
     std.debug.print("PM local setup kind={s} tag={s} module={d} sid={?d} node={?d} imports={d} sourceKind={s}\n", .{ @tagName(actual.kind), @tagName(std.meta.activeTag(actual.symbol)), actual.symbol.moduleIndex().toU32(), m.exportBindingSemanticIndex(actual.*), if (actual.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null, m.import_bindings.len, if (m.exportBindingSemanticIndex(actual.*)) |id| @tagName(m.semantic.?.symbols.items[id].kind) else "none" });
     for (m.import_bindings) |ib| std.debug.print("PM local import tag={s} module={d} sid={?d} node={?d}\n", .{ @tagName(std.meta.activeTag(ib.local_symbol)), ib.local_symbol.moduleIndex().toU32(), ib.local_symbol.semanticIndex(), if (ib.local_symbol_node) |n| @as(?u32, @backingInt(n)) else null });
     try std.testing.expect(actual.kind == .re_export);
-    const record_sid = m.exportBindingSemanticIndex(actual.*) orelse return error.MissingBarrelRecordSID;
-    try std.testing.expect(m.semantic.?.symbols.items[record_sid].kind != .import_binding);
+    // This normalized record is a redirect, not a second source declaration.
+    // Its source export leaf retains the actual import SID; the output role
+    // below must be carried by the canonical provider's independently owned SID.
+    try std.testing.expect(actual.symbol == .alias);
+    try std.testing.expect(actual.symbol.moduleIndex() == m.index);
+    try std.testing.expectEqual(@as(?u32, null), m.exportBindingSemanticIndex(actual.*));
+    const source_export_leaf = actual.local_symbol_node orelse return error.MissingBarrelSourceLeaf;
+    const record_sid = m.semantic.?.symbol_ids[@backingInt(source_export_leaf)] orelse return error.MissingBarrelSourceSID;
+    try std.testing.expect(m.semantic.?.symbols.items[record_sid].kind == .import_binding);
     try std.testing.expectEqual(@as(usize, 2), m.import_bindings.len);
     for (m.import_bindings) |binding| {
         const source_sid = binding.local_symbol.semanticIndex() orelse return error.MissingBarrelImportSID;
-        try std.testing.expect(source_sid != record_sid);
         try std.testing.expect(binding.local_symbol.moduleIndex() == m.index);
         try std.testing.expect(m.semantic.?.symbols.items[source_sid].kind == .import_binding);
         const source_anchor = binding.local_symbol_node orelse return error.MissingBarrelImportAnchor;
@@ -5597,7 +5603,33 @@ test "PM barrel import target normalized reexport preserves source record provid
         }
     }
     try std.testing.expect(forwarded and local_unchanged);
-    std.debug.print("PM barrel source imports=2 normalized-records=1 ordinary-provider=1 local-unchanged=1\n", .{});
+    const source_import = m.import_bindings[0];
+    try std.testing.expectEqual(source_import.local_symbol.semanticIndex(), @as(?u32, record_sid));
+    // Execute the unchanged normalized barrel through its actual namespace and
+    // default import consumers. Textual export shape is not the value oracle.
+    try helper.writeFile(tmp.dir, "probe.mjs", "import Value,{own}from'./entry.mjs';import * as ns from'./entry.mjs';const d=Object.getOwnPropertyDescriptor(ns,'default');console.log(JSON.stringify([typeof Value,Value===ns.default,own,d.enumerable,typeof d.get==='function'||d.value===Value]));");
+    const native_path = try helper.absPath(&tmp, "probe.mjs");
+    defer std.testing.allocator.free(native_path);
+    const native = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", native_path } });
+    defer std.testing.allocator.free(native.stdout);
+    defer std.testing.allocator.free(native.stderr);
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    try std.testing.expectEqualStrings("[\"function\",true,3,true,true]\n", native.stdout);
+    for ([_]bool{ false, true }) |minify| {
+        var bundled = try helper.bundleEntry(std.testing.allocator, &tmp, "probe.mjs", .{ .platform = .node, .minify_identifiers = minify });
+        defer bundled.deinit();
+        try std.testing.expect(!bundled.result.hasErrors());
+        try helper.writeFile(tmp.dir, "actual.cjs", bundled.code());
+        const output_path = try helper.absPath(&tmp, "actual.cjs");
+        defer std.testing.allocator.free(output_path);
+        const execution = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", output_path } });
+        defer std.testing.allocator.free(execution.stdout);
+        defer std.testing.allocator.free(execution.stderr);
+        if (execution.term != .exited or execution.term.exited != 0) std.debug.print("PM normalized runtime min={any}: {s}\n{s}\n", .{ minify, execution.stderr, bundled.code() });
+        try std.testing.expect(execution.term == .exited and execution.term.exited == 0);
+        try std.testing.expectEqualStrings(native.stdout, execution.stdout);
+    }
+    std.debug.print("PM barrel source imports=2 normalized-records=1 ordinary-provider=1 local-unchanged=1 native=1 writer=2\n", .{});
 }
 
 test "PM barrel import target excludes synthetic default namespace and CJS storage" {
