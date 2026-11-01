@@ -4718,11 +4718,11 @@ fn isSafeConstructorDirectLexicalDeclaration(
     return true;
 }
 
-/// A derived constructor lexical declaration may use one direct `super`
-/// property initializer after the leading `super()` call. Computed access is
-/// limited to string, number, boolean, or null literals, or an exact,
-/// unescaped source-bound identifier key. Direct
-/// `this.property` initializers are handled by the shared declaration gate,
+/// A derived constructor lexical declaration may use direct `super` property
+/// initializers after the leading `super()` call. Every declarator must meet
+/// the same narrow rule. Computed access is limited to string, number,
+/// boolean, or null literals, or an exact, unescaped source-bound identifier
+/// key. Direct `this.property` initializers are handled by the shared gate,
 /// which this function reaches only after the same leading-super check. Keep
 /// `super` reads separate from ordinary safe values because class lowering
 /// records the generated home-object reference in the retained graph.
@@ -4738,15 +4738,28 @@ fn isSafePostSuperDirectLexicalDeclaration(
     if (extra > extras.len or extras.len - extra < 3) return false;
     const declarators_start = extras[extra + 1];
     const declarators_len = extras[extra + 2];
-    if (declarators_len != 1 or declarators_start >= extras.len or
-        extras[declarators_start] >= ast.nodes.items.len) return false;
-    const declarator = ast.nodes.items[extras[declarators_start]];
-    if (declarator.tag != .variable_declarator) return false;
-    const declarator_extra = declarator.data.extra;
-    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-    const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+    if (declarators_len == 0 or declarators_start > extras.len or
+        declarators_len > extras.len - declarators_start) return false;
+    for (extras[declarators_start .. declarators_start + declarators_len]) |raw_declarator| {
+        if (raw_declarator >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+        if (!isSafePostSuperLexicalInitializer(ast, semantic, initializer)) return false;
+    }
+    return isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, true);
+}
+
+fn isSafePostSuperLexicalInitializer(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    initializer: ast_mod.NodeIndex,
+) bool {
     if (initializer.isNone() or @backingInt(initializer) >= ast.nodes.items.len or
         !isRetainableDirectSuperPropertyAccess(ast, initializer, false)) return false;
+    const extras = ast.extra_data.items;
     const member = ast.getNode(initializer);
     if (member.tag == .computed_member_expression) {
         const member_extra = member.data.extra;
@@ -4765,7 +4778,7 @@ fn isSafePostSuperDirectLexicalDeclaration(
     } else if (member.tag != .static_member_expression) {
         return false;
     }
-    return isSafeConstructorDirectLexicalDeclaration(ast, semantic, declaration, true);
+    return true;
 }
 
 fn isSafeConstructorForEachHead(
@@ -23042,6 +23055,7 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Read { get current() { return 4; } constructor() { let local = this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { get current() { return 5; } } class Read extends Base { constructor() { super(); const local = this.current; this.value = local; } } console.log(new Read().value);",
         "class Base { get current() { return 6; } } class Read extends Base { constructor(key) { super(); const local = super[key]; this.value = local; } } console.log(new Read('current').value);",
+        "class Base { get current() { return 7; } } class Read extends Base { constructor(key) { super(); const first = super[key], second = super.current; this.value = first + second; } } console.log(new Read('current').value);",
         "class Base { get current() { return 7; } } class Read extends Base { constructor() { super(); const local = super['current']; this.value = local; } } console.log(new Read().value);",
         "class Base {} Base.prototype[1] = 8; class Read extends Base { constructor() { super(); const local = super[1]; this.value = local; } } console.log(new Read().value);",
         "class Base { get true() { return 9; } } class Read extends Base { constructor() { super(); const local = super[true]; this.value = local; } } console.log(new Read().value);",

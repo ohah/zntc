@@ -83,6 +83,21 @@ const cases = {
     }
     console.log(new Box().value, reads);
   `,
+  'derived constructor multi-declarator direct super-property reads': `
+    var reads = 0;
+    class Base {
+      get current() { reads++; return 7; }
+      get other() { reads++; return 8; }
+    }
+    class Box extends Base {
+      constructor() {
+        super();
+        const first = super.current, second = super.other;
+        this.value = first + second;
+      }
+    }
+    console.log(new Box().value, reads);
+  `,
   'nested closures in computed method': `
     const key = 'make';
     class Box {
