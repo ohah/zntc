@@ -6146,7 +6146,7 @@ test "self namespace AST holder retains the exact import declaration identity" {
     try std.testing.expect(module.wrap_kind == .none);
     try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, source_sem.symbols.items[sid].kind);
     try std.testing.expect(module.transform_cache == null);
-    try std.testing.expect(source_sem.owner_token == .unassigned);
+    try std.testing.expect(source_sem.owner_token != .unassigned);
     var source_row_count: usize = 0;
     for (source_sem.references) |reference| {
         if (@backingInt(reference.symbol_id) != sid or !reference.flags.declare) continue;
@@ -6169,7 +6169,7 @@ test "self namespace AST holder retains the exact import declaration identity" {
     try std.testing.expect(module.transform_cache != null);
     try std.testing.expectEqualDeep(source_symbol, source_sem.symbols.items[sid]);
     try std.testing.expectEqualDeep(source_rows, source_sem.references);
-    try std.testing.expect(source_sem.owner_token == .unassigned);
+    try std.testing.expectEqual(source_sem.owner_token, module.semantic.?.owner_token);
     try std.testing.expectEqual(@as(usize, 2), output.scopes.len);
     try std.testing.expect(output.scopes[plan.getters[0].scope.toIndex()].parent == plan.root_scope);
     // Same-graph calls consume the output proof; no second holder is created.
@@ -7339,7 +7339,10 @@ fn checkSelfNamespaceDiskReceipt(source_text: []const u8, attack: ?SelfNamespace
     const original_receipt = receipt.*;
     const original_ast = module.ast.?;
     const original_sem = module.semantic.?;
-    try std.testing.expectEqual(@import("module.zig").SemanticOwnerToken.unassigned, original_sem.owner_token);
+    // The actual installation/registration producer assigns ownership before
+    // a readonly receipt or lowering consumer observes this source.
+    try std.testing.expect(original_sem.owner_token != .unassigned);
+    try std.testing.expectEqual(original_receipt.owner, original_sem.owner_token);
     const original_source = module.source;
     const original_arena = module.parse_arena;
     // Even a deliberately weakened guard must not turn a semantic assertion
@@ -7573,6 +7576,9 @@ fn checkForeignProviderDeclarationProof(corruption: u32) !void {
     const importer = graph.moduleAtMut(findModuleIdx(&graph, "entry.mjs").?).?;
     const provider = graph.moduleAtMut(findModuleIdx(&graph, "provider.mjs").?).?;
     const sem = &provider.semantic.?;
+    const provider_owner = provider.semantic.?.owner_token;
+    const importer_owner = importer.semantic.?.owner_token;
+    try std.testing.expect(provider_owner != .unassigned and importer_owner != .unassigned);
     const anchor = provider.export_bindings[0].local_symbol_node.?;
     const sid = sem.symbol_ids[@backingInt(anchor)].?;
     try std.testing.expectEqual(@as(usize, 2), sem.references.len);
@@ -7598,8 +7604,8 @@ fn checkForeignProviderDeclarationProof(corruption: u32) !void {
     try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
     // A malformed source graph must not grant a provider export capability.
     try std.testing.expectEqual(@as(usize, 0), graph.self_namespace_holders.count());
-    try std.testing.expect(provider.semantic.?.owner_token == .unassigned);
-    try std.testing.expect(importer.semantic.?.owner_token == .unassigned);
+    try std.testing.expectEqual(provider_owner, provider.semantic.?.owner_token);
+    try std.testing.expectEqual(importer_owner, importer.semantic.?.owner_token);
     @memcpy(@constCast(sem.references), original);
     provider.ast.?.nodes.items[@backingInt(anchor)] = original_binding;
     try lowering.lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
@@ -7746,6 +7752,7 @@ fn checkForeignConsumedProviderRetirement(full_prepare: bool) !void {
     defer graph.deinit();
     try graph.build(std.testing.io, &.{entry});
     const old_provider_index = findModuleIdx(&graph, "provider.mjs").?;
+    const old_provider_owner = graph.moduleAtMut(old_provider_index).?.semantic.?.owner_token;
     const source_type = graph.moduleAtMut(old_provider_index).?.module_type;
     const source_loader = graph.moduleAtMut(old_provider_index).?.loader;
     try @import("self_namespace_ast.zig").lower(&graph, .{ .format = .esm, .scope_hoist = true, .minify_syntax = false });
@@ -7779,7 +7786,14 @@ fn checkForeignConsumedProviderRetirement(full_prepare: bool) !void {
     const anchor = new_provider.export_bindings[0].local_symbol_node.?;
     const sid = new_provider.semantic.?.symbol_ids[@backingInt(anchor)].?;
     try std.testing.expectEqualStrings("replacement", new_provider.ast.?.getText(new_provider.semantic.?.symbols.items[sid].name));
-    try std.testing.expect(new_provider.semantic.?.owner_token == .unassigned);
+    if (full_prepare) {
+        // A completed rebuild includes actual runtime registration. A raw
+        // parseModule retry below has not reached that publication boundary.
+        try std.testing.expect(new_provider.semantic.?.owner_token != .unassigned);
+        try std.testing.expect(new_provider.semantic.?.owner_token != old_provider_owner);
+    } else {
+        try std.testing.expect(new_provider.semantic.?.owner_token == .unassigned);
+    }
     var store = module_store_mod.PersistentModuleStore.init(a);
     defer store.deinit();
     const mtime = try ModuleGraph.getMtime(std.testing.io, expected_path);
