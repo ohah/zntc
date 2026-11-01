@@ -447,6 +447,13 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
             if (!esm_runtime_identity_registered) return error.MissingRuntimeHelperSymbol;
         }
     }
+    // Runtime/source witnesses are readonly consumers. Establish the owner at
+    // the actual registration producer only after every fallible role reserve
+    // has succeeded; later transactional capture must not mutate its source.
+    var completed = self.modules.iterator(0);
+    while (completed.next()) |m| {
+        if (m.semantic) |*semantic| _ = semantic.captureOwnerToken();
+    }
 }
 
 /// Runtime helpers and wrappers can be emitted for modules without source ASTs
