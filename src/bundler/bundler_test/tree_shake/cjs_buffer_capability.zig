@@ -4,7 +4,7 @@ const test_helpers = @import("../../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
-test "TreeShaking CJS: node Buffer capability branch prunes safe-buffer fallback body" {
+test "TreeShaking CJS: unproven node Buffer fold preserves the safe-buffer fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js", "import { Buffer } from './lib.js'; console.log(Buffer.alloc(4).length);");
@@ -47,8 +47,8 @@ test "TreeShaking CJS: node Buffer capability branch prunes safe-buffer fallback
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = buffer") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "SAFE_BUFFER_FALLBACK_MARKER") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "allocUnsafeSlow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SAFE_BUFFER_FALLBACK_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "allocUnsafeSlow") != null);
 }
 
 test "TreeShaking CJS: direct node Buffer capability branch keeps native exports" {

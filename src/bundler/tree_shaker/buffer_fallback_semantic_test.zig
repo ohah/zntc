@@ -658,9 +658,9 @@ test "Buffer named constructor export prunes the actual dead fallback declaratio
     }
 }
 
-test "Buffer export fact preflight validates kept and constructor dependency read tuples atomically" {
+test "Buffer export fact preflight rejects ten compileable identity mutants atomically" {
     for ([_]bool{ false, true }) |dependency_read| {
-        for (0..6) |mutation| {
+        for (0..10) |mutation| {
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
             const a = arena.allocator();
@@ -706,6 +706,13 @@ test "Buffer export fact preflight validates kept and constructor dependency rea
                     duplicate[rows.len] = rows[index];
                     sem.references = duplicate;
                 },
+                6 => rows[index].flags.read = false,
+                7 => {
+                    rows[index].flags.read = false;
+                    rows[index].flags.write = true;
+                },
+                8 => rows[index].declaration_node_index = target,
+                9 => rows[index].flags.value_as_type = true,
                 else => unreachable,
             }
             const malformed = try a.dupe(Reference, sem.references);
@@ -721,6 +728,46 @@ test "Buffer export fact preflight validates kept and constructor dependency rea
             try std.testing.expectEqual(@as(usize, 1), facts.items.len);
         }
     }
+}
+
+test "Buffer fold leaves copy-call fallback AST untouched when exact graph proof rejects it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source =
+        "var buffer=require('buffer'); var Buffer=buffer.Buffer; " ++
+        "function copyProps(src,dst){for(var key in src) dst[key]=src[key];} " ++
+        "if(Buffer.from&&Buffer.alloc&&Buffer.allocUnsafe&&Buffer.allocUnsafeSlow){module.exports=buffer;} " ++
+        "else{copyProps(buffer,exports);exports.Buffer=SafeBuffer;} " ++
+        "function SafeBuffer(arg,encodingOrOffset,length){return Buffer(arg,encodingOrOffset,length);} " ++
+        "SafeBuffer.prototype=Object.create(Buffer.prototype);copyProps(Buffer,SafeBuffer); " ++
+        "SafeBuffer.from=function(arg,encodingOrOffset,length){if(typeof arg==='number') throw new TypeError('fallback'); return Buffer(arg,encodingOrOffset,length);}; " ++
+        "SafeBuffer.allocUnsafeSlow=function(size){return buffer.SlowBuffer(size);};";
+    var f = try Fixture.init(a, source);
+    const ast = &f.module.ast.?;
+    const semantic = &f.module.semantic.?;
+    const before_nodes = try a.dupe(ast_mod.Node, ast.nodes.items);
+    const before_extra = try a.dupe(u32, ast.extra_data.items);
+    const before_references = try a.dupe(Reference, semantic.references);
+    const before_ids = try a.dupe(?u32, semantic.symbol_ids);
+    var removed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    var facts: std.ArrayListUnmanaged(patterns.FoldedNodeBufferExport) = .empty;
+    var needs = false;
+
+    try std.testing.expect(!try patterns.foldNodeBufferCapabilityIfsForModuleWithExports(
+        a,
+        &f.module,
+        ast,
+        &removed,
+        &needs,
+        &facts,
+    ));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(ast.nodes.items));
+    try std.testing.expectEqualSlices(u32, before_extra, ast.extra_data.items);
+    try std.testing.expectEqualDeep(before_references, semantic.references);
+    try std.testing.expectEqualDeep(before_ids, semantic.symbol_ids);
+    try std.testing.expectEqual(@as(usize, 0), removed.items.len);
+    try std.testing.expectEqual(@as(usize, 0), facts.items.len);
 }
 
 test "Buffer folded export facts are reset before a new TreeShaker analysis run" {

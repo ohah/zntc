@@ -421,6 +421,64 @@ describe('CJS Node Buffer capability graph retention', () => {
     expect(cases).toHaveLength(10);
   });
 
+  test('preserves copy-call fallback branches when the retained graph proof rejects the fold', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-copy-call-fallback-'));
+    const input = join(dir, 'entry.js');
+    const modulePath = join(dir, 'lib.js');
+    const output = join(dir, 'out.cjs');
+    try {
+      writeFileSync(
+        input,
+        'import lib from "./lib.js"; console.log(lib.Buffer.alloc(4).length);\n',
+      );
+      writeFileSync(
+        modulePath,
+        `var buffer = require("buffer");
+var Buffer = buffer.Buffer;
+function copyProps(src, dst) { for (var key in src) dst[key] = src[key]; }
+if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
+  module.exports = buffer;
+} else {
+  copyProps(buffer, exports);
+  exports.Buffer = SafeBuffer;
+}
+function SafeBuffer(arg, encodingOrOffset, length) { return Buffer(arg, encodingOrOffset, length); }
+SafeBuffer.prototype = Object.create(Buffer.prototype);
+copyProps(Buffer, SafeBuffer);
+SafeBuffer.from = function(arg, encodingOrOffset, length) {
+  if (typeof arg === "number") throw new TypeError("SAFE_BUFFER_COPY_FALLBACK_MARKER");
+  return Buffer(arg, encodingOrOffset, length);
+};
+SafeBuffer.allocUnsafeSlow = function(size) { return buffer.SlowBuffer(size); };
+`,
+      );
+
+      const result = runCaptured(ZNTC_BIN, [
+        '--bundle',
+        input,
+        '--platform=node',
+        '--format=cjs',
+        '--profile=graph.resync.semantic',
+        '--profile-level=detailed',
+        '--profile-format=json',
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(semanticResyncCount(`${result.stderr}\n${result.stdout}`)).toBe(0);
+
+      const bundled = readFileSync(output, 'utf8');
+      expect(bundled).toContain('SAFE_BUFFER_COPY_FALLBACK_MARKER');
+      const syntax = runCaptured('node', ['--check', output]);
+      expect(syntax.exitCode, syntax.stderr).toBe(0);
+      const actual = runCaptured('node', [output]);
+      expect(actual.exitCode, actual.stderr).toBe(0);
+      expect(actual.stdout.trim()).toBe('4');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('folds top-level fallback-function cases and keeps dynamic-scope bindings live', () => {
     expect(fallbackFunctionCases).toHaveLength(14);
     for (const entry of fallbackFunctionCases) {
@@ -658,7 +716,7 @@ function SafeBuffer() { return "DIRECT_VAR_FALLBACK_MARKER"; }
       rmSync(dir, { recursive: true, force: true });
     }
   });
-  test('direct var alternate with a non-identifier initializer stays on analyzer path', () => {
+  test('preserves non-identifier fallback initializer without semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-cjs-buffer-var-call-alternate-'));
     const input = join(dir, 'entry.js');
     const output = join(dir, 'out.cjs');
@@ -690,7 +748,8 @@ function makeFallback() { return "fallback"; }
       ]);
       expect(result.exitCode, result.stderr).toBe(0);
       const profileOutput = `${result.stderr}\n${result.stdout}`;
-      expect(semanticResyncCount(profileOutput), profileOutput).toBe(1);
+      expect(semanticResyncCount(profileOutput), profileOutput).toBe(0);
+      expect(readFileSync(output, 'utf8')).toContain('makeFallback');
       const actual = runCaptured('node', [output]);
       expect(actual.exitCode, actual.stderr).toBe(0);
       expect(actual.stdout.trim()).toBe('2');

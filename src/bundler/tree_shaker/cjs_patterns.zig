@@ -192,7 +192,7 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     semantic: ?*const ModuleSemanticData,
     needs_semantic_reanalysis: *bool,
 ) !bool {
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null, semantic, null);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, null, semantic, null, false);
 }
 
 /// The module owns the actual AST and semantic tables. Only this typed path
@@ -205,7 +205,7 @@ pub fn foldNodeBufferCapabilityIfsForModule(
     needs_semantic_reanalysis: *bool,
 ) !bool {
     if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, null);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, null, false);
 }
 
 /// Producer-owned relation consumed by named-export reachability. It is held
@@ -233,7 +233,7 @@ pub fn foldNodeBufferCapabilityIfsForModuleWithExports(
 ) !bool {
     exports.clearRetainingCapacity();
     if (module.ast == null or module.semantic == null or &module.ast.? != ast) return false;
-    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, exports);
+    return foldNodeBufferCapabilityIfsWithContext(allocator, ast, removed_nodes, needs_semantic_reanalysis, module, if (module.semantic) |*sem| sem else null, exports, true);
 }
 
 fn foldNodeBufferCapabilityIfsWithContext(
@@ -244,6 +244,7 @@ fn foldNodeBufferCapabilityIfsWithContext(
     module: ?*const Module,
     semantic: ?*const ModuleSemanticData,
     folded_exports: ?*std.ArrayListUnmanaged(FoldedNodeBufferExport),
+    require_semantic_reanalysis_free: bool,
 ) !bool {
     removed_nodes.clearRetainingCapacity();
     needs_semantic_reanalysis.* = false;
@@ -358,9 +359,22 @@ fn foldNodeBufferCapabilityIfsWithContext(
             // No declaration is removed. Exact alternate reads determine the
             // surviving function identity; the retained graph updater removes
             // those reads and rebuilds statement liveness from its new counts.
-            if (!try fallbackFunctionGraphIsStable(allocator, owner, ast, branches.items, setup_statements.items, &dead_fallback_names)) return false;
+            if (!try fallbackFunctionGraphIsStable(allocator, owner, ast, branches.items, setup_statements.items, &dead_fallback_names)) {
+                removed_nodes.clearRetainingCapacity();
+                if (folded_exports) |out| out.clearRetainingCapacity();
+                return false;
+            }
             needs_semantic_reanalysis.* = false;
         }
+    }
+
+    // The export-aware production caller has no reason to perform this
+    // optional fold when its exact graph updater cannot consume the edit.
+    // Reject before publishing facts or writing the AST so the caller can
+    // preserve both runtime branches without rebuilding semantic identity.
+    if (require_semantic_reanalysis_free and needs_semantic_reanalysis.*) {
+        removed_nodes.clearRetainingCapacity();
+        return false;
     }
 
     if (folded_exports) |out| {
@@ -368,7 +382,11 @@ fn foldNodeBufferCapabilityIfsWithContext(
             for (branches.items) |branch| {
                 if (foldedBufferExportAt(owner, ast, branch.if_index, branch.kept)) |fact| {
                     try out.append(allocator, fact);
-                } else if (requires_function_consumer) return false;
+                } else if (requires_function_consumer) {
+                    out.clearRetainingCapacity();
+                    removed_nodes.clearRetainingCapacity();
+                    return false;
+                }
             }
         }
     }
@@ -523,6 +541,25 @@ test "retained Node Buffer fold defers missing semantic scope data to full analy
         parser.configureFromExtension(".cjs");
         parser.is_module = false;
         _ = try parser.parse();
+        const before_nodes = try allocator.dupe(Node, parser.ast.nodes.items);
+        const before_extra = try allocator.dupe(u32, parser.ast.extra_data.items);
+        var strict_removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+        var strict_needs_reanalysis = false;
+        try std.testing.expect(!try foldNodeBufferCapabilityIfsWithContext(
+            allocator,
+            &parser.ast,
+            &strict_removed_nodes,
+            &strict_needs_reanalysis,
+            null,
+            null,
+            null,
+            true,
+        ));
+        try std.testing.expect(strict_needs_reanalysis);
+        try std.testing.expectEqual(@as(usize, 0), strict_removed_nodes.items.len);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(before_nodes), std.mem.sliceAsBytes(parser.ast.nodes.items));
+        try std.testing.expectEqualSlices(u32, before_extra, parser.ast.extra_data.items);
+
         var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
         var needs_semantic_reanalysis = false;
         try std.testing.expect(try foldNodeBufferCapabilityIfsRetainingGraph(

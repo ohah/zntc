@@ -2566,14 +2566,7 @@ pub const TreeShaker = struct {
                 &folded_exports,
             ) catch false;
             if (retained_folded) {
-                if (needs_semantic_reanalysis) {
-                    // Missing semantic scope proof cannot authorize the
-                    // retained updater. Keep the legacy shape normalization
-                    // and full-analysis recovery for this boundary.
-                    _ = cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast);
-                    self.markAstMutatedAndResync(m);
-                    continue;
-                }
+                std.debug.assert(!needs_semantic_reanalysis);
                 const retained = if (m.parse_arena) |arena|
                     self.graph.resyncModuleMetadataAfterNodeBufferCapabilityFoldRetainingGraph(
                         m,
@@ -2597,10 +2590,8 @@ pub const TreeShaker = struct {
                 }
                 continue;
             }
-
-            removed_nodes.clearRetainingCapacity();
-            if (!cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast)) continue;
-            self.markAstMutatedAndResync(m);
+            // This is an optional value optimization. An unproven graph edit
+            // leaves the original condition and fallback branch intact.
         }
     }
 
