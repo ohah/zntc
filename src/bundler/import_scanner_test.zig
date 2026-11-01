@@ -15,6 +15,43 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
+test "empty runtime module clauses agree in initial and AST source records" {
+    const cases = [_]struct { source: []const u8, kind: ?ImportKind }{
+        .{ .source = "import './dep';", .kind = .side_effect },
+        .{ .source = "import{}from'./dep';", .kind = .side_effect },
+        .{ .source = "import{/* empty */}from'./dep';", .kind = .side_effect },
+        .{ .source = "export{}from'./dep';", .kind = .side_effect },
+        .{ .source = "export{/* empty */}from'./dep';", .kind = .side_effect },
+        .{ .source = "import value from'./dep';", .kind = .static_import },
+        .{ .source = "import{value}from'./dep';", .kind = .static_import },
+        .{ .source = "export{value}from'./dep';", .kind = .re_export },
+        .{ .source = "import type{}from'./dep';", .kind = null },
+        .{ .source = "export type{}from'./dep';", .kind = null },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var scanner = try Scanner.init(a, case.source);
+        scanner.is_module = true;
+        var parser = Parser.init(a, &scanner);
+        parser.is_module = true;
+        parser.configureFromExtension(".ts");
+        parser.enable_scan = true;
+        _ = try parser.parse();
+        const rescanned = try extractImports(a, &parser.ast);
+        const expected: usize = if (case.kind != null) 1 else 0;
+        try std.testing.expectEqual(expected, parser.scan_import_records.items.len);
+        try std.testing.expectEqual(expected, rescanned.len);
+        if (case.kind) |kind| {
+            try std.testing.expectEqual(@backingInt(kind), @backingInt(parser.scan_import_records.items[0].kind));
+            try std.testing.expectEqual(kind, rescanned[0].kind);
+            try std.testing.expectEqualStrings("./dep", rescanned[0].specifier);
+            try std.testing.expectEqual(parser.scan_import_records.items[0].source_node, rescanned[0].source_node);
+        }
+    }
+}
+
 // ============================================================
 // Tests
 // ============================================================
