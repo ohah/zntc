@@ -4721,10 +4721,10 @@ fn isSafeConstructorDirectLexicalDeclaration(
 
 /// A derived constructor lexical declaration may use direct `super` property
 /// reads or bounded unary, binary, logical, and conditional expressions
-/// containing initialized-`this` property reads after the leading `super()`
-/// call. Every initialized declarator must contain a direct property read, so
-/// mixed property-read and literal-only declarations still take semantic
-/// reanalysis.
+/// containing initialized-`this` or direct `super` property reads after the
+/// leading `super()` call. Every initialized declarator must contain a direct
+/// property read, so mixed property-read and literal-only declarations still
+/// take semantic reanalysis.
 /// Computed access is limited to string, number, boolean, or null literals,
 /// or an exact, unescaped source-bound identifier key. Keep these reads
 /// separate from ordinary safe values because class lowering records the
@@ -4798,9 +4798,7 @@ fn isSafePostSuperLexicalInitializerValueInner(
     value_idx: ast_mod.NodeIndex,
     contains_direct_property_read: *bool,
 ) bool {
-    if (isSafeConstructorThisPropertyTarget(ast, value_idx) or
-        isSafePostSuperComputedThisPropertyAccess(ast, semantic, value_idx))
-    {
+    if (isSafePostSuperLexicalInitializer(ast, semantic, value_idx)) {
         contains_direct_property_read.* = true;
         return true;
     }
@@ -23195,8 +23193,8 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input]; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = super[input?.name]; this.value = value; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current(); this.value = value; } }", .expected = false },
-        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current + 1; this.value = value; } }", .expected = false },
-        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = input ? super.current : 0; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current + 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = input ? super.current : 0; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); { let value = super.current; this.value = value; } } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 2; this.value = other; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = other; let other = 2; } }", .expected = false },
@@ -23316,6 +23314,7 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key) { super(); var first = super[key], second = this[key]; this.value = first + second; } } console.log(new Read('current').value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = super[key] + 10, second = flag && this[key] + 20; this.value = first + second; } } console.log(new Read('current', true).value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = flag ? super[key] : 0, second = !flag ? this[key] : 0; this.value = first + second; } } console.log(new Read('current', true).value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(flag) { super(); const first = super.current + 10, second = flag && super.current + 20; this.value = first + second; } } console.log(new Read(true).value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});
