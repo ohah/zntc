@@ -191,6 +191,8 @@ pub fn prepareForPreservedRebuild(self: *ModuleGraph) void {
     // 5) graph-global per-build state reset (diagnostics / worker_entries / lazy_seeds /
     //    requested_exports / source_read_cache / exec/cycle counter).
     reset(self);
+    // All modules, including failed transformed AST/cache state, were destroyed.
+    self.preserved_graph_invalidated = false;
 }
 
 pub fn deinit(self: *ModuleGraph) void {

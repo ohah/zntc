@@ -19,6 +19,10 @@ pub fn addDiag(
 ) void {
     self.diag_mutex.lock();
     defer self.diag_mutex.unlock();
+    // A failed transform refresh can leave a ready module with a transformed
+    // AST and transform_cache. Latch graph errors until the modules are
+    // destroyed by prepareForPreservedRebuild.
+    if (severity == .@"error") self.preserved_graph_invalidated = true;
     self.diagnostics.append(self.allocator, .{
         .code = code,
         .severity = severity,
