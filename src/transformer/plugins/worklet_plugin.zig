@@ -1107,7 +1107,7 @@ fn buildClassFactoryBody(
         decl_list.start,
         decl_list.len,
     });
-    const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, class_name_span);
+    const return_ref = try es_helpers.makeExactSyntheticRefFromSpan(t, class_name_span);
     try t.addSyntheticRefInScope(return_ref, factory_symbol, factory_scope, .{ .read = true });
     return .{
         .node = try buildWorkletReturnBlock(t, return_ref, &.{var_decl}),

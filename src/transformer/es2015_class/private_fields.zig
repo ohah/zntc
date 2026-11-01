@@ -138,7 +138,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name != null) {
                 return buildStaticPrivateFieldGet(self, mapping, obj_idx, node.span);
             }
-            return buildWeakMapCall(self, mapping.var_name, mapping, "get", obj_idx, &.{}, node.span);
+            return buildWeakMapCall(self, mapping, "get", obj_idx, &.{}, node.span);
         }
 
         /// this.#x = rhs (setter) → `(__classPrivateMethodGet(obj, _x, _x_set).call(obj, _v = rhs), _v)` (#1523).
@@ -672,16 +672,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
         }
 
         /// _name.method(obj, extra_args...) 호출 생성.
-        fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, field_mapping: ?Transformer.PrivateFieldMapping, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = if (field_mapping) |mapping|
-                try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id)
-            else
-                try es_helpers.makeSyntheticRef(self, wm_name);
+        fn buildWeakMapCall(self: *Transformer, mapping: Transformer.PrivateFieldMapping, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makePrivateExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             if (self.semantic_edit_enabled and !self.isClassLowered()) {
-                if (field_mapping) |mapping| {
-                    const id = mapping.symbol_id orelse @panic("private collection reference lost its producer SID");
-                    try @import("../native_constructor_guard.zig").recordReference(self, wm_ref, @fromBackingInt(id), self.current_scope, .{ .read = true });
-                }
+                const id = mapping.symbol_id orelse @panic("private collection reference lost its producer SID");
+                try @import("../native_constructor_guard.zig").recordReference(self, wm_ref, @fromBackingInt(id), self.current_scope, .{ .read = true });
             }
             return buildWeakCollectionCall(self, wm_ref, method, obj_idx, extra_arg_indices, span);
         }
@@ -760,7 +755,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     has_brand = try makePrivateInBinary(self, receiver_ref, class_ref, token_mod.Kind.eq3, node.span);
                 } else {
                     // instance: _x.has(obj). receiver_ref points at the one captured RHS.
-                    has_brand = try buildWeakMapCall(self, pf.var_name, pf, "has", receiver_ref, &.{}, node.span);
+                    has_brand = try buildWeakMapCall(self, pf, "has", receiver_ref, &.{}, node.span);
                 }
                 const guarded = try buildGuardedPrivateIn(self, receiver, has_brand, node.span);
                 return receiver.wrap(self, rhs, guarded, node.span);
