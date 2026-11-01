@@ -537,7 +537,7 @@ test "JSX automatic: fills array holes in downlevel spread children" {
 test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" {
     var r = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
-        "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\"><span />{...items}<i /></Comp>;",
+        "const props = {}; const items = [1, 2]; const result = <Comp {...props} {...{ id: \"literal\", count: 2 }} key=\"k\"><span />{...items}<i /></Comp>;",
         .es5,
     );
     defer r.deinit();
@@ -574,6 +574,25 @@ test "JSX automatic dev and fragment downlevel spread children" {
     try std.testing.expect(std.mem.indexOf(u8, dev.output, "children:[].concat") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev.output, "undefined,true") != null);
     try std.testing.expect(std.mem.indexOf(u8, dev.output, "_jsxDEV") != null);
+
+    var dev_key_fallback = try e2eFull(
+        std.testing.allocator,
+        "const items = [1, 2]; const result = <Comp {...{ id: \"dev\" }} key=\"k\"><span />{...items}</Comp>;",
+        .{
+            .jsx_transform = true,
+            .jsx_runtime = .automatic_dev,
+            .jsx_filename = "spread.tsx",
+            .unsupported = compat.fromESTarget(.es5),
+        },
+        .{ .minify_whitespace = true },
+        ".tsx",
+    );
+    defer dev_key_fallback.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "...items") == null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "_createElement.apply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "__toConsumableArray(items)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "<span") == null);
+    try std.testing.expect(std.mem.indexOf(u8, dev_key_fallback.output, "_jsxDEV(\"span\"") != null);
 
     var fragment = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
