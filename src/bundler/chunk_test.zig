@@ -1402,15 +1402,34 @@ const Linker = linker_mod.Linker;
 const test_helpers = @import("test_helpers.zig");
 
 test "bare CJS imports retain the actual shared wrapper edge" {
+    try checkBindinglessCjsEdges("import './shared.cjs';", .side_effect);
+}
+
+test "duplicate bare CJS records import one actual wrapper" {
+    try checkBindinglessCjsEdges("import './shared.cjs';import './shared.cjs';", .side_effect);
+}
+
+test "raw CJS requires retain the actual shared wrapper edge" {
+    try checkBindinglessCjsEdges("require('./shared.cjs');require('./shared.cjs');", .require);
+}
+
+test "empty runtime clauses retain the actual shared CJS wrapper edge" {
+    try checkBindinglessCjsEdges("import{}from'./shared.cjs';", .side_effect);
+    try checkBindinglessCjsEdges("export{}from'./shared.cjs';", .side_effect);
+}
+
+fn checkBindinglessCjsEdges(source: []const u8, expected_kind: types.ImportKind) !void {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try test_helpers.writeFile(tmp.dir, "shared.cjs", "console.log(7);module.exports=7;");
-    try test_helpers.writeFile(tmp.dir, "a.mjs", "import './shared.cjs';");
-    try test_helpers.writeFile(tmp.dir, "b.mjs", "import './shared.cjs';");
-    const a = try test_helpers.absPath(&tmp, "a.mjs");
+    const a_name = if (expected_kind == .require) "a.cjs" else "a.mjs";
+    const b_name = if (expected_kind == .require) "b.cjs" else "b.mjs";
+    try test_helpers.writeFile(tmp.dir, a_name, source);
+    try test_helpers.writeFile(tmp.dir, b_name, source);
+    const a = try test_helpers.absPath(&tmp, a_name);
     defer alloc.free(a);
-    const b = try test_helpers.absPath(&tmp, "b.mjs");
+    const b = try test_helpers.absPath(&tmp, b_name);
     defer alloc.free(b);
     var cache = resolve_cache_mod.ResolveCache.init(alloc, .{});
     defer cache.deinit();
@@ -1435,7 +1454,7 @@ test "bare CJS imports retain the actual shared wrapper edge" {
         const m = graph.getModule(ModuleIndex.fromUsize(i)).?;
         if (!std.mem.eql(u8, m.path, a) and !std.mem.eql(u8, m.path, b)) continue;
         try std.testing.expectEqual(@as(usize, 0), m.import_bindings.len);
-        try std.testing.expect(m.import_records[0].kind == .side_effect);
+        try std.testing.expect(m.import_records[0].kind == expected_kind);
         const consumer_chunk = chunks.getModuleChunk(m.index);
         try std.testing.expect(consumer_chunk != provider_chunk);
         const consumer = chunks.getChunk(consumer_chunk);
@@ -1446,6 +1465,13 @@ test "bare CJS imports retain the actual shared wrapper edge" {
     try std.testing.expect(chunks.getChunk(provider_chunk).wrapper_cross_exports.contains(owner.index.toU32()));
     try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
     try std.testing.expectEqual(@as(usize, 1), chunks.getChunk(provider_chunk).wrapper_cross_exports.count());
+    var single = try chunk_mod.generateChunks(alloc, &graph, &.{a}, .{});
+    defer single.deinit();
+    try chunk_mod.computeCrossChunkLinks(&single, &graph, alloc, &linker);
+    for (single.chunks.items) |chunk| {
+        try std.testing.expectEqual(@as(usize, 0), chunk.wrapper_cross_exports.count());
+        try std.testing.expectEqual(@as(usize, 0), chunk.wrapper_cross_imports.count());
+    }
 }
 
 // 다른 청크의 CJS 모듈을 **직접** import(`import d from './lib.cjs'`)하면 cross-chunk
@@ -1522,7 +1548,7 @@ test "ESM initializer cross-chunk edges retain graph owner and equal-number Symb
     defer tmp.cleanup();
     try test_helpers.writeFile(tmp.dir, "left.mjs", "export function read(){return 'left';}");
     try test_helpers.writeFile(tmp.dir, "right.mjs", "export function read(){return 'right';}");
-    const source = "import {read as left} from './left.mjs';import {read as right} from './right.mjs';console.log(left(),right());";
+    const source = "import {read as left} from './left.mjs';import {read as right} from './right.mjs';import './left.mjs';import './right.mjs';console.log(left(),right());";
     try test_helpers.writeFile(tmp.dir, "a.mjs", source);
     try test_helpers.writeFile(tmp.dir, "b.mjs", source);
     const a = try test_helpers.absPath(&tmp, "a.mjs");
@@ -1560,9 +1586,11 @@ test "ESM initializer cross-chunk edges retain graph owner and equal-number Symb
     _ = try first_owner.esmWrapperName(namespace_identity, null);
     try chunk_mod.computeCrossChunkLinks(&chunks, &graph, alloc, &linker);
     const consumer = chunks.getChunk(chunks.getModuleChunk(importer));
+    try std.testing.expectEqual(@as(usize, 0), consumer.wrapper_cross_imports.count());
     for (identities) |identity| {
         const provider_index = chunks.getModuleChunk(identity.module);
         const provider = chunks.getChunk(provider_index);
+        try std.testing.expectEqual(@as(usize, 0), provider.wrapper_cross_exports.count());
         try std.testing.expect(provider.esm_wrapper_cross_exports.contains(identity));
         const imports = consumer.esm_wrapper_cross_imports.get(@backingInt(provider_index)) orelse return error.TestUnexpectedResult;
         var present = false;
