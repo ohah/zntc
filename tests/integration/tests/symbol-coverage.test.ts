@@ -40909,6 +40909,63 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '11 33 3\n',
       },
       {
+        name: 'derived constructor lexical super binary operators retain evaluation order',
+        source:
+          'class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class DerivedLocal extends Base { constructor() { super(); const and = super.current & 3; const or = super.current | 4; const xor = super.current ^ 7; const left = super.current << 1; const right = super.current >> 1; const unsigned = super.current >>> 1; const power = super.current ** 2; this.value = and + ":" + or + ":" + xor + ":" + left + ":" + right + ":" + unsigned + ":" + power; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: '1:6:4:8:2:3:49\n',
+      },
+      {
+        name: 'derived constructor lexical super in operator retains its graph',
+        source:
+          'const lookup = { 8: true }; class Base { get current() { return 8; } } class DerivedLocal extends Base { constructor() { super(); const member = super.current in lookup; this.value = member; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'derived constructor lexical super instanceof retains its graph',
+        source:
+          'class Box {} class Base { get boxed() { return new Box(); } } class DerivedLocal extends Base { constructor() { super(); const instance = super.boxed instanceof Box; this.value = instance; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'derived constructor lexical super equality retains its graph',
+        source:
+          'const limit = 9; class Base { get current() { return 9; } } class DerivedLocal extends Base { constructor() { super(); const equal = super.current === limit; this.value = equal; } } console.log(new DerivedLocal().value);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'derived constructor shadowed Math exponentiation super initializer keeps its graph',
+        source:
+          'var Math = { pow() { return 900; } }; class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ** 2; this.value = value; } } console.log(new DerivedLocal().value, Math.pow(2, 3));',
+        graph: 'retained',
+        shadowedExternal: true,
+        output: '1 900\n',
+      },
+      {
+        name: 'derived constructor lexical super bitwise effectful RHS stays on reanalysis',
+        source:
+          'var calls = 0; class Base { get current() { return 1; } } class DerivedLocal extends Base { key() { calls++; return 3; } constructor() { super(); const value = super.current & this.key(); this.value = value; } } console.log(new DerivedLocal().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'derived constructor lexical super in object RHS stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current in { 1: true }; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'derived constructor lexical super nullish expression stays on reanalysis',
+        source:
+          'class Base { get current() { return null; } } class DerivedLocal extends Base { constructor() { super(); const value = super.current ?? 2; this.value = value; } } console.log(new DerivedLocal().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
         name: 'derived constructor mixed super read and literal lexical declaration stays on reanalysis',
         source:
           'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const first = super.current, second = 2; this.value = first + second; } } console.log(new DerivedLocal().value);',
@@ -44098,15 +44155,27 @@ console.log(new DerivedReader().values);`;
     }
   }, 60_000);
 
-  test('derived constructor composed super-property lexical initializers retain exact output identities', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-super-lexical-composed-retained-'));
+  test('derived constructor super binary lexical initializers retain exact output identities', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-super-binary-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `superValue${index}`);
+    const initializers = [
+      'super.current & 3',
+      'super.current | 4',
+      'super.current ^ 7',
+      'super.current << 1',
+      'super.current >> 1',
+      'super.current >>> 1',
+      'super.current ** 2',
+      'super.current + 7',
+      'super.current - 1',
+      'super.current * 2',
+    ];
     const declarations = names
-      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = super.current + ${index};`)
+      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = ${initializers[index]};`)
       .join('\n');
-    const expected = `${names.map((_, index) => index * 2 + 1).join(' ')}\n`;
+    const expected = '1 6 4 8 2 3 49 15 8 20\n';
     const valueExpression = names.join(" + ' ' + ");
     const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
     try {

@@ -3374,6 +3374,26 @@ fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     };
 }
 
+/// Composed post-super lexical reads can also sit beneath this additional set
+/// of binary operators. Keep the widening local to that expression gate: the
+/// constructor-value classifiers still use their narrower audited operator
+/// set. Assignment and comma expressions remain excluded.
+fn isSafePostSuperLexicalBinaryOperator(operator: token_mod.Kind) bool {
+    return isSafeConstructorBinaryOperator(operator) or switch (operator) {
+        .star2,
+        .amp,
+        .pipe,
+        .caret,
+        .shift_left,
+        .shift_right,
+        .shift_right3,
+        .kw_in,
+        .kw_instanceof,
+        => true,
+        else => false,
+    };
+}
+
 fn isSafeConstructorLogicalOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
         .amp2, .pipe2 => true,
@@ -4807,7 +4827,7 @@ fn isSafePostSuperLexicalInitializerValueInner(
     const value = ast.getNode(value_idx);
     if (value.tag == .binary_expression) {
         const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
-        return isSafeConstructorBinaryOperator(operator) and
+        return isSafePostSuperLexicalBinaryOperator(operator) and
             isSafePostSuperLexicalInitializerValueInner(
                 ast,
                 semantic,
@@ -23195,6 +23215,18 @@ test "ES5 same-var-scope lexical declarations alone admit the retained graph" {
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current(); this.value = value; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current + 1; this.value = value; } }", .expected = true },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor(input) { super(); let value = input ? super.current : 0; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current & 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current | 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current ^ 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current << 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current >> 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current >>> 1; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 2; } } class Read extends Base { constructor() { super(); let value = super.current ** 2; this.value = value; } }", .expected = true },
+        .{ .source = "const lookup = { 1: true }; class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current in lookup; this.value = value; } }", .expected = true },
+        .{ .source = "class Value {} class Base { get current() { return new Value(); } } class Read extends Base { constructor() { super(); let value = super.current instanceof Value; this.value = value; } }", .expected = true },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current ?? 0; this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } key() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current & this.key(); this.value = value; } }", .expected = false },
+        .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current in {}; this.value = value; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); { let value = super.current; this.value = value; } } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current, other = 2; this.value = other; } }", .expected = false },
         .{ .source = "class Base { get current() { return 1; } } class Read extends Base { constructor() { super(); let value = super.current; this.value = other; let other = 2; } }", .expected = false },
@@ -23315,6 +23347,13 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = super[key] + 10, second = flag && this[key] + 20; this.value = first + second; } } console.log(new Read('current', true).value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(key, flag) { super(); var first = flag ? super[key] : 0, second = !flag ? this[key] : 0; this.value = first + second; } } console.log(new Read('current', true).value);",
         "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor(flag) { super(); const first = super.current + 10, second = flag && super.current + 20; this.value = first + second; } } console.log(new Read(true).value);",
+        "class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const and = super.current & 3; const or = super.current | 4; const xor = super.current ^ 7; this.value = and + or + xor; } } console.log(new Read().value);",
+        "class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const left = super.current << 1; const right = super.current >> 1; const unsigned = super.current >>> 1; this.value = left + right + unsigned; } } console.log(new Read().value);",
+        "class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const power = super.current ** 2; this.value = power; } } console.log(new Read().value);",
+        "const lookup = { 3: true }; class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const member = super.current in lookup; this.value = member; } } console.log(new Read().value);",
+        "class Box {} class Base { get boxed() { return new Box(); } } class Read extends Base { constructor() { super(); const instance = super.boxed instanceof Box; this.value = instance; } } console.log(new Read().value);",
+        "const limit = 3; class Base { get current() { return 3; } } class Read extends Base { constructor() { super(); const equal = super.current === limit; this.value = equal; } } console.log(new Read().value);",
+        "class Base { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } } class Read extends Base { constructor() { super(); const and = super.current & 3; const or = super.current | 4; const xor = super.current ^ 7; const left = super.current << 1; const right = super.current >> 1; const unsigned = super.current >>> 1; const power = super.current ** 2; this.value = and + or + xor + left + right + unsigned + power; } } console.log(new Read().value);",
     };
     for (sources) |source| {
         var tmp = std.testing.tmpDir(.{});
@@ -23337,6 +23376,10 @@ test "ES5 audited constructor lexical initializers retain the production semanti
         try std.testing.expect(semantic.symbols.items.len > 0);
         try std.testing.expect(module.transform_cache != null);
         try std.testing.expect(profile.count(.graph_discover_pm_semantic) > 0);
-        try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
+        const resync_count = profile.count(.graph_resync_semantic);
+        if (resync_count != 0) {
+            std.debug.print("unexpected constructor lexical resync count={d} source={s}\n", .{ resync_count, source });
+        }
+        try std.testing.expectEqual(@as(u32, 0), resync_count);
     }
 }
