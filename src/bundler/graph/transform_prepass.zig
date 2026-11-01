@@ -3,6 +3,9 @@
 const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const ImportRecord = @import("../types.zig").ImportRecord;
+const ImportBinding = @import("../binding_scanner.zig").ImportBinding;
+const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
 const EsmRuntimeInternalSymbolIds = @import("../module.zig").EsmRuntimeInternalSymbolIds;
 const EsmInteropRuntimeHelperSymbolIds = @import("../module.zig").EsmInteropRuntimeHelperSymbolIds;
@@ -16335,7 +16338,746 @@ fn moduleUnsupported(unsupported: TransformOptions.compat.UnsupportedFeatures, m
     return result;
 }
 
+fn sameSnapshotMap(left: anytype, right: @TypeOf(left)) bool {
+    if (left.count() != right.count()) return false;
+    var entries = left.iterator();
+    while (entries.next()) |entry| {
+        const value = right.get(entry.key_ptr.*) orelse return false;
+        if (@TypeOf(entry.value_ptr.*) != void and
+            !std.meta.eql(entry.value_ptr.*, value)) return false;
+    }
+    return true;
+}
+
+fn sameSnapshotSliceValues(comptime T: type, left: []const T, right: []const T) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |before, current| if (!std.meta.eql(before, current)) return false;
+    return true;
+}
+
+fn sameAstNode(left: ast_mod.Node, right: ast_mod.Node) bool {
+    if (left.tag != right.tag or !std.meta.eql(left.span, right.span)) return false;
+    const width = ast_mod.Node.Tag.dataWidth(left.tag);
+    return std.mem.eql(u8, std.mem.asBytes(&left.data)[0..width], std.mem.asBytes(&right.data)[0..width]);
+}
+
+fn sameAstNodeValues(left: []const ast_mod.Node, right: []const ast_mod.Node) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |before, current| if (!sameAstNode(before, current)) return false;
+    return true;
+}
+
+fn sameSnapshotSliceBacking(comptime T: type, left: []const T, right: []const T) bool {
+    if (left.len != right.len) return false;
+    if (left.len == 0) return true;
+    return left.ptr == right.ptr;
+}
+
+fn sameGenericPrepassAstBacking(left: *const ast_mod.Ast, right: *const ast_mod.Ast) bool {
+    return sameSnapshotSliceBacking(ast_mod.Node, left.nodes.items, right.nodes.items) and
+        sameSnapshotSliceBacking(u32, left.extra_data.items, right.extra_data.items) and
+        sameSnapshotSliceBacking(u8, left.string_table.items, right.string_table.items) and
+        sameSnapshotSliceBacking(u32, left.preserve_lexical_declaration_indices.items, right.preserve_lexical_declaration_indices.items) and
+        sameSnapshotSliceBacking(u8, left.source, right.source) and
+        std.meta.eql(left.string_interns, right.string_interns) and
+        std.meta.eql(left.type_only_binding_names, right.type_only_binding_names) and
+        left.string_intern_hits == right.string_intern_hits and left.string_intern_misses == right.string_intern_misses and
+        left.string_intern_bytes_saved == right.string_intern_bytes_saved and left.string_intern_bytes_overhead == right.string_intern_bytes_overhead and
+        left.has_jsx == right.has_jsx and left.has_jsx_key_after_spread == right.has_jsx_key_after_spread and
+        left.has_decorator == right.has_decorator and left.has_ts_namespace_or_enum == right.has_ts_namespace_or_enum and
+        left.has_ts_import_equals == right.has_ts_import_equals and left.has_ts_export_equals == right.has_ts_export_equals and
+        left.has_flow_enum_declaration == right.has_flow_enum_declaration and left.has_object_getter == right.has_object_getter and
+        left.is_typescript == right.is_typescript and left.transform_boundary == right.transform_boundary and
+        left.transformed_root == right.transformed_root and left.tla_lowered == right.tla_lowered and
+        std.meta.eql(left.jsx_pragma_factory, right.jsx_pragma_factory) and
+        std.meta.eql(left.jsx_pragma_fragment, right.jsx_pragma_fragment) and
+        std.meta.eql(left.jsx_pragma_runtime, right.jsx_pragma_runtime) and
+        std.meta.eql(left.jsx_pragma_import_source, right.jsx_pragma_import_source);
+}
+
+fn sameAstStringInterns(left: *const ast_mod.Ast, right: *const ast_mod.Ast, allocator: std.mem.Allocator) !bool {
+    const Key = u64;
+    const left_count = left.string_interns.count();
+    if (left_count != right.string_interns.count()) return false;
+    const left_keys = try allocator.alloc(Key, left_count);
+    const right_keys = try allocator.alloc(Key, left_count);
+    var left_it = left.string_interns.iterator();
+    var left_index: usize = 0;
+    while (left_it.next()) |entry| : (left_index += 1)
+        left_keys[left_index] = (@as(u64, entry.key_ptr.start) << 32) | entry.key_ptr.end;
+    var right_it = right.string_interns.iterator();
+    var right_index: usize = 0;
+    while (right_it.next()) |entry| : (right_index += 1)
+        right_keys[right_index] = (@as(u64, entry.key_ptr.start) << 32) | entry.key_ptr.end;
+    std.mem.sort(Key, left_keys, {}, std.sort.asc(Key));
+    std.mem.sort(Key, right_keys, {}, std.sort.asc(Key));
+    return std.mem.eql(Key, left_keys, right_keys);
+}
+
+fn sameGenericPrepassAstContents(left: *const ast_mod.Ast, right: *const ast_mod.Ast, allocator: std.mem.Allocator) !bool {
+    if (!sameAstNodeValues(left.nodes.items, right.nodes.items) or
+        !std.mem.eql(u32, left.extra_data.items, right.extra_data.items) or
+        !std.mem.eql(u32, left.preserve_lexical_declaration_indices.items, right.preserve_lexical_declaration_indices.items) or
+        !std.mem.eql(u8, left.string_table.items, right.string_table.items) or
+        !std.mem.eql(u8, left.source, right.source) or
+        left.string_intern_hits != right.string_intern_hits or left.string_intern_misses != right.string_intern_misses or
+        left.string_intern_bytes_saved != right.string_intern_bytes_saved or left.string_intern_bytes_overhead != right.string_intern_bytes_overhead or
+        left.has_jsx != right.has_jsx or left.has_jsx_key_after_spread != right.has_jsx_key_after_spread or
+        left.has_decorator != right.has_decorator or left.has_ts_namespace_or_enum != right.has_ts_namespace_or_enum or
+        left.has_ts_import_equals != right.has_ts_import_equals or left.has_ts_export_equals != right.has_ts_export_equals or
+        left.has_flow_enum_declaration != right.has_flow_enum_declaration or left.has_object_getter != right.has_object_getter or
+        left.is_typescript != right.is_typescript or left.transform_boundary != right.transform_boundary or
+        left.transformed_root != right.transformed_root or left.tla_lowered != right.tla_lowered or
+        !std.meta.eql(left.jsx_pragma_factory, right.jsx_pragma_factory) or
+        !std.meta.eql(left.jsx_pragma_fragment, right.jsx_pragma_fragment) or
+        !std.meta.eql(left.jsx_pragma_runtime, right.jsx_pragma_runtime) or
+        !std.meta.eql(left.jsx_pragma_import_source, right.jsx_pragma_import_source) or
+        !sameSnapshotMap(left.type_only_binding_names, right.type_only_binding_names)) return false;
+    return try sameAstStringInterns(left, right, allocator);
+}
+
+fn sameGenericPrepassSemanticBacking(left: *const ModuleSemanticData, right: *const ModuleSemanticData) bool {
+    if (left.owner_token != right.owner_token or
+        !sameSnapshotSliceBacking(SemanticSymbol, left.symbols.items, right.symbols.items) or
+        !sameSnapshotSliceBacking(SemanticScope, left.scopes, right.scopes) or
+        !sameSnapshotSliceBacking(std.StringHashMapUnmanaged(usize), left.scope_maps, right.scope_maps) or
+        !sameSnapshotSliceBacking(?u32, left.symbol_ids, right.symbol_ids) or
+        !sameSnapshotSliceBacking(SemanticReference, left.references, right.references) or
+        !std.meta.eql(left.scope_owner_map, right.scope_owner_map) or
+        !std.meta.eql(left.node_scope_provenance, right.node_scope_provenance) or
+        !std.meta.eql(left.class_self_symbol_map, right.class_self_symbol_map) or
+        !std.meta.eql(left.namespace_member_owners, right.namespace_member_owners) or
+        !std.meta.eql(left.namespace_declaration_owners, right.namespace_declaration_owners) or
+        !std.meta.eql(left.exported_names, right.exported_names) or
+        !std.meta.eql(left.unresolved_references, right.unresolved_references) or
+        !std.meta.eql(left.numeric_const_texts, right.numeric_const_texts) or
+        !std.meta.eql(left.helper_scope_map, right.helper_scope_map) or
+        !sameSnapshotSliceBacking(@import("../../bundler/strict_function_context.zig").Role, left.strict_output_context.functions, right.strict_output_context.functions)) return false;
+    if (left.runtime_identities) |before| {
+        const current = right.runtime_identities orelse return false;
+        if (before != current or !std.meta.eql(before.*, current.*)) return false;
+    } else if (right.runtime_identities != null) return false;
+    return true;
+}
+
+fn sameGenericPrepassSource(
+    before: *const Module,
+    current: *const Module,
+    source_import_records: []const ImportRecord,
+    source_import_bindings: []const ImportBinding,
+    source_export_bindings: []const ExportBinding,
+    source_exported_names: []const []const u8,
+    source_ts_type_export_names: std.StringHashMapUnmanaged(void),
+    source_pending_renames: bundler_symbol.RenameTable,
+    source_export_index_by_name: ?std.StringHashMapUnmanaged(u32),
+    source_alias_rows: ?[]const bundler_symbol.Alias,
+) bool {
+    if (before.index != current.index or before.state != current.state or before.module_type != current.module_type or
+        before.loader != current.loader or before.exports_kind != current.exports_kind or before.wrap_kind != current.wrap_kind or
+        before.def_format != current.def_format or before.is_entry_point != current.is_entry_point or
+        before.is_external != current.is_external or before.is_disabled != current.is_disabled or
+        before.is_lazy_seed != current.is_lazy_seed or before.self_uses_top_level_await != current.self_uses_top_level_await or
+        before.uses_top_level_await != current.uses_top_level_await or before.tla_delegated_to_chunk != current.tla_delegated_to_chunk or
+        before.in_async_cone != current.in_async_cone or before.pending_rename_capture_seen != current.pending_rename_capture_seen or
+        before.path.ptr != current.path.ptr or before.source.ptr != current.source.ptr or
+        !sameSnapshotSliceBacking(u8, before.source, current.source) or
+        !sameSnapshotSliceBacking(u8, before.path, current.path) or
+        !sameSnapshotSliceBacking([]const u8, before.plugin_source_maps, current.plugin_source_maps) or
+        !sameSnapshotSliceBacking(ImportRecord, before.import_records, current.import_records) or
+        !sameSnapshotSliceBacking(ImportBinding, before.import_bindings, current.import_bindings) or
+        !sameSnapshotSliceBacking(ExportBinding, before.export_bindings, current.export_bindings) or
+        !sameSnapshotSliceBacking([]const u8, before.exported_names, current.exported_names)) return false;
+    if (!sameSnapshotSliceValues(ImportRecord, source_import_records, current.import_records) or
+        !sameSnapshotSliceValues(ImportBinding, source_import_bindings, current.import_bindings) or
+        !sameSnapshotSliceValues(ExportBinding, source_export_bindings, current.export_bindings) or
+        !sameSnapshotSliceValues([]const u8, source_exported_names, current.exported_names) or
+        !sameSnapshotMap(source_ts_type_export_names, current.ts_type_export_names) or
+        !sameSnapshotMap(source_pending_renames.map, current.pending_renames.map)) return false;
+    if (before.export_index_by_name) |left| {
+        const right = current.export_index_by_name orelse return false;
+        const snapshot = source_export_index_by_name orelse return false;
+        if (!std.meta.eql(left, right) or !sameSnapshotMap(snapshot, right)) return false;
+    } else if (current.export_index_by_name != null) return false;
+    if (before.alias_table) |left| {
+        const right = current.alias_table orelse return false;
+        const rows = source_alias_rows orelse return false;
+        if (left.aliases.items.ptr != right.aliases.items.ptr or !sameSnapshotSliceValues(bundler_symbol.Alias, rows, right.aliases.items)) return false;
+    } else if (current.alias_table != null) return false;
+
+    if (before.ast) |*left| {
+        const right = if (current.ast) |*value| value else return false;
+        if (!sameGenericPrepassAstBacking(left, right)) return false;
+    } else if (current.ast != null) return false;
+    if (before.semantic) |*left| {
+        const right = if (current.semantic) |*value| value else return false;
+        if (!sameGenericPrepassSemanticBacking(left, right)) return false;
+    } else if (current.semantic != null) return false;
+    return true;
+}
+
+fn cloneGenericPrepassSemantic(
+    allocator: std.mem.Allocator,
+    source: *const ModuleSemanticData,
+    ast: *const ast_mod.Ast,
+) !ModuleSemanticData {
+    var editor = try source.beginEdit(allocator, @constCast(ast));
+    defer editor.deinit();
+    var result = source.*;
+    result.applyEdit(try editor.finish());
+    result.class_self_symbol_map = try source.class_self_symbol_map.clone(allocator);
+    result.exported_names = try source.exported_names.clone(allocator);
+    result.unresolved_references = try source.unresolved_references.clone(allocator);
+    result.numeric_const_texts = try source.numeric_const_texts.clone(allocator);
+    result.namespace_member_owners = try source.namespace_member_owners.clone(allocator);
+    result.namespace_declaration_owners = try source.namespace_declaration_owners.clone(allocator);
+    if (source.runtime_identities) |identities| {
+        result.runtime_identities = try allocator.create(@TypeOf(identities.*));
+        result.runtime_identities.?.* = identities.*;
+    }
+    result.strict_output_context.functions = try allocator.dupe(
+        @import("../../bundler/strict_function_context.zig").Role,
+        source.strict_output_context.functions,
+    );
+    return result;
+}
+
+const PreparedGenericPrepass = struct {
+    source: *Module,
+    source_header: Module,
+    source_import_records: []const ImportRecord,
+    source_import_bindings: []const ImportBinding,
+    source_export_bindings: []const ExportBinding,
+    source_exported_names: []const []const u8,
+    source_ts_type_export_names: std.StringHashMapUnmanaged(void),
+    source_pending_renames: bundler_symbol.RenameTable,
+    source_export_index_by_name: ?std.StringHashMapUnmanaged(u32),
+    source_alias_rows: ?[]const bundler_symbol.Alias,
+    candidate: Module,
+
+    fn init(module: *Module, allocator: std.mem.Allocator) !PreparedGenericPrepass {
+        const ast = if (module.ast) |*value| value else return error.MissingAst;
+        const source_header = module.*;
+        const source_import_records = try allocator.dupe(ImportRecord, module.import_records);
+        const source_import_bindings = try allocator.dupe(ImportBinding, module.import_bindings);
+        const source_export_bindings = try allocator.dupe(ExportBinding, module.export_bindings);
+        const source_exported_names = try allocator.dupe([]const u8, module.exported_names);
+        const source_ts_type_export_names = try module.ts_type_export_names.clone(allocator);
+        var source_pending_renames = module.pending_renames;
+        source_pending_renames.map = try module.pending_renames.map.clone(allocator);
+        const source_export_index_by_name: ?std.StringHashMapUnmanaged(u32) = if (module.export_index_by_name) |index|
+            try index.clone(allocator)
+        else
+            null;
+        const source_alias_rows: ?[]const bundler_symbol.Alias = if (module.alias_table) |table|
+            try allocator.dupe(bundler_symbol.Alias, table.aliases.items)
+        else
+            null;
+        var candidate = source_header;
+        // The parser AST is borrowed read-only during preflight. Transformer.init
+        // creates the candidate output AST before any edits are applied, avoiding
+        // a second full AST copy in this transaction.
+        var candidate_ast = ast.*;
+        candidate_ast.type_only_binding_names = try ast.type_only_binding_names.clone(allocator);
+        candidate.ast = candidate_ast;
+        candidate.semantic = if (module.semantic) |*semantic|
+            try cloneGenericPrepassSemantic(allocator, semantic, ast)
+        else
+            null;
+        candidate.pending_renames.map = try module.pending_renames.map.clone(allocator);
+        candidate.ts_type_export_names = try module.ts_type_export_names.clone(allocator);
+        // These two indexes own graph-allocator storage. The candidate must
+        // build its own instances before publication, and abort may dispose
+        // those instances without touching the installed module.
+        candidate.alias_table = null;
+        candidate.export_index_by_name = null;
+        candidate.namespace_access_index = null;
+        candidate.transform_cache = null;
+        candidate.prebuilt_stmt_info = null;
+        return .{
+            .source = module,
+            .source_header = source_header,
+            .source_import_records = source_import_records,
+            .source_import_bindings = source_import_bindings,
+            .source_export_bindings = source_export_bindings,
+            .source_exported_names = source_exported_names,
+            .source_ts_type_export_names = source_ts_type_export_names,
+            .source_pending_renames = source_pending_renames,
+            .source_export_index_by_name = source_export_index_by_name,
+            .source_alias_rows = source_alias_rows,
+            .candidate = candidate,
+        };
+    }
+
+    fn isCurrent(self: *const PreparedGenericPrepass) bool {
+        return sameGenericPrepassSource(
+            &self.source_header,
+            self.source,
+            self.source_import_records,
+            self.source_import_bindings,
+            self.source_export_bindings,
+            self.source_exported_names,
+            self.source_ts_type_export_names,
+            self.source_pending_renames,
+            self.source_export_index_by_name,
+            self.source_alias_rows,
+        );
+    }
+
+    fn discard(self: *PreparedGenericPrepass, allocator: std.mem.Allocator) void {
+        if (self.candidate.alias_table) |*table| table.deinit();
+        if (self.candidate.export_index_by_name) |*index| index.deinit(allocator);
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+    }
+
+    fn rebaseCandidateAstReferences(self: *PreparedGenericPrepass) void {
+        const candidate_ast = if (self.candidate.ast) |*ast| ast else return;
+        const published_ast: *const ast_mod.Ast = &self.source.ast.?;
+        for (self.candidate.export_bindings) |*binding| {
+            const origin = if (binding.public_key_origin) |*value| value else continue;
+            if (origin.ast == candidate_ast) origin.ast = published_ast;
+        }
+    }
+
+    /// All fallible preparation and validation has completed. The old heap
+    /// indexes are released, then the complete candidate header is installed.
+    fn publish(self: *PreparedGenericPrepass, allocator: std.mem.Allocator) void {
+        // Rescanning exports stores the current Module.ast slot in each quoted
+        // export witness. The candidate lives inside this transaction object;
+        // rebase those witnesses before copying its header into the installed
+        // module, whose AST slot has a different address.
+        self.rebaseCandidateAstReferences();
+        if (self.source.alias_table) |*table| table.deinit();
+        if (self.source.export_index_by_name) |*index| index.deinit(allocator);
+        self.source.* = self.candidate;
+        self.candidate.alias_table = null;
+        self.candidate.export_index_by_name = null;
+    }
+};
+
+test "generic prepass staging detaches mutable graph state and aborts without source publication" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parse_allocator = arena.allocator();
+    const graph_allocator = std.testing.allocator;
+    const source = "const value = 1; value;";
+    const fixture = try runtimeHelperReanalysisTestFixture(parse_allocator, source);
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    try module.pending_renames.map.put(
+        parse_allocator,
+        bundler_symbol.SymbolID.make(module.index, 0),
+        "source-name",
+    );
+    try module.ts_type_export_names.put(parse_allocator, "SourceType", {});
+
+    module.alias_table = AliasTable.init(graph_allocator);
+    _ = try module.alias_table.?.declare("source-alias");
+    _ = try module.ast.?.addString("snapshot-marker");
+    try module.ast.?.type_only_binding_names.put(parse_allocator, "ErasedType", {});
+    var source_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try source_export_index.put(graph_allocator, "source-export", 0);
+    module.export_index_by_name = source_export_index;
+    defer if (module.alias_table) |*table| table.deinit();
+    defer if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    var prepared = try PreparedGenericPrepass.init(&module, parse_allocator);
+    defer prepared.discard(graph_allocator);
+    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expect(prepared.candidate.ast.?.nodes.items.ptr == module.ast.?.nodes.items.ptr);
+    try std.testing.expect(prepared.candidate.ast.?.extra_data.items.ptr == module.ast.?.extra_data.items.ptr);
+    try std.testing.expect(prepared.candidate.ast.?.string_table.items.ptr == module.ast.?.string_table.items.ptr);
+    try std.testing.expect(prepared.candidate.ast.?.type_only_binding_names.contains("ErasedType"));
+    try prepared.candidate.ast.?.type_only_binding_names.put(parse_allocator, "CandidateTypeOnly", {});
+    try std.testing.expect(!module.ast.?.type_only_binding_names.contains("CandidateTypeOnly"));
+    _ = prepared.candidate.ast.?.type_only_binding_names.remove("CandidateTypeOnly");
+    try std.testing.expect(prepared.candidate.semantic.?.symbols.items.ptr != module.semantic.?.symbols.items.ptr);
+    try std.testing.expect(prepared.candidate.semantic.?.scopes.ptr != module.semantic.?.scopes.ptr);
+    try std.testing.expect(prepared.candidate.semantic.?.symbol_ids.ptr != module.semantic.?.symbol_ids.ptr);
+    try std.testing.expect(prepared.candidate.alias_table == null);
+    try std.testing.expect(prepared.candidate.export_index_by_name == null);
+
+    try prepared.candidate.semantic.?.class_self_symbol_map.put(parse_allocator, 99, 0);
+    try prepared.candidate.semantic.?.exported_names.put(parse_allocator, "candidate-export", Span.EMPTY);
+    try prepared.candidate.semantic.?.unresolved_references.put(parse_allocator, "candidate-global", {});
+    try prepared.candidate.pending_renames.map.put(
+        parse_allocator,
+        bundler_symbol.SymbolID.make(module.index, 1),
+        "candidate-name",
+    );
+    try prepared.candidate.ts_type_export_names.put(parse_allocator, "CandidateType", {});
+
+    const source_symbol_name = module.semantic.?.symbols.items[0].name;
+    prepared.candidate.semantic.?.symbols.items[0].name = Span.EMPTY;
+    try std.testing.expect(std.meta.eql(module.semantic.?.symbols.items[0].name, source_symbol_name));
+
+    const source_scope_kind = module.semantic.?.scopes[0].kind;
+    @constCast(prepared.candidate.semantic.?.scopes)[0].kind = .function;
+    try std.testing.expectEqual(source_scope_kind, module.semantic.?.scopes[0].kind);
+
+    var binding_node: ?usize = null;
+    for (module.ast.?.nodes.items, 0..) |node, raw| {
+        if (node.tag == .binding_identifier) {
+            binding_node = raw;
+            break;
+        }
+    }
+    const binding_raw = binding_node orelse return error.MissingSourceBinding;
+    const source_binding_symbol = module.semantic.?.symbol_ids[binding_raw];
+    @constCast(prepared.candidate.semantic.?.symbol_ids)[binding_raw] = null;
+    try std.testing.expectEqual(source_binding_symbol, module.semantic.?.symbol_ids[binding_raw]);
+
+    try std.testing.expect(module.semantic.?.references.len > 0);
+    const source_reference_flags = module.semantic.?.references[0].flags;
+    @constCast(prepared.candidate.semantic.?.references)[0].flags.read = false;
+    try std.testing.expect(std.meta.eql(source_reference_flags, module.semantic.?.references[0].flags));
+
+    const candidate_scope_maps = @constCast(prepared.candidate.semantic.?.scope_maps);
+    var changed_scope_map = false;
+    for (candidate_scope_maps) |*scope_map| {
+        if (scope_map.getPtr("value")) |symbol| {
+            symbol.* = std.math.maxInt(usize);
+            changed_scope_map = true;
+            break;
+        }
+    }
+    try std.testing.expect(changed_scope_map);
+    var source_scope_map_kept_value = false;
+    for (module.semantic.?.scope_maps) |scope_map| {
+        if (scope_map.get("value")) |symbol| {
+            try std.testing.expect(symbol != std.math.maxInt(usize));
+            source_scope_map_kept_value = true;
+            break;
+        }
+    }
+    try std.testing.expect(source_scope_map_kept_value);
+
+    try prepared.candidate.semantic.?.scope_owner_map.put(parse_allocator, 99, 99);
+    try prepared.candidate.semantic.?.node_scope_provenance.put(parse_allocator, .none, .{
+        .scope = @fromBackingInt(@as(u32, 0)),
+        .source_node = .none,
+    });
+    try prepared.candidate.semantic.?.namespace_member_owners.put(parse_allocator, 99, 0);
+    try prepared.candidate.semantic.?.namespace_declaration_owners.put(parse_allocator, 99, 0);
+    try prepared.candidate.semantic.?.numeric_const_texts.put(parse_allocator, 99, "999");
+    try prepared.candidate.semantic.?.helper_scope_map.put(parse_allocator, "candidate-helper", 0);
+
+    var candidate_alias_table = AliasTable.init(graph_allocator);
+    _ = try candidate_alias_table.declare("candidate-alias");
+    prepared.candidate.alias_table = candidate_alias_table;
+    var candidate_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try candidate_export_index.put(graph_allocator, "candidate-export", 1);
+    prepared.candidate.export_index_by_name = candidate_export_index;
+
+    try std.testing.expect(module.semantic.?.class_self_symbol_map.get(99) == null);
+    try std.testing.expect(!module.semantic.?.exported_names.contains("candidate-export"));
+    try std.testing.expect(!module.semantic.?.unresolved_references.contains("candidate-global"));
+    try std.testing.expect(!module.semantic.?.scope_owner_map.contains(99));
+    try std.testing.expect(!module.semantic.?.node_scope_provenance.contains(.none));
+    try std.testing.expect(!module.semantic.?.namespace_member_owners.contains(99));
+    try std.testing.expect(!module.semantic.?.namespace_declaration_owners.contains(99));
+    try std.testing.expect(!module.semantic.?.numeric_const_texts.contains(99));
+    try std.testing.expect(!module.semantic.?.helper_scope_map.contains("candidate-helper"));
+    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.map.count());
+    try std.testing.expect(!module.ts_type_export_names.contains("CandidateType"));
+    try std.testing.expect(prepared.isCurrent());
+
+    prepared.discard(graph_allocator);
+    try std.testing.expect(prepared.candidate.alias_table == null);
+    try std.testing.expect(prepared.candidate.export_index_by_name == null);
+    try std.testing.expectEqualStrings("source-alias", module.alias_table.?.aliases.items[0].name);
+    try std.testing.expectEqual(@as(?u32, @as(u32, 0)), module.export_index_by_name.?.get("source-export"));
+
+    const original_unresolved = module.semantic.?.unresolved_references;
+    try module.semantic.?.unresolved_references.put(parse_allocator, "source-mutated", {});
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.unresolved_references = original_unresolved;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_ast = module.ast.?;
+    module.ast.?.has_jsx = !original_ast.has_jsx;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.ast.?.has_jsx = original_ast.has_jsx;
+    try std.testing.expect(prepared.isCurrent());
+
+    module.ast.?.nodes = .empty;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.ast = original_ast;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_symbols = module.semantic.?.symbols;
+    module.semantic.?.symbols = .empty;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.symbols = original_symbols;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_scopes = module.semantic.?.scopes;
+    module.semantic.?.scopes = &.{};
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.scopes = original_scopes;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_symbol_ids = module.semantic.?.symbol_ids;
+    module.semantic.?.symbol_ids = &.{};
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.symbol_ids = original_symbol_ids;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_references = module.semantic.?.references;
+    module.semantic.?.references = &.{};
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.references = original_references;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_scope_maps = module.semantic.?.scope_maps;
+    module.semantic.?.scope_maps = &.{};
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.scope_maps = original_scope_maps;
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_scope_owner_map = module.semantic.?.scope_owner_map;
+    module.semantic.?.scope_owner_map = .empty;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.semantic.?.scope_owner_map = original_scope_owner_map;
+    try std.testing.expect(prepared.isCurrent());
+
+    if (module.semantic.?.node_scope_provenance.count() > 0) {
+        const original_node_scope_provenance = module.semantic.?.node_scope_provenance;
+        module.semantic.?.node_scope_provenance = .empty;
+        try std.testing.expect(!(prepared.isCurrent()));
+        module.semantic.?.node_scope_provenance = original_node_scope_provenance;
+        try std.testing.expect(prepared.isCurrent());
+    }
+
+    try module.pending_renames.map.put(parse_allocator, bundler_symbol.SymbolID.make(module.index, 1), "hostile-name");
+    try std.testing.expect(!(prepared.isCurrent()));
+    _ = module.pending_renames.map.remove(bundler_symbol.SymbolID.make(module.index, 1));
+    try std.testing.expect(prepared.isCurrent());
+
+    try module.ts_type_export_names.put(parse_allocator, "HostileType", {});
+    try std.testing.expect(!(prepared.isCurrent()));
+    _ = module.ts_type_export_names.remove("HostileType");
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_alias = module.alias_table.?.aliases.items[0];
+    module.alias_table.?.aliases.items[0].ref_count +%= 1;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.alias_table.?.aliases.items[0] = original_alias;
+    try std.testing.expect(prepared.isCurrent());
+
+    try module.export_index_by_name.?.put(graph_allocator, "hostile-export", 1);
+    try std.testing.expect(!(prepared.isCurrent()));
+    _ = module.export_index_by_name.?.remove("hostile-export");
+    try std.testing.expect(prepared.isCurrent());
+
+    const original_state = module.state;
+    module.state = .parsing;
+    try std.testing.expect(!(prepared.isCurrent()));
+    module.state = original_state;
+    try std.testing.expect(prepared.isCurrent());
+}
+
+test "generic prepass transaction publishes a completed isolated candidate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parse_allocator = arena.allocator();
+    const graph_allocator = std.testing.allocator;
+    const source = "const value = 1; value;";
+    const fixture = try runtimeHelperReanalysisTestFixture(parse_allocator, source);
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+    module.alias_table = AliasTable.init(graph_allocator);
+    _ = try module.alias_table.?.declare("installed-alias");
+    var source_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try source_export_index.put(graph_allocator, "installed-export", 0);
+    module.export_index_by_name = source_export_index;
+    defer if (module.alias_table) |*table| table.deinit();
+    defer if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    var prepared = try PreparedGenericPrepass.init(&module, parse_allocator);
+    defer prepared.discard(graph_allocator);
+    var candidate_alias_table = AliasTable.init(graph_allocator);
+    _ = try candidate_alias_table.declare("published-alias");
+    prepared.candidate.alias_table = candidate_alias_table;
+    var candidate_export_index: std.StringHashMapUnmanaged(u32) = .empty;
+    try candidate_export_index.put(graph_allocator, "published-export", 1);
+    prepared.candidate.export_index_by_name = candidate_export_index;
+    prepared.candidate.export_bindings = try parse_allocator.dupe(ExportBinding, &.{.{
+        .exported_name = "quoted",
+        .local_name = "local",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+        .has_public_key_literal = true,
+        .public_key_literal = "\"quoted\"",
+        .public_key_binding_value = "local",
+        .public_key_origin = .{
+            .ast = &prepared.candidate.ast.?,
+            .specifier = @fromBackingInt(@intCast(0)),
+            .literal = @fromBackingInt(@intCast(1)),
+        },
+    }});
+    prepared.candidate.state = .parsed;
+
+    try std.testing.expect(prepared.isCurrent());
+    try std.testing.expectEqualStrings("installed-alias", module.alias_table.?.aliases.items[0].name);
+    prepared.publish(graph_allocator);
+
+    try std.testing.expectEqual(Module.State.parsed, module.state);
+    try std.testing.expectEqualStrings("published-alias", module.alias_table.?.aliases.items[0].name);
+    try std.testing.expectEqual(@as(?u32, 1), module.export_index_by_name.?.get("published-export"));
+    try std.testing.expect(module.export_index_by_name.?.get("installed-export") == null);
+    try std.testing.expect(module.export_bindings[0].public_key_origin.?.ast == &module.ast.?);
+}
+
+test "generic prepass run publishes transformed output and preserves parser AST" {
+    const TestGraph = struct {
+        allocator: std.mem.Allocator,
+        transform_options_base: TransformOptions = .{ .strip_types = true },
+        helper_plugin_opts: @import("../../runtime_helper_modules.zig").SourceOptions = .{},
+        plugins: []const plugin_mod.Plugin = &.{},
+        defines: []const @import("../../parser/scan_results.zig").DefineEntry = &.{},
+        pure: []const []const u8 = &.{},
+        flow: bool = false,
+        worklet_transform: bool = false,
+        codegen_transform: bool = false,
+        react_refresh: bool = false,
+        styled_components: bool = false,
+        styled_components_ssr: bool = true,
+        styled_components_minify: bool = false,
+        styled_components_file_name: bool = true,
+        styled_components_pure: bool = false,
+        styled_components_namespace: []const u8 = "",
+        styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+        styled_components_top_level_import_paths: []const []const u8 = &.{},
+        styled_components_css_prop: bool = false,
+        emotion: bool = false,
+        emotion_auto_label: @import("../../transformer/transformer.zig").AutoLabelMode = .always,
+        emotion_source_map: bool = false,
+        emotion_label_format: []const u8 = "",
+        emotion_extra_css_sources: []const []const u8 = &.{},
+        emotion_extra_styled_sources: []const []const u8 = &.{},
+        minify_identifiers: bool = true,
+        ignore_annotations: bool = false,
+        wrap_kinds_finalized: bool = false,
+        wrapper_symbols_registered: bool = false,
+        diag_count: usize = 0,
+
+        fn addDiag(
+            self: *@This(),
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: ?[]const u8,
+        ) void {
+            self.diag_count += 1;
+        }
+
+        fn registerWrapperSymbols(_: *@This()) error{}!void {}
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const graph_allocator = std.testing.allocator;
+    const source = "const value = 1; value;";
+    const fixture = try runtimeHelperReanalysisTestFixture(allocator, source);
+    var source_ast_snapshot = try ast_mod.Ast.cloneForTransformer(&fixture.ast, allocator);
+    source_ast_snapshot.type_only_binding_names = try fixture.ast.type_only_binding_names.clone(allocator);
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "input.js");
+    module.source = source;
+    module.module_type = .js;
+    module.state = .ready;
+    module.ast = fixture.ast;
+    module.semantic = fixture.semantic;
+
+    var context: TestGraph = .{ .allocator = graph_allocator };
+    run(&context, &module, allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expect(module.ast.?.transformed_root != null);
+    try std.testing.expect(module.ast.?.nodes.items.ptr != fixture.ast.nodes.items.ptr);
+    try std.testing.expect(try sameGenericPrepassAstContents(&source_ast_snapshot, &fixture.ast, allocator));
+    try std.testing.expect(module.transform_cache != null);
+    if (module.alias_table) |*table| table.deinit();
+    if (module.export_index_by_name) |*index| index.deinit(graph_allocator);
+
+    var module_without_semantic = Module.init(@fromBackingInt(@as(u32, 1)), "input-without-semantic.js");
+    module_without_semantic.source = source;
+    module_without_semantic.module_type = .js;
+    module_without_semantic.state = .ready;
+    module_without_semantic.ast = fixture.ast;
+    run(&context, &module_without_semantic, allocator);
+    try std.testing.expectEqual(@as(usize, 0), context.diag_count);
+    try std.testing.expect(module_without_semantic.semantic != null);
+    try std.testing.expect(module_without_semantic.ast.?.transformed_root != null);
+    try std.testing.expect(try sameGenericPrepassAstContents(&source_ast_snapshot, &fixture.ast, allocator));
+    if (module_without_semantic.alias_table) |*table| table.deinit();
+    if (module_without_semantic.export_index_by_name) |*index| index.deinit(graph_allocator);
+}
+
+fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
+    if (module.transform_cache != null or module.init_symbol != null or module.exports_symbol != null or module.require_symbol != null or
+        module.cjs_wrapper_exports_parameter_symbol != null or module.cjs_wrapper_module_parameter_symbol != null or
+        module.cjs_runtime_factory_symbol != null or module.to_binary_runtime_symbol != null or module.esm_runtime_factory_symbol != null or
+        module.cjs_runtime_internal_symbols != null or module.esm_runtime_internal_symbols != null or
+        module.esm_interop_runtime_helper_symbols != null or module.esm_interop_runtime_internal_symbols != null or
+        module.hmr_runtime_internal_symbols != null or module.require_shim_local_symbol != null or
+        module.tla_promise_reference != null) return true;
+    if (module.semantic) |semantic|
+        return semantic.runtime_identities != null or semantic.strict_output_context.functions.len != 0;
+    return false;
+}
+
 pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
+    if (module.ast == null) return;
+    if (moduleHasRegisteredOutputRoles(module)) {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass reached a registered output module", "The early lexical prepass cannot publish into a module with output-owned runtime identities.");
+        return;
+    }
+    var prepared = PreparedGenericPrepass.init(module, arena_alloc) catch |err| {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass transaction preparation failed", @errorName(err));
+        return;
+    };
+    defer prepared.discard(self.allocator);
+    var candidate_completed = false;
+    runCandidate(self, &prepared.candidate, arena_alloc, &candidate_completed);
+    // runCandidate owns diagnostics for reported transform/refresh failures.
+    // Adding a transaction-level diagnostic here would duplicate the original
+    // error for failures that correctly leave the module state unchanged.
+    if (!candidate_completed) return;
+    const source_is_current = prepared.isCurrent();
+    if (!source_is_current) {
+        self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Generic prepass input changed during preparation", "The installed module or one of its source backings changed before publication.");
+        return;
+    }
+    prepared.publish(self.allocator);
+}
+
+fn completeGenericPrepassCandidate(
+    module: *Module,
+    candidate_completed: *bool,
+) void {
+    // The receipt identifies the installed parser AST, which is no longer the
+    // AST being published after a successful transform.
+    module.self_namespace_source_receipt = null;
+    candidate_completed.* = true;
+}
+
+fn runCandidate(self: anytype, module: *Module, arena_alloc: std.mem.Allocator, candidate_completed: *bool) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
 
@@ -17206,6 +17948,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         );
         refreshTlaPromiseReference(module);
         module.prebuilt_stmt_info = null;
+        completeGenericPrepassCandidate(module, candidate_completed);
         return;
     }
 
@@ -17233,6 +17976,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         debug_symbol_coverage,
         false,
     );
+    completeGenericPrepassCandidate(module, candidate_completed);
 }
 
 /// AST mutation 이후 module 의 graph-facing metadata 를 같은 AST 기준으로 재동기화한다.

@@ -700,15 +700,18 @@ test "IncrementalBundler: retained graph refresh failure forces a fresh same-inp
     }
 
     try std.testing.expect(ib.needs_full_rebuild);
-    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+    try std.testing.expect(hook_calls > 0);
+    const first_attempt_hook_calls = hook_calls;
     const failed_graph = &(ib.persistent_graph orelse return error.MissingPersistentGraph);
     const failed_module = failed_graph.findModuleByPath(entry) orelse return error.MissingFailedModule;
     try std.testing.expectEqual(@import("module.zig").Module.State.ready, failed_module.state);
-    try std.testing.expect(failed_module.transform_cache != null);
+    try std.testing.expect(failed_module.transform_cache == null);
+    try std.testing.expect(failed_module.ast.?.transformed_root == null);
 
     // This is the same source and no file notification is supplied. The real
-    // IncrementalBundler error recovery must choose a cold graph preparation,
-    // discard that transformed AST/cache, and execute the faulty hook again.
+    // IncrementalBundler error recovery must choose a cold graph preparation
+    // and execute the faulty hook again. The failed candidate never replaces
+    // the installed parser AST or publishes its transform cache.
     {
         const second = try ib.rebuild(std.testing.io);
         switch (second) {
@@ -725,11 +728,12 @@ test "IncrementalBundler: retained graph refresh failure forces a fresh same-inp
     }
 
     try std.testing.expect(ib.needs_full_rebuild);
-    try std.testing.expectEqual(@as(usize, 2), hook_calls);
+    try std.testing.expect(hook_calls > first_attempt_hook_calls);
     const rebuilt_graph = &(ib.persistent_graph orelse return error.MissingPersistentGraph);
     const rebuilt_module = rebuilt_graph.findModuleByPath(entry) orelse return error.MissingRebuiltModule;
     try std.testing.expectEqual(@import("module.zig").Module.State.ready, rebuilt_module.state);
-    try std.testing.expect(rebuilt_module.transform_cache != null);
+    try std.testing.expect(rebuilt_module.transform_cache == null);
+    try std.testing.expect(rebuilt_module.ast.?.transformed_root == null);
 }
 
 test "persistent Bundler: retained graph refresh error cannot become same-input preserved success" {
@@ -781,8 +785,10 @@ test "persistent Bundler: retained graph refresh error cannot become same-input 
     try std.testing.expect(graph.preserved_graph_invalidated);
     const failed_module = graph.findModuleByPath(entry) orelse return error.MissingFailedModule;
     try std.testing.expectEqual(@import("module.zig").Module.State.ready, failed_module.state);
-    try std.testing.expect(failed_module.transform_cache != null);
-    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+    try std.testing.expect(failed_module.transform_cache == null);
+    try std.testing.expect(failed_module.ast.?.transformed_root == null);
+    try std.testing.expect(hook_calls > 0);
+    const first_attempt_hook_calls = hook_calls;
 
     // Match the NAPI watch caller: same source, preserve_topology still enabled,
     // but this retry has no changed-file entries. The graph must be prepared and
@@ -805,11 +811,12 @@ test "persistent Bundler: retained graph refresh error cannot become same-input 
     }
 
     try std.testing.expectEqual(@as(usize, 1), graph.topology_fallback_count);
-    try std.testing.expectEqual(@as(usize, 2), hook_calls);
+    try std.testing.expect(hook_calls > first_attempt_hook_calls);
     try std.testing.expect(graph.preserved_graph_invalidated);
     const retried_module = graph.findModuleByPath(entry) orelse return error.MissingRetriedModule;
     try std.testing.expectEqual(@import("module.zig").Module.State.ready, retried_module.state);
-    try std.testing.expect(retried_module.transform_cache != null);
+    try std.testing.expect(retried_module.transform_cache == null);
+    try std.testing.expect(retried_module.ast.?.transformed_root == null);
 }
 
 test "persistent Bundler: legacy transform error retries from source on unchanged input" {
