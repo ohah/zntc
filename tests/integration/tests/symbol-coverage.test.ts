@@ -40832,11 +40832,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 2\n',
       },
       {
-        name: 'derived constructor computed this-property lexical conditional stays on reanalysis',
+        name: 'derived constructor lexical this-property conditional retains branch order and receiver',
         source:
-          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor() { super(); const value = this["current"] ? 2 : 3; this.value = value; } } console.log(new DerivedLocal().value);',
+          'var reads = 0; class Base { constructor(flag) { this.flag = flag; this.cursor = 0; } get current() { reads++; return this.flag ? ++this.cursor : 0; } } class DerivedLocal extends Base { constructor(flag) { super(flag); const value = this.current ? this.current : 0; this.value = value; } } var first = new DerivedLocal(true), second = new DerivedLocal(false); console.log(first.value, second.value, reads);',
+        graph: 'retained',
+        output: '2 0 3\n',
+      },
+      {
+        name: 'derived constructor lexical super-property conditional stays on reanalysis',
+        source:
+          'class Base { get current() { return 1; } } class DerivedLocal extends Base { constructor(flag) { super(); const value = flag ? super.current : 0; this.value = value; } } console.log(new DerivedLocal(true).value);',
         graph: 'reanalyzed',
-        output: '2\n',
+        output: '1\n',
+      },
+      {
+        name: 'derived constructor lexical conditional call branch stays on reanalysis',
+        source:
+          'class Base { current() { return 1; } } class DerivedLocal extends Base { constructor(flag) { super(); const value = flag ? this.current() : 0; this.value = value; } } console.log(new DerivedLocal(true).value);',
+        graph: 'reanalyzed',
+        output: '1\n',
       },
       {
         name: 'derived constructor computed this-property lexical compound key stays on reanalysis',
@@ -43631,17 +43645,20 @@ describe('ES5 same-var-scope lexical declarations retain the bundler graph (#619
     }
   }, 60_000);
 
-  test('derived constructor computed this-property lexical initializers retain exact output identities', () => {
+  test('derived constructor conditional computed this-property lexical initializers retain exact output identities', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-derived-this-lexical-retained-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
     const names = Array.from({ length: 10 }, (_, index) => `thisValue${index}`);
     const declarations = names
-      .map((name, index) => `${index === 0 ? 'let' : 'const'} ${name} = this["current"] + 100;`)
+      .map(
+        (name, index) =>
+          `${index === 0 ? 'let' : 'const'} ${name} = this.selected ? this["current"] + 100 : 0;`,
+      )
       .join('\n');
     const expected = `${names.map((_, index) => index + 101).join(' ')}\n`;
     const valueExpression = names.join(" + ' ' + ");
-    const source = `class DerivedBase { constructor() { this.cursor = 0; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
+    const source = `class DerivedBase { constructor() { this.cursor = 0; this.selected = true; } get current() { return ++this.cursor; } }\nclass DerivedReader extends DerivedBase { constructor() {\n  super();\n${declarations}\n  this.values = ${valueExpression};\n} }\nconsole.log(new DerivedReader().values);`;
     try {
       writeFileSync(input, source);
       const native = spawnSync('node', [input], { encoding: 'utf8' });
