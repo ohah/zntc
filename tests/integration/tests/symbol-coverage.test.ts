@@ -9590,7 +9590,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           'globalThis.shadowMath = Math;',
           'function square(value) { return (() => value ** 2)(); }',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: true,
         output: '36 undefined 3 3\n',
       },
       {
@@ -9617,7 +9618,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           'globalThis.shadowMath = Math;',
           'function square(input) { var value = input; return (() => (value **= 2))(); }',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: true,
         output: '36 undefined 3 3\n',
       },
       {
@@ -9725,6 +9727,15 @@ describe('symbol identity coverage gate (#4819)', () => {
             expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
               `semantic_graph=${fixture.graph}`,
             );
+          }
+
+          if (minifyIdentifiers && fixture.shadowedExternal) {
+            const emitted = readFileSync(variantOutput, 'utf8');
+            const sourceMathName = emitted.match(/shadowMath\s*=\s*([\w$]+)/)?.[1];
+            expect(sourceMathName, fixture.name).toBeDefined();
+            expect(sourceMathName, fixture.name).not.toBe('Math');
+            expect(emitted, fixture.name).toContain('Math.pow');
+            expect(emitted, fixture.name).not.toMatch(/\b(?:var|let|const)\s+Math\b/);
           }
 
           const actual = spawnSync('node', [variantOutput], { encoding: 'utf8' });
@@ -15478,6 +15489,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unrelated-lexical-for-in',
         target: '--target=es5',
+        graph: 'retained',
         source: [
           'var source = { first: 1 };',
           'for (let key in source) console.log(key);',
@@ -15489,6 +15501,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'unrelated-lexical-lowering',
         target: '--target=es5',
+        graph: 'retained',
         source: [
           'var values = [1];',
           'for (var value of values) console.log(value);',
@@ -17323,13 +17336,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'exponentiation with Math shadow',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: true,
         source: [
           'const Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
           'function square(value) { return (() => value ** 2)(); }',
-          'console.log(square(6));',
+          'console.log(square(6), globalThis.shadowMath.pow(1, 2));',
         ].join('\n'),
-        output: '36\n',
+        output: '36 3\n',
       },
       {
         name: 'nullish coalescing',
@@ -17349,13 +17364,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'exponentiation assignment with Math shadow',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: true,
         source: [
           'const Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
           'function square(input) { var value = input; return (() => (value **= 2))(); }',
-          'console.log(square(6));',
+          'console.log(square(6), globalThis.shadowMath.pow(1, 2));',
         ].join('\n'),
-        output: '36\n',
+        output: '36 3\n',
       },
       {
         name: 'nullish assignment',
@@ -18098,6 +18115,14 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             fixture.shadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
           );
         }
+        if (fixture.shadowedExternal) {
+          const emitted = readFileSync(output, 'utf8');
+          const sourceMathName = emitted.match(/shadowMath\s*=\s*([\w$]+)/)?.[1];
+          expect(sourceMathName, fixture.name).toBeDefined();
+          expect(sourceMathName, fixture.name).not.toBe('Math');
+          expect(emitted, fixture.name).toContain('Math.pow');
+          expect(emitted, fixture.name).not.toMatch(/\b(?:var|let|const)\s+Math\b/);
+        }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout).toBe(fixture.output);
@@ -18152,7 +18177,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 lexical declarations keep arrow lowering on the semantic resync path', () => {
+  test('ES5 same-scope lexical captures retain the arrow semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-lexical-resync-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(
@@ -18160,9 +18185,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       [
         'function read() {',
         '  let value = 41;',
-        '  return () => value + 1;',
+        '  return () => ++value;',
         '}',
-        'console.log(read()());',
+        'var captured = read();',
+        'console.log(captured(), captured());',
       ].join('\n'),
     );
     try {
@@ -18192,10 +18218,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
         );
-      expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('42\n');
+      expect(actual.stdout).toBe('42 43\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -26040,7 +26077,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async class methods retain exact Object across ten source shadow shapes', async () => {
+  test('ES5 async class methods retain exact Object across var and lexical source shadows', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-class-object-shadow-scope-'));
     const input = join(dir, 'entry.ts');
     const shared = [
@@ -26232,8 +26269,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         }
       }
 
-      // Lexical declarations require the independent ES5 block-scoping edit;
-      // they remain outside this async-method-only retained slice.
+      // Lexical source shadows produce the same pre-final-name observation;
+      // verify both ordinary and minified output keep the generated global separate.
       for (const declaration of ['const', 'let'] as const) {
         const source = [
           shared,
@@ -26244,21 +26281,60 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         writeFileSync(input, source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
         expect(native.status, `${declaration} baseline: ${native.stderr}`).toBe(0);
-        const output = join(dir, `${declaration}-fallback.cjs`);
-        const proc = spawnSync(
-          ZNTC_BIN,
-          ['--bundle', 'entry.ts', '--target=es5', '--platform=node', '--format=cjs', '-o', output],
-          {
-            cwd: dir,
-            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-            encoding: 'utf8',
-          },
-        );
-        expect(proc.status, `${declaration} fallback: ${proc.stderr}`).toBe(0);
-        expect(proc.stderr).toContain('semantic_graph=reanalyzed');
-        const actual = spawnSync('node', [output], { encoding: 'utf8' });
-        expect(actual.status, `${declaration} fallback: ${actual.stderr}`).toBe(0);
-        expect(actual.stdout).toBe(native.stdout);
+        for (const mode of modes) {
+          const output = join(dir, `${declaration}-${mode.name}.cjs`);
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              ...mode.flags,
+              '--platform=node',
+              '--format=cjs',
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+              encoding: 'utf8',
+            },
+          );
+          expect(proc.status, `${declaration}/${mode.name}: ${proc.stderr}`).toBe(0);
+          const lines = (proc.stderr ?? '').split(/\r?\n/);
+          const report = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+          expect(report, `${declaration}/${mode.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${declaration}/${mode.name}: ${counter}: ${report}`,
+            ).toBe(expected);
+          }
+          expect(report, `${declaration}/${mode.name}`).toMatch(/clean=0(?:\s|$)/);
+          const graphMode = lines.find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+          expect(graphMode, `${declaration}/${mode.name}: ${proc.stderr}`).toContain(
+            'semantic_graph=retained',
+          );
+
+          const emitted = readFileSync(output, 'utf8');
+          const sourceObjectName = emitted.match(/([\w$]+)\.marker\b/)?.[1];
+          expect(sourceObjectName, `${declaration}/${mode.name}`).toBeDefined();
+          expect(sourceObjectName, `${declaration}/${mode.name}`).not.toBe('Object');
+          expect(emitted, `${declaration}/${mode.name}`).toContain('Object.defineProperty');
+          expect(emitted, `${declaration}/${mode.name}`).not.toMatch(
+            /\b(?:var|let|const)\s+Object\b/,
+          );
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${declaration}/${mode.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${declaration}/${mode.name}`).toBe(native.stdout);
+        }
       }
 
       const moduleFixture = fixtures[0]!;
@@ -27081,6 +27157,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'class Box { async *items(value = arguments[1]) { yield value; } } new Box().items("explicit", "extra").next().then(function (step) { console.log(step.value); });',
         expected: 'explicit\n',
       },
+      {
+        name: 'object-identity-default',
+        source:
+          'const marker = { n: 1 }; class Box { async *items(value = arguments[1], marker) { yield String(value === marker); } } new Box().items(undefined, marker).next().then(function (step) { console.log(step.value); });',
+        expected: 'true\n',
+      },
     ] as const;
     const modes = [
       { name: 'plain', minifyIdentifiers: false },
@@ -27088,7 +27170,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     ] as const;
 
     try {
-      expect(fixtures).toHaveLength(9);
+      expect(fixtures).toHaveLength(10);
       for (const fixture of fixtures) {
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
@@ -27139,6 +27221,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
           expect(actual.status, `${fixture.name}/${mode.name}: ${actual.stderr}`).toBe(0);
           expect(actual.stdout, `${fixture.name}/${mode.name}`).toBe(native.stdout);
+          if (fixture.name === 'object-identity-default') {
+            expect(readFileSync(output, 'utf8'), `${fixture.name}/${mode.name}`).toContain(
+              'arguments[1]',
+            );
+          }
         }
       }
 
@@ -27167,14 +27254,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'class Box { async *items(value = arguments?.[1]) { for await (const item of [Promise.resolve("item")]) yield String(value) + ":" + item; } } new Box().items(undefined, "extra").next().then(function (step) { console.log(step.value); });',
           expected: 'extra:item\n',
         },
-        {
-          name: 'object-identity-fallback',
-          source:
-            'const marker = { n: 1 }; class Box { async *items(value = arguments[1], marker) { yield String(value === marker); } } new Box().items(undefined, marker).next().then(function (step) { console.log(step.value); });',
-          expected: 'true\n',
-        },
       ] as const;
-      expect(fallbackFixtures).toHaveLength(5);
+      expect(fallbackFixtures).toHaveLength(4);
       for (const fixture of fallbackFixtures) {
         writeFileSync(input, fixture.source);
         const native = spawnSync('node', [input], { encoding: 'utf8' });
@@ -28830,7 +28911,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('async-generator for-await keeps non-retainable owners on semantic reanalysis', () => {
+  test('async-generator for-await retains audited owners and reanalyzes unsupported owners', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-async-generator-for-await-fallbacks-'));
     const input = join(dir, 'entry.js');
     const drain = [
@@ -28841,6 +28922,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const fixtures = [
       {
         name: 'direct-eval',
+        graph: 'reanalyzed',
         target: 'es5',
         source:
           'class Box { async *items() { eval("0"); for await (const value of ["eval"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28848,6 +28930,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'derived-class',
+        graph: 'reanalyzed',
         target: 'es5',
         source:
           'class Base {} class Box extends Base { async *items() { for await (const value of ["derived"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28855,6 +28938,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed-method',
+        graph: 'reanalyzed',
         target: 'es5',
         source:
           'var key = "items"; class Box { async *[key]() { for await (const value of ["computed"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28862,6 +28946,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'nested-async-arrow-owner',
+        graph: 'reanalyzed',
         target: 'es5',
         source:
           'class Box { async *items() { var nested = async () => { for await (const value of ["nested"]) return value; }; yield "outer"; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28869,6 +28954,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'object-method-owner',
+        graph: 'retained',
         target: 'es5',
         source:
           'var Box = { async *items() { for await (const value of ["object"]) yield value; } }; readFirst(Box.items(), function (value) { console.log(value); });',
@@ -28876,6 +28962,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'partial-async-generator-downlevel',
+        graph: 'reanalyzed',
         target: 'es2017',
         source:
           'class Box { async *items() { for await (const value of ["partial"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28883,6 +28970,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'partial-async-generator-downlevel-es2015',
+        graph: 'reanalyzed',
         target: 'es2015',
         source:
           'class Box { async *items() { for await (const value of ["partial-es2015"]) yield value; } } readFirst(new Box().items(), function (value) { console.log(value); });',
@@ -28921,7 +29009,25 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
           );
-        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain('semantic_graph=reanalyzed');
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+        if (fixture.graph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(native.stdout);
@@ -44515,7 +44621,7 @@ console.log(new DerivedReader().values);`;
     }
   }, 60_000);
 
-  test('nested, patterned, and unsupported method scopes continue to use semantic reanalysis', () => {
+  test('same-scope constructor locals retain while nested and unsupported method scopes reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-var-scope-lexical-reanalysis-'));
     const input = join(dir, 'entry.mjs');
     const output = join(dir, 'output.cjs');
@@ -44586,6 +44692,7 @@ console.log(new DerivedReader().values);`;
       },
       {
         name: 'constructor-uninitialized-lexical-local',
+        graph: 'retained',
         source:
           'class Read { constructor() { let value; this.value = value; } } console.log(new Read().value);',
         stdout: 'undefined\n',
@@ -44646,7 +44753,23 @@ console.log(new DerivedReader().values);`;
         const mode = (bundled.stderr ?? '')
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-        expect(mode, `${fixture.name}: ${bundled.stderr}`).toContain('semantic_graph=reanalyzed');
+        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        expect(mode, `${fixture.name}: ${bundled.stderr}`).toContain(
+          `semantic_graph=${expectedGraph}`,
+        );
+        if (expectedGraph === 'retained') {
+          const report = (bundled.stderr ?? '')
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+          expect(report, `${fixture.name}: ${bundled.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, fixture.name).toBe(native.stdout);
