@@ -1005,6 +1005,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params_list, span);
+            if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(params_idx, params_node);
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @backingInt(params_node),
