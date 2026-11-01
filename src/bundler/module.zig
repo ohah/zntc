@@ -1272,15 +1272,31 @@ pub const Module = struct {
         @panic("Module semantic symbol name requires AST text storage");
     }
 
-    /// ImportBinding의 현재 모듈 로컬 이름.
-    /// 일반 import 는 semantic ref 에서 이름을 가져온다. helper marker binding (JSX
-    /// runtime / runtime helper) 은 user 가 같은 이름을 점유했을 때 semantic scope 에
-    /// 로컬이 없을 수 있으므로 scanner 가 저장한 `local_name` 이 fallback.
-    pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
-        if (self.refName(ib.local_symbol)) |name| return name;
+    /// Validate the scanner-owned local node against the stored current-module
+    /// reference before any canonical/output-name consumer may use it. A null
+    /// canonical rename means no rename; it never relaxes identity validation.
+    pub fn checkedImportBindingLocalName(self: *const Module, ib: ImportBinding) error{InvalidImportLocalSymbol}![]const u8 {
+        if (self.semantic) |*sem| {
+            const ast = if (self.ast) |*value| value else return error.InvalidImportLocalSymbol;
+            const actual = binding_scanner.resolveImportLocalSymbol(ib, .{
+                .module_index = self.index,
+                .ast = ast,
+                .symbol_ids = sem.symbol_ids,
+                .symbols = sem.symbols.items,
+            });
+            if (!actual.isValid() or !actual.eql(ib.local_symbol)) return error.InvalidImportLocalSymbol;
+            return self.refName(actual) orelse error.InvalidImportLocalSymbol;
+        }
+        // Explicit graphless helper compatibility has no analyzer identity.
         if (ib.is_helper) return ib.local_name;
-        std.debug.panic(
-            "non-helper import binding '{s}' in module '{s}' has no semantic local symbol",
+        return error.InvalidImportLocalSymbol;
+    }
+
+    /// Existing infallible consumers retain a fail-closed contract. Output
+    /// writers with an error channel use checkedImportBindingLocalName.
+    pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
+        return self.checkedImportBindingLocalName(ib) catch std.debug.panic(
+            "import binding '{s}' in module '{s}' has invalid exact local identity",
             .{ ib.local_name, self.path },
         );
     }
