@@ -2414,7 +2414,12 @@ pub const SemanticEditor = struct {
         }
         var candidate_roots = roots;
         candidate_roots.node_scope_provenance = &candidate.node_scope_provenance;
-        if (!try @import("source_owned_retirement.zig").validate(candidate.allocator, candidate.ast, &candidate.source_owned_retirements, &live, candidate.symbols.items, candidate.symbol_ids.items, candidate.scopes.items, candidate.scope_maps.items, &candidate.scope_owner_map, candidate.references.items, &candidate.helper_scope_map, candidate_roots)) return error.InvalidScope;
+        const candidate_history = candidate.scopeHistoryView();
+        candidate_roots.scope_history = &candidate_history;
+        var index_arena = std.heap.ArenaAllocator.init(candidate.allocator);
+        defer index_arena.deinit();
+        const frame_index = try @import("scope_frame_history.zig").validateAndIndex(index_arena.allocator(), candidate.ast, candidate.scopes.items, &candidate.scope_owner_map, &candidate_history, null);
+        if (!frame_index.valid or !try @import("source_owned_retirement.zig").validateWithIndex(candidate.allocator, candidate.ast, &candidate.source_owned_retirements, &live, candidate.symbols.items, candidate.symbol_ids.items, candidate.scopes.items, candidate.scope_maps.items, &candidate.scope_owner_map, candidate.references.items, &candidate.helper_scope_map, candidate_roots, &frame_index)) return error.InvalidScope;
         if (count == 0) return 0;
         // The candidate and history are complete. Swap is nonfallible; defer
         // now destroys the old graph backing, never either borrowed AST.

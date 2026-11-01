@@ -16005,3 +16005,17 @@ test "function name elision retires exact empty environments with journal histor
     try std.testing.expect(runtime.term == .exited and runtime.term.exited == 0);
     try std.testing.expectEqualStrings("7 7\n", runtime.stdout);
 }
+
+test "explicit statement drops compose with actual named function retirement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = "DEV:{const dead=1;}(function unused(p){return p+1});console.log(42);";
+    for ([_]bool{ false, true }) |minify| {
+        const result = try transpile(a, source, "input.js", .{ .drop_labels = &.{"DEV"}, .minify_syntax = true, .minify_identifiers = minify });
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "function") == null);
+        const actual = try std.process.run(a, std.testing.io, .{ .argv = &.{ "node", "-e", result.code }, .stdout_limit = .limited(16384), .stderr_limit = .limited(16384) });
+        try std.testing.expect(actual.term == .exited and actual.term.exited == 0);
+        try std.testing.expectEqualStrings("42\n", actual.stdout);
+    }
+}
