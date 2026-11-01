@@ -106,6 +106,14 @@ pub const PluginFailure = struct {
     }
 };
 
+/// AST callbacks default to an untracked graph contract. A function-hook
+/// plugin may opt into semantic-editor tracking; bundler retention still
+/// requires the exact post-transform graph audit to pass.
+pub const AstGraphContract = enum {
+    untracked,
+    tracked_function_edits,
+};
+
 /// fallible plugin hook 의 out-param. 호출자가 stack 에 만들어 hook 으로 전달하면
 /// hook 이 실패 metadata 와 (load/transform 의 경우) source map chain 을 채운다.
 /// 이전에는 threadlocal 두 개로 같은 데이터를 흘렸지만 thread-safety/생명주기/계약
@@ -338,6 +346,11 @@ pub const Plugin = struct {
 
     // ─── AST 훅 (transformer 내부에서 AST 노드 방문 시 호출) ───
 
+    /// AST callbacks are analyzer-backed unless their graph edits are routed
+    /// through the exact semantic-editor API. This contract currently applies
+    /// only to `onFunction`; arbitrary visitor callbacks remain untracked.
+    ast_graph_contract: AstGraphContract = .untracked,
+
     /// 함수 노드 방문 훅. visitFunction 완료 후 호출.
     /// function_declaration, function_expression, arrow_function_expression 대상.
     onFunction: ?*const fn (ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void = null,
@@ -361,9 +374,9 @@ pub const Plugin = struct {
     pub fn hasAstTransformHooks(self: Plugin) bool {
         comptime {
             const classified_fields = .{
-                "name",               "context",    "resolveId", "load",        "transform",      "renderChunk",
-                "generateBundle",     "buildStart", "buildEnd",  "closeBundle", "resolveContext", "onFunction",
-                "autoWorkletCallees", "visitor",
+                "name",           "context",            "resolveId", "load",        "transform",      "renderChunk",
+                "generateBundle", "buildStart",         "buildEnd",  "closeBundle", "resolveContext", "ast_graph_contract",
+                "onFunction",     "autoWorkletCallees", "visitor",
             };
             for (@typeInfo(Plugin).@"struct".field_names) |field| {
                 var classified = false;
@@ -383,6 +396,20 @@ pub const Plugin = struct {
             }
         }
         return false;
+    }
+
+    /// Exact graph edits are currently available for function hooks that use
+    /// AstTransformCtx's tracked insertion-scope operations. A visitor can
+    /// replace arbitrary subtrees and needs a separate graph contract.
+    pub fn hasTrackedFunctionGraphContract(self: Plugin) bool {
+        if (self.ast_graph_contract != .tracked_function_edits or self.onFunction == null or
+            self.autoWorkletCallees.len > 0) return false;
+        if (self.visitor) |visitor| {
+            inline for (@typeInfo(Visitor).@"struct".field_names) |field| {
+                if (@field(visitor, field) != null) return false;
+            }
+        }
+        return true;
     }
 };
 

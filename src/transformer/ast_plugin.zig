@@ -715,6 +715,38 @@ pub const AstTransformCtx = struct {
                 });
             },
 
+            // Calls are needed for ordinary injected code such as
+            // `throw eval("name")`. Copy the callee and each argument so the
+            // post-transform graph audit can see dynamic name lookup instead
+            // of silently turning an unsupported call into an empty operand.
+            .call_expression => blk: {
+                const e = src_node.data.extra;
+                if (e > src_ast.extra_data.items.len or src_ast.extra_data.items.len - e < 4) break :blk .none;
+                const callee_source = src_ast.readExtraNode(e, 0);
+                const args_start = src_ast.extra_data.items[e + 1];
+                const args_len = src_ast.extra_data.items[e + 2];
+                const flags = src_ast.extra_data.items[e + 3];
+                if (callee_source.isNone() or args_start > src_ast.extra_data.items.len or
+                    args_len > src_ast.extra_data.items.len - args_start) break :blk .none;
+                const callee = try self.copyNodeFromParsedAst(src_ast, callee_source);
+                if (callee.isNone()) break :blk .none;
+
+                const scratch_top = self.transformer.scratch.items.len;
+                defer self.transformer.scratch.shrinkRetainingCapacity(scratch_top);
+                var i: u32 = 0;
+                while (i < args_len) : (i += 1) {
+                    const raw = src_ast.extra_data.items[args_start + i];
+                    if (raw >= src_ast.nodes.items.len) break :blk .none;
+                    const argument = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(raw)));
+                    if (argument.isNone()) break :blk .none;
+                    try self.transformer.scratch.append(self.transformer.allocator, argument);
+                }
+                const args = try self.transformer.ast.addNodeList(self.transformer.scratch.items[scratch_top..]);
+                break :blk self.addExtraNode(.call_expression, new_span, &.{
+                    @backingInt(callee), args.start, args.len, flags,
+                });
+            },
+
             // 지원하지 않는 노드: data에 AST 인덱스가 포함될 수 있으므로
             // raw 복사는 dangling index 위험. 안전하게 스킵.
             else => .none,

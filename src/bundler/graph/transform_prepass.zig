@@ -327,21 +327,52 @@ fn addFlowMatchGeneratedGlobals(
     if (globals.object) try addGeneratedGlobal(allocator, semantic, "Object");
 }
 
-fn fallbackToFullSemanticResync(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) bool {
-    resyncAfterAstMutation(self, module, arena_alloc, null) catch {
-        self.addDiag(
-            .parse_error,
-            .@"error",
-            module.path,
-            Span.EMPTY,
-            .parse,
-            "Post-transform analysis refresh failed",
-            "The transformed AST could not be re-analyzed safely.",
-        );
-        module.state = .ready;
-        return false;
+fn failRetainedGraphRefresh(self: anytype, module: *Module, detail: []const u8) void {
+    self.addDiag(
+        .parse_error,
+        .@"error",
+        module.path,
+        Span.EMPTY,
+        .parse,
+        "Post-transform semantic graph refresh failed",
+        detail,
+    );
+    module.state = .ready;
+}
+
+test "retained graph refresh failure diagnoses and stops the module" {
+    const TestGraph = struct {
+        diag_count: usize = 0,
+        message: []const u8 = "",
+        suggestion: ?[]const u8 = null,
+
+        fn addDiag(
+            self: *@This(),
+            _: anytype,
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+            _: anytype,
+            message: []const u8,
+            suggestion: ?[]const u8,
+        ) void {
+            self.diag_count += 1;
+            self.message = message;
+            self.suggestion = suggestion;
+        }
     };
-    return true;
+
+    var graph: TestGraph = .{};
+    var module: Module = undefined;
+    module.path = "failure.js";
+    module.state = .parsing;
+
+    failRetainedGraphRefresh(&graph, &module, "exact graph proof failed");
+
+    try std.testing.expectEqual(@as(usize, 1), graph.diag_count);
+    try std.testing.expectEqualStrings("Post-transform semantic graph refresh failed", graph.message);
+    try std.testing.expectEqualStrings("exact graph proof failed", graph.suggestion.?);
+    try std.testing.expectEqual(Module.State.ready, module.state);
 }
 
 fn isTypeErasureTag(tag: NodeTag) bool {
@@ -11138,9 +11169,17 @@ fn canKeepPrepassSemanticGraphPrepared(
         !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
         !hasNestedWorkletFunctionScope(ast, semantic) and
         isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
-    if ((self.worklet_transform and !safe_builtin_worklet) or hasAstTransformHooks(self.plugins) or
-        (hasAstTransformHooks(plugins) and !safe_builtin_worklet) or
-        (hasAstTransformHooks(options.plugins) and !safe_builtin_worklet)) return false;
+    const tracked_function_plugin_graph = canRetainTrackedAstFunctionPluginGraph(
+        self,
+        module,
+        ast,
+        options,
+        plugins,
+    );
+    if ((self.worklet_transform and !safe_builtin_worklet) or
+        (hasAstTransformHooks(self.plugins) and !tracked_function_plugin_graph) or
+        (hasAstTransformHooks(plugins) and !safe_builtin_worklet and !tracked_function_plugin_graph) or
+        (hasAstTransformHooks(options.plugins) and !safe_builtin_worklet and !tracked_function_plugin_graph)) return false;
     // The styled-components CSS-prop visitor adds a real AST import and exact
     // helper SymbolId. The retained-graph path rescans import/export metadata
     // from that edited AST without replacing its semantic graph.
@@ -11313,7 +11352,7 @@ fn canKeepPrepassSemanticGraphPrepared(
     // can remain on this graph. Other graph-changing transforms remain here.
     var found_other_transform = graph_editable_jsx or retained_stage3_decorators or retained_legacy_decorators or safe_graph_subset or
         safe_styled_components or
-        options.react_refresh or options.emotion or safe_builtin_worklet;
+        options.react_refresh or options.emotion or safe_builtin_worklet or tracked_function_plugin_graph;
     var found_transform = found_other_transform or retained_define_references or retained_simple_console_drops;
     // Type erasure may combine with native class visitation that only removes
     // type syntax. Other runtime transforms remain fail-closed at the TS import gate.
@@ -12309,6 +12348,117 @@ fn shouldRecordPrepassExplicitGlobals(
 fn hasAstTransformHooks(plugins: anytype) bool {
     for (plugins) |plugin| if (plugin.hasAstTransformHooks()) return true;
     return false;
+}
+
+fn hasTrackedAstFunctionGraphHooks(plugins: anytype) bool {
+    for (plugins) |plugin| if (plugin.hasTrackedFunctionGraphContract()) return true;
+    return false;
+}
+
+fn allAstTransformHooksHaveTrackedFunctionGraphContract(plugins: anytype) bool {
+    for (plugins) |plugin| {
+        if (plugin.hasAstTransformHooks() and !plugin.hasTrackedFunctionGraphContract()) return false;
+    }
+    return true;
+}
+
+test "tracked plugin graph contract rejects untracked AST hook composition" {
+    const Plugin = plugin_mod.Plugin;
+    const function_hook = worklet_plugin.plugin().onFunction;
+    const tracked = Plugin{
+        .name = "tracked-function",
+        .onFunction = function_hook,
+        .ast_graph_contract = .tracked_function_edits,
+    };
+    const untracked = Plugin{ .name = "untracked-function", .onFunction = function_hook };
+    const non_ast = Plugin{ .name = "observer" };
+    const tracked_only = [_]Plugin{tracked};
+    const tracked_and_untracked = [_]Plugin{ tracked, untracked };
+    const tracked_with_observer = [_]Plugin{ tracked, non_ast };
+
+    try std.testing.expect(allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_only));
+    try std.testing.expect(!allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_and_untracked));
+    try std.testing.expect(allAstTransformHooksHaveTrackedFunctionGraphContract(&tracked_with_observer));
+}
+
+/// Admit only function-hook plugins whose AST additions are tracked by
+/// AstTransformCtx. Their exact output graph is checked after `finishSemanticEdit`;
+/// plugins that replace arbitrary visitor subtrees keep the analyzer boundary.
+fn canRetainTrackedAstFunctionPluginGraph(
+    self: anytype,
+    module: *const Module,
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+    merged_plugins: anytype,
+) bool {
+    const has_tracked_hook = hasTrackedAstFunctionGraphHooks(self.plugins) or
+        hasTrackedAstFunctionGraphHooks(merged_plugins) or
+        hasTrackedAstFunctionGraphHooks(options.plugins);
+    if (!has_tracked_hook or
+        !allAstTransformHooksHaveTrackedFunctionGraphContract(self.plugins) or
+        !allAstTransformHooksHaveTrackedFunctionGraphContract(merged_plugins) or
+        !allAstTransformHooksHaveTrackedFunctionGraphContract(options.plugins)) return false;
+
+    if (self.worklet_transform or self.flow or isFlowPath(module.path) or
+        module.module_type != .js or ast.is_typescript or module.import_records.len != 0 or
+        module.self_uses_top_level_await or module.uses_top_level_await or
+        options.unsupported.hasAny() or options.drop_console or options.drop_debugger or
+        options.drop_labels.len != 0 or options.react_refresh or options.styled_components or
+        options.emotion or options.jsx_transform or options.experimental_decorators or
+        options.emit_decorator_metadata or ast.has_jsx or ast.has_decorator or
+        define_mod.astUsesDefine(ast, options.define)) return false;
+
+    const semantic = module.semantic orelse return false;
+    for (semantic.scopes) |scope| {
+        if (scope.subtree_has_direct_eval or scope.subtree_has_with) return false;
+    }
+    return true;
+}
+
+/// A tracked function plugin can add syntax that changes name lookup after the
+/// source preflight. Keep generated direct eval and `with` on the analyzer path
+/// so their dynamic environment reaches identifier minification.
+fn hasReachableDynamicNameLookup(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+) bool {
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root) catch return true;
+    defer allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .with_statement) return true;
+        if (node.tag == .call_expression and
+            @import("../../transformer/static_class_capture.zig").isDirectEvalCall(.{ .ast = ast }, node)) return true;
+    }
+    return false;
+}
+
+test "tracked function plugin output keeps generated dynamic name lookup on analyzer path" {
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const cases = [_][]const u8{
+        "function marker(){eval('shared')}",
+        "function marker(){(eval)('shared')}",
+        "function marker(){\\u0065val('shared')}",
+        "function marker(){with ({shared: 42}) { throw shared; }}",
+        "function marker(){eval?.('shared')}",
+        "function marker(){(0, eval)('shared')}",
+    };
+    const expected = [_]bool{ true, true, true, true, false, false };
+    for (cases, expected) |source, has_dynamic_lookup| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = Scanner.init(arena.allocator(), source) catch return error.OutOfMemory;
+        defer scanner.deinit();
+        var parser = Parser.init(arena.allocator(), &scanner);
+        defer parser.deinit();
+        const root = parser.parse() catch return error.OutOfMemory;
+        try std.testing.expectEqual(
+            has_dynamic_lookup,
+            hasReachableDynamicNameLookup(arena.allocator(), &parser.ast, root),
+        );
+    }
 }
 
 fn isBuiltinWorkletPlugin(plugin: plugin_mod.Plugin) bool {
@@ -16185,6 +16335,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // 안전. dev mode 모듈도 동일.
     opts.emit_runtime_helper_imports = true;
 
+    const tracked_function_plugin_graph = canRetainTrackedAstFunctionPluginGraph(
+        self,
+        module,
+        ast_ptr,
+        opts,
+        merged_plugins,
+    );
+
     const object_spread_scan =
         if (opts.unsupported.object_spread) hasReachableObjectSpread(ast_ptr) else @as(?bool, false);
     const exponentiation_scan = if (opts.unsupported.exponentiation)
@@ -16319,7 +16477,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                 transformer.computed_object_helper_source = .{ .source_ast = ast_ptr, .output_ast = transformer.ast, .owner = sem.captureOwnerToken() };
         }
     }
-    transformer.record_explicit_global_references = transformer.computed_object_helper_source != null or transformer.selective_class_candidate != null or has_complex_define_replacement or
+    transformer.record_explicit_global_references = transformer.computed_object_helper_source != null or transformer.selective_class_candidate != null or has_complex_define_replacement or tracked_function_plugin_graph or
         shouldRecordPrepassExplicitGlobals(
             flow_match_generated_globals.has_match,
             has_lowered_object_spread,
@@ -16416,6 +16574,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     }
 
     const root = transformer.transform() catch return;
+    if (can_keep_semantic_graph and tracked_function_plugin_graph and
+        hasReachableDynamicNameLookup(arena_alloc, transformer.ast, root))
+    {
+        // Plugin-generated eval/with can observe unminified source names. The
+        // source-only admission check cannot see those edits, so let the
+        // analyzer rebuild the dynamic scope facts before mangling.
+        can_keep_semantic_graph = false;
+    }
     if (can_keep_semantic_graph and hasAttributedInlineTypeRuntimeImport(ast_ptr, opts)) {
         const exact_attribute_identity = attributedInlineTypeImportsHaveExactOutputIdentity(
             arena_alloc,
@@ -16684,6 +16850,34 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .ref_deltas = prepass_ref_deltas,
     };
 
+    // A tracked function-hook plugin claims that every generated binding and
+    // reference went through AstTransformCtx's semantic editor API. Reject a
+    // broken claim before metadata publication; reanalysis must not repair a
+    // missing plugin-generated identity.
+    if (can_keep_semantic_graph and tracked_function_plugin_graph) {
+        const exact = exactPrepassReport(
+            arena_alloc,
+            module,
+            root,
+            parser_node_count,
+            &transformer,
+            &unresolved_nodes,
+            pre_transform_scope_count,
+            true,
+        ) catch null;
+        if (exact == null or !exact.?.isClean()) {
+            if (debug_symbol_coverage) {
+                if (exact) |report| std.debug.print("zntc: tracked-plugin-graph-rejected {s}: {any}\n", .{ module.path, report });
+            }
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "A tracked function-hook plugin produced a graph that failed exact semantic identity validation.",
+            );
+            return;
+        }
+    }
+
     // Parsed define expressions can add lexical references and nested scopes.
     // The source-only preflight cannot prove those generated edges, so retain
     // the graph only when the exact output audit proves every identity.
@@ -16873,46 +17067,19 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             (!lowered_simple_static_class_field_global or module.semantic.?.unresolved_references.contains("Object")) and
             (!worklet_global_reference or module.semantic.?.unresolved_references.contains("global"));
         if (!generated_globals_recorded) {
-            resyncAfterAstMutation(self, module, arena_alloc, null) catch {
-                self.addDiag(
-                    .parse_error,
-                    .@"error",
-                    module.path,
-                    Span.EMPTY,
-                    .parse,
-                    "Post-transform analysis refresh failed",
-                    "The transformed AST could not be re-analyzed safely.",
-                );
-                module.state = .ready;
-                return;
-            };
-            auditPrepassExactIfEnabled(
-                arena_alloc,
+            failRetainedGraphRefresh(
+                self,
                 module,
-                root,
-                parser_node_count,
-                &transformer,
-                &unresolved_nodes,
-                pre_transform_scope_count,
-                debug_symbol_coverage,
-                false,
+                "Generated global references could not be recorded on the retained semantic graph.",
             );
             return;
         }
         resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc) catch {
-            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
-                auditPrepassExactIfEnabled(
-                    arena_alloc,
-                    module,
-                    root,
-                    parser_node_count,
-                    &transformer,
-                    &unresolved_nodes,
-                    pre_transform_scope_count,
-                    debug_symbol_coverage,
-                    false,
-                );
-            }
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "Transformed import/export and module metadata could not be synchronized with the retained semantic graph.",
+            );
             return;
         };
         // Only the post-rescan proof authorizes publishing retained entry audits.
@@ -16924,9 +17091,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         const entry_metadata_completed = !entry_certificate_required or
             (@import("../../transformer/sideeffect_entry_graph.zig").metadataRequirementSatisfied(&transformer, module, root) catch false);
         if (!entry_metadata_published or !entry_metadata_completed) {
-            if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
-                auditPrepassExactIfEnabled(arena_alloc, module, root, parser_node_count, &transformer, &unresolved_nodes, pre_transform_scope_count, debug_symbol_coverage, false);
-            }
+            failRetainedGraphRefresh(
+                self,
+                module,
+                "The side-effect entry graph certificate did not complete on the retained semantic graph.",
+            );
             return;
         }
         if (self.transform_options_base.minify_syntax) {
@@ -16946,19 +17115,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
                     false,
                     module.memberAugmentGate(self.transform_options_base.minify_syntax),
                 ) catch {
-                    if (fallbackToFullSemanticResync(self, module, arena_alloc)) {
-                        auditPrepassExactIfEnabled(
-                            arena_alloc,
-                            module,
-                            root,
-                            parser_node_count,
-                            &transformer,
-                            &unresolved_nodes,
-                            pre_transform_scope_count,
-                            debug_symbol_coverage,
-                            false,
-                        );
-                    }
+                    failRetainedGraphRefresh(
+                        self,
+                        module,
+                        "Tree-shaker statement metadata could not be built from the retained semantic graph.",
+                    );
                     return;
                 };
             }
