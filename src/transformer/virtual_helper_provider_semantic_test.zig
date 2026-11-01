@@ -713,12 +713,13 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
         library: []const u8,
         minify_identifiers: bool,
         expected_resyncs: u32,
+        expected_stdout: ?[]const u8 = null,
     };
     const cases = [_]Case{
         .{ .name = "exported regex only", .entry = "import {live} from './lib.mjs';console.log(live());", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "import plus exported regex", .entry = "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "minified import plus exported regex", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';var check=/./s;console.log(aLongImportedFunctionName(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .expected_resyncs = 0 },
-        .{ .name = "named capture still needs helper graph resync", .entry = "import {live} from './lib.mjs';var check=/(?<name>a)/;console.log(live(),check.test('a'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 2 },
+        .{ .name = "named capture retains entry graph with one helper resync", .entry = "import {live} from './lib.mjs';var check=/(?<name>a)/;console.log(live(),check.test('a'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1, .expected_stdout = "true true\n" },
         .{ .name = "class lowering keeps static import fallback", .entry = "import {live} from './lib.mjs';var check=/./s;class Marker{}console.log(live(),check.test('\\n'),Marker.name);", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
         .{ .name = "import attributes keep static import fallback", .entry = "import {live} from './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
         .{ .name = "side-effect import attributes keep static import fallback", .entry = "import './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
@@ -752,6 +753,14 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
                 profile.count(.graph_resync_semantic),
             });
         try std.testing.expectEqual(case.expected_resyncs, profile.count(.graph_resync_semantic));
+        if (case.expected_stdout) |expected| {
+            const actual = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "node", "-e", result.output } });
+            defer std.testing.allocator.free(actual.stdout);
+            defer std.testing.allocator.free(actual.stderr);
+            try std.testing.expect(actual.term == .exited);
+            try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
+            try std.testing.expectEqualStrings(expected, actual.stdout);
+        }
     }
 }
 
