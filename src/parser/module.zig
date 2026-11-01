@@ -492,7 +492,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const src_node = self.ast.getNode(source_node);
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
         const spec = extractImportSpecifier(self, raw);
-        const rec_idx = appendSourceImportRecord(self, spec, .static_import, src_node.span, source_node);
+        const rec_idx = appendSourceImportRecord(self, spec, if (self.scratch.items.len == scratch_top) .side_effect else .static_import, src_node.span, source_node);
         try collectImportBindings(self, scratch_top, rec_idx);
         self.scan_result.has_esm_syntax = true;
     }
@@ -901,7 +901,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 const src_node = self.ast.getNode(source_node);
                 const raw = self.ast.source[src_node.span.start..src_node.span.end];
                 const spec = extractImportSpecifier(self, raw);
-                rec_idx = appendSourceImportRecord(self, spec, .re_export, src_node.span, source_node);
+                rec_idx = appendSourceImportRecord(self, spec, if (self.scratch.items.len == scratch_top) .side_effect else .re_export, src_node.span, source_node);
             }
 
             for (self.scratch.items[scratch_top..]) |spec_idx| {
