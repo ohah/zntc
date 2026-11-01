@@ -293,17 +293,16 @@ pub const ExportBinding = struct {
 };
 
 fn stableIdentifierText(allocator: std.mem.Allocator, ast: *const Ast, node: Node) ![]const u8 {
-    const raw = try ast.getTextStable(allocator, node.span);
+    const name_span = switch (node.tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier, .import_default_specifier, .import_namespace_specifier => ast.identifierNameSpan(node),
+        else => node.span,
+    };
+    const raw = try ast.getTextStable(allocator, name_span);
     return switch (node.tag) {
-        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try Scanner.decodeIdentifierEscapesAlloc(allocator, raw),
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier, .import_default_specifier, .import_namespace_specifier => try Scanner.decodeIdentifierEscapesAlloc(allocator, raw),
         .string_literal => try module_parser.moduleExportName(allocator, raw),
         else => raw,
     };
-}
-
-fn stableIdentifierTextFromSpan(allocator: std.mem.Allocator, ast: *const Ast, span: Span) ![]const u8 {
-    const raw = try ast.getTextStable(allocator, span);
-    return try Scanner.decodeIdentifierEscapesAlloc(allocator, raw);
 }
 
 /// AST에서 import 바인딩 상세를 추출한다.
@@ -364,7 +363,7 @@ pub fn extractImportBindings(
             const spec_node = ast.getNode(spec);
             switch (spec_node.tag) {
                 .import_default_specifier => {
-                    const name = try stableIdentifierTextFromSpan(allocator, ast, spec_node.span);
+                    const name = try stableIdentifierText(allocator, ast, spec_node);
                     try bindings.append(allocator, .{
                         .kind = .default,
                         .local_name = name,
@@ -376,7 +375,7 @@ pub fn extractImportBindings(
                     });
                 },
                 .import_namespace_specifier => {
-                    const name = try stableIdentifierTextFromSpan(allocator, ast, spec_node.span);
+                    const name = try stableIdentifierText(allocator, ast, spec_node);
                     try bindings.append(allocator, .{
                         .kind = .namespace,
                         .local_name = name,

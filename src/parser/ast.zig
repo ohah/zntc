@@ -1711,9 +1711,15 @@ pub const Ast = struct {
     /// temp 선언만 심볼을 얻어 tree-shake 오삭제/반쪽 rename 이 발생했다.
     /// 파서 생성 노드는 string_ref == span 이라 동작 불변.
     pub fn identifierNameText(self: *const Ast, node: Node) []const u8 {
+        return self.getText(self.identifierNameSpan(node));
+    }
+
+    /// The semantic name and its bounds share this selection with codegen.
+    /// A generated identifier's diagnostic source span may name another token.
+    pub fn identifierNameSpan(self: *const Ast, node: Node) Span {
+        _ = self;
         const ref = node.data.string_ref;
-        if (ref.start & STRING_TABLE_BIT != 0) return self.getText(ref);
-        return self.getText(node.span);
+        return if (ref.start & STRING_TABLE_BIT != 0) ref else node.span;
     }
 
     /// 합성 문자열을 string_table에 추가하고, 이를 가리키는 Span을 반환한다.
