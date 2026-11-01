@@ -767,6 +767,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 .kind = re_kind,
                 .import_record_index = re_import_record_index,
                 .default_export_node_index = @backingInt(export_node),
+                .source_export_node_index = @backingInt(export_node),
                 .has_default_export_facade = has_default_export_facade,
             }) catch {};
         }
@@ -891,6 +892,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         }
 
         // Inline scan: export { a, b } / export { a } from "module"
+        const first_export_binding = self.scan_export_bindings.items.len;
         if (self.enable_scan and !self.ctx.in_ambient and !is_type_only_export) {
             self.scan_result.has_esm_syntax = true;
             const has_source = !source_node.isNone();
@@ -929,6 +931,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .exported_name = exported_name,
                         .local_name = local_name,
                         .local_span = local_node.span,
+                        .source_specifier_node_index = @backingInt(spec_idx),
                         .kind = .re_export,
                         .import_record_index = rec_idx,
                     }) catch {};
@@ -940,6 +943,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .local_name = re.local_name,
                         .local_span = local_node.span,
                         .local_symbol_node_index = @backingInt(local_idx),
+                        .source_specifier_node_index = @backingInt(spec_idx),
                         .has_public_key_literal = exported_node.tag == .string_literal,
                         .public_key_specifier_node_index = if (re.kind == .local and exported_node.tag == .string_literal) @backingInt(spec_idx) else null,
                         .public_key_literal_node_index = if (re.kind == .local and exported_node.tag == .string_literal) @backingInt(exported_idx) else null,
@@ -966,11 +970,13 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         });
 
         if (!is_export_equals) self.has_module_syntax = true;
-        return try self.ast.addNode(.{
+        const export_node = try self.ast.addNode(.{
             .tag = .export_named_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .extra = extra_start },
         });
+        for (self.scan_export_bindings.items[first_export_binding..]) |*binding| binding.source_export_node_index = @backingInt(export_node);
+        return export_node;
     }
 
     // TS: export as namespace ns — 타입 전용 (완전 제거)
@@ -1018,6 +1024,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
     if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return decl;
 
     // Inline scan: export var/let/const/function/class
+    const first_export_binding = self.scan_export_bindings.items.len;
     if (self.enable_scan and !self.ctx.in_ambient) {
         self.scan_result.has_esm_syntax = true;
         try collectDeclExportBindings(self, decl);
@@ -1034,11 +1041,13 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         0, // attrs_start
         0, // attrs_len
     });
-    return try self.ast.addNode(.{
+    const export_node = try self.ast.addNode(.{
         .tag = .export_named_declaration,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = extra_start },
     });
+    for (self.scan_export_bindings.items[first_export_binding..]) |*binding| binding.source_export_node_index = @backingInt(export_node);
+    return export_node;
 }
 
 fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
@@ -1435,6 +1444,12 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!voi
     if (decl_idx.isNone()) return;
     if (@backingInt(decl_idx) >= self.ast.nodes.items.len) return;
     const decl_node = self.ast.getNode(decl_idx);
+    const first_binding = self.scan_export_bindings.items.len;
+    defer {
+        for (self.scan_export_bindings.items[first_binding..]) |*binding| {
+            binding.source_declaration_node_index = @backingInt(decl_idx);
+        }
+    }
 
     switch (decl_node.tag) {
         .variable_declaration => {

@@ -119,6 +119,10 @@ pub const ScanExportBinding = struct {
     /// Local exports carry the exact AST node whose analyzer SymbolId owns the
     /// exported value. Null for re-exports and synthetic default facades.
     local_symbol_node_index: ?u32 = null,
+    /// Exact declaration/specifier which produced this public export carrier.
+    source_export_node_index: ?u32 = null,
+    source_declaration_node_index: ?u32 = null,
+    source_specifier_node_index: ?u32 = null,
     /// Actual producer edge, not a public-name lookup. Rebuilt from restored ASTs.
     has_public_key_literal: bool = false,
     public_key_specifier_node_index: ?u32 = null,

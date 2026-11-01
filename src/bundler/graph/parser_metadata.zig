@@ -85,6 +85,9 @@ pub fn materialize(
                     .local_name = sb.local_name,
                     .local_span = sb.local_span,
                     .local_symbol_node = if (sb.local_symbol_node_index) |index| @fromBackingInt(@intCast(index)) else null,
+                    .source_declaration_node = if (sb.source_declaration_node_index) |index| @fromBackingInt(index) else null,
+                    .source_export_node = if (sb.source_export_node_index) |index| @fromBackingInt(index) else null,
+                    .source_specifier_node = if (sb.source_specifier_node_index) |index| @fromBackingInt(index) else null,
                     .has_public_key_literal = sb.has_public_key_literal,
                     .public_key_binding_value = if (sb.has_public_key_literal and eb_kind == .local) sb.local_name else null,
                     .public_key_literal = if (sb.public_key_literal_node_index) |index| blk: {
