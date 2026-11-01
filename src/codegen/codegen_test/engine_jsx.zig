@@ -631,6 +631,21 @@ test "JSX classic: downlevels spread props and child in the same element" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
 }
 
+test "JSX classic: downlevels static literal spread props with spread child" {
+    var r = try helpers.e2eJSXClassicTarget(
+        std.testing.allocator,
+        "const arr = [1, 2]; const x = <Foo {...{ id: 'literal', count: 2 }}>{...arr}</Foo>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...arr") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement.apply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(arr)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id:\"literal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "count:2") != null);
+}
+
 test "JSX classic: spread child call preserves surrounding arguments and fragments" {
     var mixed = try helpers.e2eJSXClassicTarget(
         std.testing.allocator,

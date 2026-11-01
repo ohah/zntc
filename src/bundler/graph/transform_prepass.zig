@@ -2414,9 +2414,7 @@ fn isRetainableClassicJsxSpreadPropsBundle(
     for (ast.nodes.items, 0..) |attribute, attribute_raw| {
         if (attribute.tag != .jsx_spread_attribute) continue;
         const operand = attribute.data.unary.operand;
-        if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len or
-            ast.nodes.items[@backingInt(operand)].tag != .identifier_reference or
-            !isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+        if (!isRetainableJsxSpreadPropsOperand(ast, semantic, operand)) return false;
 
         var owner_count: usize = 0;
         for (ast.nodes.items) |element| {
@@ -17384,7 +17382,7 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
         try std.testing.expect(tag != .spread_element and tag != .elision);
     }
 
-    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const items = [1, 2]; const result = <div {...props} value={items}>{...items}</div>;";
+    const classic_source = "const React = { createElement: function() {} }; const props = { id: 'from-props' }; const items = [1, 2]; const result = <div {...props} {...{ role: 'dialog', count: 2 }} value={items}>{...items}</div>;";
     var classic_fixture = try jsxSpreadChildTestFixture(allocator, classic_source);
     const classic_owner = classic_fixture.semantic.captureOwnerToken();
     var classic_item_symbol: ?u32 = null;
@@ -24249,8 +24247,10 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const id = \"x\"; const items = [1]; const result = <Comp {...{ id }} key=\"k\">{...items}</Comp>;",
         "const key = \"id\"; const items = [1]; const result = <Comp {...{ [key]: \"x\" }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ get id() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ method() { return \"x\"; } }} key=\"k\">{...items}</Comp>;",
         "const source = {}; const items = [1]; const result = <Comp {...{ ...source }} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...{ nested: { value: 1 } }} key=\"k\">{...items}</Comp>;",
+        "const items = [1]; const result = <Comp {...{ nested: [1, 2] }} key=\"k\">{...items}</Comp>;",
         "function getValue() { return 1; } const items = [1]; const result = <Comp {...{ value: getValue() }} key=\"k\">{...items}</Comp>;",
         "function getProps() { return {}; } const items = [1]; const result = <Comp {...getProps()} key=\"k\">{...items}</Comp>;",
         "const items = [1]; const result = <Comp {...[1, 2]} key=\"k\">{...items}</Comp>;",
@@ -24289,13 +24289,16 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
     try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .classic, true));
     try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&classic_fixture, .automatic, false));
 
-    var classic_spread_props_arena = std.heap.ArenaAllocator.init(allocator);
-    defer classic_spread_props_arena.deinit();
-    var classic_spread_props_fixture = try jsxSpreadChildTestFixture(
-        classic_spread_props_arena.allocator(),
+    const classic_spread_props_sources = [_][]const u8{
         "const props = {}; const items = [1]; const result = <div {...props}>{...items}</div>;",
-    );
-    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&classic_spread_props_fixture, .classic, true));
+        "const items = [1]; const result = <div {...{ id: 'x', count: 2, enabled: true, empty: null }}>{...items}</div>;",
+    };
+    for (classic_spread_props_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&fixture, .classic, true));
+    }
 
     const hostile_classic_props_sources = [_][]const u8{
         "const items = [1]; const result = <div {...missingProps}>{...items}</div>;",
@@ -24303,11 +24306,19 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const source = { props: {} }; const items = [1]; const result = <div {...source.props}>{...items}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props} />; const two = <div>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div><span {...props} />{...items}</div>;",
-        "const items = [1]; const result = <div {...{ id: 'x' }}>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div {...props} {...missingProps}>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div {...props}>{...items}{...getItems()}</div>;",
         "const props = {}; const items = [1]; const one = <div {...props}>before</div>; const two = <div>{...items}</div>;",
         "const props = {}; const items = [1]; const result = <div {...props}>{...[, ...items]}</div>;",
+        "const items = [1]; const result = <div {...{ id: missingValue }}>{...items}</div>;",
+        "const id = 'x'; const items = [1]; const result = <div {...{ id }}>{...items}</div>;",
+        "const key = 'id'; const items = [1]; const result = <div {...{ [key]: 'x' }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ get id() { return 'x'; } }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ method() { return 'x'; } }}>{...items}</div>;",
+        "const source = {}; const items = [1]; const result = <div {...{ ...source }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ nested: { value: 1 } }}>{...items}</div>;",
+        "const items = [1]; const result = <div {...{ nested: [1, 2] }}>{...items}</div>;",
+        "function getValue() { return 1; } const items = [1]; const result = <div {...{ value: getValue() }}>{...items}</div>;",
     };
     for (hostile_classic_props_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
