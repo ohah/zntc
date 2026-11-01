@@ -440,7 +440,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // classic-style props (key 포함)
             const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span, tag_name_idx);
 
-            const children = try collectChildren(self, children_start, children_len);
+            const lower_spread_child_call = self.options.unsupported.spread and
+                hasJsxSpreadChild(self, children_start, children_len);
+            const children = if (lower_spread_child_call)
+                try collectChildrenWithoutVisiting(self, children_start, children_len)
+            else
+                try collectChildren(self, children_start, children_len);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -453,7 +458,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
             }
 
             const all_args = self.scratch.items[scratch_top..];
-            return makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            const call = try makeCallExpr(self, all_args[0], all_args[1..], span, true);
+            return if (lower_spread_child_call)
+                try es2015_spread.ES2015Spread(Transformer).lowerSpreadCallWithPrevisitedArgs(
+                    self,
+                    self.ast.getNode(call),
+                    2,
+                )
+            else
+                call;
         }
 
         // ================================================================

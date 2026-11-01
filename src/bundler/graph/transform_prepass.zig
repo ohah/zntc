@@ -2418,6 +2418,69 @@ fn isRetainableClassicJsxSpreadPropsBundle(
     return true;
 }
 
+fn isRetainableAutomaticJsxKeyFallbackBundle(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) bool {
+    const extras = ast.extra_data.items;
+    var found_key_after_spread = false;
+    for (ast.nodes.items) |element| {
+        if (element.tag != .jsx_element) continue;
+        const extra = element.data.extra;
+        if (extra > extras.len or extras.len - extra < 5) return false;
+        const attrs_start = extras[extra + 1];
+        const attrs_len = extras[extra + 2];
+        if (attrs_start > extras.len or attrs_len > extras.len - attrs_start) return false;
+
+        var saw_spread_attribute = false;
+        var has_key_after_spread = false;
+        for (extras[attrs_start .. attrs_start + attrs_len]) |raw_idx| {
+            if (raw_idx >= ast.nodes.items.len) return false;
+            const attribute = ast.nodes.items[raw_idx];
+            switch (attribute.tag) {
+                .jsx_spread_attribute => saw_spread_attribute = true,
+                .jsx_attribute => {
+                    if (!saw_spread_attribute) continue;
+                    const name_idx = attribute.data.binary.left;
+                    if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) return false;
+                    const name = ast.nodes.items[@backingInt(name_idx)];
+                    if (name.tag != .jsx_identifier) return false;
+                    if (std.mem.eql(u8, ast.getText(name.span), "key")) has_key_after_spread = true;
+                },
+                else => return false,
+            }
+        }
+        if (!has_key_after_spread) continue;
+        found_key_after_spread = true;
+
+        const children_start = extras[extra + 3];
+        const children_len = extras[extra + 4];
+        if (children_start > extras.len or children_len > extras.len - children_start) return false;
+        var has_direct_spread_child = false;
+        for (extras[children_start .. children_start + children_len]) |raw_idx| {
+            if (raw_idx >= ast.nodes.items.len) return false;
+            const child = ast.nodes.items[raw_idx];
+            if (child.tag == .jsx_spread_child) {
+                has_direct_spread_child = true;
+                if (!isRetainableJsxSpreadChild(ast, semantic, child)) return false;
+            }
+        }
+        // A fallback with no direct spread child already follows the existing
+        // JSX path. A nested or sibling element lowers its own child list.
+        if (!has_direct_spread_child) continue;
+
+        for (extras[attrs_start .. attrs_start + attrs_len]) |raw_idx| {
+            const attribute = ast.nodes.items[raw_idx];
+            if (attribute.tag != .jsx_spread_attribute) continue;
+            const operand = attribute.data.unary.operand;
+            if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len or
+                ast.nodes.items[@backingInt(operand)].tag != .identifier_reference or
+                !isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+        }
+    }
+    return found_key_after_spread == ast.has_jsx_key_after_spread;
+}
+
 fn isRetainableJsxSpreadArrayHole(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -10179,13 +10242,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Automatic JSX lowers this child in a generated array;
                     // classic JSX lowers it in factory-call arguments. Both
                     // generated shapes now pass through the matching spread
-                    // lowerer. Automatic key-after-spread stays on reanalysis;
-                    // classic props spread is retained only when a bound prop
-                    // operand and a retainable child spread share its element.
+                    // lowerer. When a key-after-spread fallback owns direct
+                    // spread children, its bound props spreads and those
+                    // children are checked together on that exact element.
                     const supported_runtime = switch (options.jsx_runtime) {
                         .classic => !options.unsupported.object_spread or
                             isRetainableClassicJsxSpreadPropsBundle(ast, semantic),
-                        .automatic, .automatic_dev => !ast.has_jsx_key_after_spread,
+                        .automatic, .automatic_dev => isRetainableAutomaticJsxKeyFallbackBundle(ast, semantic),
                         else => false,
                     };
                     if (!supported_runtime or !isRetainableJsxSpreadChild(ast, semantic, node)) return false;
@@ -17355,6 +17418,66 @@ test "#6193 automatic JSX spread child prepass keeps exact source graph without 
     try std.testing.expectEqual(@as(usize, 2), classic_output_read_count);
     try std.testing.expectEqual(@as(usize, 1), classic_props_read_count);
     try std.testing.expectEqual(@as(usize, 2), classic_factory_read_count);
+
+    const key_fallback_source = "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\"><span />{...items}<i /></Comp>;";
+    var key_fallback_fixture = try jsxSpreadChildTestFixture(allocator, key_fallback_source);
+    const key_fallback_owner = key_fallback_fixture.semantic.captureOwnerToken();
+    var key_fallback_item_symbol: ?u32 = null;
+    var key_fallback_props_symbol: ?u32 = null;
+    for (key_fallback_fixture.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = key_fallback_fixture.ast.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "items")) {
+            key_fallback_item_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        } else if (std.mem.eql(u8, name, "props")) {
+            key_fallback_props_symbol = key_fallback_fixture.semantic.symbol_ids[raw];
+        }
+    }
+    const key_fallback_item = key_fallback_item_symbol orelse return error.MissingAutomaticJsxSpreadBinding;
+    const key_fallback_props = key_fallback_props_symbol orelse return error.MissingAutomaticJsxPropsBinding;
+    var key_fallback_module = Module.init(@fromBackingInt(0), "jsx-key-fallback-spread.tsx");
+    key_fallback_module.source = key_fallback_source;
+    key_fallback_module.module_type = .ts;
+    key_fallback_module.state = .ready;
+    key_fallback_module.ast = key_fallback_fixture.ast;
+    key_fallback_module.semantic = key_fallback_fixture.semantic;
+    var key_fallback_context: TestGraph = .{ .allocator = std.testing.allocator };
+    const key_fallback_resyncs_before = profile.count(.graph_resync_semantic);
+    run(&key_fallback_context, &key_fallback_module, allocator);
+    defer if (key_fallback_module.alias_table) |*table| table.deinit();
+    defer if (key_fallback_module.export_index_by_name) |*index| index.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), key_fallback_context.diag_count);
+    try std.testing.expectEqual(key_fallback_resyncs_before, profile.count(.graph_resync_semantic));
+    try std.testing.expectEqual(key_fallback_owner, key_fallback_module.semantic.?.owner_token);
+    try std.testing.expect(key_fallback_module.transform_cache != null);
+    const key_fallback_root = key_fallback_module.ast.?.transformed_root.?;
+    const key_fallback_reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, &key_fallback_module.ast.?, key_fallback_root);
+    defer allocator.free(key_fallback_reachable);
+    var key_fallback_item_read_count: usize = 0;
+    var key_fallback_props_read_count: usize = 0;
+    for (key_fallback_reachable) |raw| {
+        const node = key_fallback_module.ast.?.nodes.items[raw];
+        if (node.tag == .spread_element or node.tag == .jsx_spread_child) return error.AutomaticJsxSpreadRemained;
+        if (node.tag == .jsx_element) return error.AutomaticJsxRemained;
+        if (node.tag != .identifier_reference) continue;
+        const name = key_fallback_module.ast.?.getText(node.data.string_ref);
+        if (std.mem.eql(u8, name, "props")) {
+            try std.testing.expectEqual(
+                key_fallback_props,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxPropsReferenceSymbol,
+            );
+            key_fallback_props_read_count += 1;
+        } else if (std.mem.eql(u8, name, "items")) {
+            try std.testing.expectEqual(
+                key_fallback_item,
+                key_fallback_module.semantic.?.symbol_ids[raw] orelse return error.MissingAutomaticJsxSpreadReferenceSymbol,
+            );
+            key_fallback_item_read_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_item_read_count);
+    try std.testing.expectEqual(@as(usize, 1), key_fallback_props_read_count);
 }
 
 fn moduleHasRegisteredOutputRoles(module: *const Module) bool {
@@ -23972,6 +24095,11 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const result = <div>{...[1, 2]}</div>;",
         "const result = <div>{...[, 1]}</div>;",
         "function render(items) { return <div>{items.length}{...items}</div>; }",
+        "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
+        "const props = {}; const items = [1, 2]; const result = <Comp key=\"k\" {...props}>{...items}</Comp>;",
+        "const props = {}; const items = [1]; const one = <Comp {...props} key=\"k\" />; const two = <div>{...items}</div>;",
+        "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\"><span>{...items}</span></Comp>;",
+        "const props = {}; const items = [1]; function getOther() { return 1; } const result = <Comp {...props} other={getOther()} key=\"k\">{...items}</Comp>;",
     };
     for (safe_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -23988,6 +24116,29 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
     );
     try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&dev_fixture, .automatic_dev, true));
 
+    var key_fallback_arena = std.heap.ArenaAllocator.init(allocator);
+    defer key_fallback_arena.deinit();
+    var key_fallback_fixture = try jsxSpreadChildTestFixture(
+        key_fallback_arena.allocator(),
+        "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\">{...items}</Comp>;",
+    );
+    try std.testing.expect(key_fallback_fixture.ast.has_jsx_key_after_spread);
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&key_fallback_fixture, .automatic, true));
+    try std.testing.expect(auditedJsxSpreadChildAdmissionForTest(&key_fallback_fixture, .automatic_dev, true));
+
+    key_fallback_fixture.ast.has_jsx_key_after_spread = false;
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&key_fallback_fixture, .automatic, true));
+    key_fallback_fixture.ast.has_jsx_key_after_spread = true;
+
+    var no_key_fallback_arena = std.heap.ArenaAllocator.init(allocator);
+    defer no_key_fallback_arena.deinit();
+    var no_key_fallback_fixture = try jsxSpreadChildTestFixture(
+        no_key_fallback_arena.allocator(),
+        "const items = [1, 2]; const result = <div>{...items}</div>;",
+    );
+    no_key_fallback_fixture.ast.has_jsx_key_after_spread = true;
+    try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&no_key_fallback_fixture, .automatic, true));
+
     const hostile_sources = [_][]const u8{
         "const result = <div>{...missingItems}</div>;",
         "function getItems() { return [1]; } const result = <div>{...getItems()}</div>;",
@@ -23998,9 +24149,23 @@ test "#6193 automatic JSX downlevel spread child admits only audited operands" {
         "const result = <div>{...({ items: [1] })}</div>;",
         "const items = [1]; const result = <div>{...(items, items)}</div>;",
         "const items = [1]; const result = <div>{...`items`}</div>;",
-        "const props = {}; const items = [1]; const result = <div {...props} key=\"x\">{...items}</div>;",
     };
     for (hostile_sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);
+        try std.testing.expect(!auditedJsxSpreadChildAdmissionForTest(&fixture, .automatic, true));
+    }
+
+    const hostile_key_fallback_sources = [_][]const u8{
+        "const props = {}; const result = <Comp {...props} key=\"k\">{...getItems()}</Comp>;",
+        "const result = <Comp {...missingProps} key=\"k\">{...[1, 2]}</Comp>;",
+        "const source = { props: {} }; const result = <Comp {...source.props} key=\"k\">{...[1, 2]}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...props} key=\"k\">{...items}{...getItems()}</Comp>;",
+        "const props = {}; const items = [1]; const result = <Comp {...props} {...missingProps} key=\"k\">{...items}</Comp>;",
+        "const goodProps = {}; const goodItems = [1]; const badItems = [2]; const good = <Good {...goodProps} key=\"g\">{...goodItems}</Good>; const bad = <Bad {...missingProps} key=\"b\">{...badItems}</Bad>;",
+    };
+    for (hostile_key_fallback_sources) |source| {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var fixture = try jsxSpreadChildTestFixture(arena.allocator(), source);

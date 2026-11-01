@@ -534,6 +534,23 @@ test "JSX automatic: fills array holes in downlevel spread children" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "children:[].concat([void 0,1])") != null);
 }
 
+test "JSX automatic: key-after-spread fallback downlevels spread child for ES5" {
+    var r = try helpers.e2eJSXAutomaticTarget(
+        std.testing.allocator,
+        "const props = {}; const items = [1, 2]; const result = <Comp {...props} key=\"k\"><span />{...items}<i /></Comp>;",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...items") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement.apply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__toConsumableArray(items)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "<span") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "<i") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"span\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"i\"") != null);
+}
+
 test "JSX automatic: downlevel spread child preserves surrounding child order" {
     var r = try helpers.e2eJSXAutomaticTarget(
         std.testing.allocator,
