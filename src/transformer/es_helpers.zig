@@ -840,9 +840,8 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
         for (self.symbols) |sym| {
             // Source names are IdentifierName syntax; synthetic names already
             // carry StringValues and must not be decoded a second time.
-            const raw_name = if (sym.synthetic_name.len > 0) sym.synthetic_name else self.ast.getText(sym.name);
-            const sym_name = if (sym.synthetic_name.len == 0 and
-                (sym.name.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT) == 0 and
+            const raw_name = self.ast.getText(sym.name);
+            const sym_name = if ((sym.name.start & @import("../parser/ast.zig").Ast.STRING_TABLE_BIT) == 0 and
                 std.mem.indexOfScalar(u8, raw_name, '\\') != null)
             blk: {
                 if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
