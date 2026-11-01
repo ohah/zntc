@@ -1280,13 +1280,14 @@ pub const Module = struct {
         if (index.isNone() or @backingInt(index) >= ast.nodes.items.len) return false;
         const node = ast.getNode(index);
         if (node.tag != .identifier_reference and node.tag != .binding_identifier and node.tag != .string_literal) return false;
-        const from_table = node.span.start & Ast.STRING_TABLE_BIT != 0;
-        if ((node.span.end & Ast.STRING_TABLE_BIT != 0) != from_table) return false;
-        const start = node.span.start & ~Ast.STRING_TABLE_BIT;
-        const end = node.span.end & ~Ast.STRING_TABLE_BIT;
+        const name_span = if (node.tag == .string_literal) node.span else ast.identifierNameSpan(node);
+        const from_table = name_span.start & Ast.STRING_TABLE_BIT != 0;
+        if ((name_span.end & Ast.STRING_TABLE_BIT != 0) != from_table) return false;
+        const start = name_span.start & ~Ast.STRING_TABLE_BIT;
+        const end = name_span.end & ~Ast.STRING_TABLE_BIT;
         const text_len = if (from_table) ast.string_table.items.len else ast.source.len;
         if (start > end or end > text_len) return false;
-        const raw = ast.getText(node.span);
+        const raw = ast.getText(name_span);
         switch (node.tag) {
             .identifier_reference, .binding_identifier => return @import("../lexer/scanner.zig").Scanner.identifierValueEquals(raw, value),
             .string_literal => {
