@@ -10228,6 +10228,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_using_helper: bool,
     allow_tracked_super_get: bool,
     allow_tracked_super_set: bool,
+    allow_wrap_regex_helper: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
@@ -10262,7 +10263,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.keep_names = false;
     // Named-capture wrappers are ordinary tracked runtime-helper imports; the
     // regexp lowerer attaches each `__wrapRegExp` reference to its helper SID.
-    other_helpers.wrap_regex = false;
+    if (allow_wrap_regex_helper) other_helpers.wrap_regex = false;
     // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
@@ -10285,21 +10286,29 @@ fn runtimeHelpersSafeForRetainedGraph(
 test "retained legacy decorators admit their tracked metadata helper" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const helpers: RuntimeHelpers = .{ .legacy_decorator = true, .metadata = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false, false, false));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false, false, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helpers, false, false, true, false, false, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helpers, false, false, false, false, false, false, false, false, false));
     const metadata_only: RuntimeHelpers = .{ .metadata = true };
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(metadata_only, false, false, true, false, false, false, false, false, false));
     const using_helpers: RuntimeHelpers = .{ .using_ctx = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, true, false, false));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, true, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(using_helpers, false, false, false, false, false, false, false, false, false));
 }
 
 test "retained static-block super reads admit only the tracked get helper" {
     const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
     const get_helper: RuntimeHelpers = .{ .super_get = true };
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(get_helper, false, false, false, false, false, false, true, false));
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(get_helper, false, false, false, false, false, false, true, false, false));
     const set_helper: RuntimeHelpers = .{ .super_set = true };
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(set_helper, false, false, false, false, false, false, true, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(set_helper, false, false, false, false, false, false, true, false, false));
+}
+
+test "retained named capture regex admits only its tracked helper" {
+    const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
+    const helper: RuntimeHelpers = .{ .wrap_regex = true };
+    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(helper, false, false, false, false, false, false, false, false, true));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(helper, false, false, false, false, false, false, false, false, false));
+    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(.{ .wrap_regex = true, .class_private_field_set = true }, false, false, false, false, false, false, false, false, true));
 }
 
 test "retained async generator methods admit only their runtime helper family" {
@@ -10315,9 +10324,11 @@ test "retained async generator methods admit only their runtime helper family" {
         false,
         false,
         false,
+        false,
     ));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
         helpers,
+        false,
         false,
         false,
         false,
@@ -10334,6 +10345,7 @@ test "retained async generator methods admit only their runtime helper family" {
         false,
         false,
         true,
+        false,
         false,
         false,
         false,
@@ -10354,9 +10366,11 @@ test "retained private method declarations and calls admit only their helpers" {
         false,
         false,
         false,
+        false,
     ));
     try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
         get_only,
+        false,
         false,
         false,
         false,
@@ -10376,34 +10390,11 @@ test "retained private method declarations and calls admit only their helpers" {
         false,
         false,
         false,
+        false,
     ));
     try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
         .{ .class_private_method_get = true, .class_private_field_set = true },
         false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-    ));
-}
-
-test "retained named-regexp wrapper admits its tracked runtime helper" {
-    try std.testing.expect(runtimeHelpersSafeForRetainedGraph(
-        .{ .wrap_regex = true },
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-    ));
-    try std.testing.expect(!runtimeHelpersSafeForRetainedGraph(
-        .{ .wrap_regex = true, .tdz = true },
         false,
         false,
         false,
@@ -17106,6 +17097,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const allow_async_generator_helpers = can_keep_semantic_graph and
         opts.unsupported.async_generator and opts.unsupported.async_await and
         opts.unsupported.generator and transformer.runtime_helpers.async_generator;
+    const allow_wrap_regex_helper = can_keep_semantic_graph and transformer.runtime_helpers.wrap_regex and
+        transformer.runtime_helper_symbol_ids.contains("__wrapRegExp");
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
         retained_helper_demands,
         allow_derived_class_helpers,
@@ -17116,6 +17109,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         can_keep_semantic_graph and transformer.runtime_helpers.using_ctx,
         allow_tracked_super_get,
         allow_tracked_super_set,
+        allow_wrap_regex_helper,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them

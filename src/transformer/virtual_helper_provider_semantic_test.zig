@@ -161,7 +161,13 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
         const completed = try certificate.complete(&t, &semantic, loaded.contents, root);
         try std.testing.expect(completed);
         if (selected.?.externals.len != 0) {
-            try std.testing.expectEqual(@as(usize, if (selected.?.origin.catalog == .super_set) 3 else 2), selected.?.externals.len);
+            const expected_externals: usize = switch (selected.?.origin.catalog) {
+                .super_get => 2,
+                .super_set => 3,
+                .wrap_regex => 21,
+                else => 0,
+            };
+            try std.testing.expectEqual(expected_externals, selected.?.externals.len);
             const external = selected.?.externals[0];
             const output = t.virtual_provider_visits.get(external.node) orelse return error.MissingExternalVisit;
             try std.testing.expect(semantic.symbol_ids[output] == null);
@@ -379,7 +385,7 @@ fn observe(a: std.mem.Allocator, id: []const u8, minify: bool, full_driver: bool
 }
 
 test "virtual provider actual catalog initial after-visit and before-finish tuples" {
-    for ([_][]const u8{ "public-field", "to-property-key", "keep-names" }) |short| {
+    for ([_][]const u8{ "public-field", "to-property-key", "keep-names", "wrap-regex" }) |short| {
         for ([_]bool{ false, true }) |minify| {
             for ([_]bool{ false, true }) |full_driver| {
                 var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -395,11 +401,11 @@ test "virtual provider actual catalog initial after-visit and before-finish tupl
 test "virtual provider actual builtin catalog ES5 prepass does not reanalyze RED" {
     const test_helpers = @import("../bundler/test_helpers.zig");
     var total_resyncs: u32 = 0;
-    for ([_][]const u8{ "public-field", "to-property-key", "keep-names" }) |short| {
+    for ([_][]const u8{ "public-field", "to-property-key", "keep-names", "wrap-regex" }) |short| {
         for ([_]bool{ false, true }) |minify| {
             var tmp = std.testing.tmpDir(.{});
             defer tmp.cleanup();
-            const base = if (std.mem.eql(u8, short, "public-field")) "__publicField" else if (std.mem.eql(u8, short, "to-property-key")) "__toPropertyKey" else "__name";
+            const base = if (std.mem.eql(u8, short, "public-field")) "__publicField" else if (std.mem.eql(u8, short, "to-property-key")) "__toPropertyKey" else if (std.mem.eql(u8, short, "keep-names")) "__name" else "__wrapRegExp";
             const source = try std.fmt.allocPrint(std.testing.allocator, "import {{ {s} }} from '\\x00zntc:runtime/{s}';console.log(typeof {s});", .{ base, short, base });
             defer std.testing.allocator.free(source);
             try test_helpers.writeFile(tmp.dir, "entry.mjs", source);
@@ -579,7 +585,7 @@ test "virtual provider actual source transform and AST hook preserve fallback" {
     }
 }
 
-test "regexp-only work retains the graph while syntax and regex helpers keep fallback" {
+test "regexp helpers retain the graph while syntax helper work keeps fallback" {
     const test_helpers = @import("../bundler/test_helpers.zig");
     const profile = @import("../profile.zig");
     const inputs = [_]PublicCase{
@@ -610,7 +616,7 @@ test "regexp-only work retains the graph while syntax and regex helpers keep fal
         try std.testing.expectEqual(@as(u8, 0), actual.term.exited);
         try std.testing.expectEqualStrings(case.expected, actual.stdout);
         std.debug.print("provider-work-bound index={d} resync={d}\n", .{ index, profile.count(.graph_resync_semantic) });
-        if (index == 0 or index == 2) {
+        if (index == 0 or index == 2 or index == 3) {
             try std.testing.expectEqual(@as(u32, 0), profile.count(.graph_resync_semantic));
         } else {
             try std.testing.expect(profile.count(.graph_resync_semantic) > 0);
@@ -712,6 +718,7 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
         entry: []const u8,
         library: []const u8,
         minify_identifiers: bool,
+        minify_whitespace: bool = false,
         expected_resyncs: u32,
         expected_stdout: ?[]const u8 = null,
     };
@@ -719,7 +726,9 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
         .{ .name = "exported regex only", .entry = "import {live} from './lib.mjs';console.log(live());", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "import plus exported regex", .entry = "import {live} from './lib.mjs';var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = false, .expected_resyncs = 0 },
         .{ .name = "minified import plus exported regex", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';var check=/./s;console.log(aLongImportedFunctionName(),check.test('\\n'));", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .expected_resyncs = 0 },
-        .{ .name = "named capture retains entry graph with one helper resync", .entry = "import {live} from './lib.mjs';var check=/(?<name>a)/;console.log(live(),check.test('a'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1, .expected_stdout = "true true\n" },
+        .{ .name = "minified plain import baseline", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';console.log(aLongImportedFunctionName());", .library = "export function live(){return true}", .minify_identifiers = true, .expected_resyncs = 2 },
+        .{ .name = "named capture retained helper", .entry = "import {live} from './lib.mjs';var check=/(?<name>a)/;var exec=check.exec('a');var string='a'.replace(check,'$<name>');var callback='a'.replace(check,function(match,name,offset,input,groups){return groups.name});console.log(live(),exec.groups.name,string,callback);", .library = "export function live(){return true}export function dead(){console.log('DEAD')}", .minify_identifiers = false, .expected_resyncs = 0, .expected_stdout = "true a a a\n" },
+        .{ .name = "named capture retained helper with minification", .entry = "import {live as aLongImportedFunctionName} from './lib.mjs';var check=/(?<name>a)/;var exec=check.exec('a');var string='a'.replace(check,'$<name>');var callback='a'.replace(check,function(match,name,offset,input,groups){return groups.name});console.log(aLongImportedFunctionName(),exec.groups.name,string,callback);", .library = "export function live(){var r=/./s;return r.test('\\n')}", .minify_identifiers = true, .minify_whitespace = true, .expected_resyncs = 0, .expected_stdout = "true a a a\n" },
         .{ .name = "class lowering keeps static import fallback", .entry = "import {live} from './lib.mjs';var check=/./s;class Marker{}console.log(live(),check.test('\\n'),Marker.name);", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
         .{ .name = "import attributes keep static import fallback", .entry = "import {live} from './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(live(),check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
         .{ .name = "side-effect import attributes keep static import fallback", .entry = "import './lib.mjs' with { mode: 'hostile' };var check=/./s;console.log(check.test('\\n'));", .library = "export function live(){return true}", .minify_identifiers = false, .expected_resyncs = 1 },
@@ -741,11 +750,13 @@ test "ES5 regex graph retention keeps static imports and rejects hostile combina
             .format = .cjs,
             .unsupported = @import("compat.zig").fromESTarget(.es5),
             .minify_identifiers = case.minify_identifiers,
+            .minify_whitespace = case.minify_whitespace,
         });
         defer bundler.deinit();
         const result = try bundler.bundle(std.testing.io);
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
+        if (std.mem.startsWith(u8, case.name, "named capture retained helper")) try std.testing.expect(std.mem.indexOf(u8, result.output, "DEAD") == null);
         if (case.expected_resyncs != profile.count(.graph_resync_semantic))
             std.debug.print("regex graph boundary failed case={s} expected={d} actual={d}\n", .{
                 case.name,
@@ -799,14 +810,18 @@ fn expectCachedCapture(a: std.mem.Allocator, current: *@import("../bundler/modul
 }
 
 test "virtual provider disk-copy actual producer rejects foreign ownership and restores atomically" {
-    try expectDiskCopyAuthority("public-field");
+    try expectDiskCopyAuthority("public-field", false);
 }
 
 test "virtual super-get provider disk-copy retains its actual winning constructor and scopes" {
-    try expectDiskCopyAuthority("super-get");
+    try expectDiskCopyAuthority("super-get", false);
 }
 
-fn expectDiskCopyAuthority(comptime short: []const u8) !void {
+test "virtual wrap-regex provider disk-copy retains its minified winning constructor" {
+    try expectDiskCopyAuthority("wrap-regex", true);
+}
+
+fn expectDiskCopyAuthority(comptime short: []const u8, minify: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -814,7 +829,7 @@ fn expectDiskCopyAuthority(comptime short: []const u8) !void {
     const Runner = @import("../bundler/plugin.zig").PluginRunner;
     const module_mod = @import("../bundler/module.zig");
     const certificate = @import("virtual_helper_provider_certificate.zig");
-    const source_options: helpers.SourceOptions = .{ .es5 = true };
+    const source_options: helpers.SourceOptions = .{ .es5 = true, .minify = minify };
     const plugins = [_]Plugin{helpers.makePlugin(&source_options)};
     const runner = Runner.init(&plugins);
     const id = helpers.ID_PREFIX ++ short;
@@ -865,7 +880,7 @@ fn expectDiskCopyAuthority(comptime short: []const u8) !void {
     for (0..6) |mutation| {
         switch (mutation) {
             0 => current.runtime_helper_source = null,
-            1 => current.runtime_helper_source.?.variant = .min,
+            1 => current.runtime_helper_source.?.variant = if (origin.variant == .min) .plain else .min,
             2 => current.source = try a.dupe(u8, current.source),
             3 => current.ast.?.source = try a.dupe(u8, current.ast.?.source),
             4 => current.semantic = foreign_pair.semantic,
@@ -1100,5 +1115,5 @@ test "virtual super-set provider preserves actual external roles before binder a
 }
 
 test "virtual super-set provider disk-copy retains its actual winning constructor and scopes" {
-    try expectDiskCopyAuthority("super-set");
+    try expectDiskCopyAuthority("super-set", false);
 }

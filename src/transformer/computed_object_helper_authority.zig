@@ -464,7 +464,7 @@ test "computed object helper authority retains ten actual bundler applications w
                             property_key_provider = true;
                             break :blk @import("../runtime_helper_modules.zig").ID_PREFIX ++ "to-property-key";
                         },
-                        .super_get, .super_set => return error.UnexpectedComputedDataProvider,
+                        .super_get, .super_set, .wrap_regex => return error.UnexpectedComputedDataProvider,
                         .keep_names => blk: {
                             keep_names_provider = true;
                             break :blk @import("../runtime_helper_modules.zig").ID_PREFIX ++ "keep-names";

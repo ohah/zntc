@@ -7,6 +7,104 @@ const symbols = @import("../semantic/symbol.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const NodeIndex = ast_mod.NodeIndex;
 
+pub const CaptureScopes = struct {
+    lowered_arrows: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    extracted_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    required_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.lowered_arrows.deinit(allocator);
+        self.extracted_owners.deinit(allocator);
+        self.required_symbols.deinit(allocator);
+    }
+};
+
+/// Collect source owners whose generated ordinary functions can change the
+/// lexical path to `arguments`. A plain function's own native `arguments`
+/// reads need no synthetic live cell.
+pub fn collectCaptureScopes(self: anytype, allocator: std.mem.Allocator, result: *CaptureScopes) std.mem.Allocator.Error!bool {
+    const source = self.semantic_source_ast orelse return false;
+    const owners = if (self.semantic_editor) |*editor| &editor.scope_owner_map else &self.scope_owner_map;
+    const symbols_table = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
+    var iter = owners.iterator();
+    while (iter.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= self.parser_node_count or raw >= source.nodes.items.len) continue;
+        if (entry.value_ptr.* >= scopes.len) return false;
+        const node = source.nodes.items[raw];
+        switch (node.tag) {
+            .arrow_function_expression => try result.lowered_arrows.put(allocator, entry.value_ptr.*, {}),
+            .function, .function_declaration, .function_expression, .method_definition => {
+                const flags_index: usize = if (node.tag == .method_definition)
+                    ast_mod.MethodExtra.flags
+                else
+                    ast_mod.FunctionExtra.flags;
+                if (node.data.extra > source.extra_data.items.len or
+                    source.extra_data.items.len - node.data.extra <= flags_index) return false;
+                const flags = switch (node.tag) {
+                    .function, .function_declaration, .function_expression => source.readExtra(node.data.extra, ast_mod.FunctionExtra.flags),
+                    .method_definition => ast_mod.methodFlagsToFunctionFlags(source.readExtra(node.data.extra, ast_mod.MethodExtra.flags)),
+                    else => unreachable,
+                };
+                const is_async = flags & ast_mod.FunctionFlags.is_async != 0;
+                const is_generator = flags & ast_mod.FunctionFlags.is_generator != 0;
+                const unsupported = self.options.unsupported;
+                // Other transforms can extract generator loop bodies even
+                // when the target keeps native generators. A generated
+                // generator then becomes the nearest ordinary owner of
+                // source `arguments`, so preserve the live cell for every
+                // generator owner while lexical arguments are being lowered.
+                const may_be_extracted = is_generator or (is_async and unsupported.async_await);
+                if (may_be_extracted) try result.extracted_owners.put(allocator, entry.value_ptr.*, {});
+            },
+            else => {},
+        }
+    }
+
+    for (references) |reference| {
+        if (reference.flags.declare) continue;
+        const id = @backingInt(reference.symbol_id);
+        if (id >= symbols_table.len) return false;
+        const symbol = symbols_table[id];
+        if (symbol.synthetic_kind != .implicit_arguments or result.required_symbols.contains(id)) continue;
+        if (symbol.kind != .parameter or symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= scopes.len) {
+            try result.required_symbols.put(allocator, id, {});
+            continue;
+        }
+
+        var cursor = reference.scope_id;
+        var reached_owner = false;
+        var requires_cell = false;
+        var hops: usize = 0;
+        while (!cursor.isNone() and hops <= scopes.len) : (hops += 1) {
+            const raw_scope = cursor.toIndex();
+            if (raw_scope >= scopes.len) {
+                requires_cell = true;
+                break;
+            }
+            if (result.lowered_arrows.contains(raw_scope)) {
+                requires_cell = true;
+                break;
+            }
+            if (cursor == symbol.scope_id) {
+                reached_owner = true;
+                requires_cell = result.extracted_owners.contains(raw_scope);
+                break;
+            }
+            cursor = scopes[raw_scope].parent;
+        }
+        if (!reached_owner and !requires_cell) requires_cell = true;
+        if (requires_cell) try result.required_symbols.put(allocator, id, {});
+    }
+    return true;
+}
+
+pub fn requiresLiveCell(id: u32, capture_scopes: *const CaptureScopes) bool {
+    return capture_scopes.required_symbols.contains(id);
+}
+
 pub const Cell = struct {
     scope: ScopeId,
     engine_id: symbols.SymbolId,

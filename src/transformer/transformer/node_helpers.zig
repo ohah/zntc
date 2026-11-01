@@ -101,6 +101,12 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
     const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
+    var arguments_capture_scopes: @import("../live_arguments.zig").CaptureScopes = .{};
+    defer arguments_capture_scopes.deinit(self.allocator);
+    const capture_scopes_complete = if (self.semantic_edit_enabled and lower_lexical_arguments)
+        try @import("../live_arguments.zig").collectCaptureScopes(self, self.allocator, &arguments_capture_scopes)
+    else
+        false;
     const Ctx = struct {
         fn nameOf(ctx: *const anyopaque, s: @import("../../semantic/symbol.zig").Symbol) []const u8 {
             const ast: *const @import("../../parser/ast.zig").Ast = @ptrCast(@alignCast(ctx));
@@ -168,11 +174,13 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         // Explicit lexical bindings do not use a function's implicit arguments
         // object. Give that exact binding a non-special spelling so generated
         // ordinary functions can close over its live cell, including writes.
-        const engine_owner = if (self.semantic_edit_enabled and lower_lexical_arguments and sym.synthetic_kind == .implicit_arguments and
-            sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling())
-            @import("../live_arguments.zig").unsplitOwner(self, sym.scope_id)
-        else
-            null;
+        const engine_owner: ?NodeIndex = if (self.semantic_edit_enabled and lower_lexical_arguments and
+            sym.synthetic_kind == .implicit_arguments and sym.scope_id.toIndex() < scopes.len and !scopes[sym.scope_id.toIndex()].blocksMangling())
+        blk: {
+            if (capture_scopes_complete and
+                !@import("../live_arguments.zig").requiresLiveCell(@intCast(i), &arguments_capture_scopes)) break :blk null;
+            break :blk @import("../live_arguments.zig").unsplitOwner(self, sym.scope_id);
+        } else null;
         const namespace_property = if (self.namespace_member_owners) |members| members.contains(@intCast(i)) else false;
         const arguments_rename = engine_owner != null or (lower_lexical_arguments and sym.synthetic_kind == null and !namespace_property and
             (sym.kind == .parameter or sym.kind == .variable_let or sym.kind == .variable_const or

@@ -552,6 +552,7 @@ fn catalogFor(m: *const HelperModule) ?source_origin.Catalog {
         .{ .short = "keep-names", .catalog = .keep_names },
         .{ .short = "super-get", .catalog = .super_get },
         .{ .short = "super-set", .catalog = .super_set },
+        .{ .short = "wrap-regex", .catalog = .wrap_regex },
     };
     for (known) |entry| if (m == findModule(entry.short).?) return entry.catalog;
     return null;
@@ -563,6 +564,7 @@ fn moduleForCatalog(catalog: source_origin.Catalog) *const HelperModule {
         .keep_names => "keep-names",
         .super_get => "super-get",
         .super_set => "super-set",
+        .wrap_regex => "wrap-regex",
     }).?;
 }
 
